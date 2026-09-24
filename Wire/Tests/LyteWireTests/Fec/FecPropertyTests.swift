@@ -17,18 +17,18 @@ final class FecPropertyTests: XCTestCase {
         dataShards k: Int, maxShardByteCount: Int, using rng: inout SplitMix64
     ) -> Int {
         if k == 1 || Bool.random(using: &rng) {
-            return k * Int.random(in: 1...maxShardByteCount, using: &rng)
+            return k * rng.int(in: 1...maxShardByteCount)
         }
-        let q = Int.random(in: 1...(maxShardByteCount - 1), using: &rng)
-        let r = Int.random(in: max(1, k - q)...(k - 1), using: &rng)
+        let q = rng.int(in: 1...(maxShardByteCount - 1))
+        let r = rng.int(in: max(1, k - q)...(k - 1))
         return k * q + r
     }
 
     func testFieldEncodeDecodeIsIdentity() throws {
         var rng = SplitMix64(seed: 0x57_1D_FE_C0)
         for trial in 0..<20_000 {
-            let k = Int.random(in: 1...255, using: &rng)
-            let m = Int.random(in: 0...(255 - k), using: &rng)
+            let k = rng.int(in: 1...255)
+            let m = rng.int(in: 0...(255 - k))
             let bytes = validGroupByteCount(
                 dataShards: k,
                 maxShardByteCount: WireBudget.maxPlaintextShardByteCount,
@@ -37,7 +37,7 @@ final class FecPropertyTests: XCTestCase {
             let geometry = try FecGeometry(
                 dataShards: k, parityShards: m, groupByteCount: bytes
             )
-            let index = Int.random(in: 0..<geometry.totalShards, using: &rng)
+            let index = rng.int(in: 0..<geometry.totalShards)
             let field = try FecField.reedSolomonShard(index, of: geometry)
             XCTAssertEqual(
                 try FecField.decode(field.encoded), field, "trial \(trial)"
@@ -64,8 +64,8 @@ final class FecPropertyTests: XCTestCase {
     func testRandomGeometriesRecoverUpToParityCount() throws {
         var rng = SplitMix64(seed: 0x57_1D_FE_C2)
         for trial in 0..<300 {
-            let k = Int.random(in: 1...12, using: &rng)
-            let m = Int.random(in: 1...4, using: &rng)
+            let k = rng.int(in: 1...12)
+            let m = rng.int(in: 1...4)
             let bytes = validGroupByteCount(
                 dataShards: k, maxShardByteCount: 200, using: &rng
             )
@@ -76,10 +76,9 @@ final class FecPropertyTests: XCTestCase {
             let shards = try FecEncoder.encode(group: group, geometry: geometry)
 
             // Erase a random pattern of up to m shards: must recover.
-            let erasureCount = Int.random(in: 0...m, using: &rng)
+            let erasureCount = rng.int(in: 0...m)
             var slots: [[UInt8]?] = shards
-            for index in (0..<geometry.totalShards)
-                .shuffled(using: &rng).prefix(erasureCount) {
+            for index in rng.shuffled(0..<geometry.totalShards).prefix(erasureCount) {
                 slots[index] = nil
             }
             XCTAssertEqual(
@@ -90,8 +89,7 @@ final class FecPropertyTests: XCTestCase {
 
             // Erase more data shards than surviving parity: must throw.
             var lossy: [[UInt8]?] = shards
-            for index in (0..<geometry.totalShards)
-                .shuffled(using: &rng).prefix(m + 1) {
+            for index in rng.shuffled(0..<geometry.totalShards).prefix(m + 1) {
                 lossy[index] = nil
             }
             if lossy[..<k].contains(where: { $0 == nil }) {
@@ -113,7 +111,7 @@ final class FecPropertyTests: XCTestCase {
         // through the fec field, decode with it after erasures.
         var rng = SplitMix64(seed: 0x57_1D_FE_C3)
         for trial in 0..<60 {
-            let bytes = Int.random(in: 1...(20 * 1112), using: &rng)
+            let bytes = rng.int(in: 1...(20 * 1112))
             let regime: FecRegime = Bool.random(using: &rng) ? .clean : .lossy
             let geometry = try FecGeometryTable.geometry(
                 forGroupByteCount: bytes, regime: regime
@@ -137,8 +135,7 @@ final class FecPropertyTests: XCTestCase {
             }
 
             var slots: [[UInt8]?] = shards
-            for index in (0..<geometry.totalShards)
-                .shuffled(using: &rng).prefix(geometry.parityShards) {
+            for index in rng.shuffled(0..<geometry.totalShards).prefix(geometry.parityShards) {
                 slots[index] = nil
             }
             XCTAssertEqual(

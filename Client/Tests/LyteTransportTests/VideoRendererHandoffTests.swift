@@ -36,27 +36,88 @@ final class VideoRendererHandoffTests: XCTestCase {
         XCTAssertEqual(rig.renderer.enqueuedCount, 2)
         XCTAssertEqual(rig.peer.irapsEnqueued, [7],
                        "only an IRAP that reached the renderer closes the episode")
+        XCTAssertEqual(rig.peer.gateClosingIraps, [],
+                       "no gate was open, so this IRAP closed none")
         XCTAssertEqual(rig.peer.recoveryRequests.count, 0)
     }
 
-    func testIrapCloseEndsTheIdrRequesterEpisode() throws {
-        let emitted = Locked<[IdrRequest]>([])
-        let requester = IdrRequester(retryIntervalMilliseconds: 500) { request in
-            emitted.mutate { $0.append(request) }
-        }
-        let base = ClientTimestamp(microseconds: 40_000_000)
-        requester.recordRecoveryDemand(frame: FrameNumber(rawValue: 1), now: base)
-        XCTAssertTrue(requester.snapshotStats().recoveryOutstanding)
-
+    /// The production pairing: the core's demand opens the handoff's gate,
+    /// and the IRAP that closes that gate ends the core's episode — no
+    /// 500 ms retry storm after recovery.
+    func testTheGateClosingIrapEndsTheCoresEpisode() throws {
         let rig = Rig()
-        rig.peer.onIrap = { _ in requester.noteUsableIrapAccepted() }
+        let core = rig.bindCore()
+        core.requestVideoRecovery(
+            after: FrameNumber(rawValue: 11), cause: .fecAssemblerDamage)
+        rig.barrier()
         try rig.submit(frame: 12, idr: true, bytes: corpus[0])
         rig.barrier()
 
-        requester.flushIfDue(now: base.advanced(byMicroseconds: 500_000))
-        XCTAssertEqual(emitted.value.count, 1,
-                       "IRAP enqueue must end the episode; no 500 ms retry storm")
-        XCTAssertFalse(requester.snapshotStats().recoveryOutstanding)
+        XCTAssertEqual(rig.renderer.enqueuedFrames(), [12])
+        XCTAssertFalse(core.idrRequester.snapshotStats().recoveryOutstanding)
+        core.idrRequester.flushIfDue(
+            now: Rig.coreNow.advanced(byMicroseconds: 500_000))
+        XCTAssertEqual(core.idrRequester.snapshotStats().requestsSent, 1)
+    }
+
+    /// The core's demand reaches the handoff by a queue hop. An IRAP
+    /// drained before that hop lands outside any gate; if it closed the
+    /// core's episode, the gate that opens next would wait for an IRAP
+    /// with no IDR request left to summon one.
+    func testAnIrapAheadOfTheGateLeavesTheCoresEpisodeRetrying() throws {
+        let rig = Rig()
+        let core = rig.bindCore()
+        rig.renderer.ready = false
+        try rig.submit(frame: 12, idr: true, bytes: corpus[0])
+        rig.barrier()
+
+        rig.queue.suspend()
+        rig.renderer.becomeReady()
+        core.requestVideoRecovery(
+            after: FrameNumber(rawValue: 11), cause: .fecAssemblerDamage)
+        rig.queue.resume()
+        rig.barrier()
+
+        XCTAssertEqual(rig.renderer.enqueuedFrames(), [12])
+        XCTAssertEqual(rig.peer.gateClosingIraps, [])
+        XCTAssertTrue(core.idrRequester.snapshotStats().recoveryOutstanding,
+                      "an IRAP outside the gate closed the core's episode")
+        core.idrRequester.flushIfDue(
+            now: Rig.coreNow.advanced(byMicroseconds: 500_000))
+        XCTAssertEqual(core.idrRequester.snapshotStats().retryRequests, 1)
+
+        try rig.submit(frame: 30, idr: true, bytes: corpus[0])
+        rig.barrier()
+        XCTAssertEqual(rig.peer.gateClosingIraps, [30])
+        XCTAssertFalse(core.idrRequester.snapshotStats().recoveryOutstanding)
+    }
+
+    /// Damage that joins an open episode while its IRAP is pending: the
+    /// IRAP closes the gate and the episode, then the late demand opens a
+    /// fresh gate. The core's episode must reopen with it.
+    func testAGateReopenedAfterItsIrapClosedTheEpisodeReassertsIt() throws {
+        let rig = Rig()
+        let core = rig.bindCore()
+        core.requestVideoRecovery(
+            after: FrameNumber(rawValue: 5), cause: .fecAssemblerDamage)
+        rig.barrier()
+        rig.renderer.ready = false
+        try rig.submit(frame: 12, idr: true, bytes: corpus[0])
+        rig.barrier()
+
+        rig.queue.suspend()
+        rig.renderer.becomeReady()
+        core.requestVideoRecovery(
+            after: FrameNumber(rawValue: 11), cause: .fecAssemblerDamage)
+        rig.queue.resume()
+        rig.barrier()
+
+        XCTAssertEqual(rig.peer.gateClosingIraps, [12])
+        let stats = core.idrRequester.snapshotStats()
+        XCTAssertTrue(stats.recoveryOutstanding,
+                      "the handoff awaits an IRAP the core stopped asking for")
+        XCTAssertEqual(stats.episodesStarted, 2)
+        XCTAssertEqual(stats.requestsSent, 2)
     }
 
     func testBackpressureQueuesInOrderUntilTheRendererAsks() throws {
@@ -106,6 +167,7 @@ final class VideoRendererHandoffTests: XCTestCase {
         XCTAssertTrue(rig.renderer.lastEnqueueResetDecoder,
                       "the closing IRAP must reset the compressed decoder")
         XCTAssertEqual(rig.peer.irapsEnqueued, [7])
+        XCTAssertEqual(rig.peer.gateClosingIraps, [7])
         XCTAssertEqual(rig.peer.recoveryRequests.count, 1, "one episode, one ask")
     }
 
@@ -272,6 +334,26 @@ private final class Rig {
         handoff.bind(peer)
     }
 
+    static let coreNow = ClientTimestamp(microseconds: 40_000_000)
+
+    /// A real session core as the handoff's recovery peer, wired the way
+    /// the app wires them: core demands hop onto the handoff's queue.
+    /// `peer` keeps recording what the core is told.
+    func bindCore() -> LyteUdpSessionCore {
+        let crypto = PassthroughTransportCrypto()
+        let core = LyteUdpSessionCore(
+            demux: ReceiveDemux(crypto: crypto),
+            sender: TransportSender(crypto: crypto, transmit: { _ in true }),
+            now: { Rig.coreNow },
+            onVideoRecoveryDemand: { [weak handoff = self.handoff] cause, frame in
+                handoff?.beginRecovery(cause: cause, after: frame)
+            },
+            videoSink: HeadlessVideoSink(),
+            onEvent: { _ in })
+        peer.forward = core
+        return core
+    }
+
     func submit(frame: UInt32, idr: Bool, bytes: [UInt8]) throws {
         let unit = DecodeUnit(
             frameNumber: FrameNumber(rawValue: frame),
@@ -294,18 +376,37 @@ private final class RecordingPeer: VideoRecoveryPeer, @unchecked Sendable {
     private let lock = NSLock()
     private var _requests: [Request] = []
     private var _iraps: [UInt32] = []
-    var onIrap: (@Sendable (FrameNumber) -> Void)?
+    private var _closing: [UInt32] = []
+    private var _ensures: [UInt32] = []
+    /// When set, every call is also delivered to this peer.
+    var forward: (any VideoRecoveryPeer)? {
+        get { lock.withLock { _forward } }
+        set { lock.withLock { _forward = newValue } }
+    }
+    private var _forward: (any VideoRecoveryPeer)?
 
     var recoveryRequests: [Request] { lock.withLock { _requests } }
     var irapsEnqueued: [UInt32] { lock.withLock { _iraps } }
+    /// The enqueued IRAPs that closed the handoff's gate.
+    var gateClosingIraps: [UInt32] { lock.withLock { _closing } }
+    var ensuredOpen: [UInt32] { lock.withLock { _ensures } }
 
     func requestVideoRecovery(after frame: FrameNumber, cause: VideoRecoveryCause) {
         lock.withLock { _requests.append(Request(frame: frame.rawValue, cause: cause)) }
+        forward?.requestVideoRecovery(after: frame, cause: cause)
     }
 
-    func noteVideoIrapEnqueued(frame: FrameNumber) {
-        lock.withLock { _iraps.append(frame.rawValue) }
-        onIrap?(frame)
+    func noteVideoIrapEnqueued(frame: FrameNumber, closesRecovery: Bool) {
+        lock.withLock {
+            _iraps.append(frame.rawValue)
+            if closesRecovery { _closing.append(frame.rawValue) }
+        }
+        forward?.noteVideoIrapEnqueued(frame: frame, closesRecovery: closesRecovery)
+    }
+
+    func ensureVideoRecoveryOpen(after frame: FrameNumber, cause: VideoRecoveryCause) {
+        lock.withLock { _ensures.append(frame.rawValue) }
+        forward?.ensureVideoRecoveryOpen(after: frame, cause: cause)
     }
 }
 

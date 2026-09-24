@@ -28,9 +28,20 @@ extension AVSampleBufferVideoRenderer: VideoRendererPort {}
 /// The session side of renderer recovery: a damaged or backed-up
 /// renderer asks for a fresh IRAP, and an IRAP that actually reached the
 /// renderer closes the episode.
+///
+/// Invariant: while the handoff awaits an IRAP, the session's episode is
+/// open, so its IDR request keeps retrying. The session closes its episode
+/// only for an IRAP that closed the handoff's gate (`closesRecovery`), and
+/// the handoff re-asserts the episode whenever it opens a gate for a
+/// session demand that the session may have closed meanwhile.
 public protocol VideoRecoveryPeer: AnyObject, Sendable {
     func requestVideoRecovery(after frame: FrameNumber, cause: VideoRecoveryCause)
-    func noteVideoIrapEnqueued(frame: FrameNumber)
+    /// An IRAP reached the renderer; `closesRecovery` says it closed the
+    /// handoff's await-IRAP gate rather than landing outside one.
+    func noteVideoIrapEnqueued(frame: FrameNumber, closesRecovery: Bool)
+    /// The handoff opened a gate for a session demand: reopen the
+    /// session's episode (and its IDR request) if it has closed since.
+    func ensureVideoRecoveryOpen(after frame: FrameNumber, cause: VideoRecoveryCause)
 }
 
 
@@ -66,7 +77,9 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
     private let renderer: any VideoRendererPort
     private let queue: DispatchQueue
     private let clockModel: HostClockModel
-    private let playout: VideoBeatConductorController
+    /// The Conductor is scheduled on the submitting thread and told of
+    /// IRAPs on the delivery queue.
+    private let playout: Mutex<VideoBeatConductor>
     private let books: VideoDeliveryBooks
     private let recorder: VideoFlightRecorder
     private let onDimensionsChanged: @Sendable (Int32, Int32) -> Void
@@ -106,7 +119,7 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
         self.books = books
         self.recorder = recorder
         self.onDimensionsChanged = onDimensionsChanged
-        self.playout = VideoBeatConductorController(config: playoutConfig)
+        self.playout = Mutex(VideoBeatConductor(config: playoutConfig))
     }
 
     /// Points `layer` at the host time clock, rate 1: the handoff retimes
@@ -146,10 +159,12 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
         let dispatched = SystemMonotonicClock.nowNanoseconds
         let arrival = dispatched / 1_000
         let mapped = clockModel.map(unit.timestamp)?.microseconds ?? arrival
-        let decision = playout.schedule(
-            mappedCaptureMicroseconds: mapped,
-            arrivalMicroseconds: arrival,
-            sourceCaptureMicroseconds: unit.timestamp.microseconds)
+        let decision = playout.withLock {
+            $0.schedule(
+                mappedCaptureMicroseconds: mapped,
+                arrivalMicroseconds: arrival,
+                sourceCaptureMicroseconds: unit.timestamp.microseconds)
+        }
         if PipelineWitness.isEnabled {
             PipelineWitness.record("frameReady", fields: [
                 "frame": String(unit.frameNumber.rawValue),
@@ -203,11 +218,18 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
                 awaitingRandomAccess: awaiting,
                 randomAccessPending: policy.randomAccessPending,
                 pendingCount: policy.count)
+            let outcome = policy.failEpisode()
             process(
-                policy.failEpisode(),
+                outcome,
                 recoveryFrame: frame,
                 cause: cause,
                 requestRecovery: false)
+            // An IRAP that closed the previous gate after this demand was
+            // raised may have closed the session's episode with it.
+            if outcome.recoveryRequested {
+                peer.withLock { $0.value }?.ensureVideoRecoveryOpen(
+                    after: frame, cause: cause)
+            }
         }
     }
 
@@ -217,7 +239,7 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
     public func stop(flushingRenderer: Bool = false) {
         guard !stopped.exchange(true, ordering: .relaxed) else { return }
         queue.async { [self] in
-            flushBarrier.reset()
+            flushBarrier.complete()
             expiryTimer?.cancel()
             expiryTimer = nil
             renderer.stopRequestingMediaData()
@@ -417,9 +439,10 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
             }
             if pending.unit.isIDR {
                 policy.noteRandomAccessEnqueued()
-                playout.noteRandomAccessEnqueued()
+                playout.withLock { $0.noteRandomAccessEnqueued() }
                 peer.withLock { $0.value }?.noteVideoIrapEnqueued(
-                    frame: pending.unit.frameNumber)
+                    frame: pending.unit.frameNumber,
+                    closesRecovery: closesRecovery)
                 if closesRecovery {
                     forcedMetricsProbes = 3
                     recorder.recordRecoveryLifecycle(
@@ -575,7 +598,9 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
                     sampledAfterFrame: frame,
                     sampledAfterIsRandomAccess: isRandomAccess)
             }
-            if let json = try? recorder.summaryJSONLine() {
+            // Diagnostic runs only: the summary sorts every percentile.
+            if PipelineWitness.isEnabled,
+               let json = try? recorder.summaryJSONLine() {
                 NSLog("lyte video flight: %@", json)
             }
         }

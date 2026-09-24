@@ -7,6 +7,30 @@ import CDRM
 import Foundation
 import Glibc
 
+/// Opens a primary (card) node for observation, never as its master.
+/// The kernel makes an opener the master whenever the node has none, and
+/// a compositor starting after that (the greeter at boot, the user's
+/// shell at login) could not take the display. Observation needs no
+/// master: GETFB2 needs CAP_SYS_ADMIN, and the fd stays authenticated.
+/// Returns -1 with `errno` set when the open fails. `keptMaster` is set
+/// when this opener became master and could not drop it: until the fd
+/// closes, no compositor can take the display, so the caller says so.
+public func openCardWithoutMaster(_ path: String, keptMaster: inout Bool) -> Int32 {
+    let fd = open(path, O_RDWR | O_CLOEXEC)
+    guard fd >= 0 else { return -1 }
+    keptMaster = drmIsMaster(fd) != 0 && drmDropMaster(fd) != 0
+    return fd
+}
+
+/// The render node of the GPU behind an open card fd — on a multi-GPU
+/// host the one that can import this card's scanout. Nil when the
+/// driver exposes none (a scanout-only device).
+public func renderNode(forCard fd: Int32) -> String? {
+    guard let name = drmGetRenderDeviceNameFromFd(fd) else { return nil }
+    defer { free(name) }
+    return String(cString: name)
+}
+
 /// The DRM "type" property of a plane (primary / overlay / cursor).
 func planeType(fd: Int32, planeId: UInt32) -> UInt64? {
     guard let props = drmModeObjectGetProperties(
@@ -81,6 +105,17 @@ public struct ScanoutTicket {
     public var fourcc: UInt32
     public var modifier: UInt64
     public var planes: [(fd: Int32, offset: UInt32, pitch: UInt32)]
+
+    /// The first plane's buffer as the kernel knows it: the dma-buf's
+    /// inode. Every export of one buffer object shares one dma-buf, so it
+    /// names the buffer whatever fd or framebuffer id carries it. Nil
+    /// when it cannot be read.
+    public var bufferIdentity: UInt64? {
+        guard let first = planes.first else { return nil }
+        var status = stat()
+        guard fstat(first.fd, &status) == 0 else { return nil }
+        return UInt64(status.st_ino)
+    }
 
     public func release() {
         for p in planes { close(p.fd) }

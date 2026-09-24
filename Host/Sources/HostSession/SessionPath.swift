@@ -18,6 +18,15 @@
 //   PROBING ──validation timeout, or a matching response never came──▶
 //       unknown (the probe slot frees; a later datagram re-probes with a
 //        NEW token — a stale or guessed token can never promote)
+//   FALLBACK ──authenticated datagram from that tuple, sent after the
+//            newest the primary delivered on its channel──▶ PRIMARY
+//       (no probe: it was validated inside the retention window, QUIC
+//        §9.3; the primary it replaces becomes the FALLBACK, inside the
+//        retention window the first promotion started, and
+//        freshKeyframeNeeded fires — a Wi-Fi flap A→B→A costs no RTT. A
+//        straggler the client sent before it roamed carries an older
+//        channel seq than the new path already delivered and changes
+//        nothing, as does a datagram whose order is unknown)
 //   FALLBACK ──retention window expires──▶ unknown
 //
 // One probe slot: while a probe is outstanding, datagrams from *other*
@@ -70,9 +79,9 @@ public enum PathValidatorEvent: Hashable, Sendable {
     /// Transmit this challenge body (CTRL, ARQ-exempt, conn-id TLV
     /// attached by the send loop) on the given — unvalidated — tuple.
     case sendChallenge(on: FourTuple, challenge: PathChallenge)
-    /// The probed tuple answered: it is now the primary; route all media
-    /// there. The old primary is retained as `fallback` until its
-    /// retention window lapses.
+    /// The probed tuple answered, or the fallback spoke again: it is now
+    /// the primary; route all media there. The old primary is retained as
+    /// `fallback` until its retention window lapses.
     case promoted(primary: SessionPath, fallback: SessionPath)
     /// Fires exactly once per promotion: force the encoder's next frame
     /// to be an IDR.
@@ -88,7 +97,9 @@ public struct PathValidatorConfig: Sendable {
     /// frees; a genuine roam re-probes on its next datagram.
     public var validationTimeoutNS: UInt64
     /// How long the demoted primary stays known after a promotion — the
-    /// escape hatch if the new path dies immediately.
+    /// escape hatch if the new path dies immediately: an authenticated
+    /// datagram from it inside this window, newer than the primary's
+    /// latest on its channel, re-promotes it without a probe.
     public var fallbackRetentionNS: UInt64
     /// Pre-validation send cap: ≤ factor × bytes received on that tuple.
     public var amplificationFactor: Int
@@ -111,12 +122,36 @@ public struct PathValidatorConfig: Sendable {
 }
 
 public struct PathValidator {
+    /// The newest channel seq each channel delivered from one tuple: the
+    /// client's send order, which a straggler cannot fake (the seq is
+    /// under the AEAD's header authentication).
+    private struct SendOrder {
+        private var newest: [UInt8: ChannelSeq] = [:]
+
+        mutating func note(_ position: (ChannelId, ChannelSeq)?) {
+            guard let (channel, seq) = position else { return }
+            if let known = newest[channel.rawValue], known.distance(to: seq) <= 0 {
+                return
+            }
+            newest[channel.rawValue] = seq
+        }
+
+        /// True only when `position` was sent after everything this tuple
+        /// delivered on the same channel; false when that is unknown.
+        func isOvertaken(by position: (ChannelId, ChannelSeq)?) -> Bool {
+            guard let (channel, seq) = position,
+                  let known = newest[channel.rawValue] else { return false }
+            return known.distance(to: seq) > 0
+        }
+    }
+
     private struct Probe {
         let tuple: FourTuple
         let token: UInt64
         let deadline: UInt64
         var bytesReceived: Int
         var bytesSent: Int
+        var order = SendOrder()
     }
 
     public let connectionId: ConnectionId
@@ -127,6 +162,8 @@ public struct PathValidator {
     public private(set) var fallback: SessionPath?
 
     private var probe: Probe?
+    private var primaryOrder = SendOrder()
+    private var fallbackOrder = SendOrder()
     private var fallbackDeadline: UInt64 = 0
     private var rng: any RandomNumberGenerator
     private var keyframePending = false
@@ -148,30 +185,42 @@ public struct PathValidator {
 
     /// The demux trigger: every authenticated datagram (unsealed under
     /// the session keys) reports its source tuple, the connection ID its
-    /// TLV carried (nil when absent), and its wire size. Unauthenticated
+    /// TLV carried (nil when absent), its channel and seq (the client's
+    /// send order; nil when unknown), and its wire size. Unauthenticated
     /// arrivals must not reach here: the TLV is plaintext, and a forged
     /// one would hold the single probe slot. Returns the actions to take.
     public mutating func datagramReceived(
         from tuple: FourTuple,
         connectionId claimed: ConnectionId?,
+        position: (channel: ChannelId, seq: ChannelSeq)? = nil,
         byteCount: Int,
         now: UInt64
     ) -> [PathValidatorEvent] {
         var events = expire(now: now)
 
-        // Known tuples need no probing; unknown tuples without our
-        // conn-id are not ours to answer at all (never a challenge —
-        // that would make the host a reflector for arbitrary sources).
-        guard claimed == connectionId,
-              tuple != primary.tuple,
-              tuple != fallback?.tuple
-        else { return events }
+        if tuple == primary.tuple {
+            primaryOrder.note(position)
+            return events
+        }
+        // Unknown tuples without our conn-id are not ours to answer at
+        // all (never a challenge — that would make the host a reflector
+        // for arbitrary sources).
+        guard claimed == connectionId else { return events }
+
+        if let retained = fallback, retained.tuple == tuple {
+            fallbackOrder.note(position)
+            if primaryOrder.isOvertaken(by: position) {
+                events += returnToFallback()
+            }
+            return events
+        }
 
         if var active = probe {
             // One probe slot. Same tuple: the bytes raise the budget but
             // the outstanding token stands. The one resend: the budget
             // withheld the challenge earlier and now affords it.
             if active.tuple == tuple {
+                active.order.note(position)
                 active.bytesReceived += byteCount
                 if active.bytesSent == 0,
                    let challenge = challengeWithinBudget(of: &active) {
@@ -191,6 +240,7 @@ public struct PathValidator {
             bytesReceived: byteCount,
             bytesSent: 0
         )
+        fresh.order.note(position)
         if let challenge = challengeWithinBudget(of: &fresh) {
             events.append(.sendChallenge(on: tuple, challenge: challenge))
         }
@@ -230,11 +280,29 @@ public struct PathValidator {
         let old = primary
         primary = SessionPath(tuple: tuple, validatedAt: now)
         fallback = old
+        fallbackOrder = primaryOrder
+        primaryOrder = active.order
         fallbackDeadline = now + config.fallbackRetentionNS
-        keyframePending = true
-        events.append(.promoted(primary: primary, fallback: old))
-        events.append(.freshKeyframeNeeded)
+        events += promoted(from: old)
         return events
+    }
+
+    /// The retained fallback becomes the primary again and the primary
+    /// it replaces takes its place, inside the window the validating
+    /// promotion started: a flap never extends the retention of either.
+    private mutating func returnToFallback() -> [PathValidatorEvent] {
+        guard let retained = fallback else { return [] }
+        let old = primary
+        primary = retained
+        fallback = old
+        swap(&primaryOrder, &fallbackOrder)
+        return promoted(from: old)
+    }
+
+    /// The encoder owes an IDR on every promotion.
+    private mutating func promoted(from old: SessionPath) -> [PathValidatorEvent] {
+        keyframePending = true
+        return [.promoted(primary: primary, fallback: old), .freshKeyframeNeeded]
     }
 
     /// Clock advance with no datagram — the caller's timer wake. Emits

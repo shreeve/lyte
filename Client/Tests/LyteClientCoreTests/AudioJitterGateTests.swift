@@ -305,6 +305,56 @@ final class AudioJitterGateTests: XCTestCase {
         XCTAssertEqual(result.played, result.played.sorted())
     }
 
+    /// A blackout longer than the PLC budget but shorter than the re-prime
+    /// jump: once concealment has gone quiet, the resumed stream plays at
+    /// its first urgent pull instead of waiting in silence until the
+    /// backlog overgrows and a recenter throws the arrived audio away.
+    func testResumeAfterSpentConcealmentBudgetPlaysAtOnce() {
+        let buffer = AudioJitterBuffer()
+        let budget = buffer.config.maxConsecutiveConcealments
+        for n in UInt32(0)..<5 {
+            buffer.insert(packet(n), arrivalMicroseconds: UInt64(n) * 5_000)
+        }
+        for _ in 0..<5 {
+            guard case .packet = buffer.pull(nowMicroseconds: 0, urgent: true)
+            else { return XCTFail("the primed packets play") }
+        }
+        for _ in 0..<budget {
+            guard case .conceal = buffer.pull(nowMicroseconds: 0, urgent: true)
+            else { return XCTFail("the blackout conceals within budget") }
+        }
+        XCTAssertEqual(buffer.pull(nowMicroseconds: 0, urgent: true), .starved,
+                       "past the budget with nothing queued, silence")
+
+        let resume = UInt32(5 + budget + 10)
+        for n in resume..<resume + 3 {
+            buffer.insert(packet(n), arrivalMicroseconds: 1_000_000)
+        }
+        XCTAssertEqual(buffer.pull(nowMicroseconds: 1_000_000, urgent: true),
+                       .packet(packet(resume)))
+        XCTAssertEqual(buffer.snapshotStats().packetsDroppedInRecenter, 0)
+    }
+
+    /// Before playout starts nothing orders the pending packets by
+    /// distance, and serial order is ambiguous across 2^31. A packet far
+    /// from those already pending re-primes from itself, so playout never
+    /// anchors on a stale or hostile outlier.
+    func testPrimingNeverAnchorsAcrossAHalfRangeJump() {
+        let buffer = AudioJitterBuffer()
+        buffer.insert(packet(0), arrivalMicroseconds: 0)
+        buffer.insert(packet(1), arrivalMicroseconds: 5_000)
+        let far = UInt32(1) << 31 + 5
+        for n in far..<far + 5 {
+            buffer.insert(packet(n), arrivalMicroseconds: 10_000)
+        }
+        for n in far..<far + 5 {
+            XCTAssertEqual(buffer.pull(nowMicroseconds: 10_000, urgent: true),
+                           .packet(packet(n)))
+        }
+        XCTAssertEqual(buffer.pendingCount, 0,
+                       "the outliers left no stale packets behind")
+    }
+
     // MARK: Leg 5 — late-packet discipline
 
     func testLatePacketIsDroppedNotReplayed() {

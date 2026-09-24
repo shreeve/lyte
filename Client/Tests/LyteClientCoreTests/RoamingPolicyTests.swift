@@ -200,6 +200,62 @@ final class RoamingPolicyTests: XCTestCase {
             + "2→30 s, every deadline strictly future")
     }
 
+    // MARK: Leg 4b — a sighting that lands while a dial is in flight
+
+    /// The browse (2 s) usually finishes before the probe dial (3 × 700 ms)
+    /// fails, so the host's new address arrives mid-dial. It must survive
+    /// the dial, be dialed when the probe fails, and the scan ladder must
+    /// keep running either way.
+    func testMovedHostSightedMidDialIsDialedWhenTheProbeFails() {
+        var policy = makePolicy()
+        _ = policy.sessionEstablished(
+            address: "10.0.0.60", port: 41_161, now: 0)
+        let closed = policy.sessionClosed(now: 10_000_000)
+        XCTAssertTrue(closed.contains(.beginScan))
+        XCTAssertTrue(closed.contains(
+            .dial(address: "10.0.0.60", port: 41_161, discovered: false)))
+
+        XCTAssertEqual(policy.scanCompleted(
+            sightings: [sighting("10.0.0.99")], now: 12_000_000), [])
+        XCTAssertNotNil(policy.nextDeadline,
+                        "the scan ladder stays armed through the dial")
+
+        XCTAssertEqual(policy.dialFailed(now: 12_100_000), [
+            .dial(address: "10.0.0.99", port: 41_161, discovered: true),
+        ])
+        XCTAssertEqual(policy.status,
+                       .reconnecting(address: "10.0.0.99", discovered: true))
+
+        // That dial fails too: scanning resumes on its ladder.
+        var now: UInt64 = 14_000_000
+        var scanned = policy.dialFailed(now: now).contains(.beginScan)
+        while now < 40_000_000, !scanned,
+              let due = policy.nextDeadline {
+            now = max(now + 1, due)
+            let actions = policy.tick(now: now)
+            scanned = actions.contains(.beginScan)
+            if actions.contains(where: {
+                if case .dial = $0 { return true }; return false
+            }) {
+                _ = policy.dialFailed(now: now)
+            }
+        }
+        XCTAssertTrue(scanned, "a failed discovered dial resumes scanning")
+    }
+
+    /// Reconnect resets every ladder, the scan ladder included, even
+    /// while the policy already believes it is scanning.
+    func testManualReconnectRestartsTheScan() {
+        var policy = makePolicy()
+        _ = policy.sessionEstablished(
+            address: "10.0.0.60", port: 41_161, now: 0)
+        _ = policy.sessionClosed(now: 10_000_000)
+        _ = policy.scanCompleted(
+            sightings: [sighting("10.0.0.99")], now: 12_000_000)
+        let reconnect = policy.manualReconnect(now: 13_000_000)
+        XCTAssertTrue(reconnect.contains(.beginScan))
+    }
+
     // MARK: Leg 5 — client-side path change: grace, heal, escalate
 
     func testPathChangeGraceHealsOrEscalatesWithWaiver() {

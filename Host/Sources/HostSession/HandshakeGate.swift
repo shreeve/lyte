@@ -18,10 +18,17 @@
 //     clears with hysteresis at `cookieExitThreshold`. It is OFF unless
 //     `cookieSecret` is set. LyteWire's RetryCookie owns the crypto.
 //
+// With a secret, a message 1 the bucket cannot admit is challenged, never
+// dropped, in either posture: a spoofed flood fast enough to drain the
+// bucket but below the dial's threshold would otherwise starve every
+// honest dial.
+//
 // A verified cookie proves an address, not good intent: one real client
 // can replay the same RetryHandshake1 at line rate for the cookie's whole
-// lifetime, and every admission costs the Noise DH. Cookie admissions
-// therefore spend from their own (larger) bucket, and an exact replay of
+// lifetime, or mint fresh ones with fresh ephemerals, and every admission
+// costs the Noise DH. Cookie admissions therefore spend from their own
+// (larger) bucket, each proven address (IP only; an IPv6 /64) from a small
+// share of it, an admission spends both or neither, and an exact replay of
 // a cookie already admitted is dropped before it spends anything.
 //
 // Sans-IO: `now` is injected monotonic ns; the cookie secret is injected
@@ -60,6 +67,10 @@ public struct HandshakeGate: Sendable {
         public var cookieAdmissionsPerSecond: Int
         /// Verified-cookie admissions allowed back to back.
         public var cookieAdmissionBurst: Int
+        /// One proven address's share of the cookie budget, per second and
+        /// back to back: a holder minting fresh cookies at line rate
+        /// cannot spend every other client's admissions.
+        public var cookieAdmissionsPerAddressPerSecond: Int
 
         public init(
             ratePerSecond: Int = 10,
@@ -70,7 +81,8 @@ public struct HandshakeGate: Sendable {
             floodWindowNS: UInt64 = 1_000_000_000,
             cookieLifetimeNS: UInt64 = RetryCookie.defaultLifetimeNanoseconds,
             cookieAdmissionsPerSecond: Int = 50,
-            cookieAdmissionBurst: Int = 50
+            cookieAdmissionBurst: Int = 50,
+            cookieAdmissionsPerAddressPerSecond: Int = 2
         ) {
             self.ratePerSecond = ratePerSecond
             self.burst = burst
@@ -83,6 +95,8 @@ public struct HandshakeGate: Sendable {
             self.cookieLifetimeNS = cookieLifetimeNS
             self.cookieAdmissionsPerSecond = cookieAdmissionsPerSecond
             self.cookieAdmissionBurst = cookieAdmissionBurst
+            self.cookieAdmissionsPerAddressPerSecond =
+                cookieAdmissionsPerAddressPerSecond
         }
     }
 
@@ -98,8 +112,9 @@ public struct HandshakeGate: Sendable {
         case drop(Reason)
 
         public enum Reason: Equatable, Sendable {
-            /// Bucket empty and cookie mode off, or a
-            /// verified cookie that is a replay or over the cookie budget.
+            /// Bucket empty and no secret to challenge with, or a verified
+            /// cookie that is a replay or over its address's or the
+            /// host's cookie budget.
             case throttled
             /// A cookie was presented but did not verify (wrong tuple,
             /// wrong msg1, expired, or forged) — dropped quietly.
@@ -134,8 +149,10 @@ public struct HandshakeGate: Sendable {
             lastRefillNS = now
         }
 
+        var canSpend: Bool { creditNS >= costNS }
+
         mutating func spend() -> Bool {
-            guard creditNS >= costNS else { return false }
+            guard canSpend else { return false }
             creditNS -= costNS
             return true
         }
@@ -149,7 +166,13 @@ public struct HandshakeGate: Sendable {
     private var recentArrivals = Deque<UInt64>()
     /// Cookies already admitted. A cookie binds (tuple, msg1), so an exact
     /// repeat is a replay of a handshake the host already answered.
-    private var admittedCookies = BoundedRing<[UInt8]>(capacity: 256)
+    private var admittedCookies = BoundedFifoMap<[UInt8], Void>(capacity: 256)
+    /// Each proven address's share of the cookie budget, keyed by
+    /// `addressShareKey` (never the port: one host on many ports is one
+    /// share). The oldest address is forgotten first; re-proving it costs
+    /// a round trip.
+    private var addressBuckets = BoundedFifoMap<[UInt8], TokenBucket>(
+        capacity: 256)
 
     public private(set) var admitted = 0
     public private(set) var refused = 0
@@ -159,7 +182,7 @@ public struct HandshakeGate: Sendable {
     public private(set) var cookiesVerified = 0
     /// Cookies presented that did not verify — spoof evidence.
     public private(set) var cookiesRejected = 0
-    /// Verified cookies dropped as exact replays or over the cookie budget.
+    /// Verified cookies dropped as exact replays or over a cookie budget.
     public private(set) var cookiesThrottled = 0
     /// Whether the gate is currently demanding a cookie (the observable
     /// dial; the caller surfaces its transitions).
@@ -177,11 +200,14 @@ public struct HandshakeGate: Sendable {
     /// The full flood decision for one message 1.
     /// `presentedCookie` is non-nil only for a RetryHandshake1 (0x14);
     /// `clientTuple` is the caller's opaque serialization of the source
-    /// address (the cookie binds ownership of exactly it); `message1` is
-    /// the raw Noise message 1 the cookie must match verbatim.
+    /// address and port (the cookie binds ownership of exactly it);
+    /// `clientAddress` keys the source's share of the cookie budget
+    /// (`addressShareKey` of the address alone); `message1` is the raw
+    /// Noise message 1 the cookie must match verbatim.
     public mutating func admitMessage1(
         presentedCookie: ArraySlice<UInt8>?,
         clientTuple: [UInt8],
+        clientAddress: [UInt8],
         message1: ArraySlice<UInt8>,
         now: UInt64
     ) -> Decision {
@@ -216,21 +242,39 @@ public struct HandshakeGate: Sendable {
             }
             cookiesVerified += 1
             let cookie = Array(presentedCookie)
-            guard !admittedCookies.contains(cookie), cookieBucket.spend()
-            else {
+            var share = addressBuckets[clientAddress] ?? TokenBucket(
+                ratePerSecond: config.cookieAdmissionsPerAddressPerSecond,
+                burst: config.cookieAdmissionsPerAddressPerSecond)
+            share.refill(now: now)
+            // Both budgets must have credit before either is spent: a
+            // host-wide refusal never burns an honest address's share,
+            // and an address over its share never drains the host's.
+            let spent = admittedCookies[cookie] == nil
+                && share.canSpend && cookieBucket.canSpend
+            if spent {
+                _ = cookieBucket.spend()
+                _ = share.spend()
+            }
+            addressBuckets.set(share, for: clientAddress)
+            guard spent else {
                 cookiesThrottled += 1
                 refused += 1
                 return decided(.drop(.throttled))
             }
-            admittedCookies.append(cookie)
+            admittedCookies.set((), for: cookie)
             admitted += 1
             return decided(.admit)
         }
 
-        // No cookie. In require-cookie mode, answer with a stateless
-        // challenge (one HMAC, no Noise, no state); the honest client
-        // resubmits with the cookie echoed.
-        if cookieMode, let secret = config.cookieSecret,
+        // No cookie: the token bucket, unless the dial is engaged. What
+        // the bucket does not admit is answered, with a secret, by a
+        // stateless challenge (one HMAC, no Noise, no state); the honest
+        // client resubmits with the cookie echoed.
+        if !cookieMode, bucket.spend() {
+            admitted += 1
+            return decided(.admit)
+        }
+        if let secret = config.cookieSecret,
            let cookie = try? RetryCookie.mint(
                 clientTuple: clientTuple, message1: message1,
                 now: now, secret: secret
@@ -239,23 +283,81 @@ public struct HandshakeGate: Sendable {
             refused += 1
             return decided(.challenge(cookie: cookie))
         }
-
-        // Normal posture (or the mint refused a malformed tuple): the
-        // token bucket.
-        if spendToken() { return decided(.admit) }
+        // The mint refused a malformed tuple: the bucket still applies.
+        if cookieMode, bucket.spend() {
+            admitted += 1
+            return decided(.admit)
+        }
+        refused += 1
         return decided(.drop(.throttled))
     }
 
-    // MARK: - Internals
-
-    private mutating func spendToken() -> Bool {
-        guard bucket.spend() else {
-            refused += 1
-            return false
+    /// The cookie-budget share key for a source address: an IPv4 address
+    /// as written, an IPv6 address by its /64 (one subscriber's prefix;
+    /// the interface half is free for it to rotate), an IPv4-mapped IPv6
+    /// address as its IPv4. Never the port. Text that parses as neither
+    /// keys as written.
+    public static func addressShareKey(_ address: String) -> [UInt8] {
+        let unscoped = address.split(
+            separator: "%", maxSplits: 1, omittingEmptySubsequences: false)[0]
+        guard unscoped.contains(":") else { return Array(unscoped.utf8) }
+        if let v4 = unscoped.split(separator: ":").last, v4.contains(".") {
+            return Array(v4.utf8)
         }
-        admitted += 1
-        return true
+        guard let groups = ipv6Groups(unscoped) else {
+            return Array(address.utf8)
+        }
+        var key: [UInt8] = Array("v6/64:".utf8)
+        for group in groups.prefix(4) {
+            key.append(UInt8(group >> 8))
+            key.append(UInt8(group & 0xFF))
+        }
+        return key
     }
+
+    /// The eight 16-bit groups of textual IPv6, "::" expanded; nil when
+    /// it is not IPv6.
+    private static func ipv6Groups(_ text: Substring) -> [UInt16]? {
+        let colon = UInt8(ascii: ":")
+        let bytes = Array(text.utf8)
+        var gap: Int?
+        var index = 0
+        while index + 1 < bytes.count {
+            if bytes[index] == colon, bytes[index + 1] == colon {
+                guard gap == nil else { return nil }
+                gap = index
+                index += 2
+            } else {
+                index += 1
+            }
+        }
+        func parse(_ part: ArraySlice<UInt8>) -> [UInt16]? {
+            if part.isEmpty { return [] }
+            var groups: [UInt16] = []
+            for field in part.split(
+                separator: colon, omittingEmptySubsequences: false) {
+                guard (1...4).contains(field.count),
+                      let value = UInt16(
+                        String(decoding: field, as: UTF8.self), radix: 16)
+                else { return nil }
+                groups.append(value)
+            }
+            return groups
+        }
+        guard let gap else {
+            guard let groups = parse(bytes[...]), groups.count == 8
+            else { return nil }
+            return groups
+        }
+        guard let front = parse(bytes[..<gap]),
+              let back = parse(bytes[(gap + 2)...]),
+              front.count + back.count <= 7 else { return nil }
+        return front
+            + [UInt16](repeating: 0, count: 8 - front.count - back.count)
+            + back
+    }
+
+    // MARK: - Internals
 
     private mutating func noteArrival(now: UInt64) {
         recentArrivals.append(now)

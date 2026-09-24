@@ -1,4 +1,5 @@
 import SwiftUI
+import LyteTransport
 import LyteUI
 
 /// The Lyte app: each window is one connection; a new window opens in the
@@ -8,6 +9,17 @@ struct LyteApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     init() {
+        // The witnesses write only where a diagnostic bundle says to.
+        PipelineWitness.configure(environment: DiagnosticEnvironment.current)
+        HandshakeWitness.configure(environment: DiagnosticEnvironment.current)
+        if !DiagnosticEnvironment.isEnabled,
+           ProcessInfo.processInfo.environment.keys.contains(where: {
+               $0 == "LYTE_AUTOCONNECT" || $0.hasPrefix("LYTE_BENCHMARK_")
+           })
+        {
+            NSLog("lyte: diagnostic environment ignored — this bundle was "
+                + "built without make-app.sh --diagnostics")
+        }
         do {
             _ = try DiagnosticRunIdentity.publishIfRequested()
         } catch {
@@ -21,8 +33,7 @@ struct LyteApp: App {
     var body: some Scene {
         WindowGroup(id: "connection") {
             ConnectionWindow(
-                autoconnect:
-                    ProcessInfo.processInfo.environment["LYTE_AUTOCONNECT"])
+                autoconnect: DiagnosticEnvironment.current["LYTE_AUTOCONNECT"])
         }
         .defaultSize(width: 1024, height: 640)
         .commands {
@@ -44,10 +55,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard !DiagnosticRunIdentity.isRequested else { return }
-        // Refresh (not just ensure) the AWDL helper registration: a
-        // rebuilt binary's stale LWCR otherwise EX_CONFIGs every spawn.
         Task.detached(priority: .utility) {
-            HelperClient.refreshRegistration()
+            HelperClient.registerIfNeeded()
         }
+    }
+
+    /// Quitting ends every window's session with the typed goodbye; the
+    /// app waits for those closes (their ACK linger), boundedly, so no
+    /// host keeps pacing video at a dead port until its liveness timeout.
+    func applicationShouldTerminate(
+        _ sender: NSApplication
+    ) -> NSApplication.TerminateReply {
+        OpenConnections.shared.disconnectAll()
+        SessionCloses.shared.whenDrained(within: .seconds(1)) {
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+}
+
+/// Every connection window's model, held weakly, so termination can end
+/// each window's session.
+@MainActor
+final class OpenConnections {
+    static let shared = OpenConnections()
+
+    private let models = NSHashTable<ConnectionModel>.weakObjects()
+
+    func insert(_ model: ConnectionModel) {
+        models.add(model)
+    }
+
+    func disconnectAll() {
+        for model in models.allObjects { model.disconnect() }
     }
 }

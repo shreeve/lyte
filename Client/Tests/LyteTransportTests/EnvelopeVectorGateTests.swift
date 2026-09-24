@@ -13,12 +13,8 @@ import LyteWireTestKit
 
 final class EnvelopeVectorGateTests: XCTestCase {
 
-    private static var vectorsPath: String {
-        ClientTestPaths.repositoryRoot + "/Wire/Vectors/envelope-v1.json"
-    }
-
     private func loadFile() throws -> EnvelopeVectorFile {
-        try EnvelopeVectorFile.load(from: Self.vectorsPath)
+        try EnvelopeVectorFile.loadCommitted()
     }
 
     private func makeDemux() -> ReceiveDemux {
@@ -27,9 +23,7 @@ final class EnvelopeVectorGateTests: XCTestCase {
 
     func testFileIsTheFrozenContract() throws {
         let file = try loadFile()
-        XCTAssertEqual(file.format, EnvelopeVectorFile.expectedFormat)
-        XCTAssertEqual(file.formatVersion, 1)
-        XCTAssertEqual(file.wireVersion, Int(WireVersion.major))
+        XCTAssertEqual(file.identityProblems, [])
         XCTAssertEqual(file.vectors.count, 17, "the W0 contract ships 17 vectors")
     }
 

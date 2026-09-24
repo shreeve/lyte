@@ -253,6 +253,11 @@ public enum SessionEvent: Equatable, Sendable {
     /// keypress in IDLE is the WAKE; one during FROZEN persists until
     /// RECOVERY's IDR consumes it.
     case inputReceived(InputEvent, receivedAtMicroseconds: UInt64)
+    /// `Session.inputSilenceReleaseNS` passed with no authenticated
+    /// arrival: the shell releases the held keys a compositor would
+    /// autorepeat (`HeldInputBook.Scope.autorepeatingKeys`). Once per
+    /// silence; the next arrival re-arms it.
+    case inputSilenceElapsed
     /// The estimator moved the pacer rate (feedback evidence or an
     /// IdrPacing policy); the pacer is already re-capped.
     case rateChanged(bitsPerSecond: Int, reason: RateChangeReason)
@@ -263,7 +268,7 @@ public enum SessionEvent: Equatable, Sendable {
     /// bytes would have occupied at the new rate.
     case videoBacklogPurged(datagrams: Int, bytes: Int, staleWireMs: Int)
     /// A client NACK passed the retransmit gate — `shards` repair
-    /// datagrams are enqueued (fresh seqs, videoTail class).
+    /// datagrams are enqueued (videoTail class; seqs at release).
     case repairEnqueued(frame: FrameNumber, shards: Int)
     /// A client NACK was refused. `.budgetExceeded`/`.unavailable` send an
     /// explicit refusal (the client's recovery episode owns the IDR
@@ -400,6 +405,8 @@ public enum SessionDropReason: Equatable, Sendable {
     case unhandledChannel(UInt8)
     case handshakeFailed(String)
     case duplicateConnectionIdTlv
+    /// A conn-id TLV naming some other session, refused before the AEAD.
+    case foreignConnectionId
     /// A message 1 beyond the HandshakeGate budget, dropped unread before
     /// any Noise state was allocated.
     case handshakeThrottled
@@ -410,6 +417,9 @@ public enum SessionDropReason: Equatable, Sendable {
     /// than the one it was answered on: message 2 goes only to the
     /// tuple that asked, so a replayer cannot aim it elsewhere.
     case handshakeRepeatOffPath
+    /// A BeaconEcho naming no beacon still awaiting its echo, or whose
+    /// round trip is implausible against the host's own t1: no sample.
+    case beaconEchoUnmatched
     /// A chan-3 payload FeedbackReport.decode refused. Still counted as
     /// media-path evidence (an authenticated arrival) but never fed to the
     /// estimator.
@@ -537,9 +547,6 @@ public struct SessionCounters: Equatable, Sendable {
     /// Audio FEC groups closed without parity because the Opus packet
     /// size changed mid-group (a bitrate step under hard CBR).
     public var audioGroupsAbandoned: UInt64 = 0
-    /// Audio datagrams assembled by extending their pre-sized AAD header
-    /// in place after sealing, avoiding a third header+payload array.
-    public var audioSealedDatagramsAssembledInPlace = 0
     /// Audio packets refused because the session is closed. FROZEN and
     /// IDLE never count here: audio is the path probe and keeps flowing.
     public var audioPacketsSuppressed = 0
@@ -635,6 +642,8 @@ public final class Session {
     /// stream, so a file cannot head-of-line-block a keystroke. Nil when
     /// the consent toggle left key 11 undeclared.
     private var bulkArqLane: SessionArqLane?
+    /// Set once a peer poisoned an ordered stream and the teardown left.
+    private var orderedStreamPoisoned = false
 
     /// Message-1 admissions, consulted before any handshake allocation.
     private var handshakeGate: HandshakeGate
@@ -652,6 +661,32 @@ public final class Session {
     /// The message 1 this session answered; nil before its handshake and
     /// once the initiator is confirmed.
     public var answeredMessage1: [UInt8]? { answeredHandshake?.message1 }
+    /// When message 2 last left for the unconfirmed handshake: its first
+    /// answer or the latest verbatim resend.
+    private var lastAnswerNS: UInt64?
+    /// How long an unconfirmed answer outlives its latest send. The
+    /// client's longest message-1 retransmit span is a connect's first
+    /// dial, 5 × 2 s = 10 s (`ClientHandshakeInitiator.Retry.firstDial`
+    /// in LyteClientSession); 2 s more covers the confirming round trip.
+    /// Every verbatim resend restarts the span, so a client whose early
+    /// message 2s were lost is still answered on its last retransmit.
+    public static let unconfirmedAnswerLifetimeNS: UInt64 = 12_000_000_000
+    /// How long the client may go without an authenticated arrival before
+    /// the keys it holds that a compositor autorepeats are released: long
+    /// enough to ride out a Wi-Fi scan, an AWDL channel hop or a roam
+    /// (each far past the 350 ms FROZEN detector), short enough to bound a
+    /// runaway autorepeat when the path is gone.
+    public static let inputSilenceReleaseNS: UInt64 = 2_000_000_000
+    /// The latest authenticated arrival; nil before the first.
+    private var lastAuthenticatedArrivalNS: UInt64?
+    private var inputSilenceReported = false
+    /// True once an answered handshake has gone unconfirmed for
+    /// `unconfirmedAnswerLifetimeNS` since message 2 last left: no client
+    /// is behind it (a replay, a spoofed source, an abandoned dial).
+    public func isUnconfirmedAnswerAbandoned(now: UInt64) -> Bool {
+        guard !isPeerConfirmed, let lastAnswerNS else { return false }
+        return now &- lastAnswerNS >= Self.unconfirmedAnswerLifetimeNS
+    }
     private var supersedingHandshake: SupersedingHandshake?
     /// Whether the flood dial currently demands a retry cookie.
     public var handshakeCookieMode: Bool { handshakeGate.cookieMode }
@@ -751,9 +786,9 @@ public final class Session {
     /// The clipboard-image lane (memory-backed bulk cargo). Inert unless
     /// the image gate (keys 10 ∧ 12) agreed: every entry point checks.
     private var clipboardImageChannel = ClipboardImageChannel()
-    /// Id mint for image cargo (sans-IO: the init's injected
-    /// generator, boxed so the stored property stays concrete).
-    private var imageRng: BoxedRng
+    /// The injected generator: the conn-id, path-challenge tokens and
+    /// image-cargo ids all draw from this one stream (see `SharedRng`).
+    private var rng: SharedRng
 
     /// The image lane's own books (share/apply/refuse verdicts).
     public var clipboardImageCounters: ClipboardImageChannelCounters {
@@ -775,7 +810,7 @@ public final class Session {
         sendAccounting: SessionSendAccounting = .pacerRelease,
         send: @escaping (VideoChannelDatagram) -> Void
     ) {
-        var rng = rng
+        var rng = SharedRng(rng)
         self.config = config
         self.connectionId = ConnectionId.random(using: &rng)
         // Every session datagram carries the conn-id TLV. Give that carrier
@@ -797,7 +832,7 @@ public final class Session {
             || config.capabilities.clipboardImages)
             ? SessionArqLane(channel: .bulkTransfer, config: arqConfig)
             : nil
-        self.imageRng = BoxedRng(base: rng)
+        self.rng = rng
         self.estimator = RateEstimator(
             config: config.estimator
                 ?? RateEstimatorConfig(
@@ -831,7 +866,12 @@ public final class Session {
             config: config.path,
             rng: rng
         )
-        if case .testPassthrough = config.crypto {
+        let sealTagByteCount: Int
+        switch config.crypto {
+        case .noise:
+            sealTagByteCount = WireBudget.aeadTagByteCount
+        case .testPassthrough:
+            sealTagByteCount = 0
             // No handshake to wait for; the session-start beacon (and
             // the capability declaration) leave on the first `advance`.
             self.beaconClock.armSessionStart(at: now)
@@ -851,6 +891,7 @@ public final class Session {
             seal: { [unowned self] plaintext, aad, envelope in
                 try self.sealPayload(plaintext, aad: aad, envelope: envelope)
             },
+            sealTagByteCount: sealTagByteCount,
             // The estimator's send ledger taps the sink, recording (channel,
             // seq) → (instant, wire bytes) so dispersion samples match their
             // trains.
@@ -896,6 +937,7 @@ public final class Session {
             (envelope, plaintext) = try Envelope.openDatagram(datagram) {
                 envelope, wirePayload, aad in
                 claimed = try admitHeader(envelope)
+                try admitEstablishedHeader(envelope, claimed: claimed)
                 do {
                     return try unsealPayload(
                         wirePayload, aad: aad, envelope: envelope
@@ -923,8 +965,11 @@ public final class Session {
             // Key possession proven: the session is committed.
             isPeerConfirmed = true
             answeredHandshake = nil
+            lastAnswerNS = nil
             supersedingHandshake = nil
         }
+        lastAuthenticatedArrivalNS = now
+        inputSilenceReported = false
 
         // The demux trigger: only an authenticated arrival may
         // probe a new tuple. The conn-id TLV is readable by anyone who
@@ -935,6 +980,7 @@ public final class Session {
             validator.datagramReceived(
                 from: tuple,
                 connectionId: claimed,
+                position: (envelope.channel, envelope.seq),
                 byteCount: datagram.count,
                 now: now
             ),
@@ -974,8 +1020,7 @@ public final class Session {
             // loud. Message-level routing separates the two lanes.
             guard agreedBulkTransfer || agreedClipboardImages,
                   bulkArqLane != nil else {
-                counters.dropped += 1
-                events.append(.dropped(.bulkNotNegotiated))
+                events += drop(.bulkNotNegotiated)
                 return events
             }
             events += absorbBulkArq(
@@ -989,8 +1034,7 @@ public final class Session {
                 now: now, hostMicroseconds: hostMicroseconds
             )
         default:
-            counters.dropped += 1
-            events.append(.dropped(.unhandledChannel(envelope.channel.rawValue)))
+            events += drop(.unhandledChannel(envelope.channel.rawValue))
         }
         return events
     }
@@ -1023,6 +1067,31 @@ public final class Session {
         } catch {
             throw InboundRefusal(.duplicateConnectionIdTlv)
         }
+    }
+
+    /// Channels an established session reads. Anything else, and a
+    /// conn-id TLV naming another session, is refused before the AEAD is
+    /// paid: a forged datagram there could only cost an open (and feed
+    /// the transport's resync search) without carrying anything we act on.
+    private static let readChannels: Set<ChannelId> =
+        [.ctrl, .feedback, .bulkTransfer]
+
+    private func admitEstablishedHeader(
+        _ envelope: Envelope, claimed: ConnectionId?
+    ) throws {
+        guard Self.readChannels.contains(envelope.channel) else {
+            throw InboundRefusal(.unhandledChannel(envelope.channel.rawValue))
+        }
+        guard claimed == nil || claimed == connectionId else {
+            throw InboundRefusal(.foreignConnectionId)
+        }
+    }
+
+    /// Counts one refusal and names it: every `dropped` count has exactly
+    /// one `.dropped` event.
+    private func drop(_ reason: SessionDropReason) -> [SessionEvent] {
+        counters.dropped += 1
+        return [.dropped(reason)]
     }
 
     /// Counts a refused datagram and names why. An unseal failure has its
@@ -1058,8 +1127,7 @@ public final class Session {
             return [refuse(error)]
         }
         guard case .noise(let hostStatic) = config.crypto else {
-            counters.dropped += 1 // unreachable: passthrough never waits
-            return [.dropped(.notEstablished(envelope.channel.rawValue))]
+            return drop(.notEstablished(envelope.channel.rawValue)) // unreachable: passthrough never waits
         }
         // Two admissible first words: a bare Noise message 1 (0x05) or a
         // RetryHandshake1 (0x14) echoing a cookie the host minted under
@@ -1073,14 +1141,12 @@ public final class Session {
         case CtrlMessageType.retryHandshake1:
             guard let resubmission = try? RetryHandshake1.decode(payload)
             else {
-                counters.dropped += 1
-                return [.dropped(.malformedCtrl)]
+                return drop(.malformedCtrl)
             }
             presentedCookie = resubmission.cookie[...]
             message1 = resubmission.message1[...]
         default:
-            counters.dropped += 1
-            return [.dropped(.notEstablished(envelope.channel.rawValue))]
+            return drop(.notEstablished(envelope.channel.rawValue))
         }
 
         return admitInitiation(
@@ -1110,6 +1176,7 @@ public final class Session {
         let decision = handshakeGate.admitMessage1(
             presentedCookie: presentedCookie,
             clientTuple: Self.cookieTuple(tuple),
+            clientAddress: HandshakeGate.addressShareKey(tuple.remoteAddress),
             message1: message1,
             now: now
         )
@@ -1125,11 +1192,9 @@ public final class Session {
             case .success(let responder):
                 events += onAuthenticated(responder)
             case .failure(let refusal):
-                counters.dropped += 1
-                events.append(.dropped(refusal.reason))
+                events += drop(refusal.reason)
             }
         case .challenge(let cookie):
-            counters.dropped += 1
             counters.handshakeChallengesMinted += 1
             // A stateless RetryChallenge (0x13) on the exact tuple the
             // message 1 arrived from — no Noise, no session state.
@@ -1145,13 +1210,11 @@ public final class Session {
                 events.append(.sendFailed(String(describing: error)))
             }
         case .drop(.throttled):
-            counters.dropped += 1
             counters.handshakesThrottled += 1
-            events.append(.dropped(.handshakeThrottled))
+            events += drop(.handshakeThrottled)
         case .drop(.cookieInvalid):
-            counters.dropped += 1
             counters.handshakeCookiesRejected += 1
-            events.append(.dropped(.handshakeCookieInvalid))
+            events += drop(.handshakeCookieInvalid)
         }
         return events
     }
@@ -1195,14 +1258,14 @@ public final class Session {
         if let answered = answeredHandshake,
            initiation.message1.elementsEqual(answered.message1) {
             guard tuple == validator.primary.tuple else {
-                counters.dropped += 1
-                return [.dropped(.handshakeRepeatOffPath)]
+                return drop(.handshakeRepeatOffPath)
             }
             do {
                 try sendCtrl(
                     body: answered.message2Body, sealed: false,
                     now: now, hostMicroseconds: hostMicroseconds)
                 counters.handshakeMessage2Resends += 1
+                lastAnswerNS = now
                 return []
             } catch {
                 return [.sendFailed(String(describing: error))]
@@ -1288,13 +1351,11 @@ public final class Session {
         _ annexB: [UInt8],
         captureTimestampMicroseconds: UInt64,
         isKeyframe: Bool,
-        interleave: (() -> Void)? = nil,
         now: UInt64
     ) throws -> Int {
         try ingestVideoFrameBytes(
             annexB, captureTimestampMicroseconds: captureTimestampMicroseconds,
-            isKeyframe: isKeyframe, interleave: interleave, now: now,
-            isBorrowed: false)
+            isKeyframe: isKeyframe, now: now)
     }
 
     /// Borrowed encoder-buffer ingress. The pointer is consumed
@@ -1304,22 +1365,18 @@ public final class Session {
         _ annexB: UnsafeBufferPointer<UInt8>,
         captureTimestampMicroseconds: UInt64,
         isKeyframe: Bool,
-        interleave: (() -> Void)? = nil,
         now: UInt64
     ) throws -> Int {
         try ingestVideoFrameBytes(
             annexB, captureTimestampMicroseconds: captureTimestampMicroseconds,
-            isKeyframe: isKeyframe, interleave: interleave, now: now,
-            isBorrowed: true)
+            isKeyframe: isKeyframe, now: now)
     }
 
     private func ingestVideoFrameBytes<C>(
         _ annexB: C,
         captureTimestampMicroseconds: UInt64,
         isKeyframe: Bool,
-        interleave: (() -> Void)?,
-        now: UInt64,
-        isBorrowed: Bool
+        now: UInt64
     ) throws -> Int
     where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
         guard let context = try beginVideoFramePreparation(
@@ -1332,9 +1389,7 @@ public final class Session {
             prepared,
             context: context,
             captureTimestampMicroseconds: captureTimestampMicroseconds,
-            interleave: interleave,
-            now: now,
-            isBorrowed: isBorrowed
+            now: now
         )
     }
 
@@ -1388,17 +1443,17 @@ public final class Session {
         )
     }
 
-    /// Ordered locked half. Channel seq allocation, Noise sealing, enqueue,
-    /// repair retention, and frame-number advancement remain one critical
-    /// section with every other Session mutation.
+    /// Ordered locked half: pacer insertion, repair retention and
+    /// frame-number advancement, one critical section with every other
+    /// Session mutation. No seal runs here: chan-2 seqs and seals are
+    /// assigned as `pump` releases each shard, so the first quantum can
+    /// leave on the next pump.
     @discardableResult
     public func commitPreparedVideoFrame(
         _ prepared: PreparedVideoFrame,
         context: SessionVideoFramePreparationContext,
         captureTimestampMicroseconds: UInt64,
-        interleave: (() -> Void)? = nil,
-        now: UInt64,
-        isBorrowed: Bool = false
+        now: UInt64
     ) throws -> Int {
         guard phase == .established else {
             throw SessionError.notEstablished
@@ -1410,14 +1465,12 @@ public final class Session {
         guard context.frameNumber == nextVideoFrameNumber else {
             throw SessionError.staleVideoPreparation
         }
-        let shards = try channel.ingestPrepared(
+        let shards = channel.ingestPrepared(
             prepared,
             frameNumber: context.frameNumber,
             captureTimestampMicroseconds: captureTimestampMicroseconds,
             lastInputSeq: context.lastInputSeq,
-            interleave: interleave,
-            now: now,
-            isBorrowed: isBorrowed
+            now: now
         )
         // The opening exemption's glass proxy needs the first
         // IDR's group size — "received everything through this group"
@@ -1484,12 +1537,9 @@ public final class Session {
     private func encodeSealedAudio(
         envelope: Envelope, plaintext: [UInt8]
     ) throws -> [UInt8] {
-        let datagram = try envelope.sealedDatagram(plaintext[...]) {
-            plaintext, aad in
+        try envelope.sealedDatagram(plaintext[...]) { plaintext, aad in
             try sealPayload(plaintext, aad: aad, envelope: envelope)
         }
-        counters.audioSealedDatagramsAssembledInPlace += 1
-        return datagram
     }
 
     /// Audio datagrams still waiting in the shared pacer — the audio
@@ -1751,7 +1801,7 @@ public final class Session {
         }
         let channelEvents = clipboardImageChannel.shareLocalImage(
             data, sha256: sha256,
-            book: &clipboardBook, rng: &imageRng
+            book: &clipboardBook, rng: &rng
         )
         var events = processImageEvents(channelEvents, now: now)
         events += serviceArqLane(
@@ -1891,6 +1941,9 @@ public final class Session {
                 events += consumeBulkStreamMessage(bytes, now: now)
             case .oneShotAcknowledged:
                 break // bulk rides the ordered stream only (group 0)
+            case .ignored(.orderedStreamPoisoned):
+                events += tearDownPoisonedStream(
+                    now: now, hostMicroseconds: hostMicroseconds)
             case .ignored(let reason):
                 counters.arqIgnored += 1
                 events.append(.arqIgnored(reason))
@@ -1908,21 +1961,18 @@ public final class Session {
         if bytes.first == CtrlMessageType.clipboardImageCargo {
             guard let cargo = try? ClipboardImageCargo.decode(bytes)
             else {
-                counters.dropped += 1
-                return [.dropped(.malformedBulk)]
+                return drop(.malformedBulk)
             }
             // Image cargo without keys 10 ∧ 12 agreed: dropped loud.
             guard agreedClipboardImages else {
-                counters.dropped += 1
-                return [.dropped(.clipboardImagesNotNegotiated)]
+                return drop(.clipboardImagesNotNegotiated)
             }
             return processImageEvents(
                 clipboardImageChannel.ingestCargo(cargo), now: now
             )
         }
         guard let message = try? BulkMessage.decode(bytes) else {
-            counters.dropped += 1
-            return [.dropped(.malformedBulk)]
+            return drop(.malformedBulk)
         }
         if clipboardImageChannel.claims(message) {
             return processImageEvents(
@@ -1938,11 +1988,25 @@ public final class Session {
         guard agreedBulkTransfer else {
             // Chan 8 was admitted for the image lane only — a file
             // message without key 11 is still ungated traffic.
-            counters.dropped += 1
-            return [.dropped(.bulkNotNegotiated)]
+            return drop(.bulkNotNegotiated)
         }
         counters.bulkMessagesReceived += 1
         return [.bulkMessageReceived(message)]
+    }
+
+    /// A peer message past the ARQ budget poisoned an ordered stream (CTRL
+    /// or bulk): it can never deliver in order again, so the session ends
+    /// with a typed teardown the first time, and every later segment on
+    /// that stream is counted without another event.
+    private func tearDownPoisonedStream(
+        now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        counters.arqIgnored += 1
+        guard !orderedStreamPoisoned else { return [] }
+        orderedStreamPoisoned = true
+        return [.arqIgnored(.orderedStreamPoisoned)] + runLifecycle(
+            .teardownRequest(.shuttingDown),
+            now: now, hostMicroseconds: hostMicroseconds)
     }
 
     /// Image-lane channel events → chan-8 sends + session events.
@@ -2036,6 +2100,9 @@ public final class Session {
                 }
             case .oneShotAcknowledged(let group):
                 events.append(.reliableOneShotAcknowledged(group))
+            case .ignored(.orderedStreamPoisoned):
+                events += tearDownPoisonedStream(
+                    now: now, hostMicroseconds: hostMicroseconds)
             case .ignored(let reason):
                 counters.arqIgnored += 1
                 events.append(.arqIgnored(reason))
@@ -2053,8 +2120,7 @@ public final class Session {
         switch message.first {
         case CtrlMessageType.sessionTeardown:
             guard let teardown = try? SessionTeardown.decode(message) else {
-                counters.dropped += 1
-                return [.dropped(.malformedCtrl)]
+                return drop(.malformedCtrl)
             }
             return runLifecycle(
                 .teardownMessage(teardown.reason),
@@ -2067,8 +2133,7 @@ public final class Session {
         case CtrlMessageType.capabilityUpdateAck:
             guard let ack = try? CapabilityUpdateAck.decode(message),
                   let event = try? negotiator.receive(ack) else {
-                counters.dropped += 1
-                return [.dropped(.malformedCtrl)]
+                return drop(.malformedCtrl)
             }
             switch event {
             case .updateAccepted:
@@ -2076,13 +2141,11 @@ public final class Session {
             case .updateRejected:
                 return [.capabilityUpdateAcknowledged(accepted: false)]
             case .agreed, .answerUpdate:
-                counters.dropped += 1 // unreachable from receive(ack)
-                return [.dropped(.malformedCtrl)]
+                return drop(.malformedCtrl) // unreachable from receive(ack)
             }
         case CtrlMessageType.inputEvent:
             guard let event = try? InputEvent.decode(message) else {
-                counters.dropped += 1
-                return [.dropped(.malformedCtrl)]
+                return drop(.malformedCtrl)
             }
             counters.inputEventsReceived += 1
             // Pre-arm before the shell injects: a keypress during a
@@ -2096,26 +2159,22 @@ public final class Session {
             return events
         case CtrlMessageType.audioRoutingRequest:
             guard let request = try? AudioRoutingRequest.decode(message) else {
-                counters.dropped += 1
-                return [.dropped(.malformedCtrl)]
+                return drop(.malformedCtrl)
             }
             // A request without hostAudioRouting agreed by both ends uses
             // a capability never negotiated: dropped loud, never fatal.
             guard agreedHostAudioRouting else {
-                counters.dropped += 1
-                return [.dropped(.audioRoutingNotNegotiated)]
+                return drop(.audioRoutingNotNegotiated)
             }
             counters.audioRoutingRequestsReceived += 1
             return [.audioRoutingRequested(request.mode)]
         case CtrlMessageType.clipboardSet:
             guard let set = try? ClipboardSet.decode(message) else {
-                counters.dropped += 1
-                return [.dropped(.malformedCtrl)]
+                return drop(.malformedCtrl)
             }
             // A set without clipboardText agreed: dropped loud, never fatal.
             guard agreedClipboardText else {
-                counters.dropped += 1
-                return [.dropped(.clipboardNotNegotiated)]
+                return drop(.clipboardNotNegotiated)
             }
             counters.clipboardSetsReceived += 1
             // Pre-arm the book before the shell applies: the leaf's change
@@ -2130,15 +2189,13 @@ public final class Session {
             // Receiver-role messages arriving at the mediaSender /
             // sole proposer / echo emitter / status emitter / announce
             // emitter / shape emitter: hostile or confused. Dropped loud.
-            counters.dropped += 1
-            return [.dropped(.unexpectedCtrlType(message.first!))]
+            return drop(.unexpectedCtrlType(message.first!))
         case CtrlMessageType.bulkOffer, CtrlMessageType.bulkAccept,
              CtrlMessageType.bulkChunk, CtrlMessageType.bulkAck,
              CtrlMessageType.bulkComplete, CtrlMessageType.bulkAbort:
             // The bulk sextet rides chan 8, never CTRL (a chunk here would
             // head-of-line-block input). Hostile or confused; dropped loud.
-            counters.dropped += 1
-            return [.dropped(.unexpectedCtrlType(message.first!))]
+            return drop(.unexpectedCtrlType(message.first!))
         default:
             return nil
         }
@@ -2154,14 +2211,12 @@ public final class Session {
         do {
             declaration = try CapabilityDeclaration.decode(message)
         } catch {
-            counters.dropped += 1
-            return [.dropped(.malformedCtrl)]
+            return drop(.malformedCtrl)
         }
         do {
             guard case .agreed(let agreed) = try negotiator.receive(declaration)
             else {
-                counters.dropped += 1 // unreachable from receive(declaration)
-                return [.dropped(.malformedCtrl)]
+                return drop(.malformedCtrl) // unreachable from receive(declaration)
             }
             return [.capabilitiesAgreed(agreed)]
         } catch let failure as CapabilityNegotiationError
@@ -2178,8 +2233,7 @@ public final class Session {
         } catch {
             // A duplicate declaration or other protocol violation:
             // dropped loud, never fatal.
-            counters.dropped += 1
-            return [.dropped(.malformedCtrl)]
+            return drop(.malformedCtrl)
         }
     }
 
@@ -2301,12 +2355,17 @@ public final class Session {
     }
 
     /// Removes one socket-pending datagram without presenting it as path
-    /// evidence. Used when fall repricing purges the executable's unsent
-    /// EAGAIN outbox alongside the core pacer queue.
+    /// evidence: a fall purge of the executable's unsent outbox, a kernel
+    /// pressure shed, or a send the socket refused. A chan-2 datagram
+    /// already holds its seq, so the estimator is told the client's
+    /// ledger will count it missing through no fault of the path.
     public func discardPendingDatagram(_ datagram: VideoChannelDatagram) {
         guard sendAccounting == .socketConfirmed,
-              datagram.destination == nil else { return }
-        socketPending.remove(datagram)
+              datagram.destination == nil,
+              socketPending.remove(datagram) != nil else { return }
+        if datagram.pacerClass.sessionChannel == .videoActive {
+            estimator.noteHostDroppedVideo(count: 1, now: pumpNowNS)
+        }
     }
 
     public func noteKernelPressureFreshVideoShed(
@@ -2351,8 +2410,7 @@ public final class Session {
             report = try FeedbackReport.decode(plaintext)
         } catch {
             counters.feedbackReportsMalformed += 1
-            counters.dropped += 1
-            return [.dropped(.malformedFeedback)]
+            return drop(.malformedFeedback)
         }
         counters.feedbackReportsParsed += 1
         repairBudget.noteFeedback(report, now: now)
@@ -2552,16 +2610,11 @@ public final class Session {
             }
         }
 
-        let enqueued: Int
-        do {
-            enqueued = try channel.enqueueRepair(
-                frame: nack.frame,
-                shardIndices: nack.missingShards,
-                now: now
-            )
-        } catch {
-            return [.sendFailed("repair frame \(nack.frame.rawValue): \(error)")]
-        }
+        let enqueued = channel.enqueueRepair(
+            frame: nack.frame,
+            shardIndices: nack.missingShards,
+            now: now
+        )
         guard enqueued > 0 else {
             return stale(.unavailable)
         }
@@ -2629,15 +2682,43 @@ public final class Session {
 
     /// Clock advance with no datagram — the loop's timer wake: due
     /// beacons, ARQ retransmits, lifecycle timers, validator expiries.
+    /// Until the initiator proves key possession the beacon cadence and
+    /// ARQ retransmits stay parked: message 1 carries no freshness, so an
+    /// unconfirmed session may be answering a spoofed source, and it
+    /// sends that source nothing beyond its one answer (and verbatim
+    /// message 2 resends to the asking tuple).
     public func advance(now: UInt64, hostMicroseconds: UInt64) -> [SessionEvent] {
         var events = process(
             validator.advance(now: now),
             now: now, hostMicroseconds: hostMicroseconds
         )
         guard phase == .established else { return events }
+        if isPeerConfirmed {
+            events += serviceConfirmedTimers(
+                now: now, hostMicroseconds: hostMicroseconds)
+        }
+        if lifecycleLane.shouldService(at: now) {
+            events += runLifecycle(
+                nil, now: now, hostMicroseconds: hostMicroseconds
+            )
+        }
+        return events
+    }
+
+    /// When the current silence earns `.inputSilenceElapsed`; nil once it
+    /// has, or before any arrival.
+    private var inputSilenceDeadline: UInt64? {
+        guard !inputSilenceReported, let lastAuthenticatedArrivalNS
+        else { return nil }
+        return lastAuthenticatedArrivalNS &+ Self.inputSilenceReleaseNS
+    }
+
+    private func serviceConfirmedTimers(
+        now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
         // Passthrough mode establishes without a handshake, so the
         // declaration leaves on the first wake (a no-op once declared).
-        events += declareCapabilities(
+        var events = declareCapabilities(
             now: now, hostMicroseconds: hostMicroseconds
         )
         if let beacon = beaconClock.takeDueBeacon(
@@ -2648,6 +2729,10 @@ public final class Session {
             )
         }
         events += flushInputEchoes(now: now, hostMicroseconds: hostMicroseconds)
+        if let due = inputSilenceDeadline, now >= due {
+            inputSilenceReported = true
+            events.append(.inputSilenceElapsed)
+        }
         if let due = ctrlArqLane.nextDeadlineNanoseconds, now >= due {
             events += serviceArqLane(
                 .control, now: now, hostMicroseconds: hostMicroseconds
@@ -2656,11 +2741,6 @@ public final class Session {
         if let due = bulkArqLane?.nextDeadlineNanoseconds, now >= due {
             events += serviceArqLane(
                 .bulk, now: now, hostMicroseconds: hostMicroseconds
-            )
-        }
-        if lifecycleLane.shouldService(at: now) {
-            events += runLifecycle(
-                nil, now: now, hostMicroseconds: hostMicroseconds
             )
         }
         return events
@@ -2741,15 +2821,18 @@ public final class Session {
         now: UInt64, upThrough highestClass: PacerClass = .bulk
     ) -> UInt64? {
         var wake = channel.nextWake(now: now, upThrough: highestClass)
-        for candidate in [
-            beaconClock.nextDeadlineNanoseconds,
-            ctrlArqLane.nextDeadlineNanoseconds,
-            bulkArqLane?.nextDeadlineNanoseconds,
-            lifecycleLane.nextDeadlineNanoseconds, validator.nextDeadline,
-        ] {
-            guard let candidate else { continue }
+        func fold(_ candidate: UInt64?) {
+            guard let candidate else { return }
             wake = wake.map { min($0, candidate) } ?? candidate
         }
+        if isPeerConfirmed {
+            fold(beaconClock.nextDeadlineNanoseconds)
+            fold(inputSilenceDeadline)
+            fold(ctrlArqLane.nextDeadlineNanoseconds)
+            fold(bulkArqLane?.nextDeadlineNanoseconds)
+        }
+        fold(lifecycleLane.nextDeadlineNanoseconds)
+        fold(validator.nextDeadline)
         return wake
     }
 
@@ -2888,7 +2971,7 @@ public final class Session {
                 initialPath: tuple,
                 now: now,
                 config: config.path,
-                rng: imageRng
+                rng: rng
             )
         }
         do {
@@ -2901,6 +2984,7 @@ public final class Session {
             )
             transport = try responder.makeTransport()
             answeredHandshake = (Array(message1), message2Body)
+            lastAnswerNS = now
         } catch {
             return [.dropped(.handshakeFailed(String(describing: error)))]
         }
@@ -2936,8 +3020,7 @@ public final class Session {
         hostMicroseconds: UInt64
     ) -> [SessionEvent] {
         guard let type = payload.first else {
-            counters.dropped += 1
-            return [.dropped(.malformedCtrl)]
+            return drop(.malformedCtrl)
         }
         switch type {
         case CtrlMessageType.arqSegment, CtrlMessageType.arqAck:
@@ -2954,14 +3037,12 @@ public final class Session {
             return events
         case CtrlMessageType.beaconEcho:
             guard let echo = try? BeaconEcho.decode(payload) else {
-                counters.dropped += 1
-                return [.dropped(.malformedCtrl)]
+                return drop(.malformedCtrl)
             }
             return accept(echo: echo, hostMicroseconds: hostMicroseconds)
         case CtrlMessageType.pathResponse:
             guard let response = try? PathResponse.decode(payload) else {
-                counters.dropped += 1
-                return [.dropped(.malformedCtrl)]
+                return drop(.malformedCtrl)
             }
             return process(
                 validator.pathResponseReceived(
@@ -2971,8 +3052,7 @@ public final class Session {
             )
         case CtrlMessageType.idrRequest:
             guard let request = try? IdrRequest.decode(payload) else {
-                counters.dropped += 1
-                return [.dropped(.malformedCtrl)]
+                return drop(.malformedCtrl)
             }
             counters.idrRequests += 1
             // The requester retries every 500 ms until its renderer
@@ -2990,17 +3070,18 @@ public final class Session {
             }
             return [.idrRequested(request)]
         default:
-            counters.dropped += 1
-            return [.dropped(.unexpectedCtrlType(type))]
+            return drop(.unexpectedCtrlType(type))
         }
     }
 
     private func accept(
         echo: BeaconEcho, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
-        let sample = beaconClock.accept(
+        guard let sample = beaconClock.accept(
             echo: echo, hostMicroseconds: hostMicroseconds
-        )
+        ) else {
+            return drop(.beaconEchoUnmatched)
+        }
         counters.beaconEchoes += 1
         // RTT evidence into the estimator (telemetry and the retransmit
         // gate; the rate law runs on dispersion).
@@ -3050,6 +3131,11 @@ public final class Session {
                 } catch {
                     events.append(.sendFailed("path challenge: \(error)"))
                 }
+            }
+            // A promotion moves media to a path whose delay and capacity
+            // the estimator has never measured.
+            if case .promoted = event {
+                estimator.notePathChanged(now: now)
             }
             // .freshKeyframeNeeded needs no execution here: the encoder
             // loop polls takeFreshKeyframeRequest(), which reads the
@@ -3144,10 +3230,20 @@ public final class Session {
     }
 }
 
-/// A concrete `RandomNumberGenerator` boxing the init's injected
-/// generator (a stored `some` is not expressible), so the image-id mint
-/// does not force Session generic.
-struct BoxedRng: RandomNumberGenerator {
-    var base: any RandomNumberGenerator
-    mutating func next() -> UInt64 { base.next() }
+/// The init's injected generator, shared by reference: the conn-id,
+/// every path validator's challenge tokens and the image-id mint draw
+/// from one stream. Copies of a value-typed generator would replay each
+/// other, making challenge tokens equal to image ids a client sees.
+struct SharedRng: RandomNumberGenerator {
+    private final class State {
+        var base: any RandomNumberGenerator
+        init(_ base: any RandomNumberGenerator) { self.base = base }
+    }
+    private let state: State
+
+    init(_ base: some RandomNumberGenerator) {
+        state = State(base)
+    }
+
+    mutating func next() -> UInt64 { state.base.next() }
 }

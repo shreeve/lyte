@@ -56,7 +56,8 @@ public enum CursorPoll {
     /// The plane holds fb 0 (or the buffer is fully transparent).
     case hidden
     case shape(CursorFrame)
-    /// Grab/import failed this round; retried on the next fb change.
+    /// Grab/import failed this round; the fb does not latch, so the next
+    /// poll retries it.
     case failed(String)
 }
 

@@ -46,6 +46,8 @@ public struct ClientAudioRoutingSession: Sendable {
         self.desiredAtStart = desiredAtStart
     }
 
+    /// - Throws: `AudioRoutingAskError` without negotiated key 9 (key 14
+    ///   for `.streamOff`) or before the capability exchange settled.
     public func request(
         _ mode: HostAudioRoutingMode,
         agreed: Capabilities?

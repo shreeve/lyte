@@ -1,9 +1,10 @@
 // SplitMix64: the seeded RNG every LyteWire property test uses, so a
 // failure reproduces from its seed (Vigna's splitmix64.c constants).
-// The stdlib's `Int.random(in:using:)`/`shuffle(using:)` draw at Int's
-// width, so the same seed differs on wasm32; anything frozen or replayed
-// across platforms draws through `int(in:)` / `shuffle(_:)`, which draw at
-// 64 bits everywhere and match the stdlib on 64-bit hosts.
+// The stdlib's `Int.random(in:using:)`, `shuffle(using:)` and
+// `randomElement(using:)` draw at Int's width, so the same seed differs on
+// wasm32; anything frozen or replayed across platforms draws through
+// `int(in:)` / `shuffle(_:)` (an element is `xs[rng.int(in: xs.indices)]`),
+// which draw at 64 bits everywhere and match the stdlib on 64-bit hosts.
 
 public struct SplitMix64: RandomNumberGenerator, Sendable {
     private var state: UInt64
@@ -50,6 +51,14 @@ public struct SplitMix64: RandomNumberGenerator, Sendable {
     public mutating func int(in range: Range<Int>) -> Int {
         precondition(!range.isEmpty, "empty range")
         return int(in: range.lowerBound...(range.upperBound - 1))
+    }
+
+    /// A shuffled copy (see `shuffle(_:)`); the same order as
+    /// `sequence.shuffled(using: &self)` on 64-bit hosts.
+    public mutating func shuffled<S: Sequence>(_ sequence: S) -> [S.Element] {
+        var copy = Array(sequence)
+        shuffle(&copy)
+        return copy
     }
 
     /// Fisher-Yates in place, drawn at 64-bit width; the same

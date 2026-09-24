@@ -14,6 +14,44 @@ final class AudioReceiverFecGateTests: XCTestCase {
     private static let packetFrames = 240
     private static let framesPerMs = 48
 
+    /// Capture stamps are the host's: one stamped 2^63 µs away pins the
+    /// latency floor at Int64's edge, and the next honest packet's span
+    /// above it no longer fits. The books skip it instead of trapping.
+    func testHostileCaptureStampsNeverTrapTheLatencyBooks() throws {
+        let receiver = AudioReceiver()
+        let geometry = try FecGeometry(
+            dataShards: 4, parityShards: 2, groupByteCount: 320)
+        let now: UInt64 = 1_000_000
+        let stamps = [now &+ (1 << 63), now &- 10_000]
+        for (group, stamp) in stamps.enumerated() {
+            let shards = try FecEncoder.encode(
+                group: [UInt8](repeating: 7, count: 320), geometry: geometry)
+            for index in 0..<4 {
+                receiver.ingest(
+                    envelope: Envelope(
+                        channel: .audio,
+                        seq: ChannelSeq(rawValue: UInt16(group * 6 + index)),
+                        frame: FrameNumber(rawValue: UInt32(group * 4)),
+                        timestamp: stamp &+ UInt64(index) * Self.packetMicros,
+                        fec: try FecField.reedSolomonShard(
+                            index, of: geometry).encoded),
+                    payload: shards[index],
+                    now: ClientTimestamp(microseconds: now))
+            }
+        }
+        var played = 0
+        for _ in 0..<16 {
+            let decision = receiver.pullDecision(
+                now: ClientTimestamp(microseconds: now), urgent: true)
+            if case .packet = decision.verdict { played += 1 }
+        }
+        XCTAssertEqual(played, 8)
+        let recorded = receiver.snapshotStats().captureToFeed.count
+        XCTAssertGreaterThan(recorded, 0)
+        XCTAssertLessThan(recorded, 8,
+                          "a span past Int64 records nothing")
+    }
+
     func testFecHealedLossPlaysByteExactWithZeroPlc() throws {
         let receiver = AudioReceiver()
         // 100 groups; drop exactly one data shard of every third group

@@ -1938,6 +1938,61 @@ final class RateEstimatorGateTests: XCTestCase {
     /// completion presumption expiring mid-drain — the deep-floor
     /// starvation seam) feed neither the post-FEC fractions nor the
     /// regime ladder. The same storm unrecused still bites.
+    /// The session's first report carries no attempt evidence (its ledger
+    /// only seeds the differencing), so a NACK in it — a lost opening-IDR
+    /// shard — is no denominator: it once read as 100 % post-FEC loss, an
+    /// instant ×0.85 fall and a latched lossy regime.
+    func testAFirstReportNackIsNotTotalPostFecLoss() throws {
+        let estimator = makeEstimator()
+        let samples = train(
+            estimator, seqStart: 0, count: 20, sendStartNS: Self.ms,
+            sendSpacingNS: 100_000, bottleneckBitsPerSecond: 20_000_000)
+        let verdict = estimator.ingest(
+            report(
+                samples: Array(samples.dropFirst()), clientMicros: 30_000,
+                channels: lossLedger(received: 19, missing: 1),
+                nacks: [try FeedbackReport.NackEntry(
+                    frame: FrameNumber(rawValue: 0), missingShards: [0])]),
+            now: 30 * Self.ms, inRecovery: false)
+        XCTAssertEqual(verdict.postFecLossFraction, 0)
+        XCTAssertNil(verdict.newRateBitsPerSecond)
+        XCTAssertNil(verdict.fecRegime)
+        XCTAssertEqual(estimator.fecRegime, .clean)
+    }
+
+    /// A client may send reports at any rate. A storm of them — each with
+    /// a train of dispersion, every tenth with six full NACK entries on
+    /// fresh frames — must leave the estimator's memory bounded, not
+    /// grown per report.
+    func testReportStormKeepsEvidenceBounded() throws {
+        let estimator = makeEstimator()
+        var seq = 0
+        var received: UInt32 = 0
+        for n in 0..<2_100 {
+            let now = Self.ms + UInt64(n) * 10_000
+            let samples = train(
+                estimator, seqStart: seq, count: 4, sendStartNS: now,
+                sendSpacingNS: 1_000, bottleneckBitsPerSecond: 20_000_000)
+            seq += 4
+            received += 4
+            let nacks = try (0..<(n % 10 == 0 ? 6 : 0)).map { entry in
+                try FeedbackReport.NackEntry(
+                    frame: FrameNumber(rawValue: UInt32(n * 6 + entry)),
+                    missingShards: Array(0...254))
+            }
+            _ = estimator.ingest(
+                report(samples: samples, clientMicros: now / 1_000,
+                       channels: lossLedger(received: received, missing: 0),
+                       nacks: nacks),
+                now: now, inRecovery: false)
+        }
+        XCTAssertLessThanOrEqual(
+            estimator.retainedEvidenceCount,
+            2 * 256 + 2_048 + 4_096 + 1_024)
+        XCTAssertGreaterThanOrEqual(
+            estimator.rateBitsPerSecond, estimator.config.floorBitsPerSecond)
+    }
+
     func testRecusedNackShardsAreNotPathEvidence() throws {
         let estimator = makeEstimator()
         let driver = EstimatorDriver(self, estimator)
@@ -2478,6 +2533,44 @@ final class RateEstimatorGateTests: XCTestCase {
             estimator.applyIdrPacing(.halfStaleEstimate, now: 400 * Self.ms),
             4_000_000, accuracy: 200_000
         )
+    }
+
+    /// Reports still in flight at a path change describe datagrams sent on
+    /// the old path. A fast old path (0 ms standing delay) followed by a
+    /// slower new one (30 ms): if those reports seeded the new path's
+    /// baseline, every new-path report would read 30 ms inflated and fall.
+    func testReportsOfOldPathSendsDoNotSeedTheNewPathsBaseline() {
+        let estimator = makeEstimator()
+        let driver = EstimatorDriver(self, estimator)
+        for _ in 0..<10 { driver.beat(bottleneckMbps: 10) }
+
+        var inFlight: [FeedbackReport] = []
+        for index in 0..<3 {
+            let sendStart = driver.now + UInt64(index) * 5 * Self.ms
+            let samples = train(
+                estimator, seqStart: 10_000 + index * 12, count: 12,
+                sendStartNS: sendStart, bottleneckBitsPerSecond: 10e6)
+            inFlight.append(report(
+                samples: samples, clientMicros: sendStart / 1_000 + 1_000))
+        }
+        let promotion = driver.now + 20 * Self.ms
+        estimator.notePathChanged(now: promotion)
+        for (index, late) in inFlight.enumerated() {
+            let verdict = estimator.ingest(
+                late, now: promotion + UInt64(index + 1) * Self.ms,
+                inRecovery: false)
+            XCTAssertFalse(verdict.overuse)
+        }
+        XCTAssertEqual(estimator.stats.dispersionSamplesFromOldPath, 36)
+
+        driver.now = promotion + 10 * Self.ms
+        for beat in 0..<20 {
+            let verdict = driver.beat(
+                bottleneckMbps: 10, extraDelayMicros: 30_000)
+            XCTAssertFalse(verdict.overuse, "new-path beat \(beat)")
+            XCTAssertNotEqual(verdict.change, .overuse)
+        }
+        XCTAssertLessThanOrEqual(estimator.queuingDelayMicroseconds ?? 0, 1_000)
     }
 
     func testRecoveryReanchorsNinetyMegabitBeliefBeforeFiveMegabitPath() {

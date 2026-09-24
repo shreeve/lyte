@@ -94,7 +94,8 @@ public enum LytePairing {
             + "\(config.hostAddress):\(config.hostPort) …")
         do {
             try endpoint.bindAndHandshake()
-        } catch let error as TransportCryptoError {
+        } catch let error where error is TransportCryptoError
+                    || error is HandshakeExhausted {
             return .failed("handshake failed: \(error)")
         } catch {
             return .failed("bind/handshake failed: \(error)")

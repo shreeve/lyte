@@ -27,7 +27,9 @@
 //
 // There is no give-up: backoff ladders are capped (scan 1 s → 15 s,
 // dial 2 s → 30 s); Disconnect is the exit and Reconnect resets every
-// ladder.
+// ladder. While scanning is wanted, a scan is always in flight, scheduled,
+// or waiting on the one dial in flight; a sighting that lands mid-dial is
+// held and dialed the moment that dial fails.
 //
 // Sans-IO: a struct fed inputs with an injected monotonic `now` (µs),
 // returning actions; `nextDeadline` tells the driver (ConnectionModel)
@@ -145,6 +147,8 @@ public struct RoamingPolicy: Sendable {
 
     private var dialInFlight = false
     private var dialInFlightTarget: (address: String, discovered: Bool)?
+    /// A dial-worthy sighting that arrived while a dial was in flight.
+    private var sightingAwaitingDial: RoamingSighting?
     private var nextDialAllowedAt: UInt64 = 0
     private var dialRetryMicroseconds: Int64
 
@@ -232,6 +236,7 @@ public struct RoamingPolicy: Sendable {
         nextDialAllowedAt = now
         dialRetryMicroseconds = config.dialRetryFloorMicroseconds
         pendingSameAddressSighting = nil
+        sightingAwaitingDial = nil
         return []
     }
 
@@ -291,6 +296,7 @@ public struct RoamingPolicy: Sendable {
     /// The driver tears any standing session down first.
     public mutating func manualReconnect(now: UInt64) -> [RoamingAction] {
         sessionAlive = false
+        scanning = false
         pendingSameAddressSighting = nil
         scanIntervalMicroseconds = config.scanIntervalFloorMicroseconds
         dialRetryMicroseconds = config.dialRetryFloorMicroseconds
@@ -314,53 +320,52 @@ public struct RoamingPolicy: Sendable {
         }
         guard let match else {
             // Fruitless: back off and keep looking.
-            nextScanAt = now &+ UInt64(scanIntervalMicroseconds)
-            scanIntervalMicroseconds = min(
-                scanIntervalMicroseconds &* 2,
-                config.scanIntervalCeilingMicroseconds)
+            scheduleNextScan(now: now)
             return tick(now: now)
         }
-        if match.address != lastKnownAddress {
-            // The host MOVED: the standing session (if any) is
-            // unreachable by construction — dial the new address now.
-            // A new target also resets the dial ladder.
-            dialRetryMicroseconds = config.dialRetryFloorMicroseconds
-            nextDialAllowedAt = now
-            return dialNow(
-                address: match.address, port: match.port,
-                discovered: true, now: now)
-        }
-        // Same address: the network path demonstrably works. A dead
-        // session (or a waived threshold) dials right away; a merely
-        // silent one waits out the redial threshold — evidence may
-        // still return.
-        if !sessionAlive || sameAddressRedialWaived {
-            return dialNow(
-                address: match.address, port: match.port,
-                discovered: true, now: now)
+        // The host MOVED: the standing session (if any) is unreachable by
+        // construction — dial the new address now. Same address: the
+        // network path demonstrably works, so a dead session (or a waived
+        // threshold) dials right away; a merely silent one waits out the
+        // redial threshold — evidence may still return.
+        if match.address != lastKnownAddress
+            || !sessionAlive || sameAddressRedialWaived {
+            guard !dialInFlight else {
+                // The dial in flight is the decision; this sighting is
+                // next if it fails. Keep looking meanwhile.
+                if match.address != dialInFlightTarget?.address {
+                    sightingAwaitingDial = match
+                }
+                scheduleNextScan(now: now)
+                return tick(now: now)
+            }
+            return dialSighting(match, now: now)
         }
         pendingSameAddressSighting = match
         // Keep scanning meanwhile (the host could still move).
-        nextScanAt = now &+ UInt64(scanIntervalMicroseconds)
-        scanIntervalMicroseconds = min(
-            scanIntervalMicroseconds &* 2,
-            config.scanIntervalCeilingMicroseconds)
+        scheduleNextScan(now: now)
         return tick(now: now)
     }
 
     /// The dial the policy asked for never became a session (handshake
     /// timeout — commonly a host that hasn't freed the dead session
-    /// yet). Back off on this target; scanning continues throughout.
+    /// yet). A sighting held during the dial is dialed now; otherwise
+    /// back off on this target and resume scanning.
     /// Inert when no dial is in flight: a failure can only answer a dial
     /// this policy issued, never a straggler from an earlier session.
     public mutating func dialFailed(now: UInt64) -> [RoamingAction] {
         guard dialInFlight else { return [] }
         dialInFlight = false
         dialInFlightTarget = nil
+        if let held = sightingAwaitingDial {
+            sightingAwaitingDial = nil
+            return dialSighting(held, now: now)
+        }
         nextDialAllowedAt = now &+ UInt64(dialRetryMicroseconds)
         dialRetryMicroseconds = min(
             dialRetryMicroseconds &* 2,
             config.dialRetryCeilingMicroseconds)
+        if scanning, !scanInFlight, nextScanAt == nil { nextScanAt = now }
         return beginScanningIfNeeded(now: now) + tick(now: now)
     }
 
@@ -435,6 +440,28 @@ public struct RoamingPolicy: Sendable {
         nextScanAt = nil
         scanInFlight = true
         return [.beginScan]
+    }
+
+    /// The next browse after the current gap, which then doubles.
+    private mutating func scheduleNextScan(now: UInt64) {
+        nextScanAt = now &+ UInt64(scanIntervalMicroseconds)
+        scanIntervalMicroseconds = min(
+            scanIntervalMicroseconds &* 2,
+            config.scanIntervalCeilingMicroseconds)
+    }
+
+    /// Dials a sighted target at once. A new address also resets the
+    /// dial ladder.
+    private mutating func dialSighting(
+        _ sighting: RoamingSighting, now: UInt64
+    ) -> [RoamingAction] {
+        if sighting.address != lastKnownAddress {
+            dialRetryMicroseconds = config.dialRetryFloorMicroseconds
+            nextDialAllowedAt = now
+        }
+        return dialNow(
+            address: sighting.address, port: sighting.port,
+            discovered: true, now: now)
     }
 
     /// Commits to a dial: the standing session (if any) is forfeit —

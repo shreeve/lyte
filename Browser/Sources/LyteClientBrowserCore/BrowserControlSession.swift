@@ -1,16 +1,20 @@
+import LyteClientCore
 import LyteClientSession
 import LyteCore
 import LyteWire
 
 /// The browser's sans-IO session: LyteClientSession's initiator pieces
-/// (handshake, pairing, control session, beacon echo, envelope sequencer,
-/// conn-id book, lifecycle) composed over one reliable CTRL stream, plus the
-/// demux of sealed video/audio to the playout organs.
+/// (handshake, pairing, control session and blackout-detector posture,
+/// beacon echo and host clock, exempt-CTRL classifier, feedback reporter,
+/// envelope sequencer, conn-id book, lifecycle) composed over one reliable
+/// CTRL stream, plus the demux of sealed video/audio to the playout organs.
 ///
 /// The page owns WebTransport and clocks; every call takes injected time and
 /// returns a `Step` of datagrams to send and notes to log. Per-datagram
 /// faults are counted and dropped; only protocol and policy failures end
-/// the session.
+/// the session. A closed or failed session keeps ingesting acknowledgements
+/// and retransmitting until its reliable stream is quiescent, so a
+/// teardown it queued reaches the host.
 public final class BrowserControlSession {
     public enum Status: String, Sendable {
         case idle
@@ -36,8 +40,20 @@ public final class BrowserControlSession {
         }
     }
 
-    /// Message-1 retransmit schedule (the native initiator's defaults).
+    /// Message-1 retransmit schedule; a page dial is a first dial.
     public typealias HandshakeRetry = ClientHandshakeInitiator.Retry
+
+    /// The chan-3 report cadence, the native shell's: inside the 25–50 ms
+    /// band the host's estimator and its 350 ms freeze detector expect.
+    public static let feedbackIntervalMicroseconds: UInt64 = 40_000
+    /// Arrival samples kept between reports.
+    public static let maxRetainedArrivalSamples = 512
+    /// The receiver machine's timing, the native shell's: the baseline
+    /// blackout bound sits past an idle host's 1 Hz beacons, and the first
+    /// audio datagram (a dense path probe) tightens it.
+    public static let machineConfig = SessionMachineConfig(
+        blackoutSilenceMicroseconds: 2_500_000)
+    public static let tightenedBlackoutSilenceMicroseconds: Int64 = 350_000
 
     public struct Counters: Sendable, Equatable {
         /// Datagrams whose envelope did not decode.
@@ -52,9 +68,20 @@ public final class BrowserControlSession {
         /// Message-1 transmissions, the first included.
         public var message1Transmissions: UInt64 = 0
         public var retryChallengesAnswered: UInt64 = 0
+        public var pathChallengesAnswered: UInt64 = 0
+        /// 0x23 refusals: the host will not repair a NACKed frame.
+        public var repairRefusals: UInt64 = 0
         public var idrRequestsSent: UInt64 = 0
-        /// Input events dropped because the reliable queue was full.
+        /// Input events refused: a non-finite coordinate, or the input
+        /// queue full.
         public var inputsRefused: UInt64 = 0
+        /// Flushes the full reliable queue stopped; the edge waited.
+        public var inputsDeferred: UInt64 = 0
+        public var feedbackReportsSent: UInt64 = 0
+        /// Reports that did not encode or seal (the next beat rebuilds).
+        public var feedbackReportsFailed: UInt64 = 0
+        /// Arrival samples past the per-report retention bound.
+        public var arrivalSamplesDropped: UInt64 = 0
 
         public init() {}
     }
@@ -70,6 +97,9 @@ public final class BrowserControlSession {
     private var sequencer = ClientEnvelopeSequencer()
     private var connectionIds = ClientConnectionIdBook()
     private var echoBook = ClientBeaconEchoBook()
+    /// The host clock fit from the beacon book's closed samples; video
+    /// capture times map through it.
+    private var hostClock = ClientHostClock()
     private var arq = ArqEndpoint<ClientClock>(
         channel: .ctrl,
         config: {
@@ -87,6 +117,13 @@ public final class BrowserControlSession {
     private var video = BrowserVideoPlayout()
     private var audio = BrowserAudioPlayout()
     private var nextInputSeq: UInt32 = 0
+    private var input = BrowserInputQueue()
+    /// Receive ledgers per channel, cumulative since establishment: every
+    /// authenticated datagram counts, whichever organ consumes it.
+    private var ledgers: [ChannelId: SeqGapTracker] = [:]
+    private var arrivals: [ClientFeedbackReporter.Arrival] = []
+    private var feedback = ClientFeedbackReporter()
+    private var nextFeedbackMicros: UInt64 = 0
 
     public private(set) var counters = Counters()
     public private(set) var handshakeCompleted = false
@@ -103,8 +140,8 @@ public final class BrowserControlSession {
     public var clientStaticPublicKeyHex: String { Hex.string(clientStatic.publicKey) }
     public var hostStaticPublicKeyHex: String { Hex.string(hostStaticPublicKey) }
     public var framesAssembled: UInt64 { video.framesAssembled }
-    public var framesPresented: UInt64 { video.framesPresented }
     public var videoCounters: BrowserVideoPlayout.Counters { video.counters }
+    public var nackStats: ClientNackPolicy.Stats { video.nackStats }
     /// Assembled frames whose Annex-B the page has not taken yet.
     public var videoDecodeBacklog: Int { video.decodeBacklogCount }
     /// Frames whose presentation metadata the playout still holds.
@@ -114,13 +151,17 @@ public final class BrowserControlSession {
     public var audioPacketsPopped: UInt64 { audio.packetsPopped }
     public var audioPacketsDroppedStale: UInt64 { audio.packetsDroppedStale }
     public var clipboardNegotiated: Bool { control?.clipboardNegotiated ?? false }
+    /// Input events captured but not yet on the reliable stream.
+    public var inputsPending: Int { input.count }
+    /// The client lifecycle machine's state (FROZEN is a local overlay).
+    public var sessionState: SessionState? { control?.state }
     /// True when every reliable CTRL word sent has been acknowledged.
     public var isReliableQuiescent: Bool { arq.isQuiescent }
 
     public init(
         hostStaticPublicKeyHex: String,
         pin: String,
-        handshakeRetry: HandshakeRetry = HandshakeRetry()
+        handshakeRetry: HandshakeRetry = .firstDial
     ) throws {
         guard let hostKey = Hex.bytes(hostStaticPublicKeyHex),
               hostKey.count == 32
@@ -149,8 +190,13 @@ public final class BrowserControlSession {
         video.popDue(nowMicros: nowMicros)
     }
 
-    public func notePresented(frameNumber: UInt32) {
-        video.notePresented(frameNumber: frameNumber)
+    public func notePresented() {
+        video.notePresented()
+    }
+
+    /// Frames the page was told to present that will never be due.
+    public func takeAbandonedFrames() -> [UInt32] {
+        video.takeAbandoned()
     }
 
     public func noteDropped(frameNumber: UInt32) {
@@ -181,13 +227,25 @@ public final class BrowserControlSession {
         return step(outbound: [carriage])
     }
 
-    /// Ingests one opaque datagram from the host.
+    /// Ingests one opaque datagram from the host that arrived just now.
     public func ingest(datagram: [UInt8], nowMicros: UInt64) -> Step {
+        ingest(datagram: datagram[...], arrivalMicros: nowMicros, nowMicros: nowMicros)
+    }
+
+    /// Ingests one opaque datagram that arrived at `arrivalMicros`: the
+    /// beacon echo's t2, the Conductor's arrival and the feedback
+    /// dispersion read the arrival; sends and timers read `nowMicros`.
+    public func ingest(
+        datagram: ArraySlice<UInt8>, arrivalMicros: UInt64, nowMicros: UInt64
+    ) -> Step {
+        let arrival = min(arrivalMicros, nowMicros)
         switch status {
         case .handshaking:
             return ingestHandshake(datagram, nowMicros: nowMicros)
         case .established, .ready, .closed:
-            return ingestSealed(datagram, nowMicros: nowMicros)
+            return ingestSealed(datagram, arrivalMicros: arrival, nowMicros: nowMicros)
+        case .failed where transport != nil:
+            return ingestSealed(datagram, arrivalMicros: arrival, nowMicros: nowMicros)
         case .idle, .failed:
             return step(outbound: [])
         }
@@ -201,17 +259,25 @@ public final class BrowserControlSession {
             return handshakeTick(nowMicros: nowMicros)
         case .established, .ready, .closed:
             break
+        case .failed where transport != nil:
+            break
         case .idle, .failed:
             return step(outbound: [])
         }
         do {
             var outbound: [[UInt8]] = []
-            if status != .closed {
+            if !isDraining {
                 try advanceLifecycle(nowMicros: nowMicros)
                 for line in video.evictStale(nowMicros: nowMicros) {
                     note(line)
                 }
                 outbound += try idrRequestsDue(nowMicros: nowMicros)
+                if !isDraining, nowMicros >= nextFeedbackMicros {
+                    outbound += feedbackReport(nowMicros: nowMicros)
+                }
+                if status == .ready {
+                    try flushInput(nowMicros: nowMicros)
+                }
             }
             outbound += try pollArq(nowMicros: nowMicros)
             return step(outbound: outbound)
@@ -224,50 +290,82 @@ public final class BrowserControlSession {
     /// Keep ticking and ingesting until `isReliableQuiescent` so it is
     /// retransmitted until acknowledged.
     public func teardown(nowMicros: UInt64) -> Step {
-        guard status == .ready || status == .established, var control else {
+        // The session already ended; its own teardown (if any) is queued.
+        if isDraining { return step(outbound: []) }
+        guard status == .ready || status == .established, let control else {
             return failStep("teardown before established")
         }
         do {
-            let decision = control.advance(
-                .teardownRequest(.shuttingDown),
-                now: ClientTimestamp(microseconds: nowMicros)
-            )
-            self.control = control
-            try apply(decision, nowMicros: nowMicros)
-            status = .closed
-            note("teardown: shuttingDown")
+            try closeLocally(control, nowMicros: nowMicros)
             return step(outbound: try pollArq(nowMicros: nowMicros))
         } catch {
             return failStep("teardown: \(error)")
         }
     }
 
-    /// Queues one InputEvent on the reliable CTRL stream.
+    /// Queues the typed SessionTeardown and closes; the caller polls ARQ.
+    private func closeLocally(
+        _ control: ClientControlSession, nowMicros: UInt64
+    ) throws {
+        var control = control
+        let decision = control.advance(
+            .teardownRequest(.shuttingDown),
+            now: ClientTimestamp(microseconds: nowMicros)
+        )
+        self.control = control
+        try apply(decision, nowMicros: nowMicros)
+        status = .closed
+        note("teardown: shuttingDown")
+    }
+
+    /// Queues one input event captured at `nowMicros`. Key and button edges
+    /// and a scroll's finish leave at once; motion and mid-gesture scroll
+    /// coalesce and leave on the next tick. An edge the full reliable queue
+    /// refuses waits, in order, and is retried every tick.
     public func sendInput(body: InputEvent.Body, nowMicros: UInt64) -> Step {
         guard status == .ready else {
             // Soft refusal: DOM capture may fire before READY.
             note("input: ignored (status \(status.rawValue))")
             return step(outbound: [])
         }
-        do {
-            let event = InputEvent(
-                seq: nextInputSeq, clientMicroseconds: nowMicros, body: body
-            )
-            try arq.send(
-                message: event.encode(),
-                now: ClientTimestamp(microseconds: nowMicros)
-            )
-            nextInputSeq &+= 1
-            inputsSent += 1
-            return step(outbound: try pollArq(nowMicros: nowMicros))
-        } catch ArqSendError.queueFull {
-            // Backpressure: the host has not acknowledged a full queue of
-            // segments. Drop this event; the liveness clock judges the path.
+        guard body.isFinite else {
             counters.inputsRefused += 1
-            note("input: dropped (reliable queue full)")
+            note("input: refused (non-finite coordinate)")
             return step(outbound: [])
+        }
+        guard input.enqueue(body, capturedMicros: nowMicros) else {
+            counters.inputsRefused += 1
+            note("input: dropped (\(BrowserInputQueue.capacity) events waiting)")
+            return step(outbound: [])
+        }
+        guard !body.coalesces else { return step(outbound: []) }
+        do {
+            try flushInput(nowMicros: nowMicros)
+            return step(outbound: try pollArq(nowMicros: nowMicros))
         } catch {
             return failStep("input send: \(error)")
+        }
+    }
+
+    /// Hands queued input to the reliable stream until it refuses.
+    private func flushInput(nowMicros: UInt64) throws {
+        while let entry = input.first {
+            let event = InputEvent(
+                seq: nextInputSeq, clientMicroseconds: entry.capturedMicros,
+                body: entry.body)
+            do {
+                try arq.send(
+                    message: event.encode(),
+                    now: ClientTimestamp(microseconds: nowMicros))
+            } catch ArqSendError.queueFull {
+                // The host has not acknowledged a full queue of segments;
+                // the liveness clock judges the path, the edge waits.
+                counters.inputsDeferred += 1
+                return
+            }
+            input.removeFirst()
+            nextInputSeq &+= 1
+            inputsSent += 1
         }
     }
 
@@ -327,10 +425,10 @@ public final class BrowserControlSession {
     }
 
     private func ingestHandshake(
-        _ datagram: [UInt8], nowMicros: UInt64
+        _ datagram: ArraySlice<UInt8>, nowMicros: UInt64
     ) -> Step {
         guard var initiator else { return failStep("handshake state missing") }
-        let outcome = initiator.ingest(datagram[...], nowMicros: nowMicros)
+        let outcome = initiator.ingest(datagram, nowMicros: nowMicros)
         self.initiator = initiator
         syncHandshakeCounters()
         switch outcome {
@@ -366,13 +464,16 @@ public final class BrowserControlSession {
         transport = made
         status = .established
         handshakeCompleted = true
+        nextFeedbackMicros = nowMicros &+ Self.feedbackIntervalMicroseconds
         note("noise: handshake completed")
 
         var control = ClientControlSession(
             localCapabilities: .wireDefault.declaringClipboardText(),
-            machineConfig: SessionMachineConfig(),
+            machineConfig: Self.machineConfig,
             desiredHostAudioRouting: nil,
             clipboardSharingAtStart: true,
+            tightenedBlackoutSilenceMicroseconds:
+                Self.tightenedBlackoutSilenceMicroseconds,
             now: now
         )
         var pairing = try ClientPairing(
@@ -397,7 +498,7 @@ public final class BrowserControlSession {
     // MARK: Established sealed path
 
     private func ingestSealed(
-        _ datagram: [UInt8], nowMicros: UInt64
+        _ datagram: ArraySlice<UInt8>, arrivalMicros: UInt64, nowMicros: UInt64
     ) -> Step {
         guard var transport else { return failStep("no transport") }
         let envelope: Envelope
@@ -413,6 +514,7 @@ public final class BrowserControlSession {
         }
         self.transport = transport
         pendingEvidenceMicros = nowMicros
+        record(envelope, arrivalMicros: arrivalMicros)
 
         // Learned only from an authenticated datagram: a forged first
         // datagram must not choose the conn-id every later send carries.
@@ -421,17 +523,19 @@ public final class BrowserControlSession {
         }
 
         do {
-            return try route(envelope, plaintext, nowMicros: nowMicros)
+            return try route(
+                envelope, plaintext, arrivalMicros: arrivalMicros, nowMicros: nowMicros)
         } catch {
             return failStep("ingest: \(error)")
         }
     }
 
     private func route(
-        _ envelope: Envelope, _ plaintext: [UInt8], nowMicros: UInt64
+        _ envelope: Envelope, _ plaintext: [UInt8],
+        arrivalMicros: UInt64, nowMicros: UInt64
     ) throws -> Step {
         let now = ClientTimestamp(microseconds: nowMicros)
-        if status == .closed {
+        if isDraining {
             // After close only acknowledgements matter: they let the
             // teardown's retransmits stop.
             if envelope.channel == .ctrl,
@@ -449,12 +553,23 @@ public final class BrowserControlSession {
             let ingested = video.ingestShard(
                 envelope: envelope,
                 payload: plaintext[...],
-                arrivalMicroseconds: nowMicros
+                arrivalMicroseconds: arrivalMicros,
+                hostClock: hostClock.estimate()
             )
             for line in ingested.events { note(line) }
-            return step(outbound: [], scheduled: ingested.scheduled)
+            guard !ingested.nacks.isEmpty else {
+                return step(outbound: [], scheduled: ingested.scheduled)
+            }
+            // Report at once: the host's freeze budget is cadence-derived.
+            for entry in ingested.nacks {
+                note("nack: frame \(entry.frame.rawValue) asks shards \(entry.missingShards)")
+            }
+            feedback.enqueueNacks(ingested.nacks)
+            return step(
+                outbound: feedbackReport(nowMicros: nowMicros),
+                scheduled: ingested.scheduled)
         case .audio:
-            control?.noteAudioEvidence()
+            note(posture: control?.noteAudioEvidence(now: now))
             for line in audio.ingestShard(envelope: envelope, payload: plaintext[...]) {
                 note(line)
             }
@@ -470,26 +585,60 @@ public final class BrowserControlSession {
         case CtrlMessageType.arqSegment, CtrlMessageType.arqAck:
             var outbound: [[UInt8]] = []
             for event in arq.ingest(payload: plaintext, now: now) {
-                if case .message(_, let message) = event {
+                switch event {
+                case .message(_, let message):
                     try handleReliable(message, nowMicros: nowMicros)
+                case .ignored(.orderedStreamPoisoned):
+                    // A host message over the ceiling: nothing on this
+                    // stream can be delivered in order again.
+                    guard !isDraining, let control else { break }
+                    note("CTRL ordered stream poisoned by an over-budget host message — session ends")
+                    try closeLocally(control, nowMicros: nowMicros)
+                default:
+                    break
                 }
             }
             outbound += try pollArq(nowMicros: nowMicros)
             return step(outbound: outbound)
-        case CtrlMessageType.clockBeacon:
-            guard let beacon = try? ClockBeacon.decode(plaintext) else {
-                counters.malformedControl += 1
-                return step(outbound: [])
-            }
-            let (echo, _) = echoBook.answer(
-                beacon, receivedAt: now, sendingAt: now)
-            return step(outbound: [
-                try sealCtrl(plaintext: echo.encode(), nowMicros: nowMicros),
-            ])
         default:
-            // Other ARQ-exempt CTRL (path, repair refusal, …) is not consumed
-            // by the browser shell.
-            return step(outbound: [])
+            return step(outbound: try exemptControl(
+                plaintext, arrivalMicros: arrivalMicros, nowMicros: nowMicros))
+        }
+    }
+
+    /// ARQ-exempt CTRL, classified by the shared client vocabulary: a
+    /// beacon is echoed, a path challenge answered at once on the path it
+    /// probed, a repair refusal escalates to an IDR. Unknown types are
+    /// skipped; malformed words count and drop.
+    private func exemptControl(
+        _ payload: [UInt8], arrivalMicros: UInt64, nowMicros: UInt64
+    ) throws -> [[UInt8]] {
+        switch ClientExemptControl(payload: payload) {
+        case .clockBeacon(let beacon):
+            // t2 is the beacon's arrival, t3 this echo's emit.
+            let (echo, sample) = echoBook.answer(
+                beacon,
+                receivedAt: ClientTimestamp(microseconds: arrivalMicros),
+                sendingAt: ClientTimestamp(microseconds: nowMicros))
+            if let sample { hostClock.ingest(sample) }
+            return [try sealCtrl(plaintext: echo.encode(), nowMicros: nowMicros)]
+        case .pathChallenge(let response):
+            counters.pathChallengesAnswered += 1
+            return [try sealCtrl(plaintext: response.encode(), nowMicros: nowMicros)]
+        case .repairRefused(let refusal):
+            counters.repairRefusals += 1
+            note("nack: frame \(refusal.frame.rawValue) repair refused (\(refusal.reason))")
+            for line in video.handleRepairRefusal(
+                frame: refusal.frame, nowMicros: nowMicros)
+            {
+                note(line)
+            }
+            return []
+        case .malformed:
+            counters.malformedControl += 1
+            return []
+        case .unclaimed:
+            return []
         }
     }
 
@@ -507,11 +656,11 @@ public final class BrowserControlSession {
                     paired = true
                     note("pairing: PAIRED — host static pinned")
                 case .pinMismatch:
-                    _ = failStep("pairing: PIN mismatch")
+                    fail("pairing: PIN mismatch")
                 case .invalidShare:
-                    _ = failStep("pairing: invalid share")
+                    fail("pairing: invalid share")
                 case .hostRejected(let reason):
-                    _ = failStep("pairing: host rejected (\(reason))")
+                    fail("pairing: host rejected (\(reason))")
                 case .malformed:
                     counters.malformedControl += 1
                 }
@@ -522,7 +671,10 @@ public final class BrowserControlSession {
 
         // Input echoes are host→client accounting.
         if message.first == CtrlMessageType.inputEcho {
-            let echo = try InputEcho.decode(message)
+            guard let echo = try? InputEcho.decode(message) else {
+                counters.malformedControl += 1
+                return
+            }
             inputEchoes += UInt64(echo.tuples.count)
             return
         }
@@ -541,6 +693,7 @@ public final class BrowserControlSession {
         if let line = decision.note {
             note("control: \(line)")
         }
+        note(posture: decision.detectorPosture)
         switch decision.event {
         case .capability(.agreed(let caps)):
             capabilitiesAgreed = true
@@ -551,7 +704,11 @@ public final class BrowserControlSession {
             }
             note(detail)
         case .capability(.failed(let err)):
-            _ = failStep("capabilities failed: \(err)")
+            // The composed teardown leaves before the session fails.
+            if let lifecycle = decision.lifecycle {
+                try apply(lifecycle, nowMicros: nowMicros)
+            }
+            fail("capabilities failed: \(err)")
             return
         case .lifecycle(.sessionTeardown):
             note("teardown: received from host")
@@ -629,6 +786,48 @@ public final class BrowserControlSession {
         return [try sealCtrl(plaintext: request.encode(), nowMicros: nowMicros)]
     }
 
+    // MARK: Feedback
+
+    private func record(_ envelope: Envelope, arrivalMicros: UInt64) {
+        ledgers[envelope.channel, default: SeqGapTracker()].record(envelope.seq)
+        guard arrivals.count < Self.maxRetainedArrivalSamples else {
+            counters.arrivalSamplesDropped += 1
+            return
+        }
+        arrivals.append(ClientFeedbackReporter.Arrival(
+            channel: envelope.channel, seq: envelope.seq,
+            arrivalMicroseconds: arrivalMicros))
+    }
+
+    /// This beat's chan-3 report: the ledgers, the arrivals since the last
+    /// one and any queued NACK entries. Unreliable and bare, as native
+    /// sends it; a lost report is superseded by the next.
+    private func feedbackReport(nowMicros: UInt64) -> [[UInt8]] {
+        nextFeedbackMicros = nowMicros &+ Self.feedbackIntervalMicroseconds
+        let report = feedback.report(
+            ledgers: ledgers.keys.sorted { $0.rawValue < $1.rawValue }.map {
+                let tracker = ledgers[$0]!
+                return ClientFeedbackReporter.Ledger(
+                    channel: $0, highestSeq: tracker.highest,
+                    datagrams: tracker.received,
+                    duplicates: tracker.duplicates,
+                    missing: tracker.datagramsMissing)
+            },
+            arrivals: arrivals,
+            now: ClientTimestamp(microseconds: nowMicros))
+        arrivals.removeAll(keepingCapacity: true)
+        do {
+            let datagram = try seal(
+                channel: .feedback, plaintext: try report.encode(),
+                extensions: [], nowMicros: nowMicros)
+            counters.feedbackReportsSent += 1
+            return [datagram]
+        } catch {
+            counters.feedbackReportsFailed += 1
+            return []
+        }
+    }
+
     // MARK: Wire helpers
 
     private func pollArq(nowMicros: UInt64) throws -> [[UInt8]] {
@@ -639,13 +838,22 @@ public final class BrowserControlSession {
     private func sealCtrl(
         plaintext: [UInt8], nowMicros: UInt64
     ) throws -> [UInt8] {
+        try seal(
+            channel: .ctrl, plaintext: plaintext,
+            extensions: connectionIds.extensions, nowMicros: nowMicros)
+    }
+
+    private func seal(
+        channel: ChannelId, plaintext: [UInt8],
+        extensions: [WireExtension], nowMicros: UInt64
+    ) throws -> [UInt8] {
         guard var transport else {
             throw BrowserControlError.notEstablished
         }
         let envelope = sequencer.envelope(
-            channel: .ctrl,
+            channel: channel,
             timestamp: nowMicros,
-            extensions: connectionIds.extensions
+            extensions: extensions
         )
         let datagram = try transport.sealDatagram(envelope, plaintext: plaintext)
         self.transport = transport
@@ -654,6 +862,17 @@ public final class BrowserControlSession {
 
     private func note(_ line: String) {
         events.append(line)
+    }
+
+    private func note(posture: ClientDetectorPosture?) {
+        switch posture {
+        case .tightened(let bound):
+            note("audio evidence — blackout detector tightened to \(bound / 1_000) ms")
+        case .relaxed(let bound):
+            note("audio quiet announced — blackout detector relaxed to \(bound / 1_000) ms")
+        case nil:
+            break
+        }
     }
 
     /// Builds a step and drains the notes, so each note is reported once.
@@ -675,14 +894,20 @@ public final class BrowserControlSession {
         )
     }
 
+    /// Ends the session once; the FAIL note rides the step being built.
+    private func fail(_ message: String) {
+        guard status != .failed else { return }
+        status = .failed
+        failure = message
+        note("FAIL  \(message)")
+    }
+
     private func failStep(_ message: String) -> Step {
-        if status != .failed {
-            status = .failed
-            failure = message
-            note("FAIL  \(message)")
-        }
+        fail(message)
         return step(outbound: [])
     }
+
+    private var isDraining: Bool { status == .closed || status == .failed }
 }
 
 public enum BrowserControlError: Error {

@@ -13,23 +13,29 @@ run by hand.
   defaults to `/Applications/Xcode.app`).
 - **pup:** Swift 6.1.2 at `/usr/local/bin/swift` and the `LD_LIBRARY_PATH`
   shim described in [OPERATIONS.md](OPERATIONS.md#build-on-pup).
-- **WebAssembly legs (optional):** swiftly, Swift 6.3.3 and the
-  `swift-6.3.3-RELEASE_wasm` SDK, plus `wasmtime` for the Wire leg. Pins
+- **WebAssembly and page legs:** swiftly, Swift 6.3.3 and the
+  `swift-6.3.3-RELEASE_wasm` SDK, `wasmtime` for the Wire leg, and Node
+  for the page tests. The macOS gate fails without them unless
+  `LYTE_GATE_ALLOW_SKIP=1`. Pins
   and install commands: `Scripts/lib/wasm-toolchain.sh`. On an Xcode 27
   Mac the pinned toolchain cannot compile against the macOS 27 SDK; the
   lib selects an older installed SDK, or honor `SDKROOT`.
 - **Browser smoke (optional):** Google Chrome, a GPU, Node 24 or 26,
-  `openssl`, and network access for the first `npm install` of
+  `openssl`, and network access for the sidecar's first `npm ci` of
   `rwebtransport` under `Browser/Harness/`.
-- **Python analyzer tests:** Python 3.9–3.12 (the gate builds a venv in
-  `.build/ci-python` from `Scripts/requirements.txt`, NumPy 2.0.2); set
-  `LYTE_CI_PYTHON` to pick the interpreter.
+- **Python analyzer tests:** Python 3.9 or later (the gate builds a venv
+  in `.build/ci-python` from `Scripts/requirements.txt`: NumPy 2, the
+  newest release the interpreter supports); set `LYTE_CI_PYTHON` to pick
+  the interpreter.
 
 ## Package tests
 
 Run from the repository root. These are the gate's exact commands; the gate
 also runs `swift package resolve` first and `swift package clean` when the
-build graph changed.
+package's build graph changed: its manifest, pins or file list, or the
+manifest, pins or `Sources` file list of a package it depends on by path
+(`Scripts/lib/build-graph.sh`). Adding a file cleans only that package and
+its dependents.
 
 ```sh
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
@@ -45,9 +51,10 @@ Never point Client's scratch path at the repository root `.build`: it holds
 the published `Lyte.app`, and `swift package clean` would delete it while it
 runs.
 
-Which suites to run after a change: Wire → all packages; Common → Host,
-Client, SystemTests, Browser; Host → SystemTests, Browser; Client →
-SystemTests, Browser.
+Which suites to run after a change: the changed package, Common (its lints
+read every package's sources), and every package that depends on the
+changed one: Common or Wire → all packages; Host or Client → SystemTests
+and Browser.
 
 Iterate with `--filter <TestClass>`. Environment knobs read by the suites:
 
@@ -66,7 +73,7 @@ fakes:
 | Kit | Target | Use |
 |---|---|---|
 | `SealedCtrlPeer` | `LyteWireTestKit` | A role-agnostic sealed far end: handshake, per-channel seqs, ARQ, capability declaration, retry answers |
-| `HostSessionHarness`, `PeerBackedClient` | `HostWireTestKit` (test-only target) | A shipping `HostWire.Session` with an outbox and virtual time |
+| `HostSessionHarness`, `PeerBackedClient` | `HostWireTestKit` (product for test targets only) | A shipping `HostWire.Session` with an outbox and virtual time |
 | `ScriptedHost`, `ClientCoreHarness`, `ManualMicrosClock` | `LyteClientTestKit` | The real `LyteUdpSessionCore` without a socket, against a scripted host |
 | `SimNet`, `SplitMix64` | `LyteWireTestKit` | Deterministic impairment; 64-bit seeded draws identical on every platform |
 
@@ -74,9 +81,9 @@ fakes:
 
 | Package | Test targets |
 |---|---|
-| Common | `LyteCoreTests` (with the single-owner ratchets), `LyteIOTests`, `LyteTestKitTests` (the sans-IO lint), `COpusTests` |
+| Common | `LyteCoreTests`, `LyteIOTests`, `LyteTestKitTests` (the sans-IO lint and the single-owner ratchets), `COpusTests` |
 | Wire | `LyteWireTests` — codecs, vector files, `VectorRegenerationTests`, ARQ/FEC/Noise/pairing simulations |
-| Host | `HostCoreTests`, `HostSessionTests`, `HostWireTests` (session gates), `HostAudioTests`, `HostLayoutTests`; Linux only: `HostEyeTests`, `CNetIOTests`, `CPipeWireAudioTests` (against a silent PipeWire socket in a temp runtime dir, never the desktop's server), `LyteHostIntegrationTests` |
+| Host | `HostCoreTests`, `HostSessionTests`, `HostWireTests` (session gates and HostIO), `HostAudioTests`, `HostLayoutTests` (the seeded `host.conf`); Linux only: `HostEyeTests`, `CNetIOTests`, `CPipeWireAudioTests` (against a silent PipeWire socket in a temp runtime dir, never the desktop's server), `LyteHostIntegrationTests` |
 | Client | `LyteTransportTests`, `LyteClientSessionTests`, `LyteClientCoreTests`, `LyteCorpusTests` (slow corpus legs), `LyteAppTests` (app lifecycle under injected services), `LyteHelperTests` |
 | SystemTests | `LyteClientHostTests` — real client and host composed in one process |
 | Browser | `LyteClientBrowserCoreTests` — the browser core against an in-process `HostWire.Session`; page input rules in `Browser/Tests/Page/page.test.mjs` (Node, not SwiftPM) |
@@ -85,38 +92,62 @@ fakes:
 
 - `SansIOArchitectureTests`: import allowlists for every sans-IO target
   (`LyteCore`, `LyteClientCore`, `LyteClientSession`, `LyteWire`,
-  `HostCore`, `HostSession`, `HostWire`), `Crypto` confined to
-  `LyteWire/Crypto/`, `CNanorsWire` confined to `Fec/NanorsBackend.swift`,
-  and a forbidden-token scan (Foundation IO, locks, threads, OS clocks,
-  system randomness).
-- Single-owner ratchets (`LyteCoreTests/*RatchetTests`): one
-  implementation of each shared concept (Annex-B, hex, SHA-256, histogram,
-  Wire TOS, renderer handoff, video sink, screen source, …) across all
-  production sources, Browser included.
-- Layout tests (`HostLayoutTests`, `ClientLayoutTests`,
-  `SystemTestsLayoutTests`) check the `Sources/<Target>` /
-  `Tests/<Target>Tests` grammar and role boundaries, not file lists.
+  `HostCore`, `HostSession`, `HostWire`, `LyteClientBrowserCore`),
+  `Crypto` confined to `LyteWire/Crypto/`, `CNanorsWire` confined to
+  `Fec/NanorsBackend.swift`, and a forbidden-token scan (Foundation IO,
+  stdout, tasks and actors, locks, threads, OS clocks, and system
+  randomness — including `random`/`shuffled` calls handed no generator).
+- Single-owner ratchets (`LyteTestKitTests/SingleOwnerTests`, one table
+  matched on scanner tokens, so comments, strings and longer names never
+  trip it): every top-level type `LyteCore` and `LyteIO` declare (and
+  `HostSession`, within Host) is declared nowhere else; the `ScreenSource`
+  and `VideoSink` seams are declared once by their owners; the monotonic
+  clock, SHA-256, the eye pipeline's constructors, scanout grabs and the
+  host lifecycle machine are spelled only by their owners. The Opus leaf
+  ratchet (`LyteCoreTests/COpusDeclarationRatchetTests`) scans every
+  package manifest.
+
+Boundary tests in the other packages:
+
+- `ClientLayoutTests` (`LyteTransportTests`): every Client manifest target
+  owns exactly `Sources/<Target>/` (tests `Tests/<Target>Tests/`), the
+  shipping client has no plaintext transport mode, and each control
+  concept is reached from one `LyteClientSession` owner.
+- `SystemTestsLayoutTests`: the client and host roles meet only in
+  SystemTests and the Browser tests (an import scan that attributes and
+  qualifiers cannot evade), and shipping client code carries no test
+  equipment.
+- `WireLayoutTests`: every Wire target files its sources under
+  `LyteWire`'s domain directories.
 
 ## The macOS gate — `Scripts/CI/test-all-macos.sh`
 
 In order:
 
 1. **Frozen vectors.** Fails when any file under `Wire/Vectors/` other than
-   `README.md` is modified, deleted, renamed or retyped relative to
+   a `README.md` (at any depth) is modified, deleted, renamed or retyped
+   relative to
    `LYTE_GATE_BASE_SHA` (default: merge base with `origin/main`). New files
-   are allowed. `LYTE_ALLOW_VECTOR_CHANGES=1` overrides, deliberately.
+   are allowed; a base that is not a commit fails the gate.
+   `LYTE_ALLOW_VECTOR_CHANGES=1` overrides, deliberately.
 2. **Package tests** for Common, Wire, Host, Client, SystemTests and
    Browser, as above.
-3. **WebAssembly legs** when the pinned toolchain is installed:
-   `Browser/Scripts/build.sh`, then `Wire/Scripts/wasm-test.sh` when
-   `wasmtime` is present. Otherwise the gate prints `SKIPPED` and
-   continues.
-4. **Browser page tests:** `node --test Browser/Tests/Page/page.test.mjs`
-   (`SKIPPED` without Node).
-5. **Script tests:** `test-benchmark-safety.sh`,
+3. **WebAssembly legs:** `Browser/Scripts/build.sh`, then
+   `Wire/Scripts/wasm-test.sh`.
+4. **Browser page tests:** `node --test Browser/Tests/Page/page.test.mjs`.
+
+   A leg whose toolchain (pinned Swift Wasm, `wasmtime`, Node) is missing
+   fails the gate. `LYTE_GATE_ALLOW_SKIP=1` skips it instead; the gate
+   then ends with `macOS gate PASSED WITH SKIPPED LEGS:` and the list. The
+   last lines always name the toolchain legs that ran.
+5. **Script tests:** `test-shell-assertions.sh` (every tracked `*.sh`
+   parses, and none states a check as a bare `[[ … ]]`, `(( … ))` or
+   `! cmd`, which macOS bash 3.2 never fails under `set -e`; tests use
+   `Scripts/lib/assert.sh`), `test-build-graph.sh`, `test-gate-lock.sh`,
+   `test-frozen-vectors.sh`, `test-benchmark-safety.sh`,
    `test-host-release-posture.sh`, `test-host-package-image.sh --self-test`,
    `test-host-installer.sh --self-test` (which also runs
-   `test-host-deploy.sh`), `test-sign-dev.sh`.
+   `test-host-deploy.sh`), `test-sign-dev.sh`, `test-setup-dev-signing.sh`.
 6. **Python:** `test_analyze_app_benchmark.py`, `test_motion_preflight.py`,
    then `test-app-identity.sh`.
 7. **Signed debug CLI:** `Scripts/build-cli.sh debug`,
@@ -129,17 +160,29 @@ In order:
 
 ## The pup gate — `Scripts/CI/test-all-pup.sh`
 
-Mirrors Browser, Client, Common, Wire, Host and SystemTests to
-`~/src/lyte-gates/deterministic/` on `LYTE_PUP_HOST` (default `pup`) under a
-lock, then:
+One ssh session to `LYTE_PUP_HOST` (default `pup`) fingerprints protected
+state (step 1 below) before it writes anything, then takes an `flock` on
+`~/src/lyte-gates/.deterministic.flock`, which then names the holder; a
+second gate fails at once with that name, and a lock path that is a symlink
+or not a regular file fails the gate untouched. The lock lives as long as the
+session's processes, and the session terminates its whole process tree
+when the local gate goes away, so an interrupted gate leaves nothing
+running. Under the lock the local side mirrors Client, Common, Wire, Host,
+`Scripts/`, `LICENSE` and `docs/THIRD-PARTY.md` (the host image carries
+both) to `~/src/lyte-gates/deterministic/`, plus only the manifest and
+`Sources/` of Browser and SystemTests (Common's lints scan them), then the
+session:
 
 1. Fingerprints protected state: `~/.config/lyte/{noise_static.key,
-   paired_clients,host.conf}` (required), the pre-XDG copies when present,
+   paired_clients,host.conf}` (required: a missing one fails the gate
+   before any build), the pre-XDG copies when present,
    `/etc/systemd/system/lyte-host.service`, and the `~/.local/bin/lyte-host`
    link target.
 2. Package tests (`swift test -Xswiftc -warnings-as-errors`) for Common,
-   Wire and Host; `swift build --target LyteClientCore` and
-   `--target LyteClientSession` for Client.
+   Wire, Client and Host. Off macOS the Client manifest keeps only
+   `LyteClientCore`, `LyteClientSession` and their suites.
+   Each package is cleaned by the same per-package build-graph rule as on
+   the Mac.
 3. Plain and release Host builds with `-warnings-as-errors`.
 4. Stages a host image and runs `test-host-package-image.sh`,
    `test-host-installer.sh IMAGE` and `--self-test`, and
@@ -150,8 +193,8 @@ lock, then:
 7. Verifies the protected-state fingerprint is unchanged.
 
 The pup gate never deploys or restarts the standing service. Browser is
-mirrored and hashed but not built on pup: its JavaScriptKit dependency
-needs Swift 6.2 or later.
+not built on pup: its JavaScriptKit dependency needs Swift 6.2 or later.
+SystemTests composes the macOS client and is not built either.
 
 ## WebAssembly
 
@@ -172,11 +215,10 @@ session proof. It passes when every line below is present (each PASS line contin
 its measurements):
 
 ```text
-PASS  envelope-v1/nominal-video-shard
-PASS  noise-v1/snow-ik-25519-chachapoly-sha256
 PASS  control-session/noise-pair-caps
 PASS  control-session/clipboard-cap
 PASS  control-session/teardown
+PASS  control-session/feedback
 PASS  frame-present/classify
 PASS  frame-present/webcodecs
 PASS  frame-present/webgpu
@@ -191,8 +233,9 @@ PASS  audio-worklet/ring
 PASS  interaction-shell/b6
 ```
 
-The video legs are paced: the page runs one loop (ingest, decode,
-present) and presents each frame on the Conductor's clock.
+The video legs are paced: the page ingests and decodes as datagrams
+arrive and presents on `requestAnimationFrame`, each frame at its
+Conductor beat.
 `conductor-video/schedule` asserts that presented PTS sit on the beat grid
 and that no frame was shown before its PTS; `conductor-video/present`
 asserts at least five frames presented and at least three decoded ahead of
@@ -202,8 +245,7 @@ its PTS). Frame 0 always presents about 20–45 ms late (it anchors the score
 with a one-beat cushion), and frame 1 is sometimes skipped as late; both are
 the Conductor's laws working, not failures.
 
-The WebTransport carrier echo proofs (`wt-carrier/*`) are skipped in peer
-mode. Environment: `LYTE_WT_RUNTIME` (`node`|`bun`), `LYTE_CHROME`,
+Environment: `LYTE_WT_RUNTIME` (`node`|`bun`), `LYTE_CHROME`,
 `LYTE_CONTROL_PEER_PORT`, `LYTE_BROWSER_SMOKE_TIMEOUT_S`,
 `LYTE_BROWSER_CONFIGURATION`. What the smoke does and does not prove is in
 [BROWSER.md](BROWSER.md).
@@ -215,22 +257,32 @@ run, and read the safety rules in [OPERATIONS.md](OPERATIONS.md#safety)
 first.
 
 `Scripts/benchmark-app.sh [--no-build] [--seconds N] [--out DIR]
-static|motion|quality-static|handshake-only|all` builds and launches the
-real `Lyte.app` against the standing host, drives
+static|motion|quality-static|handshake-only|all` turns the one
+`.build/Lyte.app` into a diagnostic build (`Scripts/make-app.sh
+--diagnostics release`; only a bundle whose Info.plist carries
+`LyteDiagnosticEntryPoints` obeys the benchmark and witness environment
+below), launches it against the standing host, drives
 `Scripts/motion-presenter.py` on pup's glass for motion legs, and judges the
-run with `Scripts/analyze-app-benchmark.py`. `all` runs each leg in its own
-process. It takes the app-artifact lock and refuses to run while the
-owner's interactive app is open.
+run with `Scripts/analyze-app-benchmark.py`. On every exit — success,
+failure or interrupt — the process that built the diagnostic bundle
+restores the plain one with `Scripts/make-app.sh release`, and prints a
+WARNING with that command if the restore fails. `all` builds once and runs
+each leg in its own `--no-build` process. `--no-build` builds and restores
+nothing, and refuses a bundle without the diagnostic entry points. The
+benchmark takes the app-artifact lock and refuses to run while the owner's
+interactive app is open.
 
 `Scripts/benchmark-netem.sh moderate` shapes one host→client flow with
 `Scripts/netem/port-netem.sh` (20 ms delay, 10 ms jitter, 1 % loss) around
-one motion leg and judges the impairment SLOs. See
+one motion leg and judges the impairment SLOs (`analyze-app-benchmark.py
+--netem-profile`: presentation-gap p99, decoded fps, renderer, audio
+continuity). See
 [`Scripts/netem/README.md`](../Scripts/netem/README.md).
 
 | Variable | Used by | Meaning |
 |---|---|---|
 | `LYTE_PUP_HOST` | both, pup gate | ssh host (default `pup`); `PUP` and `LYTE_BENCHMARK_PUP` are refused |
-| `LYTE_BENCHMARK_HOST` | both | address the app dials (default `10.0.0.232`, the wired leg; use `10.0.0.249` while pup is on Wi-Fi only) |
+| `LYTE_BENCHMARK_HOST` | both | address the app dials (default `10.0.0.232`, pup's wired leg; the address in use is in [HANDOFF.md](../HANDOFF.md)) |
 | `LYTE_BENCHMARK_PORT` | both | UDP port `lyte-host.service` must own (app default 41151; netem requires it) |
 | `LYTE_BENCHMARK_ALLOW_STANDING_PORT` | netem | `1` to impair the standing 41151 flow |
 | `LYTE_BENCHMARK_SECONDS` | app | leg length (default 30) |
@@ -245,5 +297,7 @@ one motion leg and judges the impairment SLOs. See
 - Reproduce a bug with a test that fails before the fix.
 - Test behavior. Do not pin source spellings, private member names or
   file lists; see [AGENTS.md](../AGENTS.md#change-discipline).
-- New wire bytes need a new vector file (or new cases appended in a new
-  file) plus a builder in `LyteWireVectorGen`.
+- New wire bytes go in a new vector file with a builder in
+  `LyteWireVectorGen`, registered in `vectorFileBuilders`
+  (`VectorRegenerationTests` fails on an unregistered file); see
+  [Wire/Vectors/README.md](../Wire/Vectors/README.md).

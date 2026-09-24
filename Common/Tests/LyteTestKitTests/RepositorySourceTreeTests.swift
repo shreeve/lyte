@@ -51,6 +51,42 @@ final class RepositorySourceTreeTests: XCTestCase {
         )
     }
 
+    /// A tree reached through a symlink still relativizes: the root may
+    /// be spelled through the link while files come back from the
+    /// enumerator by their real path (macOS spells `/tmp` checkouts
+    /// `/private/tmp`), and ratchets hash these relative paths.
+    func testRelativePathsSurviveSymlinkedRoots() throws {
+        let fileManager = FileManager.default
+        let scratch = fileManager.temporaryDirectory.appendingPathComponent(
+            "lyte-relative-path-\(UUID().uuidString)"
+        )
+        defer { try? fileManager.removeItem(at: scratch) }
+        let real = scratch.appendingPathComponent("real")
+        let link = scratch.appendingPathComponent("link")
+        try fileManager.createDirectory(
+            at: real.appendingPathComponent("sub"),
+            withIntermediateDirectories: true
+        )
+        let file = real.appendingPathComponent("sub/File.swift")
+        try Data("// file\n".utf8).write(to: file)
+        try fileManager.createSymbolicLink(
+            at: link, withDestinationURL: real)
+
+        XCTAssertEqual(
+            RepositorySourceTree(repositoryRoot: link).relativePath(for: file),
+            "sub/File.swift")
+        XCTAssertEqual(
+            RepositorySourceTree.relativePath(
+                of: link.appendingPathComponent("sub/File.swift"), below: real),
+            "sub/File.swift")
+        let enumerated = try XCTUnwrap(
+            fileManager.enumerator(at: real, includingPropertiesForKeys: nil))
+        let names = enumerated.compactMap { $0 as? URL }.map {
+            RepositorySourceTree.relativePath(of: $0, below: real)
+        }
+        XCTAssertEqual(names.sorted(), ["sub", "sub/File.swift"])
+    }
+
     func testOnlyImmediateTestKitTargetsAreExcluded() throws {
         let fileManager = FileManager.default
         let scratch = fileManager.temporaryDirectory.appendingPathComponent(
@@ -86,41 +122,10 @@ final class RepositorySourceTreeTests: XCTestCase {
             )
         }
 
-        XCTAssertEqual(
-            try tree.violations(containing: ["ForbiddenTwin"]),
-            [
-                "Client/Sources/LyteTransport/HiddenTestKit/Twin.swift: ForbiddenTwin",
-            ]
-        )
-    }
-
-    func testScannerFindsTwinsAndHonorsOnlyExplicitExclusions() throws {
-        let fileManager = FileManager.default
-        let scratch = fileManager.temporaryDirectory.appendingPathComponent(
-            "lyte-source-tree-\(UUID().uuidString)"
-        )
-        defer { try? fileManager.removeItem(at: scratch) }
-
-        let tree = RepositorySourceTree(repositoryRoot: scratch)
-        for (index, root) in tree.productionSourceRoots.enumerated() {
-            try fileManager.createDirectory(
-                at: root,
-                withIntermediateDirectories: true
-            )
-            let source = index == 3 ? "struct ForbiddenTwin {}\n" : "// clean\n"
-            try Data(source.utf8).write(
-                to: root.appendingPathComponent("Source\(index).swift")
-            )
-        }
-
-        let violations = try tree.violations(containing: ["ForbiddenTwin"])
-        XCTAssertEqual(violations.count, 1)
-        XCTAssertTrue(violations[0].hasPrefix("Host/Sources/Source3.swift:"))
-
-        let excluded = try tree.violations(
-            containing: ["ForbiddenTwin"],
-            excludingRelativePaths: ["Host/Sources/Source3.swift"]
-        )
-        XCTAssertTrue(excluded.isEmpty)
+        let scanned = try tree.productionSwiftFiles().map(tree.relativePath(for:))
+        XCTAssertTrue(scanned.contains(
+            "Client/Sources/LyteTransport/HiddenTestKit/Twin.swift"))
+        XCTAssertFalse(scanned.contains(
+            "Client/Sources/LyteClientTestKit/Twin.swift"))
     }
 }

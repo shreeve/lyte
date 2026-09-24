@@ -16,7 +16,8 @@ import HostEye
 
 func runCapture(_ rawArgs: [String]) -> Never {
     var device = "/dev/dri/card1"
-    var render = "/dev/dri/renderD128"
+    /// nil: the render node the card names (DirectScreenSource).
+    var render: String?
     var seconds = 10.0
     var output = "/tmp/lyte-eye.hevc"
     var qp: Int32 = 24
@@ -26,7 +27,7 @@ func runCapture(_ rawArgs: [String]) -> Never {
     while let arg = it.next() {
         switch arg {
         case "--device": device = it.next() ?? device
-        case "--render": render = it.next() ?? render
+        case "--render": render = it.next()
         case "--seconds": seconds = Double(it.next() ?? "") ?? seconds
         case "--out": output = it.next() ?? output
         case "--qp": qp = Int32(it.next() ?? "") ?? qp
@@ -64,7 +65,7 @@ func runCapture(_ rawArgs: [String]) -> Never {
 /// writing every changed frame to an Annex-B file. The file
 /// decode-probes on the Mac.
 func runNativeCapture(
-    device: String, render: String, seconds: Double,
+    device: String, render: String?, seconds: Double,
     output: String, qp: Int32, bitrateBitsPerSecond: Int64 = 0,
     chroma444: Bool = false
 ) -> Never {
@@ -90,6 +91,13 @@ func runNativeCapture(
     }
     let width = screen.width
     let height = screen.height
+    let render = render ?? screen.renderNode
+    if screen.renderNodeIsFallback {
+        print("capture: \(device) names no render node — using \(render)")
+    }
+    if screen.keptMaster {
+        print("capture: could not drop DRM master on \(device)")
+    }
     print("""
         capture: \(device) \(width)x\(height) → \(output) \
         (qp \(qp), \(Int(seconds))s) [NATIVE — no libavcodec]\

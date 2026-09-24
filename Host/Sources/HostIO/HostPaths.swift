@@ -9,8 +9,11 @@
 //
 // Identity once lived in ~/.config/lyte-host. `adoptConfigFile` reads the
 // new location first; when only the legacy file exists it COPIES it into
-// place (0600, atomic, verified byte-for-byte) and never deletes, moves, or
-// writes the legacy file. Writes go only to the new location.
+// place (0600, atomic, create-if-absent, verified byte-for-byte) and never
+// deletes, moves, or writes the legacy file. Adoption never replaces or
+// removes anything at the new location it did not itself just create:
+// whatever lands there first wins, and the only file it ever removes is
+// its own copy that failed verification.
 
 #if canImport(Darwin)
 import Darwin
@@ -75,18 +78,35 @@ public struct HostPaths: Equatable, Sendable {
     /// The config file `name` to read and write — always the new location.
     /// When only `~/.config/lyte-host/<name>` exists it is copied there
     /// first and `note` says so; the legacy file is left exactly as found.
+    /// A new-location entry that appears meanwhile (another host process,
+    /// a `--pair` run) wins. A copy this call made that reads back wrong
+    /// is removed — only that file, never an entry someone else put there
+    /// — and the call throws, so no later start trusts it unverified; the
+    /// next start copies again.
     public func adoptConfigFile(_ name: String) throws -> (path: String, note: String?) {
+        try adoptConfigFile(name, readBack: SecretFile.read)
+    }
+
+    /// `adoptConfigFile` with the verifying read injected.
+    @_spi(Testing)
+    public func adoptConfigFile(
+        _ name: String, readBack: (String) throws -> [UInt8]?
+    ) throws -> (path: String, note: String?) {
         let target = config(name)
         if SecretFile.exists(target) {
             return (target, nil)
         }
         let legacy = legacyConfig(name)
-        guard let bytes = try SecretFile.read(legacy) else {
+        guard let bytes = try SecretFile.read(legacy),
+              let created = try SecretFile.createOwned(bytes, at: target)
+        else {
             return (target, nil)
         }
-        try SecretFile.write(bytes, to: target)
-        guard try SecretFile.read(target) == bytes else {
-            unlink(target)
+        guard try readBack(target) == bytes else {
+            guard SecretFile.identity(of: target) == created else {
+                return (target, nil) // replaced meanwhile: the winner's
+            }
+            SecretFile.remove(target)
             throw HostPathError.adoptionMismatch(target)
         }
         return (target, "identity: copied \(legacy) → \(target) (legacy file left in place)")
@@ -113,7 +133,7 @@ public enum SecretFile {
     public static func write(_ bytes: [UInt8], to path: String) throws {
         let temporary = try writeTemporary(bytes, for: path)
         guard rename(temporary, path) == 0 else {
-            let text = errnoText()
+            let text = Posix.errnoText()
             unlink(temporary)
             throw HostPathError.write("cannot rename into \(path): \(text)")
         }
@@ -125,14 +145,48 @@ public enum SecretFile {
     /// neither overwrites the other. Returns false (writing nothing) when
     /// the file already exists — the caller reads the winner's.
     public static func create(_ bytes: [UInt8], at path: String) throws -> Bool {
+        try createOwned(bytes, at: path) != nil
+    }
+
+    /// Which file a path names: device and inode.
+    struct FileIdentity: Equatable {
+        let device: UInt64
+        let inode: UInt64
+    }
+
+    /// `create`, returning the created file's identity (nil when the path
+    /// already existed), so a caller can later tell its own file from one
+    /// that replaced it.
+    static func createOwned(
+        _ bytes: [UInt8], at path: String
+    ) throws -> FileIdentity? {
         let temporary = try writeTemporary(bytes, for: path)
         defer { unlink(temporary) }
+        guard let created = identity(of: temporary) else {
+            throw HostPathError.write("cannot stat \(temporary): \(Posix.errnoText())")
+        }
         guard link(temporary, path) == 0 else {
-            if errno == EEXIST { return false }
-            throw HostPathError.write("cannot create \(path): \(errnoText())")
+            if errno == EEXIST { return nil }
+            throw HostPathError.write("cannot create \(path): \(Posix.errnoText())")
         }
         syncDirectory(of: path)
-        return true
+        return created
+    }
+
+    /// The identity of the entry at `path` itself (a symlink is not
+    /// followed); nil when there is none.
+    static func identity(of path: String) -> FileIdentity? {
+        var info = stat()
+        guard lstat(path, &info) == 0 else { return nil }
+        return FileIdentity(
+            device: UInt64(truncatingIfNeeded: info.st_dev),
+            inode: UInt64(truncatingIfNeeded: info.st_ino))
+    }
+
+    /// Unlinks `path` and makes the removal durable.
+    static func remove(_ path: String) {
+        guard unlink(path) == 0 else { return }
+        syncDirectory(of: path)
     }
 
     /// The bytes, fsync'ed, in a fresh `.<name>.tmp.XXXXXX` beside `path`.
@@ -149,7 +203,7 @@ public enum SecretFile {
         }
         guard fd >= 0 else {
             throw HostPathError.write(
-                "cannot create a temporary for \(path): \(errnoText())")
+                "cannot create a temporary for \(path): \(Posix.errnoText())")
         }
         _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
         let temporary = String(decoding: template.dropLast().map {
@@ -162,11 +216,11 @@ public enum SecretFile {
                 let n = Self.writeSome(fd, raw.baseAddress! + written, raw.count - written)
                 if n < 0 {
                     if errno == EINTR { continue }
-                    return errnoText()
+                    return Posix.errnoText()
                 }
                 written += n
             }
-            return fsync(fd) == 0 ? nil : errnoText()
+            return fsync(fd) == 0 ? nil : Posix.errnoText()
         }
         close(fd)
         if let failure {
@@ -208,32 +262,16 @@ public enum SecretFile {
     }
 
     private static func syncDirectory(of path: String) {
-        let directoryFd = open(parent(of: path), O_RDONLY | O_DIRECTORY | O_CLOEXEC)
-        if directoryFd >= 0 {
-            _ = fsync(directoryFd)
-            close(directoryFd)
-        }
+        Posix.syncDirectory(parent(of: path))
     }
 
     /// The whole file, or nil when it does not exist. Any other failure
     /// throws: an unreadable identity is never mistaken for a missing one.
     public static func read(_ path: String) throws -> [UInt8]? {
-        let fd = open(path, O_RDONLY | O_CLOEXEC)
-        guard fd >= 0 else {
-            if errno == ENOENT { return nil }
-            throw HostPathError.read("cannot open \(path): \(errnoText())")
-        }
-        defer { close(fd) }
-        var bytes: [UInt8] = []
-        var chunk = [UInt8](repeating: 0, count: 4096)
-        while true {
-            let n = chunk.withUnsafeMutableBytes { readSome(fd, $0.baseAddress!, $0.count) }
-            if n < 0 {
-                if errno == EINTR { continue }
-                throw HostPathError.read("cannot read \(path): \(errnoText())")
-            }
-            if n == 0 { return bytes }
-            bytes += chunk[0..<n]
+        do {
+            return try Posix.readFile(path)
+        } catch {
+            throw HostPathError.read(error.text)
         }
     }
 
@@ -244,12 +282,10 @@ public enum SecretFile {
 
     /// `mkdir -p` with owner-only permissions for every directory created.
     public static func makeDirectories(_ path: String) throws {
-        var built = ""
-        for component in path.split(separator: "/") {
-            built += "/" + component
-            if mkdir(built, 0o700) != 0 && errno != EEXIST {
-                throw HostPathError.createDirectory("\(built): \(errnoText())")
-            }
+        do {
+            try Posix.makeDirectories(path, mode: 0o700)
+        } catch {
+            throw HostPathError.createDirectory(error.text)
         }
     }
 
@@ -273,20 +309,6 @@ public enum SecretFile {
         #else
         Glibc.write(fd, buffer, count)
         #endif
-    }
-
-    private static func readSome(
-        _ fd: Int32, _ buffer: UnsafeMutableRawPointer, _ count: Int
-    ) -> Int {
-        #if canImport(Darwin)
-        Darwin.read(fd, buffer, count)
-        #else
-        Glibc.read(fd, buffer, count)
-        #endif
-    }
-
-    private static func errnoText() -> String {
-        String(cString: strerror(errno))
     }
 }
 

@@ -8,7 +8,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# The one physical Lyte.app: a second copy with the same bundle identity
+# breaks macOS Local Network privacy. A benchmark that builds turns it into
+# a diagnostic build for the run and restores the plain build at exit.
 APP="$ROOT/.build/Lyte.app"
+MAKE_APP="${LYTE_MAKE_APP:-$ROOT/Scripts/make-app.sh}"
+REBUILD="Scripts/benchmark-app.sh without --no-build (it restores the plain app at exit)"
 APP_EXECUTABLE="$APP/Contents/MacOS/Lyte"
 ANALYZER="$ROOT/Scripts/analyze-app-benchmark.py"
 source "$ROOT/Scripts/lib/benchmark-process.sh"
@@ -92,16 +97,79 @@ refuse_if_lyte_is_running() {
   }
 }
 
+bundle_is_diagnostic() {
+  local value
+  value="$(plutil -extract LyteDiagnosticEntryPoints raw \
+    -o - "$1/Contents/Info.plist" 2>/dev/null || true)"
+  [[ "$value" == true ]] || return 1
+}
+
+# Set once this process starts the diagnostic build: from then on every exit
+# — success, failure or signal — restores the plain everyday bundle, after
+# the app-artifact lock is released and the benchmark app has exited. A
+# `--no-build` run (every leg of `all`) built nothing and restores nothing.
+RESTORE_PLAIN_APP=0
+restore_plain_app() {
+  (( RESTORE_PLAIN_APP )) || return 0
+  RESTORE_PLAIN_APP=0
+  exec 9>&-
+  local waited=0
+  while lyte_benchmark_app_pids >/dev/null 2>&1 && (( waited < 100 )); do
+    sleep 0.1
+    waited=$(( waited + 1 ))
+  done
+  bundle_is_diagnostic "$APP" || return 0
+  # A subprocess that inherited the lock descriptor (a tool the signal just
+  # killed) can hold it a moment longer; wait for it, boundedly.
+  (
+    exec 8>"${LYTE_APP_LOCK_FILE:-$ROOT/.build/.lyte-app-artifact.lock}"
+    "${LYTE_LOCKF:-lockf}" -s -t 10 8
+  ) || true
+  echo "==> restoring the everyday app: Scripts/make-app.sh release" >&2
+  if (cd "$ROOT" && env -u LYTE_APP_DESTINATION "$MAKE_APP" release); then
+    return 0
+  fi
+  cat >&2 <<EOF
+WARNING: ============================================================
+WARNING: .build/Lyte.app is STILL A DIAGNOSTIC BUILD. It obeys the
+WARNING: autoconnect and benchmark environment. Restore the everyday
+WARNING: app before using it, from $ROOT:
+WARNING:
+WARNING:     Scripts/make-app.sh release
+WARNING: ============================================================
+EOF
+}
+
+handle_early_signal() {
+  trap - EXIT
+  trap '' INT TERM
+  restore_plain_app
+  exit "$1"
+}
+
+trap restore_plain_app EXIT
+trap 'handle_early_signal 130' INT
+trap 'handle_early_signal 143' TERM
+
 # Precedes directory creation, builds, remote work, and service restart;
 # each leg re-checks for an app launched during preflight.
 refuse_if_lyte_is_running
 mkdir -p "$OUT_DIR"
 OUT_DIR="$(cd "$OUT_DIR" && pwd -P)"
 if (( ! NO_BUILD )); then
-  "$ROOT/Scripts/make-app.sh" release
+  mkdir -p "$ROOT/.build"
+  RESTORE_PLAIN_APP=1
+  (cd "$ROOT" && env -u LYTE_APP_DESTINATION "$MAKE_APP" --diagnostics release)
 fi
 [[ -x "$APP/Contents/MacOS/Lyte" ]] || {
-  echo "missing signed app: run Scripts/make-app.sh release" >&2
+  echo "missing signed app $APP: run $REBUILD" >&2
+  exit 1
+}
+# The app obeys the benchmark environment only when its signed Info.plist
+# enables the diagnostic entry points; any other bundle would never start.
+bundle_is_diagnostic "$APP" || {
+  echo "benchmark refused: $APP is not a diagnostic build" >&2
+  echo "rebuild it with $REBUILD" >&2
   exit 1
 }
 # Hold the app-artifact lock for the whole leg so no assembly swaps the
@@ -116,18 +184,18 @@ codesign --verify --strict "$APP"
 CLIENT_SOURCE_SHA256="$(lyte_source_fingerprint "$ROOT" $LYTE_CLIENT_SOURCE_PATHS)"
 recorded_client_source="$APP/Contents/Resources/client-source.sha256"
 [[ -s "$recorded_client_source" ]] || {
-  echo "benchmark refused: Lyte.app has no signed source provenance" >&2
-  echo "rebuild it with Scripts/make-app.sh release" >&2
+  echo "benchmark refused: $APP has no signed source provenance" >&2
+  echo "rebuild it with $REBUILD" >&2
   exit 1
 }
 read -r bundled_client_source < "$recorded_client_source"
 [[ "$CLIENT_SOURCE_SHA256" == "$bundled_client_source" ]] || {
-  echo "benchmark refused: Lyte.app was built from different client source" >&2
-  echo "rebuild it with Scripts/make-app.sh release" >&2
+  echo "benchmark refused: $APP was built from different client source" >&2
+  echo "rebuild it with $REBUILD" >&2
   exit 1
 }
 read -r APP_BUILD_UTC < "$APP/Contents/Resources/build-utc.txt" || {
-  echo "benchmark refused: Lyte.app has no signed build timestamp" >&2
+  echo "benchmark refused: $APP has no signed build timestamp" >&2
   exit 1
 }
 
@@ -142,7 +210,7 @@ if (( NO_BUILD )); then
         done
   )"
   [[ -z "$stale_client_source" ]] || {
-    echo "--no-build refused: client source is newer than Lyte.app:" >&2
+    echo "--no-build refused: client source is newer than $APP:" >&2
     printf '%s\n' "$stale_client_source" >&2
     exit 1
   }
@@ -257,9 +325,13 @@ start_handshake_evidence() {
     -w "$OUT_DIR/$run_id-client.pcap" "udp port $BENCH_PORT" \
     >"$OUT_DIR/$run_id-client-tcpdump.stderr" 2>&1 &
   HANDSHAKE_LOCAL_TCPDUMP_PID=$!
+  # Both captures run as root under sudo, and $! is the sudo process: only
+  # `sudo -n kill` can signal it (sudo relays the signal to tcpdump). The
+  # pup capture is also bounded by timeout in case this side never returns.
   HANDSHAKE_REMOTE_TCPDUMP_PID="$(pup_ssh \
     "sudo -n rm -f '/tmp/$run_id-host.pcap'; \
-sudo -n nohup tcpdump -i any -nn -U -w '/tmp/$run_id-host.pcap' \
+sudo -n nohup timeout $((BENCH_SECONDS + 300)) \
+tcpdump -i any -nn -U -w '/tmp/$run_id-host.pcap' \
 'udp port $BENCH_PORT' >'/tmp/$run_id-host-tcpdump.stderr' 2>&1 & echo \$!")"
   pup_ssh "date -u +%FT%TZ; \
 p=\$(systemctl show lyte-host --property MainPID --value); \
@@ -274,11 +346,19 @@ collect_handshake_evidence() {
   local run_id="$HANDSHAKE_RUN_ID"
   [[ -n "$run_id" ]] || return 0
   [[ -z "$HANDSHAKE_LOCAL_TCPDUMP_PID" ]] \
-    || kill "$HANDSHAKE_LOCAL_TCPDUMP_PID" 2>/dev/null || true
+    || sudo -n kill "$HANDSHAKE_LOCAL_TCPDUMP_PID" 2>/dev/null || true
   [[ -z "$HANDSHAKE_REMOTE_TCPDUMP_PID" ]] \
     || pup_ssh \
-      "kill '$HANDSHAKE_REMOTE_TCPDUMP_PID' 2>/dev/null || true" || true
+      "sudo -n kill '$HANDSHAKE_REMOTE_TCPDUMP_PID' 2>/dev/null || true" || true
   sleep 1
+  if [[ -n "$HANDSHAKE_LOCAL_TCPDUMP_PID" ]] \
+      && ps -p "$HANDSHAKE_LOCAL_TCPDUMP_PID" >/dev/null 2>&1; then
+    echo "WARNING: local root tcpdump (sudo PID $HANDSHAKE_LOCAL_TCPDUMP_PID) is still capturing" >&2
+  fi
+  if [[ -n "$HANDSHAKE_REMOTE_TCPDUMP_PID" ]] \
+      && pup_ssh "ps -p '$HANDSHAKE_REMOTE_TCPDUMP_PID' >/dev/null 2>&1"; then
+    echo "WARNING: pup root tcpdump (sudo PID $HANDSHAKE_REMOTE_TCPDUMP_PID) is still capturing" >&2
+  fi
   netstat -s -p udp > "$OUT_DIR/$run_id-client-udp-after.txt"
   sudo -n tcpdump -nn -tttt -vv \
     -r "$OUT_DIR/$run_id-client.pcap" "udp port $BENCH_PORT" \
@@ -358,10 +438,11 @@ handle_signal() {
   trap - EXIT
   trap '' INT TERM
   cleanup
+  restore_plain_app
   exit "$status"
 }
 
-trap cleanup EXIT
+trap 'cleanup; restore_plain_app' EXIT
 trap 'handle_signal 130' INT
 trap 'handle_signal 143' TERM
 

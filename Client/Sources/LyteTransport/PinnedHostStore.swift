@@ -116,8 +116,13 @@ public struct PinnedHostStore: Codable, Equatable, Sendable {
             return (PinnedHostStore(), nil)
         }
         if let data = try? Data(contentsOf: url),
-           let store = try? JSONDecoder().decode(
+           var store = try? JSONDecoder().decode(
                PinnedHostStore.self, from: data) {
+            // Recognition looks hosts up by key: an entry keyed by any
+            // hash but its own static's would dial a different key.
+            store.hosts = store.hosts.filter {
+                $0.value.publicKeyHash == $0.key.lowercased()
+            }
             return (store, nil)
         }
         return (PinnedHostStore(), quarantine(url))
@@ -152,6 +157,9 @@ public struct PinnedHostStore: Codable, Equatable, Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(self).write(to: url, options: .atomic)
+        // Host names and LAN addresses are the owner's business.
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
     // MARK: Trust operations

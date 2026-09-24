@@ -10,7 +10,7 @@ import Foundation
 import LyteWire
 import Synchronization
 
-public final class LyteUdpSession: @unchecked Sendable {
+public final class LyteUdpSession: Sendable {
     public struct Config: Sendable {
         /// The local bind (0 = kernel-assigned).
         public var bindPort: UInt16 = 0
@@ -27,14 +27,35 @@ public final class LyteUdpSession: @unchecked Sendable {
 
     public let crypto: any TransportCrypto
     public let config: Config
-    public private(set) var endpoint: UdpReceiveEndpoint?
-    private let coreStorage = Mutex<LyteUdpSessionCore?>(nil)
+
+    /// What start() publishes and stopParts() retires, under one lock: once
+    /// `stopped` is set nothing new starts, so a stop that races a dial
+    /// never misses a thread, a timer or a socket.
+    private struct Parts {
+        var stopped = false
+        var endpoint: UdpReceiveEndpoint?
+        var audioPlayer: LyteAudioPlayer?
+    }
+    private let parts = Mutex(Parts())
+    /// Shared with the input sender, which outlives no session.
+    private final class CoreBox: Sendable {
+        let core = Mutex<LyteUdpSessionCore?>(nil)
+    }
+    private let coreBox = CoreBox()
+
+    /// The socket; published before the blocking handshake so a stop can
+    /// cancel the dial.
+    public var endpoint: UdpReceiveEndpoint? {
+        parts.withLock { $0.endpoint }
+    }
     public var core: LyteUdpSessionCore? {
-        coreStorage.withLock { $0 }
+        coreBox.core.withLock { $0 }
     }
     /// The playback unit, present when `config.audioPlayback`
     /// and the audio device came up.
-    public private(set) var audioPlayer: LyteAudioPlayer?
+    public var audioPlayer: LyteAudioPlayer? {
+        parts.withLock { $0.audioPlayer }
+    }
 
     private let videoSink: any VideoSink
     private let onEvent: @Sendable (LyteUdpSessionEvent) -> Void
@@ -48,13 +69,7 @@ public final class LyteUdpSession: @unchecked Sendable {
     /// on the HAL, which would wedge a main-actor caller.
     private let audioQueue = DispatchQueue(
         label: "lyte.audio.engine", qos: .userInitiated)
-    private lazy var orderedInput = OrderedInputSender {
-        [weak self] body, captured in
-        guard let self, let core = self.core else {
-            throw TransportEndpointError.notStarted
-        }
-        _ = try core.sendInput(body, captured: captured)
-    }
+    private let orderedInput: OrderedInputSender
 
     public init(
         crypto: any TransportCrypto,
@@ -76,11 +91,18 @@ public final class LyteUdpSession: @unchecked Sendable {
         self.onVideoRecoveryTrace = onVideoRecoveryTrace
         self.videoSink = videoSink
         self.onEvent = onEvent
+        self.orderedInput = OrderedInputSender { [coreBox] body, captured in
+            guard let core = coreBox.core.withLock({ $0 }) else {
+                throw TransportEndpointError.notStarted
+            }
+            _ = try core.sendInput(body, captured: captured)
+        }
     }
 
     /// Bind → handshake (blocking) → core published → capability
-    /// declaration → receive thread → timers. Throws TransportCryptoError
-    /// or TransportEndpointError when the dial never became a session.
+    /// declaration → receive thread → timers. Throws HandshakeExhausted,
+    /// TransportCryptoError or TransportEndpointError when the dial never
+    /// became a session (`.cancelled` when stop() or close() ended it).
     ///
     /// The core is published and the declaration sent before the receive
     /// thread starts, so the host's first datagrams wait in the kernel
@@ -94,35 +116,56 @@ public final class LyteUdpSession: @unchecked Sendable {
                 self?.core?.handleDatagram(
                     outcome, arrivalMicroseconds: arrivalMicroseconds)
             })
-        try endpoint.bindAndHandshake()
-        self.endpoint = endpoint
+        guard parts.withLock({ parts in
+            guard !parts.stopped else { return false }
+            parts.endpoint = endpoint
+            return true
+        }) else { throw TransportEndpointError.cancelled }
 
-        let sender = TransportSender(crypto: crypto, transmit: {
-            [weak endpoint] datagram in
-            endpoint?.sendToPeer(datagram) ?? false
-        })
-        let core = LyteUdpSessionCore(
-            demux: endpoint.demux,
-            sender: sender,
-            config: config.core,
-            clockModel: clockModel,
-            asynchronousVideoBuild: true,
-            onVideoRecoveryDemand: onVideoRecoveryDemand,
-            onVideoRecoveryTrace: onVideoRecoveryTrace,
-            videoSink: videoSink,
-            onEvent: onEvent
-        )
-        coreStorage.withLock { $0 = core }
-        try core.open()
-        endpoint.startReceiving()
-        core.startTimers()
+        let core: LyteUdpSessionCore
+        do {
+            try endpoint.bindAndHandshake()
+            let sender = TransportSender(crypto: crypto, transmit: {
+                [weak endpoint] datagram in
+                endpoint?.sendToPeer(datagram) ?? false
+            })
+            core = LyteUdpSessionCore(
+                demux: endpoint.demux,
+                sender: sender,
+                config: config.core,
+                clockModel: clockModel,
+                asynchronousVideoBuild: true,
+                onVideoRecoveryDemand: onVideoRecoveryDemand,
+                onVideoRecoveryTrace: onVideoRecoveryTrace,
+                videoSink: videoSink,
+                onEvent: onEvent
+            )
+            coreBox.core.withLock { $0 = core }
+            try core.open()
+        } catch {
+            endpoint.stop()
+            throw error
+        }
+        guard parts.withLock({ parts in
+            guard !parts.stopped else { return false }
+            endpoint.startReceiving()
+            core.startTimers()
+            return true
+        }) else {
+            endpoint.stop()
+            throw TransportEndpointError.cancelled
+        }
 
         // A refused audio device is never fatal; the engine spin-up goes
         // to the audio queue.
         if config.audioPlayback {
             do {
                 let player = try LyteAudioPlayer(receiver: core.audio)
-                audioPlayer = player
+                guard parts.withLock({ parts in
+                    guard !parts.stopped else { return false }
+                    parts.audioPlayer = player
+                    return true
+                }) else { return }
                 let onEvent = onEvent
                 audioQueue.async {
                     do {
@@ -176,8 +219,12 @@ public final class LyteUdpSession: @unchecked Sendable {
 
     private func stopParts() {
         orderedInput.stop()
-        if let player = audioPlayer {
-            audioPlayer = nil
+        let (endpoint, player) = parts.withLock { parts in
+            parts.stopped = true
+            defer { parts.audioPlayer = nil }
+            return (parts.endpoint, parts.audioPlayer)
+        }
+        if let player {
             // Serialized behind the async start; never blocks teardown.
             audioQueue.async { player.stop() }
         }
@@ -197,7 +244,16 @@ extension LyteUdpSession: VideoRecoveryPeer {
         core?.requestVideoRecovery(after: frame, cause: cause)
     }
 
-    public func noteVideoIrapEnqueued(frame: FrameNumber) {
-        core?.noteVideoIrapEnqueued(frame: frame)
+    public func noteVideoIrapEnqueued(
+        frame: FrameNumber, closesRecovery: Bool
+    ) {
+        core?.noteVideoIrapEnqueued(
+            frame: frame, closesRecovery: closesRecovery)
+    }
+
+    public func ensureVideoRecoveryOpen(
+        after frame: FrameNumber, cause: VideoRecoveryCause
+    ) {
+        core?.ensureVideoRecoveryOpen(after: frame, cause: cause)
     }
 }

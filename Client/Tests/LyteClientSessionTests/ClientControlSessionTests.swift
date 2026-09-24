@@ -189,6 +189,46 @@ final class ClientControlSessionTests: XCTestCase {
             [CtrlMessageType.idleFrame], now: at(10)))
     }
 
+    /// The detector tightens on the first audio evidence, relaxes on an
+    /// announced quiet, and tightens again when audio resumes; a session
+    /// configured without a tightened bound never moves.
+    func testAudioEvidenceTightensAndAnnouncedQuietRelaxesTheDetector()
+        throws
+    {
+        let quietCapable = local.declaringAudioQuietPosture()
+        var session = ClientControlSession(
+            localCapabilities: quietCapable,
+            machineConfig: SessionMachineConfig(
+                blackoutSilenceMicroseconds: 2_500_000),
+            desiredHostAudioRouting: nil,
+            tightenedBlackoutSilenceMicroseconds: 350_000,
+            now: at(0))
+        _ = try session.start()
+        _ = try session.receiveReliable(
+            try CapabilityDeclaration(capabilities: quietCapable).encode(),
+            now: at(1))
+
+        XCTAssertEqual(session.noteAudioEvidence(now: at(10)),
+                       .tightened(blackoutSilenceMicroseconds: 350_000))
+        XCTAssertNil(session.noteAudioEvidence(now: at(20)))
+        XCTAssertEqual(session.advance(now: at(400_000)).state, .frozen,
+                       "the tightened bound is the one in force")
+
+        let quiet = AudioTrackState(state: .quiet).encode()
+        XCTAssertEqual(
+            try session.receiveReliable(quiet, now: at(500_000))?
+                .detectorPosture,
+            .relaxed(blackoutSilenceMicroseconds: 2_500_000))
+        XCTAssertNil(try session.receiveReliable(quiet, now: at(600_000))?
+            .detectorPosture, "a repeated check-in changes nothing")
+        XCTAssertEqual(session.noteAudioEvidence(now: at(700_000)),
+                       .tightened(blackoutSilenceMicroseconds: 350_000))
+
+        var untightened = makeSession()
+        XCTAssertNil(untightened.noteAudioEvidence(now: at(10)))
+        XCTAssertFalse(untightened.detectorTightened)
+    }
+
     private func makeSession(
         localCapabilities: Capabilities? = nil,
         desiredHostAudioRouting: HostAudioRoutingMode? = nil,

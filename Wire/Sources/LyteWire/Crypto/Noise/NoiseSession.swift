@@ -2,7 +2,9 @@
 // ALPN, so one wire-major version byte prefixes the first handshake
 // message's encrypted payload, and a mismatch aborts before any transport
 // key exists. Message 2's payload echoes the responder's version byte, so
-// both ends prove agreement inside the transcript. Sans-IO.
+// both ends prove agreement inside the transcript. A read that throws —
+// authentication or version — leaves the session exactly as it was, so
+// no later write or `makeTransport` can proceed past it. Sans-IO.
 
 public struct NoiseSession: Sendable {
     public private(set) var handshake: NoiseHandshake
@@ -60,8 +62,11 @@ public struct NoiseSession: Sendable {
     public mutating func readMessage2(
         _ message: ArraySlice<UInt8>
     ) throws -> [UInt8] {
-        let payload = try handshake.readMessage2(message)
-        return try verifyVersion(in: payload)
+        var next = handshake
+        let payload = try Self.versionChecked(next.readMessage2(message))
+        handshake = next
+        negotiatedVersion = WireVersion.major
+        return payload
     }
 
     // MARK: Responder side
@@ -72,8 +77,11 @@ public struct NoiseSession: Sendable {
     public mutating func readMessage1(
         _ message: ArraySlice<UInt8>
     ) throws -> [UInt8] {
-        let payload = try handshake.readMessage1(message)
-        return try verifyVersion(in: payload)
+        var next = handshake
+        let payload = try Self.versionChecked(next.readMessage1(message))
+        handshake = next
+        negotiatedVersion = WireVersion.major
+        return payload
     }
 
     /// Builds message 2: our version byte echoed ‖ `applicationPayload`.
@@ -98,7 +106,8 @@ public struct NoiseSession: Sendable {
         )
     }
 
-    private mutating func verifyVersion(in payload: [UInt8]) throws -> [UInt8] {
+    /// The application payload after a matching version byte.
+    private static func versionChecked(_ payload: [UInt8]) throws -> [UInt8] {
         guard let received = payload.first else {
             throw NoiseError.missingVersionPayload
         }
@@ -107,7 +116,6 @@ public struct NoiseSession: Sendable {
                 received: received, expected: WireVersion.major
             )
         }
-        negotiatedVersion = received
         return Array(payload.dropFirst())
     }
 }

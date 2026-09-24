@@ -100,6 +100,10 @@ final class CookieGateTests: XCTestCase {
                        "no garbage msg1 establishes anything")
         XCTAssertGreaterThan(session.counters.handshakeChallengesMinted, 0,
                        "un-cookied floods draw stateless 0x13 challenges")
+        XCTAssertEqual(
+            session.counters.dropped + session.counters.handshakeChallengesMinted,
+            30,
+            "each flood datagram is answered or refused, never both")
 
         // Drain the flood's challenges off the pacer and discard them:
         // the legit client's challenge must be the ONLY one we pick up.
@@ -236,5 +240,54 @@ final class CookieGateTests: XCTestCase {
             .handshakeCookieModeChanged(requireCookie: false)
         )
         XCTAssertFalse(session.handshakeCookieMode)
+    }
+
+    /// One proven host on many source ports is one share of the cookie
+    /// budget: fresh cookies from 60 ports buy that host its share, not
+    /// the host-wide budget, and a client at another address dialing in
+    /// the same instant is still admitted.
+    func testOneAddressOnManyPortsSpendsOneShareOfTheCookieBudget() throws {
+        let hostStatic = NoiseKeyPair.generate()
+        let session = Session(
+            config: SessionConfig(
+                crypto: .noise(hostStatic: hostStatic),
+                rateBitsPerSecond: 20_000_000,
+                handshakeGate: HandshakeGate.Config(
+                    cookieSecret: Self.secret,
+                    cookieEnterThreshold: 1, cookieExitThreshold: 0
+                )
+            ),
+            clientTuple: Self.tupleA, now: 0,
+            rng: SplitMix64(seed: 0x9047)
+        ) { _ in }
+
+        func cookied(_ message1: [UInt8], from tuple: FourTuple) throws -> [UInt8] {
+            let cookie = try RetryCookie.mint(
+                clientTuple: Array(
+                    "\(tuple.remoteAddress):\(tuple.remotePort)".utf8),
+                message1: message1[...], now: 1_000, secret: Self.secret)
+            return try ctrlDatagram(seq: 0, payload:
+                try RetryHandshake1(cookie: cookie, message1: message1).encode())
+        }
+        var rng = SplitMix64(seed: 0x9048)
+        for port in UInt16(20_000)..<20_060 {
+            let tuple = FourTuple(
+                localAddress: "10.0.0.249", localPort: 41_157,
+                remoteAddress: "10.0.0.66", remotePort: port)
+            let garbage = (0..<96).map { _ in UInt8.random(in: 0...255, using: &rng) }
+            _ = session.receive(
+                try cookied(garbage, from: tuple),
+                from: tuple, now: 2_000, hostMicroseconds: 1)
+        }
+        XCTAssertEqual(session.counters.handshakeCookiesVerified, 2,
+                       "one address's share, whatever its ports")
+
+        let (_, message1) = try rawMessage1(hostStatic: hostStatic)
+        let events = session.receive(
+            try cookied(message1, from: Self.tupleA),
+            from: Self.tupleA, now: 2_000, hostMicroseconds: 2)
+        XCTAssertTrue(events.contains { if case .handshakeCompleted = $0 {
+            return true } else { return false } },
+            "the host-wide cookie budget is untouched: \(events)")
     }
 }

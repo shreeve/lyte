@@ -59,7 +59,7 @@ final class ControlCodecTests: XCTestCase {
             seq: 7, clientMicroseconds: 0x11_2233_4455,
             body: .keyKeycode(keycode: 30, pressed: true)
         )
-        XCTAssertEqual(key.encode(), [
+        XCTAssertEqual(try key.encode(), [
             0x16,                                   // type
             7, 0, 0, 0,                             // seq u32 LE
             0x55, 0x44, 0x33, 0x22, 0x11, 0, 0, 0,  // clientMicros u64 LE
@@ -81,7 +81,7 @@ final class ControlCodecTests: XCTestCase {
                 expected.append(UInt8(truncatingIfNeeded: bits >> shift))
             }
         }
-        XCTAssertEqual(move.encode(), expected)
+        XCTAssertEqual(try move.encode(), expected)
         XCTAssertEqual(try InputEvent.decode(move.encode()), move)
 
         // The remaining kinds round-trip.
@@ -115,8 +115,8 @@ final class ControlCodecTests: XCTestCase {
         XCTAssertEqual(try InputEcho.decode(echo.encode()), echo)
     }
 
-    func testHostileInputBytesRejectAndNeverTrap() {
-        let good = InputEvent(
+    func testHostileInputBytesRejectAndNeverTrap() throws {
+        let good = try InputEvent(
             seq: 1, clientMicroseconds: 2,
             body: .keyKeycode(keycode: 30, pressed: true)
         ).encode()
@@ -141,7 +141,7 @@ final class ControlCodecTests: XCTestCase {
         badFlag[18] = 2
         XCTAssertThrowsError(try InputEvent.decode(badFlag))
         // Reserved axis-flag bits.
-        var axis = InputEvent(
+        var axis = try InputEvent(
             seq: 1, clientMicroseconds: 2,
             body: .pointerAxis(dx: 1, dy: 2, finish: false)
         ).encode()
@@ -167,6 +167,67 @@ final class ControlCodecTests: XCTestCase {
             )]
         ))
         XCTAssertNil(try LastInputSeqTlv.decode(extensions: []))
+    }
+
+    /// Hosts turn coordinates into integers with trapping conversions,
+    /// so a non-finite coordinate must never leave the decoder: every
+    /// NaN/±Inf class in every f64 slot of every kind rejects, naming the
+    /// offending bit pattern.
+    private static let nonFiniteBits: [UInt64] = [
+        0x7FF8_0000_0000_0000, 0xFFF8_0000_0000_0000,
+        0x7FF0_0000_0000_0001, 0x7FFF_FFFF_FFFF_FFFF,
+        Double.infinity.bitPattern, (-Double.infinity).bitPattern,
+    ]
+
+    /// Every f64 slot of every kind, holding `bad` in one slot.
+    private static func coordinateBodies(_ bad: Double) -> [InputEvent.Body] {
+        let bodies: [(Double, Double) -> InputEvent.Body] = [
+            { .pointerMotionAbsolute(x: $0, y: $1) },
+            { .pointerMotionRelative(dx: $0, dy: $1) },
+            { .pointerAxis(dx: $0, dy: $1, finish: false) },
+        ]
+        return bodies.flatMap { [$0(bad, 1), $0(1, bad)] }
+    }
+
+    func testNonFiniteCoordinatesRejectInEverySlot() {
+        for bits in Self.nonFiniteBits {
+            for event in Self.coordinateBodies(Double(bitPattern: bits)) {
+                let bytes = InputEvent(
+                    seq: 1, clientMicroseconds: 2, body: event
+                ).rawCoordinateBytes()
+                XCTAssertThrowsError(try InputEvent.decode(bytes)) {
+                    XCTAssertEqual(
+                        $0 as? InputMessageError,
+                        .nonFiniteCoordinate(bits), "\(event)"
+                    )
+                }
+            }
+        }
+        let finite = InputEvent(
+            seq: 1, clientMicroseconds: 2,
+            body: .pointerMotionRelative(
+                dx: .greatestFiniteMagnitude, dy: -.leastNonzeroMagnitude
+            )
+        )
+        XCTAssertEqual(try InputEvent.decode(finite.encode()), finite)
+    }
+
+    /// The encoder refuses what the decoder rejects, with the same typed
+    /// error, so a sender bug surfaces at the sender instead of breaking
+    /// the peer's stream.
+    func testEncodeRefusesNonFiniteCoordinatesInEverySlot() {
+        for bits in Self.nonFiniteBits {
+            for event in Self.coordinateBodies(Double(bitPattern: bits)) {
+                XCTAssertThrowsError(try InputEvent(
+                    seq: 1, clientMicroseconds: 2, body: event
+                ).encode()) {
+                    XCTAssertEqual(
+                        $0 as? InputMessageError,
+                        .nonFiniteCoordinate(bits), "\(event)"
+                    )
+                }
+            }
+        }
     }
 
     // MARK: AudioRoutingRequest/Status (0x18/0x19)

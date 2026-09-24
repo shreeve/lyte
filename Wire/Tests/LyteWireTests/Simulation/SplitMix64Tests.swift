@@ -36,9 +36,41 @@ final class SplitMix64Tests: XCTestCase {
         for _ in 0..<64 {
             XCTAssertEqual(rng.int(in: 5...5), 5)
             XCTAssertEqual(rng.int(in: -3..<(-2)), -3)
-            XCTAssert((Int.min...Int.max).contains(rng.int(in: Int.min...Int.max)))
             XCTAssert((-10...10).contains(rng.int(in: -10...10)))
         }
+    }
+
+    /// Forbidden-token scan: a replayed draw at Int width differs on
+    /// wasm32, so a seed that fails there would not reproduce on a Mac.
+    /// Wire's tests and test equipment draw through SplitMix64's helpers.
+    func testReplayedDrawsNeverUseIntWidthStdlibHelpers() throws {
+        let root = URL(fileURLWithPath: WireVectors.directory)
+            .deletingLastPathComponent()
+        let forbidden = [
+            "Int.random(in:", ".shuffle(using:", ".shuffled(using:",
+            ".randomElement(using:",
+        ]
+        var offenders: [String] = []
+        for directory in ["Tests/LyteWireTests", "Sources/LyteWireTestKit",
+                          "Sources/LyteWireVectorGen"] {
+            let base = root.appendingPathComponent(directory)
+            guard let walker = FileManager.default.enumerator(
+                at: base, includingPropertiesForKeys: nil
+            ) else { continue }
+            for case let url as URL in walker where url.pathExtension == "swift"
+                && !["SplitMix64.swift", "SplitMix64Tests.swift"]
+                    .contains(url.lastPathComponent) {
+                let text = try String(contentsOf: url, encoding: .utf8)
+                for (number, line) in text.split(
+                    separator: "\n", omittingEmptySubsequences: false
+                ).enumerated()
+                where forbidden.contains(where: line.contains)
+                    && line.contains("using:") {
+                    offenders.append("\(url.lastPathComponent):\(number + 1)")
+                }
+            }
+        }
+        XCTAssertEqual(offenders, [])
     }
 
     #if _pointerBitWidth(_64)

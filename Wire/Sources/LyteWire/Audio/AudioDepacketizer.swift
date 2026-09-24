@@ -72,7 +72,12 @@ public struct AudioDepacketizer: Sendable {
     /// init from the nominal group size. It must never follow an arriving
     /// shard's declared geometry: a k=1 shard would shrink retention 4×
     /// and a k=254 shard would widen admission ~64×.
-    private let horizonPackets: Int32
+    private let horizonPackets: UInt32
+    /// The most groups ever retained: twice the nominal horizon's group
+    /// count. Honest traffic keeps `horizonGroups + 1`; a peer declaring
+    /// small groups at every packet number inside the horizon hits this
+    /// cap and the oldest group makes room.
+    private let maxGroups: Int
 
     public private(set) var stats = AudioDepacketizerStats()
 
@@ -100,9 +105,13 @@ public struct AudioDepacketizer: Sendable {
 
     public init(horizonGroups: Int = 8, nominalDataShards: Int = 4) {
         self.horizonGroups = max(horizonGroups, 2)
-        self.horizonPackets = Int32(
+        self.horizonPackets = UInt32(
             self.horizonGroups * max(nominalDataShards, 1))
+        self.maxGroups = 2 * self.horizonGroups
     }
+
+    /// Groups currently held; never above twice `horizonGroups`.
+    public var trackedGroupCount: Int { groups.count }
 
     /// Feeds one accepted chan-1 datagram. Returns the packets it made
     /// available NOW: the shard's own packet when it is a fresh data
@@ -111,8 +120,7 @@ public struct AudioDepacketizer: Sendable {
         stats.datagramsIngested += 1
 
         guard let field = try? FecField.decode(envelope.fec),
-              case .reedSolomon(let shardIndex, let geometry) = field,
-              Int(shardIndex) < geometry.totalShards
+              case .reedSolomon(let shardIndex, let geometry) = field
         else {
             stats.malformedDatagrams += 1
             return []
@@ -123,14 +131,18 @@ public struct AudioDepacketizer: Sendable {
             return []
         }
 
+        // Serial distances are judged unsigned so no id is both "not
+        // behind" and "not ahead": an id within the horizon behind the
+        // newest (or equal) is admitted, one up to 2³¹ − 1 ahead advances
+        // the newest, and everything else — the exact 2³¹ antipode
+        // included — is stale.
         let groupId = envelope.frame.rawValue
         if let newest = newestGroupId {
-            let age = Int32(bitPattern: newest &- groupId)
-            if age > horizonPackets {
-                stats.staleShards += 1
-                return []
-            }
-            if Int32(bitPattern: groupId &- newest) > 0 {
+            if newest &- groupId > horizonPackets {
+                guard groupId &- newest <= UInt32(Int32.max) else {
+                    stats.staleShards += 1
+                    return []
+                }
                 newestGroupId = groupId
                 evictBeyondHorizon()
             }
@@ -138,6 +150,9 @@ public struct AudioDepacketizer: Sendable {
             newestGroupId = groupId
         }
 
+        if groups[groupId] == nil, groups.count >= maxGroups {
+            evictOldest()
+        }
         var group = groups[groupId] ?? Group(geometry: geometry)
         guard group.geometry == geometry else {
             // A group's six shards all advertise one geometry; a
@@ -230,14 +245,26 @@ public struct AudioDepacketizer: Sendable {
     /// the honest losses (missing data the wire never yielded).
     private mutating func evictBeyondHorizon() {
         guard let newest = newestGroupId else { return }
-        for (id, group) in groups {
-            guard Int32(bitPattern: newest &- id) > horizonPackets else { continue }
-            let missing = group.missingDataIndices.count
-            if missing > 0 {
-                stats.groupsUnrecoverable += 1
-                stats.packetsUnrecoverable += UInt64(missing)
-            }
-            groups.removeValue(forKey: id)
+        for id in groups.keys where newest &- id > horizonPackets {
+            evict(id)
+        }
+    }
+
+    /// Makes room at the group cap: every retained id is within the
+    /// horizon behind the newest, so the largest unsigned age is oldest.
+    private mutating func evictOldest() {
+        guard let newest = newestGroupId,
+              let oldest = groups.keys.max(by: { newest &- $0 < newest &- $1 })
+        else { return }
+        evict(oldest)
+    }
+
+    private mutating func evict(_ id: UInt32) {
+        guard let group = groups.removeValue(forKey: id) else { return }
+        let missing = group.missingDataIndices.count
+        if missing > 0 {
+            stats.groupsUnrecoverable += 1
+            stats.packetsUnrecoverable += UInt64(missing)
         }
     }
 }

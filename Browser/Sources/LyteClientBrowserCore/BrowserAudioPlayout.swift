@@ -3,11 +3,14 @@ import LyteWire
 
 /// Sans-IO browser audio organ: LyteWire `AudioDepacketizer` plus a bounded
 /// hand-off queue. Page JS owns Opus decode (WebCodecs) and the AudioWorklet
-/// PCM ring; this type never invents samples or clocks.
+/// PCM ring; this type never invents samples or clocks, and it owns both
+/// latency bounds the page executes.
 ///
 /// When the page stops popping (a background tab, no AudioDecoder) the queue
 /// keeps only the newest packets: audio popped later must be fresh, not
-/// seconds stale.
+/// seconds stale. The ring drops its oldest audio past
+/// `ringCeilingFrames`, so output clock drift cannot grow latency without
+/// limit.
 public struct BrowserAudioPlayout {
     public struct Packet: Sendable, Equatable {
         public var number: UInt32
@@ -18,6 +21,8 @@ public struct BrowserAudioPlayout {
 
     /// 20 packets: 100 ms at the host's 5 ms Opus packet cadence.
     public static let defaultCapacity = 20
+    /// The AudioWorklet ring's ceiling: 200 ms of 48 kHz frames.
+    public static let ringCeilingFrames = 9_600
 
     private var depacketizer = AudioDepacketizer()
     private let capacity: Int

@@ -112,6 +112,37 @@ fail:
     return NULL;
 }
 
+lyte_netio *lyte_netio_new_listener(const char *bind_ip, uint16_t bind_port,
+                                    char *err, size_t errlen)
+{
+    struct sockaddr_in sa;
+    if (parse_addr(bind_ip, bind_port, &sa, err, errlen) != 0)
+        return NULL;
+    /* A bind without SO_REUSEPORT conflicts with every holder of the
+       port, SO_REUSEPORT members included. The probe is released just
+       before the real bind. */
+    int probe = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (probe < 0) {
+        sys_err(err, errlen, "socket(AF_INET, SOCK_DGRAM) failed");
+        return NULL;
+    }
+    if (bind(probe, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
+        set_err(err, errlen, "port %u is already bound by another socket "
+                "(is another host running?): %s", bind_port, strerror(errno));
+        close(probe);
+        return NULL;
+    }
+    struct sockaddr_in bound;
+    socklen_t blen = sizeof(bound);
+    if (getsockname(probe, (struct sockaddr *)&bound, &blen) < 0) {
+        sys_err(err, errlen, "getsockname failed");
+        close(probe);
+        return NULL;
+    }
+    close(probe);
+    return lyte_netio_new(bind_ip, ntohs(bound.sin_port), err, errlen);
+}
+
 uint16_t lyte_netio_local_port(const lyte_netio *n)
 {
     return n->local_port;
@@ -179,16 +210,18 @@ int lyte_netio_errno_class(int err)
 #if EWOULDBLOCK != EAGAIN
     case EWOULDBLOCK:
 #endif
+    case EINTR: /* a signal interrupted the call: retry it */
         return 0;
     case ENOBUFS:
         return LYTE_NETIO_NO_BUFFER;
     case ECONNREFUSED:
-        return LYTE_NETIO_PEER_GONE;
+        return LYTE_NETIO_REFUSED;
     case EHOSTUNREACH:
     case EHOSTDOWN:
     case ENETUNREACH:
     case ENETDOWN:
     case EPERM:
+    case EMSGSIZE: /* a learned path MTU below this datagram */
         return LYTE_NETIO_TRANSIENT;
     default:
         return -1;
@@ -230,7 +263,13 @@ int lyte_netio_send_batch(lyte_netio *n, const lyte_netio_pkt *pkts, int count,
         memcpy(CMSG_DATA(cm), &tos, sizeof(tos));
     }
 
-    int sent = sendmmsg(n->fd, msgs, (unsigned int)count, 0);
+    /* A signal is not socket pressure: retried here, so EINTR never
+       reaches the caller as a would-block (which the kernel-pressure
+       governor would count against the socket). */
+    int sent;
+    do {
+        sent = sendmmsg(n->fd, msgs, (unsigned int)count, 0);
+    } while (sent < 0 && errno == EINTR);
     if (sent < 0) {
         int class = lyte_netio_errno_class(errno);
         if (class == -1 || class == LYTE_NETIO_TRANSIENT)
@@ -276,7 +315,10 @@ int lyte_netio_send_to(lyte_netio *n, const lyte_netio_pkt *pkt,
     int tos = pkt->tos;
     memcpy(CMSG_DATA(cm), &tos, sizeof(tos));
 
-    ssize_t sent = sendmsg(n->fd, &msg, 0);
+    ssize_t sent;
+    do {
+        sent = sendmsg(n->fd, &msg, 0);
+    } while (sent < 0 && errno == EINTR);
     if (sent < 0) {
         int class = lyte_netio_errno_class(errno);
         if (class == -1 || class == LYTE_NETIO_TRANSIENT)
@@ -319,7 +361,10 @@ int lyte_netio_recv_batch(lyte_netio *n, lyte_netio_slot *slots, int count,
         msgs[i].msg_hdr.msg_namelen = sizeof(srcs[i]);
     }
 
-    int got = recvmmsg(n->fd, msgs, (unsigned int)count, 0, NULL);
+    int got;
+    do {
+        got = recvmmsg(n->fd, msgs, (unsigned int)count, 0, NULL);
+    } while (got < 0 && errno == EINTR);
     if (got < 0) {
         int class = lyte_netio_errno_class(errno);
         /* ENOBUFS has no receive meaning; keep it fatal-and-loud. */

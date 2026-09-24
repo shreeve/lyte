@@ -84,6 +84,31 @@ final class ClientInitiatorPiecesTests: XCTestCase {
                        "answering spends no attempt")
     }
 
+    /// A real host challenges each message 1 at most once; answering
+    /// every challenge would reflect a flood at the host's tuple. One
+    /// answer per transmission, the rest counted.
+    func testOneChallengeAnswerPerMessage1Transmission() throws {
+        var handshake = try initiator()
+        _ = try handshake.begin(nowMicros: 0)
+        let challenge = try carriage(
+            try RetryChallenge(cookie: [7]).encode())
+        var replies = 0
+        for _ in 0..<10 {
+            if case .reply = handshake.ingest(challenge[...], nowMicros: 10) {
+                replies += 1
+            }
+        }
+        XCTAssertEqual(replies, 1)
+        XCTAssertEqual(handshake.counters.retryChallengesIgnored, 9)
+
+        guard case .retransmit = handshake.tick(nowMicros: 100_000) else {
+            return XCTFail("the window closed without a retransmit")
+        }
+        guard case .reply = handshake.ingest(challenge[...], nowMicros: 100_010)
+        else { return XCTFail("a fresh transmission earns a fresh answer") }
+        XCTAssertEqual(handshake.counters.retryChallengesAnswered, 2)
+    }
+
     func testFaultsAreCountedAndTheGenuineMessage2StillCompletes() throws {
         var handshake = try initiator()
         let first = try handshake.begin(nowMicros: 0)
@@ -132,6 +157,20 @@ final class ClientInitiatorPiecesTests: XCTestCase {
         XCTAssertEqual(recovery.stats.requestsSent, 2)
     }
 
+    /// The open episode gates rendering: dependent frames wait for the
+    /// IRAP that closes it.
+    func testOpenEpisodeAdmitsOnlyRandomAccessFrames() {
+        var recovery = ClientIdrRecovery()
+        XCTAssertTrue(recovery.admits(isRandomAccess: false))
+        XCTAssertFalse(recovery.recordDemand(frame: FrameNumber(rawValue: 3)))
+        XCTAssertTrue(recovery.recordDemand(frame: FrameNumber(rawValue: 4)),
+                      "a second verdict joins the open episode")
+        XCTAssertFalse(recovery.admits(isRandomAccess: false))
+        XCTAssertTrue(recovery.admits(isRandomAccess: true))
+        recovery.noteUsableIrapAccepted()
+        XCTAssertTrue(recovery.admits(isRandomAccess: false))
+    }
+
     // MARK: Beacon echo
 
     func testMirrorClosesTheSampleTheHostMeasured() {
@@ -156,6 +195,56 @@ final class ClientInitiatorPiecesTests: XCTestCase {
         XCTAssertEqual(sample?.offsetMicroseconds, 3_990)
         XCTAssertEqual(sample?.rttMicroseconds, 20)
         XCTAssertEqual(sample?.measuredAt.microseconds, 5_000)
+    }
+
+    /// Every mirror timestamp but t3 is host-chosen; a mirror naming a t3
+    /// this book never sent, or closing an impossible RTT, is refused.
+    func testForgedMirrorsCloseNoSample() {
+        var book = ClientBeaconEchoBook()
+        func beacon(_ seq: UInt32, mirror: ClockBeacon.LastEcho? = nil)
+            -> ClockBeacon {
+            ClockBeacon(beaconSeq: seq,
+                        hostSend: HostTimestamp(microseconds: 1_000),
+                        lastEcho: mirror)
+        }
+        let t2 = ClientTimestamp(microseconds: 5_000)
+        let t3 = ClientTimestamp(microseconds: 5_010)
+        for seq in UInt32(1)...3 {
+            _ = book.answer(beacon(seq), receivedAt: t2, sendingAt: t3)
+        }
+        let forgedTurnaround = ClockBeacon.LastEcho(
+            beaconSeq: 1, clientSend: ClientTimestamp(microseconds: 0),
+            hostReceive: HostTimestamp(microseconds: 1_030))
+        let negativeRtt = ClockBeacon.LastEcho(
+            beaconSeq: 2, clientSend: t3,
+            hostReceive: HostTimestamp(microseconds: 1_000))
+        let hugeRtt = ClockBeacon.LastEcho(
+            beaconSeq: 3, clientSend: t3,
+            hostReceive: HostTimestamp(microseconds: UInt64(Int64.max)))
+        for mirror in [forgedTurnaround, negativeRtt, hugeRtt] {
+            let (_, sample) = book.answer(
+                beacon(9, mirror: mirror), receivedAt: t2, sendingAt: t3)
+            XCTAssertNil(sample)
+        }
+        XCTAssertEqual(book.mirrorsRefused, 3)
+    }
+
+    // MARK: Exempt CTRL
+
+    func testExemptControlAnswersChallengesAndCountsMalformedWords() {
+        let challenge = PathChallenge(token: 0x0123_4567_89AB_CDEF)
+        XCTAssertEqual(
+            ClientExemptControl(payload: challenge.encode()),
+            .pathChallenge(response: PathResponse(token: challenge.token)))
+        XCTAssertEqual(
+            ClientExemptControl(payload: [CtrlMessageType.pathChallenge, 0]),
+            .malformed(type: CtrlMessageType.pathChallenge))
+        let beacon = ClockBeacon(
+            beaconSeq: 4, hostSend: HostTimestamp(microseconds: 9))
+        XCTAssertEqual(ClientExemptControl(payload: beacon.encode()),
+                       .clockBeacon(beacon))
+        XCTAssertEqual(ClientExemptControl(payload: [0x7E, 1, 2]), .unclaimed)
+        XCTAssertEqual(ClientExemptControl(payload: []), .unclaimed)
     }
 
     // MARK: Carriage books

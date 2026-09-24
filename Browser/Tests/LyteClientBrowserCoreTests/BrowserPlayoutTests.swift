@@ -1,4 +1,3 @@
-import Foundation
 import HostWire
 import LyteClientBrowserCore
 import LyteWire
@@ -60,11 +59,24 @@ final class BrowserPlayoutTests: XCTestCase {
         XCTAssertLessThanOrEqual(client.videoPresentationBacklog, 12)
         XCTAssertGreaterThan(client.videoCounters.framesNotPresentable, 0)
 
-        // The page decodes everything it was told about.
-        for frame in scheduled {
-            XCTAssertNotNil(client.takeAnnexB(frameNumber: frame.frameNumber))
+        // The page decodes the chain up to the overflow; once it opened the
+        // episode nothing but an IRAP is handed out or marked presentable.
+        let decodable = scheduled.filter {
+            client.takeAnnexB(frameNumber: $0.frameNumber) != nil
         }
+        XCTAssertGreaterThan(decodable.count, 1)
+        XCTAssertEqual(
+            decodable.map(\.frameNumber),
+            scheduled.prefix(decodable.count).map(\.frameNumber))
+        XCTAssertFalse(scheduled.dropFirst(decodable.count).contains(where: \.shouldPresent))
         XCTAssertEqual(client.videoDecodeBacklog, 0)
+        // Frames the page was told to show and the overflow discarded are
+        // named once, so the page can close them.
+        let abandoned = client.takeAbandonedFrames()
+        XCTAssertFalse(abandoned.isEmpty)
+        let promised = Set(scheduled.filter(\.shouldPresent).map(\.frameNumber))
+        XCTAssertTrue(Set(abandoned).isSubset(of: promised))
+        XCTAssertEqual(client.takeAbandonedFrames(), [])
 
         var notes: [String] = []
         host.deliver(client.tick(nowMicros: host.nowMicros), notes: &notes)
@@ -102,7 +114,7 @@ final class BrowserPlayoutTests: XCTestCase {
             capture += Self.beatMicros
             let frame = keyframe ? corpus[0] : corpus[1 + index % (corpus.count - 1)]
             let scheduled = try send(frame, keyframe: keyframe, capture: capture, host, client)
-            XCTAssertEqual(scheduled.map(\.shouldPresent), [true], "on time")
+            XCTAssertEqual(scheduled.map(\.latenessMicroseconds), [0], "on time")
         }
         func requestDueIdr() {
             var notes: [String] = []
@@ -195,25 +207,38 @@ final class BrowserPlayoutTests: XCTestCase {
         XCTAssertNil(playout.idrRequestDue(nowMicros: far))
     }
 
-    /// When the page stops taking decode input, the backlog is bounded and
-    /// the loss opens a recovery episode.
-    func testUndrainedDecodeBacklogIsBounded() throws {
+    /// When the page stops taking decode input, the backlog is bounded; the
+    /// evicted frame takes its dependents with it, so the page is never
+    /// handed a frame whose reference is gone, and the loss asks for an IDR.
+    func testUndrainedDecodeBacklogIsBoundedAndNeverHandsOutABrokenChain() throws {
         let host = BrowserHostPeer()
         let (client, _) = try host.readyClient()
         let corpus = try Self.corpus()
         let total = BrowserVideoPlayout.decodeBacklogCapacity + 10
+        let far: UInt64 = 1 << 40
 
-        _ = try send(corpus[0], keyframe: true, capture: 0, host, client)
-        for index in 1..<total {
-            let frame = corpus[1 + (index - 1) % (corpus.count - 1)]
-            _ = try send(
-                frame, keyframe: false, capture: UInt64(index) * Self.beatMicros,
-                host, client
-            )
+        var frames: [UInt32] = []
+        for index in 0..<total {
+            // One frame per beat, each presented but never decoded.
+            host.advance(microseconds: Self.beatMicros - 4_000)
+            let annexB = index == 0 ? corpus[0] : corpus[1 + (index - 1) % (corpus.count - 1)]
+            frames += try send(
+                annexB, keyframe: index == 0,
+                capture: UInt64(index) * Self.beatMicros, host, client
+            ).map(\.frameNumber)
+            while client.popDueFrame(nowMicros: far) != nil {}
+            XCTAssertLessThanOrEqual(
+                client.videoDecodeBacklog, BrowserVideoPlayout.decodeBacklogCapacity)
         }
         XCTAssertEqual(client.framesAssembled, UInt64(total))
-        XCTAssertEqual(client.videoDecodeBacklog, BrowserVideoPlayout.decodeBacklogCapacity)
-        XCTAssertEqual(client.videoCounters.decodeBacklogEvicted, 10)
+        XCTAssertEqual(client.videoCounters.decodeBacklogEvicted, 1)
+        XCTAssertEqual(
+            frames.compactMap { client.takeAnnexB(frameNumber: $0) }.count, 0,
+            "every frame after the evicted IDR references it")
+
+        var notes: [String] = []
+        host.deliver(client.tick(nowMicros: host.nowMicros), notes: &notes)
+        XCTAssertEqual(client.counters.idrRequestsSent, 1, notes.joined(separator: " | "))
     }
 
     // MARK: Audio
@@ -221,13 +246,13 @@ final class BrowserPlayoutTests: XCTestCase {
     func testAudioQueueKeepsOnlyTheNewestPacketsWhenNotDrained() throws {
         let host = BrowserHostPeer()
         let (client, _) = try host.readyClient()
-        let session = try XCTUnwrap(host.session)
+        let session = host.session
         let sent = 50
         for index in 0..<sent {
             try session.ingestAudioPacket(
                 [0xF8, 0xFF, 0xFE, UInt8(index)],
-                captureTimestampMicroseconds: host.nowMicros,
-                now: host.nowMicros * 1_000
+                captureTimestampMicroseconds: host.hostMicros,
+                now: host.hostMicros * 1_000
             )
             host.advance(microseconds: 5_000)
             deliverAll(host, client)
@@ -249,17 +274,7 @@ final class BrowserPlayoutTests: XCTestCase {
     // MARK: Helpers
 
     private static func corpus() throws -> [[UInt8]] {
-        let root = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .appendingPathComponent("../../../Wire/Vectors/video-corpus-v1")
-            .standardized
-        let names = try FileManager.default.contentsOfDirectory(atPath: root.path)
-            .filter { $0.hasPrefix("frame-00") && $0.hasSuffix(".annexb") }
-            .sorted()
-        XCTAssertGreaterThanOrEqual(names.count, 2)
-        return try names.map {
-            [UInt8](try Data(contentsOf: root.appendingPathComponent($0)))
-        }
+        try VideoCorpus.frames()
     }
 
     /// Host ingests one frame; every shard crosses; returns what the
@@ -268,10 +283,9 @@ final class BrowserPlayoutTests: XCTestCase {
         _ annexB: [UInt8], keyframe: Bool, capture: UInt64,
         _ host: BrowserHostPeer, _ client: BrowserControlSession
     ) throws -> [BrowserVideoPlayout.ScheduledFrame] {
-        let session = try XCTUnwrap(host.session)
-        try session.ingestVideoFrame(
+        try host.session.ingestVideoFrame(
             annexB, captureTimestampMicroseconds: capture,
-            isKeyframe: keyframe, now: host.nowMicros * 1_000
+            isKeyframe: keyframe, now: host.hostMicros * 1_000
         )
         var scheduled: [BrowserVideoPlayout.ScheduledFrame] = []
         for _ in 0..<200 {

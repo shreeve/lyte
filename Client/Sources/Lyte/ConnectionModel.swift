@@ -75,9 +75,26 @@ final class ConnectionModel {
 
     /// The Lyte-UDP session; nil while connecting, roaming, or idle.
     private(set) var lyteSession: LyteUdpSession?
+    /// The session a dial is still starting (first connect or roaming
+    /// re-dial), until the dial claims it back. Every exit — Disconnect,
+    /// the window closing, quit, a newer dial — stops it at once, so no
+    /// socket keeps handshaking for a window that moved on and no host
+    /// keeps a just-answered session for a client that left.
+    private(set) var dialingSession: LyteUdpSession?
     /// Fences late events from detached sessions: each session built
     /// mints an epoch, and only the current epoch's events apply.
     private var sessionEpoch = 0
+    /// The first session-ending event (a capability failure or a close)
+    /// of the current epoch's dial, held while no window owns the session
+    /// yet. Adoption replays it, so a session that died during its own
+    /// start never becomes a live-looking stream.
+    private var pendingTerminal: LyteUdpSessionEvent?
+    /// The current epoch's session was ended by the core because the host
+    /// broke an ordered stream (its close reads as our own teardown).
+    private var hostPoisonedStream = false
+    /// When this window's sessions ended on a poisoned stream, oldest
+    /// first, within `poisonedStreamWindowMicroseconds`.
+    private var poisonedStreamEnds: [UInt64] = []
     /// The session machine's FROZEN pill.
     private(set) var lyteFrozen = false
     /// What the current session's capability agreement made available.
@@ -157,8 +174,7 @@ final class ConnectionModel {
     /// ordinal high-water mark makes overlapping scans idempotent, and a
     /// recorder reset (ordinals restart) clears it implicitly.
     private let linkHealthMeter = LinkHealthMeter(
-        trace: ProcessInfo.processInfo
-            .environment["LYTE_LINK_HEALTH_DEBUG"] == "1"
+        trace: DiagnosticEnvironment.current["LYTE_LINK_HEALTH_DEBUG"] == "1"
             ? { line in print(line); fflush(stdout) } : nil)
     /// nil until streaming produces a verdict; .good renders nothing.
     private(set) var linkHealth: LinkHealthAssessment?
@@ -210,6 +226,7 @@ final class ConnectionModel {
     /// window. Unpaired hosts go through the pairing sheet instead
     /// (ConnectView routes them there).
     func connectLyte(_ host: DiscoveredLyteHost) async {
+        abandonDial()
         let generation = advanceLifecycle()
         guard let pinned = services.loadPins().host(publicKeyHash: host.publicKeyHash),
               let hostStatic = pinned.staticPublicKey else {
@@ -221,13 +238,14 @@ final class ConnectionModel {
         hostName = host.name
         hostPublicKeyHash = host.publicKeyHash
         pinnedHost = pinned
+        poisonedStreamEnds.removeAll()
         phase = .connecting("Connecting to \(host.name) over Lyte-UDP…")
         HandshakeWitness.record("autoconnectBegin", fields: [
             "host": host.address,
             "port": String(host.port),
         ])
 
-        let environment = ProcessInfo.processInfo.environment
+        let environment = DiagnosticEnvironment.current
         let benchmarking = environment["LYTE_BENCHMARK_RUN_ID"] != nil
         // A benchmark autoconnect has no human interaction surface. Never
         // let Security.framework wait on hidden authorization UI before the
@@ -250,8 +268,8 @@ final class ConnectionModel {
                 "error": String(describing: error),
             ])
             guard isCurrent(generation) else { return }
-            // The Keychain path needs the stable "Lyte Dev" signature —
-            // builds via Scripts/make-app.sh (docs/MACOS-SIGNING.md).
+            // The Keychain grant follows a stable signature: builds via
+            // Scripts/make-app.sh (docs/MACOS-SIGNING.md).
             phase = .failed(.ordinary("client identity: \(error)"))
             return
         }
@@ -299,13 +317,13 @@ final class ConnectionModel {
                     hostPort: dialPort,
                     hostStaticPublicKey: hostStatic,
                     staticKeys: identity,
-                    attempts: round == 1 ? 5 : 3,
-                    attemptTimeoutMilliseconds: round == 1 ? 2_000 : 700)
+                    retry: round == 1 ? .firstDial : .redial)
             } catch {
                 phase = .failed(.ordinary("host key: \(error)"))
                 return
             }
             let candidate = makeLyteSession(crypto: crypto, config: sessionConfig)
+            beginDial(candidate)
             do {
                 HandshakeWitness.record("sessionStartBegin", fields: [
                     "round": String(round),
@@ -316,8 +334,9 @@ final class ConnectionModel {
                 HandshakeWitness.record("sessionStartCompleted", fields: [
                     "round": String(round),
                 ])
+                // Abandoned mid-dial: whoever abandoned it ended it.
+                guard claimDial(candidate) else { return }
                 guard isCurrent(generation) else {
-                    // Cancelled mid-dial: this session has no owner.
                     services.endSession(candidate, .goodbye)
                     return
                 }
@@ -328,14 +347,13 @@ final class ConnectionModel {
                     "round": String(round),
                     "error": String(describing: error),
                 ])
+                guard claimDial(candidate) else { return }
+                // A dial that failed after binding still holds its socket.
+                services.endSession(candidate, .silent)
                 guard isCurrent(generation) else { return }
-                guard case TransportCryptoError.handshakeFailed(let why)
-                        = error, why.hasPrefix("no response"),
-                      services.now() < deadline else {
-                    if let endpointError = error as? TransportEndpointError,
-                       let problem = LocalNetworkAccessProblem.endpointError(
-                        endpointError)
-                    {
+                let failure = DialFailure(error)
+                guard failure == .unanswered, services.now() < deadline else {
+                    if case .localNetwork(let problem) = failure {
                         phase = .failed(.localNetwork(
                             problem,
                             diagnosticDetail: String(describing: error)))
@@ -349,12 +367,20 @@ final class ConnectionModel {
                     + "it may be restarting; still trying…")
                 // The quiet re-browse: if the reborn host is already
                 // advertising, dial where it lives NOW.
-                let sighting = await services.browse(2.0)
-                    .first { $0.publicKeyHash == host.publicKeyHash }
+                let hosts = await services.browse(2.0)
                 guard isCurrent(generation) else { return }
-                if let sighting {
+                if let sighting = hosts.first(where: {
+                    $0.publicKeyHash?.lowercased()
+                        == host.publicKeyHash?.lowercased()
+                }) {
                     dialAddress = sighting.address
                     dialPort = sighting.port
+                } else if let pkh = host.publicKeyHash,
+                          Self.identityReplaced(
+                            in: hosts, name: host.name, publicKeyHash: pkh) {
+                    phase = .failed(.ordinary(
+                        Self.identityReplacedMessage(host.name)))
+                    return
                 }
             }
         }
@@ -368,6 +394,7 @@ final class ConnectionModel {
         }
         phase = .streaming
         services.streamBegan()
+        replayPendingTerminal()
     }
 
     // MARK: - Session lifecycle
@@ -404,6 +431,8 @@ final class ConnectionModel {
         // never carries over.
         sessionEpoch += 1
         negotiated = .none
+        pendingTerminal = nil
+        hostPoisonedStream = false
         let epoch = sessionEpoch
         let session = LyteUdpSession(
             crypto: crypto,
@@ -440,6 +469,26 @@ final class ConnectionModel {
         // sharing is on (updatePasteboardWatcher).
         pasteboardSync = makePasteboardSync(for: lyte)
         if negotiated.agreed { startAgreedFeatures(on: lyte) }
+    }
+
+    /// Delivers the end a session met before its window adopted it, once
+    /// the window's machinery (roaming, the chroma fallback) stands to act
+    /// on it. The last step of every adoption.
+    func replayPendingTerminal() {
+        guard let event = pendingTerminal else { return }
+        pendingTerminal = nil
+        if case .closed(let reason) = event,
+           case .localTeardown = reason {
+            // The core closed itself before anyone owned it: nobody else
+            // is driving this end.
+            if hostPoisonedStream {
+                endAfterPoisonedStream(reason)
+            } else {
+                beginRoamingAfterLoss(reason)
+            }
+        } else {
+            handleLyteEvent(event)
+        }
     }
 
     /// The attached session's agreed features: the clipboard watcher and
@@ -505,6 +554,7 @@ final class ConnectionModel {
     /// `reason` turns the end into a failure screen.
     func endLyteSession(reason: String?) {
         guard lyteSession != nil || roaming != nil else { return }
+        abandonDial()
         stopRoamingMachinery()
         lyteInputCapture?.stop()
         lyteInputCapture = nil
@@ -535,9 +585,35 @@ final class ConnectionModel {
     /// In-flight work is invalidated first — a dial that completes
     /// afterward closes its session — then whatever stands ends.
     func disconnect() {
+        abandonDial()
         advanceLifecycle()
         if case .connecting = phase { phase = .pickHost }
         endLyteSession(reason: nil)
+    }
+
+    /// Stops the dial in flight now rather than when its handshake gives
+    /// up. The goodbye close cancels a handshake still retrying (there is
+    /// no core to linger for) and says goodbye to one the host just
+    /// answered. Its events are fenced off with a fresh epoch.
+    func abandonDial() {
+        guard let dialing = dialingSession else { return }
+        dialingSession = nil
+        sessionEpoch += 1
+        services.endSession(dialing, .goodbye)
+    }
+
+    /// `session` is now the dial in flight. Callers abandon any earlier
+    /// dial before building `session`: the abandon mints a new epoch.
+    func beginDial(_ session: LyteUdpSession) {
+        dialingSession = session
+    }
+
+    /// A dial's completion takes its session back; false when the dial
+    /// was abandoned meanwhile (the abandoner already ended the session).
+    func claimDial(_ session: LyteUdpSession) -> Bool {
+        guard dialingSession === session else { return false }
+        dialingSession = nil
+        return true
     }
 
     // MARK: - Events
@@ -549,6 +625,12 @@ final class ConnectionModel {
     }
 
     func handleLyteEvent(_ event: LyteUdpSessionEvent) {
+        if lyteSession == nil, Self.endsSession(event) {
+            // The dial in flight has no window yet; its end waits for
+            // adoption.
+            if pendingTerminal == nil { pendingTerminal = event }
+            return
+        }
         switch event {
         case .capabilitiesAgreed(let agreed):
             negotiated = NegotiatedFeatures(agreed)
@@ -578,11 +660,17 @@ final class ConnectionModel {
             } else {
                 roamingInput { policy, now in policy.evidenceReturned(now: now) }
             }
+        case .orderedStreamPoisoned:
+            // The core's own teardown and close follow; the close acts.
+            hostPoisonedStream = true
         case .capabilityUpdateAnswered, .modeChanged, .idleFrameReceived,
              .teardownSent, .protocolNote:
             break
         case .closed(let reason):
             switch Self.closeVerdict(reason) {
+            case .ignore where hostPoisonedStream
+                || lyteSession?.core?.orderedStreamPoisoned == true:
+                endAfterPoisonedStream(reason)
             case .ignore:
                 break
             case .end(let message):
@@ -590,6 +678,63 @@ final class ConnectionModel {
             case .roam:
                 beginRoamingAfterLoss(reason)
             }
+        }
+    }
+
+    /// A host that poisons its stream again this soon is broken, not
+    /// unlucky: every re-dial resets the roaming ladders and costs an IDR,
+    /// so a second poisoned end inside the window ends the window.
+    static let poisonedStreamWindowMicroseconds: UInt64 = 60_000_000
+    static let poisonedStreamEndsTolerated = 1
+
+    /// The core ended a session whose host broke an ordered stream. The
+    /// first time a fresh session is the only way back; a repeat inside
+    /// `poisonedStreamWindowMicroseconds` ends the window with a reason.
+    private func endAfterPoisonedStream(_ reason: SessionCloseReason) {
+        let now = services.now()
+        poisonedStreamEnds.removeAll {
+            now &- $0 >= Self.poisonedStreamWindowMicroseconds
+        }
+        poisonedStreamEnds.append(now)
+        guard poisonedStreamEnds.count > Self.poisonedStreamEndsTolerated
+        else { return beginRoamingAfterLoss(reason) }
+        poisonedStreamEnds.removeAll()
+        endLyteSession(reason: Self.poisonedStreamMessage(hostName))
+    }
+
+    static func poisonedStreamMessage(_ hostName: String?) -> String {
+        "\(hostName ?? "The host") keeps sending control messages over the "
+            + "size limit — reconnecting cannot fix it"
+    }
+
+    /// True when a host advertises under the pinned host's name with a
+    /// different identity while none advertises the pinned one. mDNS keeps
+    /// instance names unique on a link, so the pinned host was reinstalled
+    /// or replaced: a dial against its old static can only meet silence
+    /// (the host cannot decrypt message 1), which looks exactly like a
+    /// host that is down.
+    static func identityReplaced(
+        in hosts: [DiscoveredLyteHost], name: String, publicKeyHash: String
+    ) -> Bool {
+        let pinned = publicKeyHash.lowercased()
+        guard !hosts.contains(where: {
+            $0.publicKeyHash?.lowercased() == pinned
+        }) else { return false }
+        return hosts.contains {
+            $0.name.caseInsensitiveCompare(name) == .orderedSame
+                && $0.publicKeyHash.map { $0.lowercased() != pinned } == true
+        }
+    }
+
+    static func identityReplacedMessage(_ name: String) -> String {
+        "\(name) now has a different identity — it was reinstalled or "
+            + "replaced. Pair with it again."
+    }
+
+    private static func endsSession(_ event: LyteUdpSessionEvent) -> Bool {
+        switch event {
+        case .capabilitiesFailed, .closed: true
+        default: false
         }
     }
 

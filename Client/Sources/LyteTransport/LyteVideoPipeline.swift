@@ -1,12 +1,13 @@
 // LyteVideoPipeline: video datagrams → VideoAssembler → VideoRenderFactory
 // → CMSampleBuffer → one VideoSink. Presentation timing is the sink
 // owner's; frame order is the assembler's guarantee. Damage leaves through
-// `onFecImpossible` and `onRepairSignal`.
+// `onFecImpossible`, `onRepairSignal` and `onSampleFailure`.
 //
 // Assembly and the books are confined by `lock`. Sample construction runs
 // on the serial `sampleQueue`, which alone touches the factory. Callbacks
 // never run under `lock`.
 
+import LyteClientSession
 import LyteCore
 import CoreMedia
 import Dispatch
@@ -103,6 +104,9 @@ public final class LyteVideoPipeline: @unchecked Sendable {
     private let onFecImpossible: (@Sendable (FrameNumber, _ presumedLostDataShards: Int, _ bestCaseParityShards: Int) -> Void)?
     /// The NackPolicy's feed.
     private let onRepairSignal: (@Sendable (VideoRepairSignal, ClientTimestamp) -> Void)?
+    /// A decoded frame that CoreMedia refused to wrap: the reference chain
+    /// is broken although the repair policy heard it decoded.
+    private let onSampleFailure: (@Sendable (FrameNumber) -> Void)?
 
     private var evictionTimer: DispatchSourceTimer?
 
@@ -112,6 +116,8 @@ public final class LyteVideoPipeline: @unchecked Sendable {
     ///   - onFecImpossible: fired once per frame the assembler writes off
     ///     as unrecoverable from plausible arrivals.
     ///   - onRepairSignal: the NackPolicy's event feed.
+    ///   - onSampleFailure: fired once per decoded frame whose sample (or
+    ///     format description) failed to build, on the sample worker.
     ///   - nowNanoseconds: the shell's monotonic clock. All convenience
     ///     timestamps and lock/build telemetry derive from this one source.
     public init(
@@ -121,7 +127,8 @@ public final class LyteVideoPipeline: @unchecked Sendable {
         nowNanoseconds: @escaping @Sendable () -> UInt64,
         sink: any VideoSink,
         onFecImpossible: (@Sendable (FrameNumber, _ presumedLostDataShards: Int, _ bestCaseParityShards: Int) -> Void)? = nil,
-        onRepairSignal: (@Sendable (VideoRepairSignal, ClientTimestamp) -> Void)? = nil
+        onRepairSignal: (@Sendable (VideoRepairSignal, ClientTimestamp) -> Void)? = nil,
+        onSampleFailure: (@Sendable (FrameNumber) -> Void)? = nil
     ) {
         self.channel = channel
         self.assembler = VideoAssembler(channel: channel, config: config)
@@ -130,6 +137,7 @@ public final class LyteVideoPipeline: @unchecked Sendable {
         self.sink = sink
         self.onFecImpossible = onFecImpossible
         self.onRepairSignal = onRepairSignal
+        self.onSampleFailure = onSampleFailure
     }
 
     /// Starts the stale-group eviction timer. Idempotent.
@@ -302,50 +310,24 @@ public final class LyteVideoPipeline: @unchecked Sendable {
                     assemblyLockHoldMicroseconds)
                 actions.append(.buildSample(
                     unit, now, assemblyLockHoldMicroseconds))
-                actions.append(.repairSignal(
-                    .frameDecoded(frame: unit.frameNumber), now))
             case .framesSkipped(let from, let through, _):
                 stats.framesSkipped += UInt64(through.rawValue &- from.rawValue) + 1
-                actions.append(.repairSignal(
-                    .framesGone(from: from, through: through), now))
             case .fecImpossible(let frame, let lost, let parity):
                 stats.fecImpossibleCount += 1
                 actions.append(.fecImpossible(
                     frame, presumedLostDataShards: lost, bestCaseParityShards: parity))
-            case .evicted(let frame, _):
+            case .evicted:
                 stats.evictions += 1
-                actions.append(.repairSignal(
-                    .framesGone(from: frame, through: frame), now))
-            case .shardDropped(let reason):
+            case .shardDropped:
                 stats.shardsDropped += 1
-                // Duplicate-slot and passed-turn drops feed the policy's
-                // repair books; the rest are counters only.
-                switch reason {
-                case .duplicateShard(let frame, let shardIndex):
-                    actions.append(.repairSignal(
-                        .satisfiedShardDropped(
-                            frame: frame, shardIndex: shardIndex),
-                        now))
-                case .staleFrame(let frame):
-                    actions.append(.repairSignal(
-                        .staleShardDropped(frame: frame), now))
-                default:
-                    break
-                }
-            case .nackCandidates(
-                let frame, _, let missingIndices, let parity, let age):
-                actions.append(.repairSignal(
-                    .nackCandidates(
-                        frame: frame,
-                        missingShardIndices: missingIndices,
-                        parityShards: parity,
-                        frameAgeMicroseconds: age),
-                    now))
-            case .repairShardAccepted(let frame, let index):
+            case .nackCandidates:
+                break
+            case .repairShardAccepted:
                 stats.repairShardsAccepted += 1
-                actions.append(.repairSignal(
-                    .repairShardAccepted(frame: frame, shardIndex: index),
-                    now))
+            }
+            // The policy's feed follows the event's own actions.
+            if let signal = VideoRepairSignal(event) {
+                actions.append(.repairSignal(signal, now))
             }
         }
         return actions
@@ -391,6 +373,7 @@ public final class LyteVideoPipeline: @unchecked Sendable {
             stats.sampleBuildMicroseconds.record(elapsed)
             stats.sampleFailures += 1
             lock.unlock()
+            onSampleFailure?(unit.frameNumber)
             return
         }
         let elapsed = (nowNanoseconds() &- started) / 1_000

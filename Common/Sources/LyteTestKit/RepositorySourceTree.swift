@@ -29,14 +29,6 @@ private final class SourceCache: @unchecked Sendable {
     private var files: [String: [URL]] = [:]
     private var sources: [String: String] = [:]
     private var tokens: [String: [String]] = [:]
-    private var bytes: [String: [UInt8]] = [:]
-
-    func bytes(at path: String, _ load: () throws -> [UInt8]) rethrows -> [UInt8] {
-        if let cached = lock.withLock({ bytes[path] }) { return cached }
-        let loaded = try load()
-        lock.withLock { bytes[path] = loaded }
-        return loaded
-    }
 
     func files(below path: String, _ load: () throws -> [URL]) rethrows -> [URL] {
         if let cached = lock.withLock({ files[path] }) { return cached }
@@ -108,35 +100,6 @@ public struct RepositorySourceTree {
         let load = { try String(contentsOf: file, encoding: .utf8) }
         guard let cache else { return try load() }
         return try cache.source(at: path, load)
-    }
-
-    private func bytes(of file: URL) throws -> [UInt8] {
-        let load = { Array(try Data(contentsOf: file)) }
-        guard let cache else { return try load() }
-        return try cache.bytes(at: file.standardizedFileURL.path, load)
-    }
-
-    /// Plain substring search over UTF-8 bytes, comments included.
-    private static func contains(_ needle: [UInt8], in haystack: [UInt8]) -> Bool {
-        guard let firstByte = needle.first else { return true }
-        guard haystack.count >= needle.count else { return false }
-        return haystack.withUnsafeBufferPointer { hay in
-            needle.withUnsafeBufferPointer { pin in
-                let last = hay.baseAddress! + (hay.count - pin.count)
-                var cursor = hay.baseAddress!
-                while cursor <= last {
-                    guard let hit = memchr(
-                        cursor, Int32(firstByte), last - cursor + 1)
-                    else { return false }
-                    let candidate = hit.assumingMemoryBound(to: UInt8.self)
-                    if memcmp(candidate, pin.baseAddress!, pin.count) == 0 {
-                        return true
-                    }
-                    cursor = UnsafePointer(candidate) + 1
-                }
-                return false
-            }
-        }
     }
 
     /// `SwiftSourceScanner.tokens` of `file` (comments and strings removed),
@@ -221,37 +184,25 @@ public struct RepositorySourceTree {
         return files.sorted { $0.path < $1.path }
     }
 
-    public func violations(
-        containing tokens: [String],
-        excludingRelativePaths: Set<String> = [],
-        excludingPathPrefixes: [String] = []
-    ) throws -> [String] {
-        var violations: [String] = []
-
-        for file in try productionSwiftFiles() {
-            let relativePath = relativePath(for: file)
-            if excludingRelativePaths.contains(relativePath)
-                || excludingPathPrefixes.contains(where: relativePath.hasPrefix)
-            {
-                continue
-            }
-
-            let source = try bytes(of: file)
-            for token in tokens
-            where Self.contains(Array(token.utf8), in: source) {
-                violations.append("\(relativePath): \(token)")
-            }
-        }
-
-        return violations.sorted()
+    public func relativePath(for file: URL) -> String {
+        Self.relativePath(of: file, below: repositoryRoot)
     }
 
-    public func relativePath(for file: URL) -> String {
-        let rootPath = repositoryRoot.standardizedFileURL.path + "/"
-        let filePath = file.standardizedFileURL.path
-        guard filePath.hasPrefix(rootPath) else {
-            return filePath
+    /// `file`'s path below `root`, or its standardized absolute path when
+    /// it lies elsewhere. Both sides are compared standardized, then with
+    /// symlinks resolved, so a tree reached through a symlink (`/tmp`
+    /// against the enumerator's `/private/tmp`, or a linked checkout)
+    /// still relativizes.
+    public static func relativePath(of file: URL, below root: URL) -> String {
+        let spellings = [
+            (file.standardizedFileURL.path, root.standardizedFileURL.path),
+            (file.resolvingSymlinksInPath().path,
+             root.resolvingSymlinksInPath().path),
+        ]
+        for (filePath, rootPath) in spellings
+        where filePath.hasPrefix(rootPath + "/") {
+            return String(filePath.dropFirst(rootPath.count + 1))
         }
-        return String(filePath.dropFirst(rootPath.count))
+        return file.standardizedFileURL.path
     }
 }

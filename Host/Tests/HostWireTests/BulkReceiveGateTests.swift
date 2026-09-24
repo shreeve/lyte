@@ -284,10 +284,21 @@ final class BulkReceiveGateTests: XCTestCase {
             (".bashrc", "bashrc"),
             ("...sneaky", "sneaky"),
             ("../.ssh", "ssh"),
+            // A separator or dot carrying a combining mark is one
+            // Character but still a 0x2F / 0x5C / 0x2E byte on disk.
+            ("Documents/\u{301}evil.sh", "evil.sh"),
+            ("Documents\\\u{301}evil.sh", "evil.sh"),
+            (".\u{301}bashrc", "bashrc"),
+            ("..\u{301}/\u{301}.\u{20DD}profile", "profile"),
             // Control bytes vanish; interior spaces survive.
             ("evil\u{0000}name.txt", "evilname.txt"),
             ("bell\u{07}~\u{7F}.png", "bell~.png"),
             (" padded name.txt ", "padded name.txt"),
+            // C1 and bidi controls vanish: no name displays spoofed.
+            ("invoice\u{202E}fdp.exe", "invoicefdp.exe"),
+            ("a\u{2066}b\u{2069}\u{200F}c\u{061C}.txt", "abc.txt"),
+            ("csi\u{9B}31m\u{85}.log", "csi31m.log"),
+            ("two\u{2028}lines\u{2029}.md", "twolines.md"),
             // Trailing dots trim (Windows-hostile, dedupe-hostile).
             ("archive.tar.gz...", "archive.tar.gz"),
             // Nothing left → the fallback.
@@ -300,8 +311,13 @@ final class BulkReceiveGateTests: XCTestCase {
             ("фото с дачи.jpeg", "фото с дачи.jpeg"),
         ]
         for (offered, expected) in table {
-            XCTAssertEqual(BulkFileNaming.sanitized(offered), expected,
+            let name = BulkFileNaming.sanitized(offered)
+            XCTAssertEqual(name, expected,
                            "sanitized(\(offered.debugDescription))")
+            let bytes = Array(name.utf8)
+            XCTAssertNotEqual(bytes.first, 0x2E, offered.debugDescription)
+            XCTAssertFalse(bytes.contains { $0 == 0x2F || $0 == 0x5C || $0 == 0x00 },
+                           offered.debugDescription)
         }
 
         // Overlong truncates on the byte budget, keeping the extension.
@@ -331,6 +347,16 @@ final class BulkReceiveGateTests: XCTestCase {
         XCTAssertEqual(
             BulkFileNaming.collisionFree("free.txt") { taken.contains($0) },
             "free.txt"
+        )
+        XCTAssertEqual(
+            BulkFileNaming.collisionFree("full.txt") {
+                $0 != "full (9999).txt"
+            },
+            "full (9999).txt"
+        )
+        XCTAssertNil(
+            BulkFileNaming.collisionFree("full.txt") { _ in true },
+            "past the last number there is no name, never a taken one"
         )
 
         print("""
@@ -486,12 +512,16 @@ final class BulkReceiveGateTests: XCTestCase {
 
     // MARK: Leg 7 — storage failures: honest aborts, possession kept
 
-    /// A real BulkFileStore with sabotage dials: a write budget and a
-    /// lying free-space gauge.
+    /// A real BulkFileStore with sabotage dials: a write budget, a
+    /// lying free-space gauge, a racer that plants a file on the chosen
+    /// name just before each of the next `racesToLose` promotions, and a
+    /// directory that claims every name is taken.
     private final class SabotagedStore: BulkReceiveStore {
         let inner: BulkFileStore
         var writesAllowed: Int?
         var fakeFreeBytes: UInt64?
+        var racesToLose = 0
+        var everyNameTaken = false
         private(set) var writes = 0
 
         init(directoryPath: String) throws {
@@ -515,6 +545,12 @@ final class BulkReceiveGateTests: XCTestCase {
             try inner.stagingDigest()
         }
         func promoteStaging(toName name: String) throws {
+            if racesToLose > 0 {
+                racesToLose -= 1
+                _ = FileManager.default.createFile(
+                    atPath: inner.directoryPath + "/" + name,
+                    contents: Data("racer".utf8))
+            }
             try inner.promoteStaging(toName: name)
         }
         func removeStaging(transferId: UInt64) {
@@ -522,7 +558,7 @@ final class BulkReceiveGateTests: XCTestCase {
         }
         func closeStaging() { inner.closeStaging() }
         func finalNameExists(_ name: String) -> Bool {
-            inner.finalNameExists(name)
+            everyNameTaken || inner.finalNameExists(name)
         }
         func freeDiskSpaceByteCount() -> UInt64? {
             fakeFreeBytes ?? inner.freeDiskSpaceByteCount()
@@ -536,6 +572,47 @@ final class BulkReceiveGateTests: XCTestCase {
         func removeResumeState(transferId: UInt64) {
             inner.removeResumeState(transferId: transferId)
         }
+    }
+
+    func testGateANameTakenDuringPromotionMovesToTheNextNumber() throws {
+        let dir = try makeTempDir()
+        let store = try SabotagedStore(directoryPath: dir)
+        store.racesToLose = 2
+        let shell = BulkReceiveShell(store: store)
+        let payload = makePayload(count: 5_000, seed: 0x2ACE)
+        let offer = try makeOffer(id: 0xC4, payload: payload, name: "report.pdf")
+        let events = try run(
+            shell: shell, sender: ScriptedSender(offer: offer, payload: payload))
+
+        XCTAssertTrue(events.contains(.fileCompleted(
+            name: "report (2).pdf", path: dir + "/report (2).pdf",
+            byteCount: 5_000)))
+        XCTAssertEqual(try fileBytes(dir + "/report (2).pdf"), payload)
+        for racer in ["report.pdf", "report (1).pdf"] {
+            XCTAssertEqual(try fileBytes(dir + "/" + racer),
+                           Array("racer".utf8), "\(racer) was replaced")
+        }
+        XCTAssertEqual(shell.counters.storageFailures, 0)
+    }
+
+    func testGateEveryNameTakenFailsLoudAndOverwritesNothing() throws {
+        let dir = try makeTempDir()
+        let store = try SabotagedStore(directoryPath: dir)
+        store.everyNameTaken = true
+        let shell = BulkReceiveShell(store: store)
+        let payload = makePayload(count: 5_000, seed: 0xF011)
+        let offer = try makeOffer(id: 0xC5, payload: payload, name: "full.bin")
+        let events = try run(
+            shell: shell, sender: ScriptedSender(offer: offer, payload: payload))
+
+        XCTAssertTrue(events.contains(.storageFailure("promote: no free name")))
+        XCTAssertFalse(events.contains { event in
+            if case .fileCompleted = event { return true }
+            return false
+        })
+        XCTAssertEqual(shell.counters.storageFailures, 1)
+        XCTAssertEqual(try visibleEntries(dir), [],
+                       "the sha-good staging bytes stay dotted, nothing lands")
     }
 
     func testGateOfferPastFreeSpaceRefusesUpFront() throws {

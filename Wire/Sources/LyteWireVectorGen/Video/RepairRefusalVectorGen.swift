@@ -96,7 +96,7 @@ public func makeRepairRefusalVectorFile() throws -> RepairRefusalVectorFile {
     return RepairRefusalVectorFile(
         format: RepairRefusalVectorFile.expectedFormat,
         formatVersion: 1,
-        wireVersion: Int(WireVersion.major),
+        wireVersion: 1,
         vectors: vectors
     )
 }

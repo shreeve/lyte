@@ -5,7 +5,9 @@ import LyteWire
 /// recovery episode, which ends only when a usable IRAP is accepted.
 ///
 /// The first demand is due at once. Further damage never mints a second
-/// request; it only updates the episode's newest frame and count. Because
+/// request; it only updates the episode's newest frame and count. An open
+/// episode is also the render gate: frames already queued when damage was
+/// found must not race the IRAP, so only random-access frames pass. Because
 /// the 0x10 request is ARQ-exempt and fire-and-forget, an outstanding
 /// episode re-asks every `retryIntervalMicroseconds` — by default 500 ms:
 /// twice the 250 ms repair/stale horizon, ten or more feedback cadences, and
@@ -44,19 +46,27 @@ public struct ClientIdrRecovery: Sendable {
     public var isOutstanding: Bool { episode != nil }
 
     /// One broken-reference verdict. Opens an episode (its request is due
-    /// immediately) or joins the open one.
-    public mutating func recordDemand(frame: FrameNumber) {
+    /// immediately) or joins the open one; true when it joined.
+    @discardableResult
+    public mutating func recordDemand(frame: FrameNumber) -> Bool {
         stats.verdicts += 1
         if var current = episode {
             current.newestDamagedFrame = frame
             current.damageCount &+= 1
             episode = current
-        } else {
-            episode = Episode(
-                newestDamagedFrame: frame, damageCount: 1, lastSentAt: nil)
-            stats.episodesStarted += 1
-            stats.recoveryOutstanding = true
+            return true
         }
+        episode = Episode(
+            newestDamagedFrame: frame, damageCount: 1, lastSentAt: nil)
+        stats.episodesStarted += 1
+        stats.recoveryOutstanding = true
+        return false
+    }
+
+    /// Whether a frame may reach the renderer now: any frame outside an
+    /// episode, only a random-access one inside it.
+    public func admits(isRandomAccess: Bool) -> Bool {
+        episode == nil || isRandomAccess
     }
 
     /// The request to send now: the episode's first, or a retry once the

@@ -122,7 +122,7 @@ final class SessionLifecycleCodecTests: XCTestCase {
     func testDecodersNeverTrapOnHostileBytes() {
         var rng = SplitMix64(seed: 0x4B_57_34_62)
         for _ in 0..<20_000 {
-            let count = Int.random(in: 0...8, using: &rng)
+            let count = rng.int(in: 0...8)
             let bytes = (0..<count).map { _ in
                 UInt8.random(in: .min ... .max, using: &rng)
             }

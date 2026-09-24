@@ -5,8 +5,9 @@
 Lyte is an MIT-licensed remote-desktop system that owns both ends of the
 wire: a SwiftUI macOS client and a Swift Linux host that speak one
 protocol, **Lyte-UDP**, over plain UDP. There is no RTSP, RTP, GameStream,
-Sunshine, Moonlight, VNC or RDP compatibility path. Every datagram is
-Noise-encrypted, paced, measured and repaired by Lyte's own transport.
+Sunshine, Moonlight, VNC or RDP compatibility path. After a Noise
+handshake every datagram is encrypted, paced, measured and repaired by
+Lyte's own transport.
 
 The goal: use another computer as if it were local, with game-streaming
 responsiveness and the conveniences of a remote desktop.
@@ -21,10 +22,10 @@ responsiveness and the conveniences of a remote desktop.
   `AVSampleBufferDisplayLayer`, one Conductor timing video and audio, 5 ms
   Opus audio, keyboard and mouse input, clipboard text and images, file
   transfer, PIN pairing, and roaming when the host moves or restarts.
-- **Transport**: Noise IK on every datagram, adaptive Reed-Solomon FEC,
-  targeted NACK repair, reliable control beside low-latency media,
-  application-level congestion control, capability-negotiated and
-  consent-gated feature channels.
+- **Transport**: Noise IK sealing every session datagram, adaptive
+  Reed-Solomon FEC, targeted NACK repair, reliable control beside
+  low-latency media, application-level congestion control,
+  capability-negotiated and consent-gated feature channels.
 - **Browser**: a Chrome proof harness (Swift WebAssembly + WebTransport +
   WebCodecs + WebGPU) against a DRM-free test peer. It is not yet a product
   client; see [docs/BROWSER.md](docs/BROWSER.md).
@@ -34,7 +35,7 @@ Lyte ships no rendezvous or relay service.
 
 ## Architecture
 
-Six SwiftPM packages, each built and tested on its own:
+Six SwiftPM packages:
 
 ```text
 Common/       LyteCore (sans-IO shared policy, the Conductor) · LyteIO · COpus
@@ -86,8 +87,8 @@ Scripts/launch-app.sh
 Client binaries that talk to a host must be signed with a stable identity
 so the Keychain grant for the pairing key survives rebuilds; see
 [docs/MACOS-SIGNING.md](docs/MACOS-SIGNING.md). To install a host, follow
-[Host/INSTALL.md](Host/INSTALL.md), then pair from the client with the PIN
-the host prints.
+[Host/INSTALL.md](Host/INSTALL.md), then
+[pair a client](docs/OPERATIONS.md#pairing-a-client).
 
 ## Documentation
 
@@ -99,7 +100,7 @@ the host prints.
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Packages, targets, data flow, threads |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) | The Lyte-UDP contract and its vectors |
 | [docs/TESTING.md](docs/TESTING.md) | Every gate and its exact commands |
-| [docs/OPERATIONS.md](docs/OPERATIONS.md) | The reference rig, deploy, rollback, safety |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | The reference rig, deploy, rollback, pairing, safety |
 | [docs/BROWSER.md](docs/BROWSER.md) | The browser client |
 | [docs/DESIGN.md](docs/DESIGN.md) | Product and interaction decisions |
 | [docs/GLOSSARY.md](docs/GLOSSARY.md) | Slice ids and project vocabulary |

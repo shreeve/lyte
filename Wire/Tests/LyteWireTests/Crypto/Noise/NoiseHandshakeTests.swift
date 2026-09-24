@@ -1,4 +1,5 @@
 import XCTest
+import LyteCore
 import LyteWire
 import LyteWireTestKit
 
@@ -111,6 +112,19 @@ final class NoiseHandshakeTests: XCTestCase {
             )
         }
         XCTAssertNil(host.negotiatedVersion)
+        // The rejected message left no trace: the responder cannot
+        // answer it or derive keys from it, and a genuine message 1
+        // still completes.
+        XCTAssertThrowsError(try host.writeMessage2())
+        XCTAssertThrowsError(try host.makeTransport())
+        var client = try NoiseSession(
+            role: .initiator, staticKeys: clientStatic,
+            remoteStaticPublicKey: hostStatic.publicKey
+        )
+        _ = try host.readMessage1(try client.writeMessage1()[...])
+        _ = try client.readMessage2(try host.writeMessage2()[...])
+        XCTAssertEqual(try client.makeTransport().handshakeHash,
+                       try host.makeTransport().handshakeHash)
     }
 
     func testVersionMismatchRejectedByInitiator() throws {
@@ -131,6 +145,10 @@ final class NoiseHandshakeTests: XCTestCase {
                 .versionMismatch(received: 0, expected: WireVersion.major)
             )
         }
+        // Keys never exist for a mismatched answer.
+        XCTAssertFalse(client.isComplete)
+        XCTAssertNil(client.negotiatedVersion)
+        XCTAssertThrowsError(try client.makeTransport())
     }
 
     func testEmptyFirstPayloadRejected() throws {
@@ -146,6 +164,55 @@ final class NoiseHandshakeTests: XCTestCase {
         XCTAssertThrowsError(try host.readMessage1(message1[...])) { error in
             XCTAssertEqual(error as? NoiseError, .missingVersionPayload)
         }
+    }
+
+    // MARK: Low-order ephemerals
+
+    /// X25519's low-order u-coordinates (and their non-canonical
+    /// encodings p−1, p, p+1): a DH with any of them yields the all-zero
+    /// secret.
+    private static let lowOrderPoints: [[UInt8]] = [
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "0100000000000000000000000000000000000000000000000000000000000000",
+        "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800",
+        "5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157",
+        "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+    ].map { Hex.bytes($0)! }
+
+    /// A low-order `e` in message 1 aborts with invalidPublicKey and
+    /// leaves the responder able to take a genuine message 1.
+    func testLowOrderInitiatorEphemeralRejectedAndRetryable() throws {
+        var (client, host) = try makeSessions()
+        let genuine = try client.writeMessage1()
+        for point in Self.lowOrderPoints {
+            let forged = point + genuine.dropFirst(32)
+            XCTAssertThrowsError(try host.readMessage1(forged[...])) {
+                XCTAssertEqual($0 as? NoiseError, .invalidPublicKey)
+            }
+        }
+        _ = try host.readMessage1(genuine[...])
+        _ = try client.readMessage2(try host.writeMessage2()[...])
+        XCTAssertTrue(client.isComplete)
+    }
+
+    /// A low-order `e` in message 2 aborts with invalidPublicKey and
+    /// leaves the initiator able to take the genuine message 2.
+    func testLowOrderResponderEphemeralRejectedAndRetryable() throws {
+        var (client, host) = try makeSessions()
+        _ = try host.readMessage1(try client.writeMessage1()[...])
+        let genuine = try host.writeMessage2()
+        for point in Self.lowOrderPoints {
+            let forged = point + genuine.dropFirst(32)
+            XCTAssertThrowsError(try client.readMessage2(forged[...])) {
+                XCTAssertEqual($0 as? NoiseError, .invalidPublicKey)
+            }
+            XCTAssertFalse(client.isComplete)
+        }
+        _ = try client.readMessage2(genuine[...])
+        XCTAssertEqual(try client.makeTransport().handshakeHash,
+                       try host.makeTransport().handshakeHash)
     }
 
     // MARK: Authentication failures

@@ -19,7 +19,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
         // The sans-IO wire core (envelope, channels, vocabulary) shared with
-        // the host; the frozen Vectors/ files are the contract CL-1 codes to.
+        // the host; the frozen Vectors/ files are the contract.
         .package(path: "../Wire"),
         // Shared operating-system adapters used by both client and host.
         .package(path: "../Common"),
@@ -42,7 +42,7 @@ let package = Package(
                 .product(name: "LyteWire", package: "Wire"),
             ]
         ),
-        // The Lyte-UDP client (CL-1..CL-12): owns the receive socket,
+        // The Lyte-UDP client: owns the receive socket,
         // decodes envelopes via LyteWire, demuxes (chan, seq), renders
         // video/audio, sends input — the client's entire protocol stack.
         .target(
@@ -56,13 +56,13 @@ let package = Package(
                 .product(name: "LyteWire", package: "Wire"),
             ]
         ),
-        // The corpus/diagnostic harness (H4 V-2/V-3): authored corpus
+        // The corpus/diagnostic harness: authored corpus
         // frames, gate math (PSNR/SSIM/patch/grating), PNG IO, the
         // VTDecompressionSession readback tap, and the quality-readback
         // scorer. Diagnostic surfaces only — lyte-cli's corpus commands,
-        // the app's env-gated benchmark, and the gate tests. Kept out of
+        // the app's diagnostic-build benchmark, and the gate tests. Kept out of
         // LyteTransport so the production streaming stack carries no
-        // harness code (the v1-final review's named boundary).
+        // harness code.
         .target(name: "LyteCorpus"),
         .target(name: "LyteUI"),
         .target(name: "LyteHelperProtocol"),
@@ -88,7 +88,6 @@ let package = Package(
             name: "lyte-cli",
             dependencies: [
                 "LyteUI",
-                "LyteHelperProtocol",
                 "LyteClientCore",
                 "LyteClientSession",
                 "LyteTransport",
@@ -103,8 +102,8 @@ let package = Package(
             name: "Lyte",
             dependencies: [
                 "LyteClientCore", "LyteUI", "LyteHelperProtocol",
-                "LyteClientSession", "LyteTransport",
-                // The env-gated diagnostic benchmark's quality scorer and
+                "LyteHelperSecurity", "LyteClientSession", "LyteTransport",
+                // The diagnostic-build benchmark's quality scorer and
                 // synthetic motion reference — an explicit dependency; the
                 // streaming stack itself carries no corpus code.
                 "LyteCorpus",
@@ -125,6 +124,15 @@ let package = Package(
         .testTarget(
             name: "LyteHelperTests",
             dependencies: ["LyteHelperSecurity", "lyte-helperd"]
+        ),
+        // lyte-cli's argument contracts, parsed as the shell parses them.
+        .testTarget(
+            name: "LyteCLITests",
+            dependencies: [
+                "lyte-cli",
+                "LyteCorpus",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ]
         ),
         .testTarget(
             name: "LyteClientCoreTests",
@@ -162,7 +170,7 @@ let package = Package(
                 "LyteClientSession",
                 "LyteTransport",
                 "LyteClientTestKit",
-                // CL-11: the Opus leaf round-trip generates real packets
+                // The Opus leaf round-trip generates real packets
                 // with libopus' encoder (test-only; production encodes
                 // nothing client-side).
                 .product(name: "COpus", package: "Common"),
@@ -173,3 +181,14 @@ let package = Package(
         ),
     ]
 )
+
+// Off macOS only the IO-free client policy and its suites exist; every
+// other target needs AppKit, AVFoundation or Network.framework.
+#if !os(macOS)
+let portableTargets: Set<String> = [
+    "LyteClientCore", "LyteClientSession",
+    "LyteClientCoreTests", "LyteClientSessionTests",
+]
+package.targets = package.targets.filter { portableTargets.contains($0.name) }
+package.products = package.products.filter { portableTargets.contains($0.name) }
+#endif

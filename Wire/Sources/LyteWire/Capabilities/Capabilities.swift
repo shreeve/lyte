@@ -27,7 +27,9 @@
 //
 // Capabilities are fixed after the exchange except keys in
 // `renegotiableKeys`: only maxDatagramBytes, raised on direct paths at an
-// IDR boundary and never past either end's declared ceiling.
+// IDR boundary and never past either end's declared ceiling. The raise is
+// dormant in v1: the envelope and transport enforce the WireBudget
+// constants, and no end applies an agreed value past 1152.
 
 /// The capability key registry (wire v1). Keys are CBOR unsigned map
 /// keys; the numbers are wire contract. New keys append; a key's type

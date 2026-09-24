@@ -1,11 +1,11 @@
 import XCTest
 @testable import HostCore
 
-// The tripwire's gate laws (postures design, 2026-08-02): capture
-// never stops — only transmission gates; ~5 s of unbroken silence
-// closes the gate; ~100 ms of sound fires it; the wake burst carries
-// the onset AND its leading context; check-ins bound staleness while
-// gated. All in packet time — the wire's 5 ms cadence is the clock.
+// The tripwire's gate laws: capture never stops — only transmission
+// gates; ~5 s of unbroken silence closes the gate; ~100 ms of sound fires
+// it; the wake burst carries the onset AND its leading context; check-ins
+// bound staleness while gated. All in packet time — the wire's 5 ms
+// cadence is the clock.
 
 final class AudioTripwireTests: XCTestCase {
 

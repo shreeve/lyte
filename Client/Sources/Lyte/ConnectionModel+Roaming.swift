@@ -108,6 +108,12 @@ extension ConnectionModel {
         Task { @MainActor [weak self] in
             let hosts = await browse(2.0)
             guard let self, self.isCurrent(generation) else { return }
+            if let name = self.hostName, let pkh = self.hostPublicKeyHash,
+               Self.identityReplaced(in: hosts, name: name, publicKeyHash: pkh) {
+                // No ladder can reach the pinned identity any more.
+                self.endLyteSession(reason: Self.identityReplacedMessage(name))
+                return
+            }
             let sightings = hosts.compactMap { host -> RoamingSighting? in
                 guard let pkh = host.publicKeyHash else { return nil }
                 return RoamingSighting(
@@ -140,8 +146,7 @@ extension ConnectionModel {
                 hostPort: port,
                 hostStaticPublicKey: hostStatic,
                 staticKeys: identity,
-                attempts: 3,
-                attemptTimeoutMilliseconds: 700)
+                retry: .redial)
         else {
             roamingInput { policy, now in policy.dialFailed(now: now) }
             return
@@ -154,7 +159,10 @@ extension ConnectionModel {
             shareClipboard: clipboardSharing,
             shareClipboardImages: clipboardImageSharing,
             chroma: chromaTier)
+        // A newer dial supersedes one still in flight.
+        abandonDial()
         let lyte = makeLyteSession(crypto: crypto, config: config)
+        beginDial(lyte)
         let generation = lifecycleGeneration
         let start = services.startSession
         let endSession = services.endSession
@@ -162,14 +170,19 @@ extension ConnectionModel {
             do {
                 try await start(lyte)
             } catch {
-                guard let self, self.isCurrent(generation) else { return }
+                guard let self else { return endSession(lyte, .silent) }
+                // Abandoned: whoever abandoned it ended it.
+                guard self.claimDial(lyte) else { return }
+                endSession(lyte, .silent)
+                guard self.isCurrent(generation) else { return }
                 self.roamingInput { policy, now in policy.dialFailed(now: now) }
                 return
             }
+            guard let self else { return endSession(lyte, .goodbye) }
+            guard self.claimDial(lyte) else { return }
             // The window disconnected (and perhaps connected afresh)
             // while this dial ran: the session has no owner.
-            guard let self, self.isCurrent(generation),
-                  self.lyteSession == nil else {
+            guard self.isCurrent(generation), self.lyteSession == nil else {
                 endSession(lyte, .goodbye)
                 return
             }
@@ -195,5 +208,6 @@ extension ConnectionModel {
         roamingInput { policy, now in
             policy.sessionEstablished(address: address, port: port, now: now)
         }
+        replayPendingTerminal()
     }
 }

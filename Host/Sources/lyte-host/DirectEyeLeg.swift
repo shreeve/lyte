@@ -23,11 +23,13 @@ import LyteWire
 final class WarmEye {
     private let width: Int32
     private let height: Int32
+    private let renderNode: String
     private var pipeline: EyePipeline?
 
     init(screen: DirectScreenSource) {
         self.width = screen.width
         self.height = screen.height
+        self.renderNode = screen.renderNode
     }
 
     /// The pipeline for the next session, in its chroma posture, first
@@ -42,7 +44,7 @@ final class WarmEye {
         }
         let opened = try EyePipeline(
             width: width, height: height,
-            renderNode: config.renderNode, qp: config.qp,
+            renderNode: renderNode, qp: config.qp,
             bitrateBitsPerSecond: config.bitrateBitsPerSecond,
             hrdBufferBits: config.bitrateBitsPerSecond > 0
                 ? Int64(EncoderHrd.bufferBits(
@@ -57,9 +59,8 @@ final class WarmEye {
 
 final class DirectEyeLeg {
     struct Config {
+        /// The card node observed unless --drm-device names another.
         static let defaultDevice = "/dev/dri/card1"
-        var device = Config.defaultDevice
-        var renderNode = "/dev/dri/renderD128"
         /// The leg's wall-clock bound; `.infinity` for a service session.
         var seconds: Double
         var qp: Int32 = 24
@@ -91,7 +92,8 @@ final class DirectEyeLeg {
     /// end stops the leg.
     private(set) var deliveryFailures = 0
     private(set) var admission = VideoAdmissionGate()
-    private var lastDeliveryFailureWallSeconds = 0.0
+    /// Monotonic seconds, like every clock below.
+    private var lastDeliveryFailureSeconds = 0.0
     static let refusedIdrRetrySeconds = 1.0 / 60
     private var lastEncodedCaptureUs: UInt64 = 0
     private(set) var staticIdrsServed = 0
@@ -104,7 +106,7 @@ final class DirectEyeLeg {
     static let cursorPollMicroseconds: UInt64 = 16_667
     /// How often a running session's janitor bounds host.log.
     static let logCheckIntervalMicros: UInt64 = 60_000_000
-    private var lastDeliveryWallSeconds = 0.0
+    private var lastDeliverySeconds = 0.0
     private(set) var keepalivesSent = 0
     /// The video quiet ladder: engaged only under the key-16 agreement;
     /// every step and wake is announced (0x26).
@@ -112,6 +114,7 @@ final class DirectEyeLeg {
     private(set) var postureAnnouncements = 0
     /// True once the encoder runs Rext 4:4:4 (what actually ran).
     private(set) var chroma444Active = false
+    private var lateBestAgreementNoted = false
     /// The display's geometry changed under the leg: a clean exit, not
     /// an error.
     private(set) var modeChangeEnded = false
@@ -189,7 +192,21 @@ final class DirectEyeLeg {
     /// reaches the input injector before the first client event can.
     static func openScreen(device: String) throws -> DirectScreenSource {
         do {
-            return try DirectScreenSource(device: device)
+            let screen = try DirectScreenSource(device: device)
+            if screen.renderNodeIsFallback {
+                print("""
+                    direct: \(device) names no render node — using \
+                    \(screen.renderNode), which may be another GPU's
+                    """)
+            }
+            if screen.keptMaster {
+                print("""
+                    direct: could not drop DRM master on \(device) — a \
+                    compositor starting now cannot take the display while \
+                    the host runs
+                    """)
+            }
+            return screen
         } catch DirectScreenSourceError.openDevice(let path, let code) {
             throw HostError("direct: open(\(path)) errno \(code)")
         } catch DirectScreenSourceError.noActivePrimaryPlane {
@@ -271,7 +288,8 @@ final class DirectEyeLeg {
             ? "vbr \(config.bitrateBitsPerSecond / 1_000_000) Mbps cap"
             : "cqp \(config.qp)"
         print("""
-            direct: eye open — \(width)x\(height) on \(config.device), native \
+            direct: eye open — \(width)x\(height) on \(screen.device) \
+            (render \(screen.renderNode)), native \
             VAAPI \(rc), \(chroma == .yuv444 ? "Rext 4:4:4 (AYUV)" : "4:2:0") \
             (rate directives apply live)
             """)
@@ -296,7 +314,7 @@ final class DirectEyeLeg {
         var observationSkipEvents: UInt64 = 0
         let t0 = SystemMonotonicClock.nowSeconds
         // The stillness clock: last pixel change or client input.
-        var lastActivityWallSeconds = t0
+        var lastActivitySeconds = t0
 
         // Recovery and keepalive frames run on the 1 ms poll, independent
         // of the 60 Hz observation grid.
@@ -305,7 +323,7 @@ final class DirectEyeLeg {
         ) throws -> Bool {
             // A refused IDR is retried no sooner than one beat later.
             if staticIdrWanted,
-               SystemMonotonicClock.nowSeconds - lastDeliveryFailureWallSeconds
+               SystemMonotonicClock.nowSeconds - lastDeliveryFailureSeconds
                    >= Self.refusedIdrRetrySeconds {
                 staticIdrWanted = false
                 let served: Void? = try pipeline.encodeRetained(forceIDR: true) {
@@ -318,7 +336,7 @@ final class DirectEyeLeg {
                     staticIdrWanted = true // nothing retained yet
                 } else {
                     staticIdrsServed += 1
-                    lastDeliveryWallSeconds = SystemMonotonicClock.nowSeconds
+                    lastDeliverySeconds = SystemMonotonicClock.nowSeconds
                     print("""
                         direct: static-screen IDR served \
                         (re-encoded retained surface)
@@ -331,7 +349,7 @@ final class DirectEyeLeg {
             if let wire, let snapshot {
                 let inputSeconds = Double(snapshot.lastInputActivityNS) / 1e9
                 let idle = SystemMonotonicClock.nowSeconds
-                    - max(lastActivityWallSeconds, inputSeconds)
+                    - max(lastActivitySeconds, inputSeconds)
                 if snapshot.videoQuietPostureAgreed {
                     let verdict = quietPacer.assess(idleSeconds: idle)
                     keepaliveInterval = verdict.keepaliveSeconds
@@ -344,7 +362,7 @@ final class DirectEyeLeg {
                 }
             }
             if wire != nil,
-               SystemMonotonicClock.nowSeconds - lastDeliveryWallSeconds
+               SystemMonotonicClock.nowSeconds - lastDeliverySeconds
                    >= keepaliveInterval {
                 let served: Void? = try pipeline.encodeRetained(forceIDR: false) {
                     bytes, keyframe in
@@ -353,7 +371,7 @@ final class DirectEyeLeg {
                 }
                 if served != nil {
                     keepalivesSent += 1
-                    lastDeliveryWallSeconds = SystemMonotonicClock.nowSeconds
+                    lastDeliverySeconds = SystemMonotonicClock.nowSeconds
                     return true
                 }
             }
@@ -397,26 +415,19 @@ final class DirectEyeLeg {
                     SystemMonotonicClock.nowMicroseconds - cursorStart
             }
 
-            // A late Best agreement reopens the encoder in 4:4:4 (once);
-            // resetting sampling and identity makes the current screen
-            // fresh, so the new encoder's first IDR carries it.
-            if !pipeline.chroma444,
+            // Chroma is fixed when the encoder opens: a Best agreement
+            // that lands after the opening wait keeps this session in
+            // 4:2:0, and a clean reconnect opens in 4:4:4. Never a
+            // mid-stream encoder dial.
+            if !lateBestAgreementNoted, !pipeline.chroma444,
                ChromaPosture.from(
                    agreedChromaModes: snapshot?.agreedChromaModes
                ) == .yuv444 {
-                do {
-                    try pipeline.reopen(chroma444: true)
-                    chroma444Active = true
-                    samplingCadence.reset()
-                    screen.resetIdentityObservation()
-                    print("""
-                        direct: Best tier agreed — encoder reopened as Rext \
-                        4:4:4 (AYUV, one-pass blit)
-                        """)
-                } catch {
-                    lastError = "direct: 4:4:4 reopen: \(error)"
-                    return
-                }
+                lateBestAgreementNoted = true
+                print("""
+                    direct: Best tier agreed after the encoder opened — \
+                    this session stays 4:2:0; a reconnect opens 4:4:4
+                    """)
             }
 
             // The cap becomes the next frame's VBR envelope; no reset.
@@ -463,6 +474,14 @@ final class DirectEyeLeg {
                 }
             }
             guard let observation = screen.observe() else {
+                if screen.primaryPlaneMoved {
+                    print("""
+                        direct: the output moved to another primary plane \
+                        — ending session; the re-dial reads it fresh
+                        """)
+                    modeChangeEnded = true
+                    return
+                }
                 if idle(snapshot) { continue } else { return }
             }
             if observation.identityChanged { framebufferTransitions += 1 }
@@ -505,7 +524,7 @@ final class DirectEyeLeg {
                 if idle(snapshot) { continue } else { return }
             }
             changedObservations += 1
-            lastActivityWallSeconds = SystemMonotonicClock.nowSeconds
+            lastActivitySeconds = SystemMonotonicClock.nowSeconds
             // A queue at its latency budget gets no new frame; the reset
             // fingerprint re-observes the newest pixels next beat.
             if let wire {
@@ -540,7 +559,7 @@ final class DirectEyeLeg {
                 lastStages.deliverUs = SystemMonotonicClock.nowMicroseconds - deliverStart
                 maxStages.formMax(lastStages)
                 frames += 1
-                lastDeliveryWallSeconds = SystemMonotonicClock.nowSeconds
+                lastDeliverySeconds = SystemMonotonicClock.nowSeconds
             } catch {
                 lastError = "direct: frame \(frames): \(error)"
                 return
@@ -592,9 +611,8 @@ final class DirectEyeLeg {
             wire.noteCursorShape(.hidden)
         case .shape(let frame):
             cursorShapesSeen += 1
-            let pointer = wire.lastAbsolutePointerInjection().map {
-                CursorHotspot.Point(
-                    x: Int($0.x.rounded()), y: Int($0.y.rounded()))
+            let pointer = wire.lastAbsolutePointerInjection().flatMap {
+                InputCoordinate.pixel(x: $0.x, y: $0.y)
             }
             let plane = frame.planeCrtc.map {
                 CursorHotspot.Point(x: $0.x, y: $0.y)
@@ -641,10 +659,11 @@ final class DirectEyeLeg {
     ) {
         guard hotspotRecheckArmed, let frame = lastCursorFrame,
               let sent = sentHotspot,
-              let pointer = wire.lastAbsolutePointerInjection()
+              let injected = wire.lastAbsolutePointerInjection(),
+              let pointer = InputCoordinate.pixel(x: injected.x, y: injected.y)
         else { return }
-        let nowMicros = UInt64(SystemMonotonicClock.nowSeconds * 1_000_000)
-        guard nowMicros &- pointer.atMicros > 150_000 else { return }
+        guard SystemMonotonicClock.nowMicroseconds &- injected.atMicros
+            > 150_000 else { return }
         guard let plane = watcher.planeCrtcPosition(),
               CursorHotspot.canRecheck(
                   planeCrtc: .init(x: plane.x, y: plane.y))
@@ -654,9 +673,7 @@ final class DirectEyeLeg {
             return
         }
         let hot = CursorHotspot.derive(
-            pointer: .init(
-                x: Int(pointer.x.rounded()),
-                y: Int(pointer.y.rounded())),
+            pointer: pointer,
             planeCrtc: .init(x: plane.x, y: plane.y),
             crop: .init(x: frame.cropX, y: frame.cropY),
             width: frame.width, height: frame.height)
@@ -666,7 +683,7 @@ final class DirectEyeLeg {
         print("""
             direct: cursor hotspot corrected (\(sent.x),\(sent.y)) → \
             (\(hot.x),\(hot.y)) at rest — plane(\(plane.x),\(plane.y)) \
-            pointer(\(Int(pointer.x)),\(Int(pointer.y)))
+            pointer(\(pointer.x),\(pointer.y))
             """)
         sentHotspot = (hot.x, hot.y)
         wire.noteCursorShape(CursorShape(
@@ -727,7 +744,7 @@ final class DirectEyeLeg {
                         : [])
             } catch {
                 deliveryFailures += 1
-                lastDeliveryFailureWallSeconds = SystemMonotonicClock.nowSeconds
+                lastDeliveryFailureSeconds = SystemMonotonicClock.nowSeconds
                 if deliveryFailures <= 3 {
                     print("""
                         direct: session refused frame \

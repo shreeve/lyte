@@ -1,5 +1,5 @@
 // The ARQ frame codecs: the wire format of the reliable sublayer that
-// CTRL, video-idle and the feature channels ride. Two frame types,
+// CTRL and the feature channels ride. Two frame types,
 // registered in the CTRL type space and used on every reliable channel:
 //
 //   0x07  data segment — one slice of one message in one group
@@ -123,7 +123,9 @@ public enum ArqBounds {
         + maxAckBlocks * (ackBlockFixedByteCount + maxAckBitmapByteCount)
     /// Segments one send group may hold (in flight plus queued) before
     /// `send` pushes back with `ArqSendError.queueFull` — the endpoint's
-    /// memory bound against a runaway producer.
+    /// local memory bound against a runaway producer, not wire contract
+    /// (seqs are assigned at first transmission, so the queue never
+    /// touches the serial half-space).
     public static let maxQueuedSegmentsPerGroup =
         32_768 - maxReceiveWindowSegments
 }

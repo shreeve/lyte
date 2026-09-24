@@ -30,10 +30,4 @@ Not part of the macOS app or the Linux host image.
 | JavaScriptKit | JS↔WASM bridge in the `LyteClientBrowser` WebAssembly module | MIT; version pinned in `Browser/Package.resolved` |
 | swift-syntax | Build-time dependency of JavaScriptKit's macros; not linked into the module | Apache 2.0; version pinned in `Browser/Package.resolved` |
 | rwebtransport | WebTransport server in the local `lyte-wt-sidecar` relay (Node) | Apache 2.0; npm, version and integrity pinned in `Browser/Harness/package-lock.json` |
-| PackageToJS WASI shim | Loaded by the proof page from jsDelivr (`build.sh --use-cdn`) | Part of JavaScriptKit (MIT) |
-
-## Vendored headers
-
-| Component | Use | License and source |
-|---|---|---|
-| NVIDIA Video Codec SDK header `nvEncodeAPI.h` | `Host/Sources/CNvEnc`, used only by the banked `lyte-nvenc` probe (not in the host image) | MIT, by NVIDIA; the notice is in the header itself; from nv-codec-headers n12.2.72.0 |
+| `@bjorn3/browser_wasi_shim` 0.4.1 | WASI shim for the browser page, vendored in `Browser/Page/vendor/browser_wasi_shim/` | MIT OR Apache-2.0; both licenses beside the files |

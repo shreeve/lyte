@@ -1,62 +1,55 @@
-// Authoring tool for the Wire/Vectors/ artifacts. Run once per file,
-// commit the output, and treat the committed file as frozen: a byte
-// difference against it is a wire-contract break to investigate, never a
-// prompt to regenerate. See Vectors/README.md for the freeze policy.
+// Authoring tool for the Wire/Vectors/ artifacts: writes one builder's
+// file for a NEW vector file. A committed file is frozen, so the tool
+// refuses to replace an existing path unless `--force` is given (for a
+// scratch comparison, never for Wire/Vectors/). See Vectors/README.md for
+// the freeze policy.
 //
-// `video` reads the corpus from <output-dir>/video-corpus-v1/.
+// `video` always reads the committed corpus, Wire/Vectors/video-corpus-v1/.
 // `video-roundtrip` is the decode-evidence harness (VideoRoundTrip.swift).
 
 import Foundation
 import LyteWireTestKit
 import LyteWireVectorGen
 
-func die(_ message: String) -> Never {
+/// Usage errors exit 64 (EX_USAGE); runtime failures exit 1.
+func die(_ message: String, status: Int32 = 1) -> Never {
     FileHandle.standardError.write(Data((message + "\n").utf8))
-    exit(64)
+    exit(status)
 }
 
-/// Every vector kind and its builder; the argument is the output path.
-let builders: KeyValuePairs<String, (String) throws -> any FrozenVectorFile> = [
-    "envelope": { _ in try makeEnvelopeVectorFile() },
-    "fec": { _ in try makeFecVectorFile() },
-    "video": { output in
-        try makeVideoVectorFile(corpusDirectory: URL(fileURLWithPath: output)
-            .deletingLastPathComponent().path + "/video-corpus-v1")
-    },
-    "beacon": { _ in try makeBeaconVectorFile() },
-    "noise": { _ in try makeNoiseVectorFile() },
-    "session": { _ in try makeSessionVectorFile() },
-    "arq": { _ in try makeArqVectorFile() },
-    "lifecycle": { _ in try makeLifecycleVectorFile() },
-    "pairing": { _ in try makePairingVectorFile() },
-    "capabilities": { _ in try makeCapabilityVectorFile() },
-    "retry": { _ in try makeRetryVectorFile() },
-    "control": { _ in try makeControlVectorFile() },
-    "clipboard": { _ in try makeClipboardVectorFile() },
-    "bulk": { _ in try makeBulkVectorFile() },
-    "clipboard-images": { _ in try makeClipboardImageVectorFile() },
-    "cursor": { _ in try makeCursorVectorFile() },
-    "repair-refusal": { _ in try makeRepairRefusalVectorFile() },
-    "postures": { _ in try makePostureVectorFile() },
-]
+let kinds = vectorFileBuilders.map(\.kind)
+let usage = """
+usage: lyte-wire-vectorgen [--force] <\(kinds.joined(separator: "|"))> <output-path>
+       lyte-wire-vectorgen video-roundtrip <input.hevc> <output.hevc>
+"""
 
-let arguments = CommandLine.arguments
-guard (3...4).contains(arguments.count) else {
-    die("""
-    usage: lyte-wire-vectorgen <\(builders.map(\.key).joined(separator: "|"))> <output-path>
-           lyte-wire-vectorgen video-roundtrip <input.hevc> <output.hevc>
-    """)
-}
-if arguments[1] == "video-roundtrip" {
-    try runVideoRoundTrip(
-        inputPath: arguments[2],
-        outputPath: arguments.count > 3 ? arguments[3] : arguments[2] + ".roundtrip"
-    )
+var arguments = Array(CommandLine.arguments.dropFirst())
+let force = arguments.first == "--force"
+if force { arguments.removeFirst() }
+guard arguments.count == 3 || arguments.count == 2 else { die(usage, status: 64) }
+
+if arguments[0] == "video-roundtrip" {
+    guard arguments.count == 3, !force else { die(usage, status: 64) }
+    do {
+        try runVideoRoundTrip(inputPath: arguments[1], outputPath: arguments[2])
+    } catch {
+        die("video-roundtrip: \(error)")
+    }
     exit(0)
 }
-guard let build = builders.first(where: { $0.key == arguments[1] })?.value else {
-    die("unknown vector kind '\(arguments[1])' — expected \(builders.map(\.key).joined(separator: ", ")), or video-roundtrip")
+
+guard arguments.count == 2 else { die(usage, status: 64) }
+guard let builder = vectorFileBuilders.first(where: { $0.kind == arguments[0] }) else {
+    die("unknown vector kind '\(arguments[0])' — expected \(kinds.joined(separator: ", ")), or video-roundtrip", status: 64)
 }
-let file = try build(arguments[2])
-try file.canonicalJSON().write(to: URL(fileURLWithPath: arguments[2]))
-print("wrote \(file.vectorNameGroups.joined().count) vectors to \(arguments[2])")
+let output = arguments[1]
+if !force, FileManager.default.fileExists(atPath: output) {
+    die("\(output) exists; committed vector files are frozen. New cases go in a new file; pass --force only to overwrite a scratch copy.")
+}
+do {
+    let file = try builder.build()
+    try file.canonicalJSON().write(to: URL(fileURLWithPath: output))
+    print("wrote \(file.vectorNameGroups.joined().count) vectors to \(output)")
+} catch {
+    die("\(builder.kind): \(error)")
+}

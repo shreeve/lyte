@@ -33,8 +33,10 @@ clock); do not read them as the current contract.
 | Wire payload (ciphertext + 16 B tag) | ≤ 1128 | `WireBudget.maxWirePayloadByteCount` |
 | Datagram | ≤ 1152 | `WireBudget.maxDatagramByteCount` |
 
-The datagram ceiling can be raised per session only through capability key
-8 (`maxDatagramBytes`), host-proposed at an IDR boundary.
+Capability key 8 (`maxDatagramBytes`) declares and renegotiates a larger
+ceiling, host-proposed at an IDR boundary, but the raise is dormant in v1:
+every layer enforces the constants above and no end applies an agreed
+value past 1152.
 
 ## Envelope
 
@@ -46,8 +48,9 @@ or FEC group id; `timestamp` is microseconds in the sender's monotonic
 domain.
 
 TLV types: `0x00` invalid, `0x01` connection id (migration), `0x02` wire
-major version, `0x03` last input seq. Unknown TLV types are skipped by
-consumers and preserved by the codec.
+major version (reserved, unused in v1: the major rides the first Noise
+handshake payload byte and must match exactly), `0x03` last input seq.
+Unknown TLV types are skipped by consumers and preserved by the codec.
 
 Pinned by `envelope-v1.json`, `session-v1.json` (conn-id TLV),
 `control-v1.json` (lastInputSeq TLV).
@@ -60,15 +63,17 @@ Pinned by `envelope-v1.json`, `session-v1.json` (conn-id TLV),
 | 1 | audio | unreliable, RS-FEC | audio |
 | 2 | video-active | unreliable, RS-FEC + NACK repair | fresh video (repairs: video tail) |
 | 3 | feedback | unreliable, 25–50 ms reports | telemetry |
-| 4 | video-idle | ARQ one-shot groups | video tail |
+| 4 | video-idle | registered, unused in v1 | video tail |
 | 5–7 | reserved | never sent; dropped on receive | — |
 | 8 | bulk transfer | ARQ ordered stream | bulk (last) |
 | 9–255 | feature channels | ARQ | feature |
 
 Priority order, highest first: control/input > audio > fresh video > video
 tail and retransmits > refinement > feature > telemetry > bulk
-(`LyteWire/ChannelId.swift`, `WirePriority`). Refinement has no channel of
-its own; the pacer demotes it by content.
+(`WirePriority` in `LyteWire/ChannelId.swift`). The host's pacer enforces
+it with its own classes (`PacerClass` in `HostCore/Pacer.swift`), which
+have no feature rung because no v1 message rides chans 9–255. Refinement
+has no channel of its own; the pacer demotes it by content.
 
 ## FEC
 
@@ -79,6 +84,13 @@ shards. Shards are balanced: every data shard but the last is
 `ceil(group / k)` bytes. Video groups are one frame; audio groups are four
 5 ms Opus packets plus two parity (RS 4+2).
 
+A video frame's shards carry contiguous chan-2 seqs in shard-index order,
+so any one shard names the group's seq range; a repair is a fresh datagram
+with its own seq. The host assigns chan-2 seqs as its pacer releases each
+datagram, so chan-2 seqs reach the wire in ascending order and a datagram
+the host drops before sending consumes none. That is sender behavior, not
+a wire-format change.
+
 Pinned by `fec-v1.json` (field, geometry ladder, recovery matrices) and
 `video-v1.json` (packetize and assembly scenarios over
 `video-corpus-v1/`).
@@ -88,31 +100,46 @@ Pinned by `fec-v1.json` (field, geometry ladder, recovery matrices) and
 ```text
 client                                   host
 0x05 ‖ Noise IK msg1          ──►
-                              ◄──        0x13 retry challenge (cookie mode only)
+                              ◄──        0x13 retry challenge (under load)
 0x14 ‖ cookie ‖ msg1          ──►
                               ◄──        0x06 ‖ Noise IK msg2
-sealed traffic, both ways; each side's first ARQ message is 0x0F
+sealed traffic, both ways; in a streaming session each side's first ARQ
+message is 0x0F (a pairing-only run opens with share A, 0x0B)
 ```
 
 - Suite `Noise_IK_25519_ChaChaPoly_SHA256`. The client knows the host's
   static key from pairing. The first handshake payload byte each way is
   the wire major version (1); a mismatch aborts before any transport key.
-- The client sends one message 1 and retransmits the same bytes (5
-  transmissions, 1 s apart, `ClientHandshakeInitiator.Retry`), so a late
-  answer to any copy completes the transcript. Answering a retry challenge
-  spends no attempt.
-- The host rate-limits message 1 (`HostSession.HandshakeGate`). Under a
-  flood it switches to cookie mode: a stateless 24-byte HMAC cookie binds
-  the client tuple, a timestamp (30 s lifetime) and message 1 verbatim.
-  A verified cookie is admitted once; replays are dropped.
+- The client sends one message 1 and retransmits the same bytes on a
+  schedule `ClientHandshakeInitiator.Retry` owns — by default 5
+  transmissions 1 s apart; a connect's first dial allows 5 × 2 s
+  (`.firstDial`), its later rounds and roaming probes 3 × 700 ms
+  (`.redial`) — so a late answer to any copy completes the transcript.
+  Answering a retry challenge spends no attempt; the client answers at
+  most one challenge per message-1 transmission.
+- The host rate-limits message 1 with a token bucket
+  (`HostSession.HandshakeGate`). A message 1 the bucket cannot admit, and
+  every un-cookied message 1 while arrivals exceed the flood threshold
+  (cookie mode), draws a stateless RetryChallenge instead of a drop: a
+  24-byte HMAC cookie that binds the client tuple, a timestamp (30 s
+  lifetime) and message 1 verbatim. Verified cookies spend from their own
+  budget, each source IP (an IPv6 /64) from a small share of it; an
+  admission spends both budgets or neither. The cookie itself still binds
+  address and port. A replay of an admitted cookie is dropped.
 - Message 1 carries no freshness, so a replayed one authenticates again.
   The host therefore commits to a client only when it proves key
   possession: its first authenticated transport datagram. Until then a
   verbatim repeat of the answered message 1 gets the same message 2 again
   (on the tuple that sent it), and a newer message 1 that authenticates
-  replaces the unconfirmed handshake. The listening host also drops any
-  message 1 it already answered earlier in the process, so a captured one
-  replays at most once per host run and cannot hold the host against a
+  replaces the unconfirmed handshake. An unconfirmed host sends nothing
+  timer-driven: the session-start beacon and its capability declaration
+  leave once with message 2, and the 1 Hz beacons and ARQ retransmits
+  start only after the client's first authenticated datagram. An answer
+  still unconfirmed 12 s after message 2 last left is discarded; each
+  verbatim resend restarts that span, which outlasts the client's longest
+  retry schedule (5 × 2 s). The listening host also drops
+  any message 1 it already answered earlier in the process, so a captured
+  one replays at most once per host run and cannot hold the host against a
   real client's next dial.
 - Handshake carriage (0x05, 0x06, 0x13, 0x14) is bare: it is not sealed and
   not ARQ-carried. A bare 0x05/0x06 after the client is confirmed is
@@ -129,8 +156,9 @@ The receiver keeps a 64-deep replay window per channel and commits window
 state only after the tag verifies. After eight consecutive open failures it
 also tries the next four forward wraps, so a long one-way gap cannot kill a
 channel; the tag arbitrates, so a forgery never moves the anchor. Rekey is
-Noise REKEY plus an epoch increment, with the previous epoch kept as a
-grace key.
+a pinned primitive: Noise REKEY plus an epoch increment, with the previous
+epoch kept as a grace key. Wire v1 has no CTRL message that triggers it,
+so no v1 end rekeys and every session runs at epoch 0.
 
 Pinned by `noise-v1.json`.
 
@@ -150,18 +178,18 @@ the message codecs).
 
 ## Capabilities
 
-Each side's first ARQ message is a capability declaration (0x0F): a
-deterministic-CBOR map. The agreed set is the intersection, computed the
-same way on both ends; there is no accept round. Unknown keys are ignored
-and preserved, and survive intersection only when both sides declare
-byte-equal values.
+In a streaming session each side's first ARQ message is a capability
+declaration (0x0F): a deterministic-CBOR map. The agreed set is the
+intersection, computed the same way on both ends; there is no accept round.
+Unknown keys are ignored and preserved, and survive intersection only when
+both sides declare byte-equal values.
 
 | Key | Name | Type / intersect | Gates |
 |---|---|---|---|
 | 1 | wireMinor (required) | u16, min | — |
 | 2 | videoCodecs (required) | id list, ∩ (1 = HEVC) | — |
 | 3 | chromaModes (required) | id list, ∩ (1 = 4:2:0, 2 = 4:4:4) | chroma posture |
-| 4 | idleSilence | bool, AND | idle-mode video |
+| 4 | idleSilence | bool, AND | idle-mode video (dormant, see [lifecycle](#session-lifecycle)) |
 | 5 | featureChannels | id list, ∩ (1 clipboard, 2 files, 3 printing) | — |
 | 6 | audioExpress | bool, AND | — |
 | 7 | resume | bool, AND | — |
@@ -211,8 +239,8 @@ after the handshake unless noted).
 | 0x12 | CapabilityUpdateAck | client → host | ARQ | `capabilities-v1.json` |
 | 0x13 | RetryChallenge | host → client | bare, unsealed | `retry-v1.json` |
 | 0x14 | RetryHandshake1 | client → host | bare, unsealed | `retry-v1.json` |
-| 0x15 | IdleFrame | host → client | ARQ one-shot group | `control-v1.json` |
-| 0x16 | InputEvent | client → host | ARQ | `control-v1.json` |
+| 0x15 | IdleFrame | host → client | CTRL ARQ one-shot group; not sent by the v1 host | `control-v1.json` |
+| 0x16 | InputEvent | client → host | ARQ | `control-v1.json`, `input-coordinates-v1.json` |
 | 0x17 | InputEcho | host → client | ARQ | `control-v1.json` |
 | 0x18 | AudioRoutingRequest | client → host | ARQ, key 9 | `control-v1.json` |
 | 0x19 | AudioRoutingStatus | host → client | ARQ, key 9 | `control-v1.json` |
@@ -235,19 +263,36 @@ A reliable-channel payload that starts with 0x07 or 0x08 is a sequence of
 ARQ frames; an ACK can ride ahead of fresh segments in one datagram.
 Sequencing is per group: group 0 is the channel's ordered stream, non-zero
 groups are independent one-shot messages allocated by the endpoint
-(`ArqEndpoint.sendOneShot`). Segments are retransmitted byte-identical in
-fresh datagrams (fresh seq, fresh nonce). An ACK describes at most 256
-segments past its cumulative point, which is also the widest receive
-window; a sender never exceeds the peer's window. One send group holds at
-most 32,512 segments; past that `send` throws `ArqSendError.queueFull`,
-which every shell treats as backpressure, not as a fatal error.
+(`ArqEndpoint.sendOneShot`); no v1 end sends one, and receivers accept
+them. Segments are retransmitted byte-identical in fresh datagrams (fresh
+seq, fresh nonce). An ACK describes at most 256 segments past its
+cumulative point, which is also the widest receive window; a sender never
+exceeds the peer's window. A sender bounds each group's queue locally
+(LyteWire: 32,512 segments, a memory bound, not wire contract); past it
+`send` throws `ArqSendError.queueFull`, which every shell treats as
+backpressure, not as a fatal error.
+
+A reassembled message is at most 262,144 bytes. The ceiling is not
+negotiated, so both ends share it. A message past it poisons its group:
+a one-shot group is dropped, and a poisoned ordered stream can never
+deliver in order again, so the endpoint reports it
+(`isOrderedStreamPoisoned`, `.orderedStreamPoisoned`). Either end that
+sees its peer poison CTRL or chan 8 ends the session with a `shuttingDown`
+teardown; the macOS client then re-dials. Each open one-shot receive group
+reserves a whole message (262,144 bytes) of a 1 MiB receive budget: a
+segment that would open a group whose reservation does not fit is refused
+unacknowledged, and an admitted group is never refused. A group given up
+(poisoned or expired) closes at the cumulative point it reached, so late
+retransmits are acknowledged truthfully and never reopen it.
 
 Pinned by `arq-v1.json`.
 
 ## Session lifecycle
 
 - Wire modes are ACTIVE and IDLE (0x09). FROZEN and RECOVERY are local
-  path-loss overlays and never appear on the wire.
+  path-loss overlays and never appear on the wire. IDLE is dormant in v1:
+  it follows a converged ratchet frame the host never produces, so the host
+  stays ACTIVE and never sends mode IDLE.
 - Teardown (0x0A) carries `takenOver` (0x01) or `shuttingDown` (0x02). The
   macOS client roams (re-dials) on `shuttingDown` and ends the window on
   `takenOver`.
@@ -257,17 +302,24 @@ Pinned by `arq-v1.json`.
 - Path migration: a datagram from a new tuple carrying the connection-id
   TLV draws a PathChallenge (0x03) after it unseals; a matching
   PathResponse (0x04) promotes the tuple, and video restarts from an IDR.
+  The previous primary stays the fallback for 3 s: a datagram from it
+  takes the path back only when its authenticated channel seq is newer
+  than the newest the new primary delivered on that channel, so a
+  straggler cannot flip the path, and a return does not renew the window.
 
 Pinned by `lifecycle-v1.json` and `session-v1.json`.
 
 ## Clock and feedback
 
 The host sends a ClockBeacon every second; the client echoes it, and
-`HostClockModel` fits offset and skew from the four timestamps. The client
-sends a feedback report on chan 3 every 25–50 ms: per-channel counters,
-per-packet arrival dispersion (kernel monotonic stamps) and up to six NACK
-entries. The host's `RateEstimator` prices the path from these reports;
-there is no client-side rate control.
+`ClientHostClock` (`LyteClientSession`) fits offset and skew from the four
+timestamps; it drops implausible samples and clamps the fitted skew, so a
+frozen or lying host clock cannot derail the fit. The host measures
+round-trip time from its own record of each beacon's send time, never from
+the echoed copy. The client sends a feedback report on chan 3 every
+25–50 ms: per-channel counters, per-packet arrival dispersion (kernel
+monotonic stamps) and up to six NACK entries. The host's `RateEstimator`
+prices the path from these reports; there is no client-side rate control.
 
 Pinned by `beacon-v1.json`.
 
@@ -282,7 +334,8 @@ Pinned by `beacon-v1.json`.
 - **Audio:** Opus, 5 ms packets, hard CBR, RS 4+2 groups on chan 1. The
   host may gate transmission during announced silence (0x25) and replays a
   pre-roll ring on wake.
-- **Cursor:** shape and hotspot as metadata (0x24), up to 256 × 256 BGRA.
+- **Cursor:** shape and hotspot as metadata (0x24), BGRA with sides ≤ 256
+  and area ≤ 16,384 px (65,536 B); a larger crop is suppressed.
 
 Pinned by `video-v1.json` + `video-corpus-v1/`, `postures-v1.json`,
 `cursor-v1.json`; the audio interior composes the envelope and FEC formats
@@ -298,6 +351,11 @@ and is pinned by hand-built bytes in `AudioInteriorTests`.
 | File transfer | 0x1C–0x21 | 8 | 11 | [bulk channel](decisions/20260728-053300-lyte-bulk-channel.md) |
 | Clipboard images | 0x22 + a bulk transfer | 8 | 10 ∧ 12 | [clipboard](decisions/20260722-231500-lyte-clipboard.md) |
 
+InputEvent pointer coordinates and scroll deltas are f64 and must be
+finite: a NaN or ±Inf coordinate rejects the event
+(`input-coordinates-v1.json`). Finite values of any magnitude decode;
+bounding them to the screen is the host injector's job.
+
 Bulk transfers are chunked, resumable across sessions and credit-driven;
 the sender reads at most 128 unconfirmed chunks ahead, and the receive
 window is clamped to 256 chunks.
@@ -310,8 +368,9 @@ window is clamped to 256 chunks.
   fails if a committed vector file is modified, deleted, renamed or
   retyped; new files and README prose may be added. Changed semantics need
   a new versioned file and a wire-version decision.
-- `VectorRegenerationTests` rebuilds every committed file from its builder
-  in `LyteWireVectorGen`, so builders cannot drift from the bytes.
+- Every committed file is byte-for-byte its builder's output in
+  `LyteWireVectorGen` (authoring rules:
+  [Wire/Vectors/README.md](../Wire/Vectors/README.md)).
 - The same vectors verify byte-for-byte on macOS, Linux (pup) and
   wasm32-wasip1 (`Wire/Scripts/wasm-test.sh`).
 - A banked set of wire-v2 changes is recorded in the

@@ -55,13 +55,18 @@ public struct ClientCapabilitySession: Sendable {
 
     /// Returns the declaration exactly once. The shell sends these bytes as
     /// the first post-establishment reliable word.
+    /// - Throws: `CapabilityMessageError` when the local capabilities do
+    ///   not encode (a local configuration bug).
     public mutating func start() throws -> [UInt8]? {
         guard let declaration = negotiator.start() else { return nil }
         return try declaration.encode()
     }
 
     /// Handles only client-bound capability words. `nil` leaves all other
-    /// reliable message types to their owning client organs.
+    /// reliable message types to their owning client organs. Hostile or
+    /// unanswerable words become `.malformed`/`.refused` events.
+    /// - Throws: `ClientCapabilitySessionError.unexpectedNegotiatorEvent`
+    ///   only if LyteWire's negotiator breaks its event contract.
     public mutating func receive(
         _ bytes: [UInt8]
     ) throws -> ClientCapabilitySessionDecision? {
@@ -103,8 +108,15 @@ public struct ClientCapabilitySession: Sendable {
                     throw ClientCapabilitySessionError
                         .unexpectedNegotiatorEvent
                 }
+                // The ack's status byte makes it one byte longer than
+                // the update it echoes: an update at the ceiling cannot be
+                // answered and is malformed from this end's view.
+                guard let ack = try? acknowledgement.encode() else {
+                    return ClientCapabilitySessionDecision(
+                        event: .malformed(.update))
+                }
                 return ClientCapabilitySessionDecision(
-                    outboundReliable: [try acknowledgement.encode()],
+                    outboundReliable: [ack],
                     event: .updateAnswered(
                         accepted: acknowledgement.status == .accepted))
             } catch let failure as CapabilityNegotiationError {

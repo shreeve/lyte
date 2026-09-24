@@ -123,6 +123,7 @@ struct WireView: AsyncParsableCommand {
         } else {
             // No key argued: the pinned store supplies the host static and
             // the Keychain our persistent identity — plain 1-RTT Noise IK.
+            // --host may name the pin; the dial goes to its address.
             guard let pinned = PinnedHostStore.load().host(address: host),
                   let key = pinned.staticPublicKey
             else {
@@ -141,7 +142,7 @@ struct WireView: AsyncParsableCommand {
                 + Hex.string(identity.publicKey.prefix(4))
                 + "…")
             crypto = try NoiseTransportCrypto(
-                hostAddress: host,
+                hostAddress: pinned.address,
                 hostPort: hostPort == 0 ? port : hostPort,
                 hostStaticPublicKey: key,
                 staticKeys: identity)
@@ -276,6 +277,8 @@ struct WireView: AsyncParsableCommand {
                     print("wire-view: reliable idle frame \(frame) — \(outcome)")
                 case .teardownSent(let reason):
                     print("wire-view: teardown 0x0A sent (\(reason))")
+                case .orderedStreamPoisoned:
+                    break   // its protocol note says which lane
                 case .closed(let reason):
                     print("wire-view: session CLOSED — \(reason)")
                     finishBox.value?("session closed: \(reason)")

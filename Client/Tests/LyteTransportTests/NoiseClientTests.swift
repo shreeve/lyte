@@ -150,9 +150,9 @@ final class NoiseClientTests: XCTestCase {
             hostStaticPublicKey: NoiseKeyPair.generate().publicKey, // not the host's
             attempts: 2, attemptTimeoutMilliseconds: 40)
         XCTAssertThrowsError(try crypto.performHandshake(io: host)) {
-            guard case TransportCryptoError.handshakeFailed = $0 else {
-                return XCTFail("expected handshakeFailed, got \($0)")
-            }
+            XCTAssertEqual(($0 as? HandshakeExhausted)?
+                .counters.message1Transmissions, 2,
+                "a host that cannot open message 1 stays silent: exhausted")
         }
         XCTAssertEqual(host.message1Attempts, 2,
                        "the host saw message 1s it could not open")

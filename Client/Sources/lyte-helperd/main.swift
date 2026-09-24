@@ -10,8 +10,8 @@ import LyteHelperSecurity
 /// Security surface: one Mach service exporting three argument-free calls
 /// (`streamBegan`, `streamEnded`, `version`). A peer must satisfy the code
 /// requirement derived from this binary's own designated requirement with
-/// the app's identifier; XPC rejects anyone else before the delegate runs.
-/// The only privileged effect is awdl0's IFF_UP flag.
+/// the app's identifier; XPC rejects every other signer before the delegate
+/// runs. The only privileged effect is awdl0's IFF_UP flag.
 
 /// One per XPC connection; its holds are released exactly once.
 final class ConnectionHandler: NSObject, LyteHelperCommands, @unchecked Sendable {
@@ -21,8 +21,18 @@ final class ConnectionHandler: NSObject, LyteHelperCommands, @unchecked Sendable
     func streamEnded() { AwdlHoldController.shared.streamEnded(owner) }
 
     func version(reply: @escaping @Sendable (String) -> Void) {
-        reply(LyteHelper.version)
+        reply(HelperVersion.answer)
     }
+}
+
+/// This build's `version` answer (HelperCodeIdentity), taken once: main
+/// logs it at startup, so a rebuild that replaces the bundle under a
+/// running daemon cannot change what that daemon answers.
+enum HelperVersion {
+    static let answer = HelperCodeIdentity.versionAnswer(
+        protocolVersion: LyteHelper.version,
+        codeHash: (try? HelperCodeIdentity.currentProcessCodeHash())
+            ?? "unsigned")
 }
 
 final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
@@ -40,23 +50,20 @@ final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
     }
 }
 
-let listener = NSXPCListener(machServiceName: LyteHelper.machServiceName)
+let requirement: String
 do {
-    let requirement = try HelperClientRequirement.forCurrentProcess()
-    if CommandLine.arguments.contains("--print-client-requirement") {
-        print(requirement)
-        exit(0)
-    }
-    // Foundation asks XPC to reject a foreign peer before the delegate sees
-    // it. The exported root operations are never reachable without this DR.
-    listener.setConnectionCodeSigningRequirement(requirement)
+    requirement = try HelperClientRequirement.forCurrentProcess()
 } catch {
     NSLog("lyte-helperd: client requirement unavailable — refusing to start: \(error)")
     exit(EX_CONFIG)
 }
+if CommandLine.arguments.contains("--print-client-requirement") {
+    print(requirement)
+    exit(0)
+}
 
-// launchd stop, SMAppService.unregister (every app launch refreshes the
-// registration) and shutdown all arrive as SIGTERM: restore awdl0 first.
+// launchd stop, SMAppService re-registration and shutdown all arrive as
+// SIGTERM: restore awdl0 first.
 signal(SIGTERM, SIG_IGN)
 let termination = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
 termination.setEventHandler {
@@ -65,8 +72,9 @@ termination.setEventHandler {
 }
 termination.resume()
 
-NSLog("lyte-helperd: starting (v\(LyteHelper.version))")
+NSLog("lyte-helperd: starting (v\(HelperVersion.answer))")
+AwdlHoldController.shared.reconcileAfterUncleanExit()
+let listener = NSXPCListener(machServiceName: LyteHelper.machServiceName)
 let delegate = ListenerDelegate()
-listener.delegate = delegate
-listener.resume()
+HelperListener.activate(listener, requiring: requirement, delegate: delegate)
 RunLoop.main.run()

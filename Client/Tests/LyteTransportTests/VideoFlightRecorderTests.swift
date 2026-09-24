@@ -262,6 +262,18 @@ final class VideoFlightRecorderTests: XCTestCase {
         XCTAssertTrue(recorder.recentFrames().isEmpty)
     }
 
+    /// The periodic line carries the books, never the lifecycle ring that
+    /// grows by one event per renderer sample.
+    func testSummaryLineLeavesTheLifecycleRingOut() throws {
+        let recorder = VideoFlightRecorder(nowMicroseconds: { 1 })
+        for frame in UInt32(0)..<50 {
+            recorder.recordRecoveryLifecycle(kind: "probe", frame: frame)
+        }
+        XCTAssertEqual(recorder.snapshot().recoveryLifecycle.count, 50)
+        let line = try recorder.summaryJSONLine()
+        XCTAssertFalse(line.contains("\"probe\""), line)
+    }
+
     func testWrappedRingReportsNewestCue() {
         let recorder = makeRecorder(capacity: 2)
         for i: UInt32 in 1...3 {

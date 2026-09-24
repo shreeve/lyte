@@ -1,5 +1,6 @@
 import CNetIO
 import Glibc
+import HostWire
 @testable import lyte_host
 import LyteWire
 import XCTest
@@ -68,6 +69,54 @@ final class HandshakeLatchLoopbackTests: XCTestCase {
             try client.confirm(message2: reply.payload)
         }, .established)
         XCTAssertEqual(wire.handshakesSuperseded, 1)
+    }
+
+    /// An answer no client confirms within the client's whole retransmit
+    /// span is discarded then, not held until the 30 s liveness close.
+    func testAnAnswerNobodyConfirmsIsDiscardedAfterTheRetransmitSpan() throws {
+        let hostStatic = NoiseKeyPair.generate()
+        let wire = try SessionWire(
+            listener: HostListener(port: 0), peer: nil,
+            rateBitsPerSecond: 1_000_000)
+        defer { wire.shutdown(reason: .shuttingDown, lingerSeconds: 0) }
+        let replayer = try LoopbackDialer(
+            port: wire.localPort, hostStaticPublicKey: hostStatic.publicKey)
+        try replayer.dial()
+        let span = Double(Session.unconfirmedAnswerLifetimeNS) / 1e9
+        XCTAssertThrowsError(try awaitClient(
+            wire, hostStatic: hostStatic, timeoutSeconds: span + 1
+        ) {
+            XCTAssertNotNil(replayer.awaitMessage2(), "answered, never confirmed")
+        })
+        XCTAssertEqual(wire.handshakesAbandoned, 1)
+    }
+
+    /// A connect's first dial (message 1 at 0, 2, 4, 6 and 8 s) whose
+    /// message 2s are all lost but the last still establishes: each
+    /// verbatim retransmit is answered again, never dropped as a message
+    /// 1 an abandoned session answered.
+    func testAFirstDialWhoseEarlyAnswersAreLostStillEstablishes() throws {
+        let hostStatic = NoiseKeyPair.generate()
+        let wire = try SessionWire(
+            listener: HostListener(port: 0), peer: nil,
+            rateBitsPerSecond: 1_000_000)
+        defer { wire.shutdown(reason: .shuttingDown, lingerSeconds: 0) }
+        let client = try LoopbackDialer(
+            port: wire.localPort, hostStaticPublicKey: hostStatic.publicKey)
+        XCTAssertEqual(try awaitClient(
+            wire, hostStatic: hostStatic, timeoutSeconds: 15
+        ) {
+            try client.dial()
+            for _ in 0..<4 {
+                usleep(2_000_000)
+                client.drain() // every answer so far is lost
+                client.send(client.message1Datagram)
+            }
+            let reply = try XCTUnwrap(
+                client.awaitMessage2(), "the 8 s retransmit is answered")
+            try client.confirm(message2: reply.payload)
+        }, .established)
+        XCTAssertEqual(wire.handshakesAbandoned, 0)
     }
 
     /// A message 1 some session of this process already answered is

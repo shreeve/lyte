@@ -7,6 +7,9 @@
 set -eu
 
 TRIPLE="wasm32-unknown-wasip1"
+# Its own scratch path: the host toolchain's `swift test --scratch-path
+# .build` keeps its workspace state, checkouts and manifest caches apart.
+SCRATCH=".build/wasm"
 
 # Resolve the package root physically (pwd -P): the tests locate vectors
 # via #filePath, and a symlinked working directory (/tmp → /private/tmp)
@@ -27,18 +30,19 @@ cd "$WIRE_ROOT"
 echo "wasm-test: toolchain ${LYTE_WASM_TOOLCHAIN_VERSION}, SDK ${LYTE_WASM_SDK}, $("$WASMTIME" --version)"
 echo "wasm-test: building tests for ${TRIPLE} in ${WIRE_ROOT}"
 swiftly run swift build "+${LYTE_WASM_TOOLCHAIN_VERSION}" \
-    --swift-sdk "$LYTE_WASM_SDK" --build-tests
+    --swift-sdk "$LYTE_WASM_SDK" --scratch-path "$SCRATCH" --build-tests \
+    -Xswiftc -warnings-as-errors
 
 # `swift test` cannot drive XCTest on WASI (its in-process runner only
 # speaks swift-testing there and reports 0 tests); the built .xctest wasm
 # module is invoked directly instead.
-TEST_MODULE=".build/${TRIPLE}/debug/LyteWirePackageTests.xctest"
+TEST_MODULE="${SCRATCH}/${TRIPLE}/debug/LyteWirePackageTests.xctest"
 if [ ! -f "$TEST_MODULE" ]; then
     echo "wasm-test: test module missing after build: $TEST_MODULE" >&2
     exit 1
 fi
 
-OUTPUT_LOG="$(mktemp -t lyte-wasm-test)"
+OUTPUT_LOG="$(mktemp "${TMPDIR:-/tmp}/lyte-wasm-test.XXXXXX")"
 trap 'rm -f "$OUTPUT_LOG"' EXIT
 
 echo "wasm-test: running the suite under wasmtime"

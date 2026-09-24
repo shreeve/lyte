@@ -16,7 +16,7 @@ public func makePairingVectorFile() throws -> PairingVectorFile {
     PairingVectorFile(
         format: PairingVectorFile.expectedFormat,
         formatVersion: 1,
-        wireVersion: Int(WireVersion.major),
+        wireVersion: 1,
         draftVectors: makeDraftVectors(),
         exchangeVectors: try makeExchangeVectors(),
         messageVectors: try makeMessageVectors()

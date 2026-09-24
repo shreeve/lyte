@@ -19,6 +19,7 @@
 // with the pointer's edge geometry for the strip's reveal policy.
 
 import AppKit
+import Carbon.HIToolbox
 import LyteClientCore
 import LyteTransport
 import LyteWire
@@ -165,7 +166,8 @@ final class LyteInputCapture {
                 MacEvdevKeyMap.evdevButton(
                     forMacButtonNumber: event.buttonNumber),
                 pressed: pressed, onVideo: onVideo,
-                commandHeld: event.modifierFlags.contains(.command)), event)
+                commandHeld: event.modifierFlags.contains(.command),
+                modifiersDown: Self.modifiersDown(event.modifierFlags)), event)
         default:
             break
         }
@@ -215,19 +217,31 @@ final class LyteInputCapture {
     private func handleKey(_ event: NSEvent) -> NSEvent? {
         guard let window, event.window === window, window.isKeyWindow else { return event }
         let commandHeld = event.modifierFlags.contains(.command)
+        let iso = KBGetLayoutType(Int16(LMGetKbdType()))
+            == PhysicalKeyboardLayoutType(kKeyboardISO)
 
         switch event.type {
         case .keyDown:
-            let code = MacEvdevKeyMap.evdevKeycode(forMacKeyCode: event.keyCode)
+            let code = MacEvdevKeyMap.evdevKeycode(
+                forMacKeyCode: event.keyCode, isoKeyboard: iso)
             return execute(forwarding.keyDown(
-                code, isRepeat: event.isARepeat, commandHeld: commandHeld,
+                code, macKeyCode: event.keyCode,
+                isRepeat: event.isARepeat, commandHeld: commandHeld,
                 isLocalShortcut: commandHeld
-                    && Self.isLocalShortcut(event)), event)
+                    && Self.isLocalShortcut(event),
+                modifiersDown: Self.modifiersDown(event.modifierFlags),
+                capsLockOn: event.modifierFlags.contains(.capsLock)), event)
 
         case .keyUp:
-            let code = MacEvdevKeyMap.evdevKeycode(forMacKeyCode: event.keyCode)
-            return execute(
-                forwarding.keyUp(code, commandHeld: commandHeld), event)
+            let code = MacEvdevKeyMap.evdevKeycode(
+                forMacKeyCode: event.keyCode, isoKeyboard: iso)
+            return execute(forwarding.keyUp(
+                code, macKeyCode: event.keyCode, commandHeld: commandHeld),
+                event)
+
+        case .flagsChanged where event.keyCode == MacEvdevKeyMap.capsLockKeyCode:
+            return execute(forwarding.capsLockChanged(
+                on: event.modifierFlags.contains(.capsLock)), event)
 
         case .flagsChanged:
             guard let (keycode, deviceMask) =
@@ -238,6 +252,29 @@ final class LyteInputCapture {
         default:
             return event
         }
+    }
+
+    /// The plain modifier keys (evdev) physically down per this event's
+    /// flags: the device bits name the side; a flag without them counts as
+    /// the left key.
+    static func modifiersDown(_ flags: NSEvent.ModifierFlags) -> Set<UInt32> {
+        let groups: [(flag: NSEvent.ModifierFlags, left: UInt16, right: UInt16)] = [
+            (.shift, 0x38, 0x3C), (.control, 0x3B, 0x3E), (.option, 0x3A, 0x3D),
+        ]
+        var down = Set<UInt32>()
+        for group in groups where flags.contains(group.flag) {
+            let sides = [group.left, group.right].compactMap { keyCode in
+                MacEvdevKeyMap.modifierKeys[keyCode].flatMap {
+                    flags.rawValue & $0.deviceMask != 0 ? $0.evdev : nil
+                }
+            }
+            if sides.isEmpty, let left = MacEvdevKeyMap.modifierKeys[group.left] {
+                down.insert(left.evdev)
+            } else {
+                down.formUnion(sides)
+            }
+        }
+        return down
     }
 
     /// True when a menu item (the app's own commands, which own every

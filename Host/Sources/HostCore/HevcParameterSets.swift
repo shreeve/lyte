@@ -3,8 +3,14 @@
 //
 // Scope: the iHD encode dialect only — Main 8-bit 4:2:0, or Rext Main
 // 4:4:4 8-bit with recipe.chroma444 — one temporal layer, IPPP with one
-// reference, CTB 64, no tiles/PCM/scaling lists. NVENC writes its own
-// headers.
+// reference, CTB 64, no tiles/PCM/scaling lists.
+//
+// Any display size is conforming: the coded picture is the display size
+// rounded up to MinCbSizeY (8), and the SPS conformance window crops the
+// padding back off (at 4:2:0 to the even size at or below the display
+// size — the window counts whole chroma samples). general_level_idc is
+// the lowest Main-tier level, never below 5.0, whose picture size and
+// luma sample rate (Table A.8) cover the recipe.
 
 import LyteCore
 
@@ -18,9 +24,6 @@ public struct HevcHeaderRecipe: Hashable, Sendable {
     public var fpsDenominator: UInt32
     /// PPS init_qp (26 + init_qp_minus26).
     public var initialQP: Int32
-    /// general_level_idc (30 × the level number): 150 = L5.0, which
-    /// covers 2048×1280@60 with margin.
-    public var levelIdc: UInt32
     /// PPS diff_cu_qp_delta_depth; nil disables cu_qp_delta (CQP). Under
     /// rate control the driver writes per-CU deltas into the slice data,
     /// so the PPS must declare them or the decoder misparses every
@@ -32,7 +35,7 @@ public struct HevcHeaderRecipe: Hashable, Sendable {
     public init(
         width: UInt32, height: UInt32,
         fpsNumerator: UInt32 = 60, fpsDenominator: UInt32 = 1,
-        initialQP: Int32 = 24, levelIdc: UInt32 = 150,
+        initialQP: Int32 = 24,
         cuQpDeltaDepth: UInt32? = nil,
         chroma444: Bool = false
     ) {
@@ -41,10 +44,79 @@ public struct HevcHeaderRecipe: Hashable, Sendable {
         self.fpsNumerator = fpsNumerator
         self.fpsDenominator = fpsDenominator
         self.initialQP = initialQP
-        self.levelIdc = levelIdc
         self.cuQpDeltaDepth = cuQpDeltaDepth
         self.chroma444 = chroma444
     }
+
+    /// MinCbSizeY: log2_min_luma_coding_block_size_minus3 is 0.
+    public static let minimumCodingBlockSize: UInt32 = 8
+
+    /// pic_width_in_luma_samples: `width` rounded up to MinCbSizeY. The
+    /// encoder codes (and its surfaces hold) this many columns.
+    public var codedWidth: UInt32 { Self.roundedUp(width) }
+    /// pic_height_in_luma_samples: `height` rounded up to MinCbSizeY.
+    public var codedHeight: UInt32 { Self.roundedUp(height) }
+
+    /// The picture the conformance window leaves: the display size at
+    /// 4:4:4; at 4:2:0 the even size at or below it (at least 2), because
+    /// the window's offsets count chroma samples (SubWidthC = SubHeightC
+    /// = 2), so an odd display dimension loses its last column or row
+    /// rather than showing a column or row of padding.
+    public var displayedWidth: UInt32 { displayed(width) }
+    public var displayedHeight: UInt32 { displayed(height) }
+
+    private func displayed(_ size: UInt32) -> UInt32 {
+        chroma444 ? size : max(size & ~1, 2)
+    }
+
+    /// The level every session signals at least: 5.0. Table A.9 bounds
+    /// the bit rate by level too (Main tier 4.1 = 20 Mbit/s), and the
+    /// session's rate ceiling (50 Mbit/s by default) is not part of the
+    /// recipe, so the floor keeps small pictures from under-signalling it
+    /// further than 5.0 always has.
+    public static let minimumLevelIdc: UInt32 = 150
+
+    /// general_level_idc (30 × the level number): the lowest Main-tier
+    /// level of Table A.8, at least `minimumLevelIdc`, whose MaxLumaPs,
+    /// dimension bound (sqrt(8 × MaxLumaPs)) and MaxLumaSr cover the
+    /// coded picture at this frame rate; 6.2 when nothing does.
+    public var levelIdc: UInt32 {
+        let width = UInt64(codedWidth), height = UInt64(codedHeight)
+        let samples = width * height
+        let denominator = UInt64(max(fpsDenominator, 1))
+        let sampleRate = (samples * UInt64(fpsNumerator) + denominator - 1)
+            / denominator
+        for level in Self.levels where level.idc >= Self.minimumLevelIdc {
+            let maxSquare = 8 * level.maxLumaPs
+            if samples <= level.maxLumaPs, width * width <= maxSquare,
+               height * height <= maxSquare, sampleRate <= level.maxLumaSr {
+                return level.idc
+            }
+        }
+        return Self.levels[Self.levels.count - 1].idc
+    }
+
+    private static func roundedUp(_ size: UInt32) -> UInt32 {
+        (size + minimumCodingBlockSize - 1)
+            / minimumCodingBlockSize * minimumCodingBlockSize
+    }
+
+    /// Table A.8: general_level_idc, MaxLumaPs, MaxLumaSr.
+    private static let levels: [(idc: UInt32, maxLumaPs: UInt64, maxLumaSr: UInt64)] = [
+        (30, 36_864, 552_960),
+        (60, 122_880, 3_686_400),
+        (63, 245_760, 7_372_800),
+        (90, 552_960, 16_588_800),
+        (93, 983_040, 33_177_600),
+        (120, 2_228_224, 66_846_720),
+        (123, 2_228_224, 133_693_440),
+        (150, 8_912_896, 267_386_880),
+        (153, 8_912_896, 534_773_760),
+        (156, 8_912_896, 1_069_547_520),
+        (180, 35_651_584, 1_069_547_520),
+        (183, 35_651_584, 2_139_095_040),
+        (186, 35_651_584, 4_278_190_080),
+    ]
 }
 
 public enum HevcParameterSets {
@@ -141,11 +213,21 @@ public enum HevcParameterSets {
         } else {
             w.ue(1)    // chroma_format_idc = 4:2:0
         }
-        w.ue(recipe.width)  // pic_width_in_luma_samples
-        w.ue(recipe.height) // pic_height_in_luma_samples
-        // conformance_window_flag: the eye's dimensions are CTB-round
-        // already (2048×1280); a recipe needing cropping extends here.
-        w.u(0, 1)
+        w.ue(recipe.codedWidth)  // pic_width_in_luma_samples
+        w.ue(recipe.codedHeight) // pic_height_in_luma_samples
+        if recipe.codedWidth == recipe.displayedWidth,
+           recipe.codedHeight == recipe.displayedHeight {
+            w.u(0, 1)  // conformance_window_flag
+        } else {
+            // Offsets count chroma samples: SubWidthC = SubHeightC = 2
+            // at 4:2:0, 1 at 4:4:4; the displayed size divides exactly.
+            let sub: UInt32 = recipe.chroma444 ? 1 : 2
+            w.u(1, 1)  // conformance_window_flag
+            w.ue(0)    // conf_win_left_offset
+            w.ue((recipe.codedWidth - recipe.displayedWidth) / sub)   // right
+            w.ue(0)    // conf_win_top_offset
+            w.ue((recipe.codedHeight - recipe.displayedHeight) / sub) // bottom
+        }
         w.ue(0)        // bit_depth_luma_minus8
         w.ue(0)        // bit_depth_chroma_minus8
         w.ue(8)        // log2_max_pic_order_cnt_lsb_minus4 (POC 12 bit)

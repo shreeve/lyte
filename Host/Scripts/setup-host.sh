@@ -72,22 +72,22 @@ else
     todo "udev rule missing — WITHOUT IT CLIENT INPUT IS OFF; run:"
     cat <<'EOF'
     sudo tee /etc/udev/rules.d/60-lyte-uinput.rules >/dev/null <<'RULE'
-# Lyte: seat-user access to /dev/uinput for the CInputUinput input
-# backend — E2 primary (the Mutter RemoteDesktop injector is retired).
-# Shape carried over from Sunshine 60-sunshine.rules at its H2-exit
-# uninstall (2026-07-22).
+# Lyte: the seat user may open /dev/uinput, the host's only input
+# injector (CInputUinput's virtual keyboard, mouse and tablet).
 KERNEL=="uinput", SUBSYSTEM=="misc", OPTIONS+="static_node=uinput", GROUP="input", MODE="0660", TAG+="uaccess"
 RULE
     sudo udevadm control --reload && sudo udevadm trigger /dev/uinput
 EOF
 fi
 
-# --- 3. Optional SCHED_RR prerequisite -------------------------------
+# --- 3. Optional SCHED_RR prerequisite (hand-run hosts) ---------------
+# The service gets LimitRTPRIO=50 from its unit; a host run by hand from
+# this shell needs the drain (10) and audio (12) priorities itself.
 RTPRIO="$(ulimit -r 2>/dev/null || printf '0')"
-if [ "${RTPRIO:-0}" -ge 20 ] 2>/dev/null; then
-    ok "realtime scheduling allowance is $RTPRIO (need 20)"
+if [ "${RTPRIO:-0}" -ge 12 ] 2>/dev/null; then
+    ok "realtime scheduling allowance is $RTPRIO (hand-run hosts need 12)"
 else
-    todo "realtime scheduling allowance is ${RTPRIO:-0}; optional loaded-host latency prerequisite:"
+    todo "realtime scheduling allowance is ${RTPRIO:-0}; hand-run hosts only (the service's unit grants its own):"
     printf '    echo "%s - rtprio 20" | sudo tee /etc/security/limits.d/90-lyte-rtprio.conf\n' "$USER"
     todo "log out and back in after granting it; this script does not mutate limits"
 fi

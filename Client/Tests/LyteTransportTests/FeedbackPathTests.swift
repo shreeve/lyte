@@ -19,10 +19,6 @@ import LyteWireTestKit
 
 final class FeedbackPathTests: XCTestCase {
 
-    private static var beaconVectorsPath: String {
-        ClientTestPaths.repositoryRoot + "/Wire/Vectors/beacon-v1.json"
-    }
-
     // MARK: - Helpers
 
     /// A demux fed a known pattern: video seqs 0,1,2,4 (gap at 3, then a
@@ -481,7 +477,7 @@ final class FeedbackPathTests: XCTestCase {
 
         // The echo's bytes match the frozen W4a worked example, and the
         // host-side computation with its t4 gives the pinned offset/RTT.
-        let file = try BeaconVectorFile.load(from: Self.beaconVectorsPath)
+        let file = try BeaconVectorFile.loadCommitted()
         let example = file.clockWorkedExample
         XCTAssertEqual(Hex.string(echo.encode()), example.echoHex,
                        "our echo is byte-identical to the frozen vector")

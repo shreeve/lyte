@@ -28,6 +28,9 @@ const EVDEV_KEYS = {
   Delete: 111, AudioVolumeMute: 113, AudioVolumeDown: 114,
   AudioVolumeUp: 115, NumpadEqual: 117, Pause: 119, NumpadComma: 121,
   IntlYen: 124, MetaLeft: 125, MetaRight: 126, ContextMenu: 127,
+  // JIS Kana / Eisu: KEY_HENKAN / KEY_MUHENKAN, as the native client maps
+  // the same keys.
+  Lang1: 92, Lang2: 94,
   F13: 183, F14: 184, F15: 185, F16: 186, F17: 187, F18: 188, F19: 189,
   F20: 190, F21: 191, F22: 192, F23: 193, F24: 194,
 };
@@ -49,14 +52,20 @@ const BUTTON_BITS = [[1, 272], [2, 273], [4, 274], [8, 275], [16, 276]];
 // Activities.
 const META_KEYCODES = new Set([125, 126]);
 
-/** Canvas CSS pixels → host stream pixels (aspect-fit letterbox). */
-export function mapPointerToHost(canvas, clientX, clientY, hostW, hostH) {
+/**
+ * Canvas CSS pixels → host stream pixels (aspect-fit letterbox). Outside
+ * the stream it is null, or the nearest edge point when `clamp` is set (a
+ * drag that leaves the canvas keeps moving the host pointer).
+ */
+export function mapPointerToHost(canvas, clientX, clientY, hostW, hostH, clamp = false) {
   const rect = canvas.getBoundingClientRect();
   const scale = Math.min(rect.width / hostW, rect.height / hostH);
+  if (!(scale > 0)) return null;
   const ox = (rect.width - hostW * scale) / 2;
   const oy = (rect.height - hostH * scale) / 2;
   const hx = (clientX - rect.left - ox) / scale;
   const hy = (clientY - rect.top - oy) / scale;
+  if (clamp) return { x: Math.min(Math.max(hx, 0), hostW), y: Math.min(Math.max(hy, 0), hostH) };
   if (hx < 0 || hy < 0 || hx > hostW || hy > hostH) return null;
   return { x: hx, y: hy };
 }
@@ -70,8 +79,9 @@ const AXIS_FINISH_AFTER_MS = 150;
 
 /**
  * Captures pointer, wheel and keyboard on the video canvas.
- * `sendInput(kind, ...args)` delivers one event to the session (and its
- * datagrams to the carrier). `hostSize()` returns the stream geometry.
+ * `sendInput(kind, ...args)` delivers one event to the session, which
+ * coalesces motion and never drops an edge it accepted, so the held sets
+ * here are what the host holds. `hostSize()` returns the stream geometry.
  * Every key and button the host was told is down is released on blur and
  * on dispose, so the host never keeps a stuck key.
  */
@@ -83,7 +93,9 @@ export function installCanvasInput(canvas, { sendInput, hostSize }) {
   const send = (kind, ...args) => sendInput(kind, nowMicros(), ...args);
   const toHost = (event) => {
     const { width, height } = hostSize();
-    return mapPointerToHost(canvas, event.clientX, event.clientY, width, height);
+    return mapPointerToHost(
+      canvas, event.clientX, event.clientY, width, height, heldButtons.size > 0
+    );
   };
 
   // Pointer Events report only the first press and last release; chorded
@@ -175,11 +187,12 @@ export function installCanvasInput(canvas, { sendInput, hostSize }) {
 }
 
 /**
- * AudioWorklet PCM ring. Plays through a realtime AudioContext; `offline`
- * renders 100 ms into an OfflineAudioContext instead — for headless smoke
- * runs, where there is no output device to prove anything with.
+ * AudioWorklet PCM ring bounded at WASM's `maxQueuedFrames`. Plays through
+ * a realtime AudioContext; `offline` renders 100 ms into an
+ * OfflineAudioContext instead — for headless smoke runs, where there is no
+ * output device to prove anything with.
  */
-export async function createAudioRing({ offline = false } = {}) {
+export async function createAudioRing({ offline = false, maxQueuedFrames } = {}) {
   let ctx;
   if (offline) {
     if (typeof OfflineAudioContext !== "function") {
@@ -201,6 +214,7 @@ export async function createAudioRing({ offline = false } = {}) {
     numberOfInputs: 0,
     numberOfOutputs: 1,
     outputChannelCount: [2],
+    processorOptions: { maxQueuedFrames },
   });
   node.connect(ctx.destination);
   let framesPushed = 0;
@@ -216,11 +230,26 @@ export async function createAudioRing({ offline = false } = {}) {
     },
     framesPushed: () => framesPushed,
     renderOffline: () => (offline ? ctx.startRendering() : Promise.resolve(null)),
+    /** The ring's own counters (realtime only: an offline one has ended). */
+    stats: () =>
+      new Promise((resolve) => {
+        node.port.onmessage = (event) => resolve(event.data);
+        node.port.postMessage({ type: "stats" });
+      }),
     async close() {
       node.disconnect();
       if (!offline) await ctx.close().catch(() => {});
     },
   };
+}
+
+/** Frames of a rendered AudioBuffer carrying any non-zero sample. */
+function audibleFrames(buffer) {
+  if (!buffer) return 0;
+  const left = buffer.getChannelData(0);
+  let frames = 0;
+  for (let i = 0; i < left.length; i++) if (left[i] !== 0) frames += 1;
+  return frames;
 }
 
 /** WebCodecs Opus decode → interleaved stereo Float32. */
@@ -279,7 +308,12 @@ export async function createOpusDecoder(onPcm) {
     decode(bytes, timestampUs) {
       if (error) throw error;
       decoder.decode(
-        new EncodedAudioChunk({ type: "key", timestamp: timestampUs, data: bytes })
+        new EncodedAudioChunk({
+          type: "key",
+          timestamp: timestampUs,
+          data: bytes,
+          transfer: [bytes.buffer],
+        })
       );
     },
     outputs: () => outputs,
@@ -302,7 +336,10 @@ export async function runInteractionProofs({ pump, offlineAudio = false, timeout
   // Load the worklet while the input and clipboard legs run.
   let audioRing = null;
   let ringError = null;
-  const ringReady = createAudioRing({ offline: offlineAudio }).then(
+  const ringReady = createAudioRing({
+    offline: offlineAudio,
+    maxQueuedFrames: bridge.audioRingCeilingFrames,
+  }).then(
     (ring) => (audioRing = ring),
     (error) => (ringError = error)
   );
@@ -384,10 +421,18 @@ export async function runInteractionProofs({ pump, offlineAudio = false, timeout
         ? `PASS  audio/webcodecs — ${opus.detail} → ${pcmFrames} PCM frames`
         : `FAIL  audio/webcodecs — ${opus?.detail || "decoder produced no PCM"}`
     );
-    await Promise.race([audioRing.renderOffline(), sleep(2_000)]).catch(() => {});
+    const played = await Promise.race([
+      audioRing.mode === "offline"
+        ? audioRing.renderOffline().then(audibleFrames)
+        : audioRing.stats().then((stats) => stats.framesPlayed),
+      sleep(2_000).then(() => 0),
+    ]).catch(() => 0);
     note(
-      `PASS  audio-worklet/ring — AudioWorklet (${audioRing.mode}) loaded; ` +
-        `pushed ${audioRing.framesPushed()} frames (ctx=${audioRing.contextState})`
+      played > 0
+        ? `PASS  audio-worklet/ring — AudioWorklet (${audioRing.mode}) played ${played} ` +
+            `non-silent frames of ${audioRing.framesPushed()} pushed`
+        : `FAIL  audio-worklet/ring — AudioWorklet (${audioRing.mode}) played nothing ` +
+            `of ${audioRing.framesPushed()} pushed`
     );
   }
   opus?.close?.();

@@ -97,6 +97,10 @@ final class LoopbackDialer {
         return found
     }
 
+    /// The client's transport once `confirm` has run.
+    private var transport: NoiseTransport?
+    private var feedbackSeq: UInt16 = 0
+
     /// Completes the handshake from `message2` and sends one sealed CTRL
     /// datagram: the proof of key possession.
     func confirm(message2: [UInt8]) throws {
@@ -107,6 +111,20 @@ final class LoopbackDialer {
                 channel: .ctrl, seq: ChannelSeq(rawValue: 1),
                 frame: FrameNumber(rawValue: 0), timestamp: 0, fec: 0),
             plaintext: [CtrlMessageType.arqAck, 0, 0][...]))
+        self.transport = transport
+    }
+
+    /// One sealed feedback datagram: media-path evidence for the host's
+    /// lifecycle, whatever its interior says.
+    func sendFeedback() throws {
+        guard var transport else { return }
+        feedbackSeq &+= 1
+        send(try transport.sealDatagram(
+            Envelope(
+                channel: .feedback, seq: ChannelSeq(rawValue: feedbackSeq),
+                frame: FrameNumber(rawValue: 0), timestamp: 0, fec: 0),
+            plaintext: [0][...]))
+        self.transport = transport
     }
 }
 

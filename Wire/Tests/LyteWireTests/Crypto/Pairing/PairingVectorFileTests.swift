@@ -21,9 +21,8 @@ final class PairingVectorFileTests: XCTestCase {
         try XCTUnwrap(Hex.bytes(hex), "\(context): malformed hex")
     }
 
-    func testFileIdentity() throws {
+    func testDraftProvenancePresent() throws {
         let file = try loadFile()
-        XCTAssertEqual(file.identityProblems, [])
         XCTAssertFalse(file.draftVectors.lowOrder.cases.isEmpty)
         XCTAssertFalse(file.draftVectors.source.isEmpty)
         XCTAssertEqual(file.draftVectors.sourceSha256.count, 64)

@@ -78,6 +78,7 @@ public struct ClientPairing: Sendable {
     ///     run pins — MUST be the carrying Noise session's keys, or
     ///     confirmation fails.
     ///   - noiseHandshakeHash: the carrying session's transcript hash.
+    /// - Throws: `PairingPakeError` when the PIN or a key is malformed.
     public init(
         pin: [UInt8],
         clientStaticPublicKey: [UInt8],
@@ -94,6 +95,7 @@ public struct ClientPairing: Sendable {
 
     /// Opens the run: the encoded 0x0B share A for the reliable ordered
     /// stream. Callable exactly once.
+    /// - Throws: `PairingPakeError.invalidState` on a second call.
     public mutating func start() throws -> [UInt8] {
         guard state == .idle else {
             throw PairingPakeError.invalidState

@@ -1,31 +1,31 @@
 # Operations
 
-The reference rig, the host's installed layout, deploy and rollback, and the
-safety runbook. Fresh-machine installation is in
+The reference rig, the host's installed layout, deploy and rollback,
+pairing, uninstall, and the safety runbook. Everything after the rig
+section applies to any installed host. Fresh-machine installation is in
 [`Host/INSTALL.md`](../Host/INSTALL.md); facts that change from day to day
-(addresses in use, the deployed version) are in
+(the interface in use, the deployed version) are in
 [`HANDOFF.md`](../HANDOFF.md).
 
 ## The rig
 
 | Machine | Role | Facts |
 |---|---|---|
-| `pup` | Linux reference host | Ubuntu 26.04; Intel Meteor Lake GPU drives the panel (Direct Eye and VAAPI run there); RTX 4050 with no attached connectors. Wired `10.0.0.232` on `enxf8e43b7ede7c`, Wi-Fi `10.0.0.249`. Swift 6.1.2 at `/usr/local/bin/swift`. `ssh pup`. |
+| `pup` | Linux reference host | Ubuntu 26.04; Intel Meteor Lake GPU drives the panel (Direct Eye and VAAPI run there); RTX 4050 with no attached connectors. Wired `10.0.0.232` on `enxf8e43b7ede7c`, Wi-Fi `10.0.0.249` on `wlp0s20f3`. Swift 6.1.2 at `/usr/local/bin/swift`. `ssh pup`. |
 | the Mac | client and development machine | Xcode, the signing identity, `.build/Lyte.app` (the owner's interactive app) |
 
 The standing host is `lyte-host.service` on UDP **41151**, advertised over
 mDNS on the interface named by `--advertise-interface` in its `host.conf`.
 When that interface is down, discovery finds nothing. `Lyte.app` finds
 hosts only through mDNS (it has no manual address entry), so point
-`--advertise-interface` at a live interface and restart the service —
-while pup is Wi-Fi only that is `wlp0s20f3`:
+`--advertise-interface` at a live interface and restart the service:
 
 ```sh
-ssh pup "sed -i 's/--advertise-interface [^ ]*/--advertise-interface wlp0s20f3/' ~/.config/lyte/host.conf && sudo systemctl restart lyte-host"
+ssh pup "sed -i 's/--advertise-interface [^ ]*/--advertise-interface <iface>/' ~/.config/lyte/host.conf && sudo systemctl restart lyte-host"
 ```
 
-`lyte-cli wire-view --host <address> --host-port 41151 --host-key <key>`
-dials an address directly without discovery.
+`lyte-cli wire-view 0 --host <address> --host-port 41151 --host-key <key>`
+dials an address directly without discovery (`0` binds a free local port).
 
 **Agents on the Mac:** a sandboxed agent shell cannot reach pup: `ssh pup`
 fails with `No route to host` because macOS Local Network privacy blocks
@@ -73,27 +73,29 @@ to absolute paths; the installer writes the resolved paths into the unit).
 | Log | `~/.local/state/lyte/host.log` (0600); over 64 MiB it moves to `host.log.1` at the next start, and the running host moves its own output the same way at every session boundary and once a minute |
 | Unit | `/etc/systemd/system/lyte-host.service` (system unit with `User=`, ambient `CAP_SYS_ADMIN`, `Restart=always`) |
 
-`lyte-host --wire-listen` without `--seconds` is a service: it serves
-sessions in turn in one process, and its PID stays the same across
-sessions. A failed session or a display mode change exits the process and
-systemd restarts it. `--seconds N` or `--pair` serves one session.
+The host mints its identity on first run; it survives deploys, reinstalls
+and uninstalls. The service serves sessions in turn in one process
+([service loop](ARCHITECTURE.md#host-linux)).
 
 ## Deploy and roll back
 
-Run as the seat user in the host tree on pup (`~/src/lyte-host`), after a
-release build:
+Run as the seat user in the Host package (`Host/` in a checkout,
+`~/src/lyte-host` on pup), after a release build:
 
 ```sh
-cd ~/src/lyte-host                          # the Host package on pup (Host/ in the repo)
+cd ~/src/lyte-host                          # or Host/ in a checkout
 ./Scripts/deploy-host.sh --restart            # copy to versions/<id>, flip the link, restart
 ./Scripts/deploy-host.sh --status             # active and previous version, sha256 check
 ./Scripts/deploy-host.sh --rollback --restart # flip back (a second rollback undoes the first)
 ```
 
-A deploy never rewrites a version in place, and redeploying the active
-binary is a no-op. The newest five versions (`--keep N`) plus the active
-and previous ones are kept. Without `--restart` the running process keeps
-its open executable until the next restart.
+A deploy copies `.build/release/lyte-host` (and `lyte-audio-check` when
+built) into `versions/<first 12 hex of its sha256>/` and swaps
+`~/.local/bin/lyte-host` in one rename; it never rewrites a version in
+place, and redeploying the active binary is a no-op. The newest five
+versions (`--keep N`) plus the active and previous ones are kept. Without
+`--restart` the running process keeps its open executable until the next
+restart.
 
 Verify a restart:
 
@@ -125,16 +127,17 @@ sudo systemctl start lyte-host
 Pairing without a person at the client: run the `--pair` host in the
 background (`nohup … </dev/null > ~/lyte-pair.log 2>&1 &` — without the
 stdin redirect the ssh session never returns), read the PIN from its log,
-then pair from the Mac with the CLI, which writes the same pinned-host
-store and Keychain identity the app uses:
+then pair from the Mac with the signed CLI (`Scripts/build-cli.sh`), which
+writes the same pinned-host store and Keychain identity the app uses:
 
 ```sh
-lyte-cli wire-pair <address> --port 41151 --pin <PIN> --host-key <host key>
+.build/debug/lyte-cli wire-pair <address> --port 41151 --pin - --host-key <host key>   # PIN on stdin
 ```
 
-The client leaves as soon as the PIN exchange completes; the `--pair` host
-then exits cleanly on its own. Afterwards remove the capability and start
-the service as above.
+The client leaves without a teardown as soon as the PIN exchange
+completes; the `--pair` host sees its path go silent and exits within
+about a second. Afterwards remove the capability and start the service as
+above.
 
 The standing conf does not pass `--require-paired`, so the service admits
 any client that knows the host's public key (deferred: [TODO.md](../TODO.md)).
@@ -150,9 +153,9 @@ These rules protect the owner's live rig. They are repository law
   identity state; the pup gate does this automatically. Losing the key
   unpairs every client, with no undo.
 - **The standing port.** Never displace UDP 41151. Test hosts take a fresh
-  41xxx port and `--no-advertise`. `lyte-host` binds with `SO_REUSEPORT`,
-  so a second process on 41151 would silently share traffic rather than
-  fail.
+  41xxx port and `--no-advertise`. A listener on a port another socket
+  holds refuses to start, so a stray host on 41151 fails rather than
+  sharing the service's traffic.
 - **One Direct Eye.** Do not start a second Direct Eye (`lyte-host`,
   `lyte-eye`) while the service holds the DRM seat: parallel eyes black the
   interactive screen. `lyte-control-peer` has no eye and is safe beside the
@@ -161,13 +164,14 @@ These rules protect the owner's live rig. They are repository law
   unit runs `~/.local/bin/lyte-host` — a symlink the seat user owns, into
   `~/.local/share/lyte/versions/`, which the seat user also owns — with
   ambient `CAP_SYS_ADMIN` and `Restart=always`, and `host.conf` (also the
-  user's) supplies its arguments. Any code running as the seat user can
-  re-point the symlink or rewrite a version, kill the host (signals are
-  permitted by UID), and systemd re-executes the planted binary with
-  `CAP_SYS_ADMIN`, which is effectively root. The owner accepts this for
-  now; the pre-1.0 hardening (a root-owned executable, or file capabilities
-  on a root-owned copy) is in [TODO.md](../TODO.md). Treat the seat
-  account as root-equivalent on a host running the service.
+  user's) supplies its arguments and environment. Any code running as the
+  seat user can re-point the symlink, rewrite a version or set
+  `LD_PRELOAD` in `host.conf`, kill the host (signals are permitted by
+  UID), and systemd re-executes it with `CAP_SYS_ADMIN`, which is
+  effectively root. The owner accepts this for now; the pre-1.0 hardening
+  (a root-owned executable and root-owned knobs) is in
+  [TODO.md](../TODO.md). Treat the seat account as root-equivalent on a
+  host running the service.
 - **Hand-run binaries.** Keep them under the home build tree, not `/tmp`
   (`nosuid` strips file capabilities), `setcap cap_sys_admin+ep` the exact
   binary, and remove the capability afterwards.
@@ -177,10 +181,12 @@ These rules protect the owner's live rig. They are repository law
   refuses to run if its qdisc is already present, and refuses a port that
   `lyte-host.service` does not own; 41151 additionally needs
   `LYTE_BENCHMARK_ALLOW_STANDING_PORT=1`.
-- **Benchmarks.** Do not launch `Scripts/benchmark-app.sh` while the
-  owner's `Lyte.app` is open: both use the bundle identity
-  `dev.shreeve.lyte`, and a benchmark launch can replace the interactive
-  client. Live benchmarks and netem runs need the owner's go-ahead.
+- **Benchmarks.** `Scripts/benchmark-app.sh` publishes its diagnostic
+  build to the owner's `.build/Lyte.app`, under the same bundle identity
+  (`dev.shreeve.lyte`), refuses to start while any Lyte process runs, and
+  rebuilds the plain app when it exits (a failed restore prints the
+  `Scripts/make-app.sh release` to run). Live benchmarks and netem runs
+  need the owner's go-ahead.
 - **The pup gate** (`Scripts/CI/test-all-pup.sh`) builds in
   `~/src/lyte-gates/deterministic/` and never deploys or restarts the
   service.
@@ -209,4 +215,5 @@ Host/Scripts/uninstall-host.sh          # unit, link, versions, legal payload; k
 Host/Scripts/uninstall-host.sh --purge  # also host.conf and the logs
 ```
 
-Neither touches identity at either location.
+Neither touches identity at either location; remove it by hand only to
+unpair every client (there is no undo).

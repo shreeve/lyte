@@ -13,10 +13,6 @@ final class ClipboardImageVectorFileTests: XCTestCase {
         try ClipboardImageVectorFile.loadCommitted()
     }
 
-    func testFileIdentity() throws {
-        XCTAssertEqual(try loadFile().identityProblems, [])
-    }
-
     /// The file's coverage discipline: the marker carries roundtrips
     /// including a foreign-but-well-formed mime (format policy is the
     /// channel's, never the codec's) and the exact 255-byte mime

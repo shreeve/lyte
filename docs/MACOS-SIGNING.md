@@ -6,10 +6,9 @@ authorization for the client pairing key survives every rebuild — one
 
 ## The problem
 
-Lyte's pairing identity lives *inside* the login Keychain — today the X25519
-Noise static (`ClientNoiseIdentity`, a generic-password item via `SecItemAdd`);
-originally the GameStream era's RSA-2048 mutual-TLS key, where this lesson was
-learned. The first time a binary touches that item, macOS shows:
+Lyte's pairing identity lives *inside* the login Keychain: the X25519 Noise
+static (`ClientNoiseIdentity`, a generic-password item via `SecItemAdd`). The
+first time a binary touches that item, macOS shows:
 
 > "lyte-cli" wants to sign using key "…" in your keychain.
 
@@ -139,6 +138,14 @@ Scripts/make-app.sh             # release (default)
 Scripts/launch-app.sh
 ```
 
+Only `Scripts/make-app.sh --diagnostics release` builds a bundle whose
+signed Info.plist enables the diagnostic entry points (autoconnect, the
+benchmark driver); `LYTE_APP_DIAGNOSTICS` in the environment is ignored.
+`Scripts/benchmark-app.sh` builds that bundle at `.build/Lyte.app` itself —
+there is only ever one physical copy — and rebuilds the plain bundle when
+it exits. If that restore fails it prints a WARNING; run
+`Scripts/make-app.sh release` before using the app again.
+
 `make-app.sh` refuses to replace the bundle while any `Lyte` process is
 running, including its helper. Assembly and scripted launch share one
 non-waiting artifact lock, and publication checks process state again after
@@ -163,9 +170,10 @@ Scripts/sign-dev.sh .build/debug/lyte-cli
 Scripts/sign-dev.sh .build/Lyte.app
 ```
 
-Prefer these over `swift build --package-path Client --scratch-path "$PWD/.build"`
-whenever the binary will talk to a host, so the signature (and thus the
-keychain grant) stays intact.
+A bare `swift build --package-path Client --scratch-path .build` rewrites
+`.build/<configuration>/lyte-cli` as an ad-hoc-signed executable, replacing
+the stable signature and so the keychain grant. Run the signing script again
+before any CLI command that touches the client identity.
 
 ## How `sign-dev.sh` picks the identifier
 
@@ -238,7 +246,33 @@ Security surface:
   daemon exits a few seconds after it goes idle.
 - `SIGTERM` (launchd stop, `SMAppService` re-registration, shutdown)
   restores `awdl0` before the daemon exits.
+- A daemon killed while holding (crash, `SIGKILL`) cannot restore. It
+  leaves `/var/run/dev.shreeve.lyte.helper.awdl-held`, and its successor
+  raises `awdl0` before accepting clients. The app's stream end always
+  reaches the helper, so launchd starts that successor.
 - A route watcher reasserts the hold only on `awdl0`'s own up edge.
+
+### Registration
+
+Registering the daemon tells launchd to run whatever `lyte-helperd` is in
+the bundle as root, and the bundle is user-owned. So the app registers
+only when it has to. At launch it leaves an enabled registration alone
+when the registered helper answers `version` with the current value: the
+XPC protocol version plus the code-directory hash of the helper's signed
+code, which the helper reads once at startup and the app computes from the
+helper embedded in its own bundle. It leaves a registration awaiting Login
+Items approval alone too. It registers when there is no registration, or
+when the enabled helper is silent or stale: a rebuild re-signs the helper
+(changing its hash, so even a still-running old helper reads as stale), and
+launchd then refuses the old launch requirement with `EX_CONFIG`.
+
+Before any `register()`, the app validates the embedded helper on disk
+(`SecStaticCodeCheckValidity`, every architecture, strict). The helper must
+satisfy the app's own designated requirement with the helper's identifier.
+A helper signed by anyone else is refused, and an existing registration is
+left alone. Every XPC connection from the app, the version probe included,
+installs the same requirement, so the app never talks to a foreign helper.
+An unsigned app has no derivable requirement and never registers.
 
 ### Client authentication
 
@@ -254,15 +288,20 @@ Deriving from the helper rather than hard-coding a certificate preserves the
 exact signer selected by `sign-dev.sh`: the Apple Development anchor and leaf
 identity in the preferred path, or the Lyte Dev certificate root in the
 explicit fallback. Startup fails closed if the running code is invalid, its
-requirement has an unexpected shape, or the rewritten requirement cannot be
-compiled.
+requirement has an unexpected shape (anything but one identifier clause, a
+pinned signer, and no `or` alternative), or the rewritten requirement cannot
+be compiled.
+
+These checks exclude other signers, not other processes of the same user.
+Both development identities sign without a prompt, so same-user code can
+sign a binary that satisfies either requirement.
 
 The packaging gate asks the signed helper for the derived requirement, proves
 it is byte-for-byte the signed app's designated requirement, proves the app
 satisfies it, and proves both the same-signed helper (wrong identifier) and an
 Apple platform binary (wrong identity) fail it.
 
-## Gotchas (learned the hard way)
+## Gotchas
 
 - **`security find-identity -v` hides the fallback.** Apple selection uses
   `security find-identity -v -p codesigning`. The valid-only filter omits the
@@ -285,8 +324,3 @@ Apple platform binary (wrong identity) fail it.
   identity from the user's search list, or Lyte Dev from the dedicated
   keychain). A stable signing identity and DR keep the pairing key's ACL grant
   valid.
-- **A later bare `swift build --package-path Client --scratch-path .build`
-  overwrites the CLI artifact.** SwiftPM emits an
-  ad-hoc-signed executable at `.build/<configuration>/lyte-cli`, replacing the
-  stable signature installed by `Scripts/build-cli.sh`. Run the signing script
-  again immediately before any CLI command that touches the client identity.

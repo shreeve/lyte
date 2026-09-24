@@ -19,24 +19,28 @@ typedef struct lyte_netio lyte_netio;
 #define LYTE_NETIO_MAX_BATCH 64
 
 /* Distinct return for ECONNREFUSED on a connect()ed socket (send or
-   receive): a previous send drew ICMP port-unreachable — the peer's
-   socket is closed (the client exited). The caller ends the session
-   cleanly; it is not an I/O failure. */
-#define LYTE_NETIO_PEER_GONE (-2)
+   receive): a previous send drew ICMP port-unreachable. The ICMP is
+   unauthenticated and matches only the 4-tuple, so it is a hint that
+   the peer's socket closed, never proof; the caller decides what it
+   corroborates. It is not an I/O failure. */
+#define LYTE_NETIO_REFUSED (-2)
 /* Local UDP send-buffer exhaustion (ENOBUFS), retryable like EAGAIN but
    distinct for telemetry. */
 #define LYTE_NETIO_NO_BUFFER (-3)
 /* A soft network error: EHOSTUNREACH / EHOSTDOWN (a neighbor stopped
    answering ARP — a sleeping or roaming client), ENETUNREACH / ENETDOWN
-   (a route or link flap), EPERM (a netfilter drop). On a connected UDP
+   (a route or link flap), EPERM (a netfilter drop), EMSGSIZE (a learned
+   path MTU below the datagram). On a connected UDP
    socket Linux reports these through the pending socket error on the
    next send or receive, which consumes it. The caller counts it as loss
    and keeps the session; the liveness clock decides whether the peer is
    gone. */
 #define LYTE_NETIO_TRANSIENT (-4)
 
-/* Maps a send/receive errno to 0 (would block), one of the codes above,
-   or -1 (fatal). Exposed so the mapping is testable. */
+/* Maps a send/receive errno to 0 (would block, or EINTR: retry), one of
+   the codes above, or -1 (fatal). Exposed so the mapping is testable.
+   The send and receive calls below retry EINTR themselves, so none of
+   them reports a signal as a would-block. */
 int lyte_netio_errno_class(int err);
 
 /* One datagram to send. `tos` is the raw IPv4 TOS byte (DSCP << 2):
@@ -75,6 +79,14 @@ typedef struct {
    visible. Returns NULL with `err` filled on failure. */
 lyte_netio *lyte_netio_new(const char *bind_ip, uint16_t bind_port,
                            char *err, size_t errlen);
+
+/* The listening socket: lyte_netio_new, but it fails with `err` filled
+   when any socket already holds the port. SO_REUSEPORT (which the
+   session's media sockets need to join the listening port) would
+   otherwise let a second host on the same port silently share its
+   traffic. Port 0 takes a fresh kernel-assigned port the same way. */
+lyte_netio *lyte_netio_new_listener(const char *bind_ip, uint16_t bind_port,
+                                    char *err, size_t errlen);
 
 /* The locally bound port, host order — the answer after binding port 0. */
 uint16_t lyte_netio_local_port(const lyte_netio *n);
@@ -122,7 +134,7 @@ int lyte_netio_send_to(lyte_netio *n, const lyte_netio_pkt *pkt,
 
 /* Receives up to `count` (≤ LYTE_NETIO_MAX_BATCH) datagrams in one
    recvmmsg call. Returns the number received (0 if the socket would
-   block), LYTE_NETIO_PEER_GONE or LYTE_NETIO_TRANSIENT, or -1 with `err`
+   block), LYTE_NETIO_REFUSED or LYTE_NETIO_TRANSIENT, or -1 with `err`
    filled. */
 int lyte_netio_recv_batch(lyte_netio *n, lyte_netio_slot *slots, int count,
                           char *err, size_t errlen);

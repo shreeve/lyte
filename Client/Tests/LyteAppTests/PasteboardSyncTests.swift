@@ -66,6 +66,97 @@ final class PasteboardSyncTests: XCTestCase {
         XCTAssertEqual(NSBitmapImageRep(data: Data(png))?.pixelsWide, 5)
         XCTAssertEqual(Array(png.prefix(4)), [0x89, 0x50, 0x4E, 0x47])
     }
+
+    /// A writer clears (bumping the count) and fills the pasteboard under
+    /// that same count. A tick that lands in between must neither consume
+    /// the count (the copy would never be read) nor judge markers on the
+    /// empty board (a concealed item written next would be read unvetted).
+    func testATickBetweenClearAndWriteNeitherLosesNorLeaksTheCopy() throws {
+        let texts = Received()
+        let sync = PasteboardSync(
+            pasteboard: pasteboard,
+            onLocalChange: { texts.append(Array($0.utf8)) })
+
+        pasteboard.clearContents()
+        sync.poll()
+        let concealed = NSPasteboardItem()
+        concealed.setString("hunter2", forType: .string)
+        concealed.setData(Data(), forType: .init("org.nspasteboard.ConcealedType"))
+        pasteboard.writeObjects([concealed])
+        sync.poll()
+        sync.poll()
+        XCTAssertTrue(texts.all.isEmpty)
+
+        pasteboard.clearContents()
+        sync.poll()
+        let ordinary = NSPasteboardItem()
+        ordinary.setString("ordinary", forType: .string)
+        pasteboard.writeObjects([ordinary])
+        sync.poll()
+        sync.poll()
+        XCTAssertEqual(texts.all, [Array("ordinary".utf8)])
+    }
+
+    /// A password manager that writes its string and then, in a separate
+    /// call under the same count, adds the concealed marker: a tick in
+    /// between must not ship the string before the marker lands.
+    func testATickBetweenStringAndMarkerNeverShipsTheSecret() throws {
+        let texts = Received()
+        let sync = PasteboardSync(
+            pasteboard: pasteboard,
+            onLocalChange: { texts.append(Array($0.utf8)) })
+
+        pasteboard.clearContents()
+        pasteboard.setString("hunter2", forType: .string)
+        sync.poll()
+        pasteboard.setData(Data(), forType: .init("org.nspasteboard.ConcealedType"))
+        sync.poll()
+        sync.poll()
+        sync.poll()
+        XCTAssertTrue(texts.all.isEmpty, "the secret left before its marker")
+
+        // An ordinary sequential copy still arrives, one tick later.
+        pasteboard.clearContents()
+        pasteboard.setString("ordinary", forType: .string)
+        sync.poll()
+        XCTAssertTrue(texts.all.isEmpty)
+        sync.poll()
+        XCTAssertEqual(texts.all, [Array("ordinary".utf8)])
+        sync.poll()
+        XCTAssertEqual(texts.all.count, 1, "a consumed change was read twice")
+    }
+
+    /// A password manager's copy carries a nspasteboard.org marker; it
+    /// must never reach the host. The next ordinary copy still does.
+    func testMarkedCopiesNeverLeaveTheMac() throws {
+        let texts = Received()
+        let images = Received()
+        let sync = PasteboardSync(
+            pasteboard: pasteboard, intervalMilliseconds: 10,
+            onLocalChange: { texts.append(Array($0.utf8)) })
+        sync.onLocalImageChange = { images.append($0) }
+        sync.setImagesEnabled(true)
+        sync.start()
+        defer { sync.stop() }
+
+        for marker in PasteboardSync.privateMarkers {
+            let item = NSPasteboardItem()
+            item.setString("hunter2", forType: .string)
+            item.setData(Data(try pngBytes()), forType: .png)
+            item.setData(Data(), forType: marker)
+            pasteboard.clearContents()
+            pasteboard.writeObjects([item])
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        pasteboard.clearContents()
+        pasteboard.setString("ordinary", forType: .string)
+        let deadline = Date().addingTimeInterval(2)
+        while texts.all.isEmpty, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertEqual(texts.all, [Array("ordinary".utf8)])
+        XCTAssertTrue(images.all.isEmpty)
+    }
 }
 
 private final class Received: @unchecked Sendable {

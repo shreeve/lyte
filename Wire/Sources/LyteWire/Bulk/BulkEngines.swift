@@ -84,7 +84,7 @@ public struct BulkPossession: Hashable, Sendable {
     /// The wire encoding, under-claiming past the bitmap window
     /// (always legal).
     public var map: BulkChunkMap {
-        .describing(contiguousCount: contiguousCount, extras: extras)
+        .describing(normalized: contiguousCount, extras: extras)
     }
 
     /// The lowest not-held index at or past `cursor` and below
@@ -92,8 +92,7 @@ public struct BulkPossession: Hashable, Sendable {
     public func nextMissing(
         from cursor: UInt64, below chunkCount: UInt64
     ) -> UInt64? {
-        var index = max(cursor, 0)
-        if index < contiguousCount { index = contiguousCount }
+        var index = max(cursor, contiguousCount)
         while index < chunkCount {
             if !extras.contains(index) { return index }
             index += 1

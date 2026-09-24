@@ -110,8 +110,7 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
     public let hostPort: UInt16
     private let hostStaticPublicKey: [UInt8]
     private let staticKeys: NoiseKeyPair
-    private let attempts: Int
-    private let attemptTimeoutMilliseconds: Int
+    private let retry: ClientHandshakeInitiator.Retry
 
     // Each directional transport copy is used only under its own lock:
     // Noise's nonce/replay serialization holds without send waiting on
@@ -132,15 +131,14 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
     ///   - staticKeys: the client's Noise static identity; nil mints a
     ///     throwaway pair. Pairing and paired reconnects need the
     ///     persistent identity: the host pins exactly this static.
-    ///   - attempts/attemptTimeoutMilliseconds: the client-owned retry
-    ///     timer for a lost message 1 or 2.
+    ///   - retry: the client-owned retry schedule for a lost message 1
+    ///     or 2 (`.firstDial`, `.redial`, or the 5 × 1 s default).
     public init(
         hostAddress: String,
         hostPort: UInt16,
         hostStaticPublicKey: [UInt8],
         staticKeys: NoiseKeyPair? = nil,
-        attempts: Int = 5,
-        attemptTimeoutMilliseconds: Int = 1_000
+        retry: ClientHandshakeInitiator.Retry
     ) throws {
         guard hostStaticPublicKey.count == 32 else {
             throw TransportCryptoError.invalidHostKey(
@@ -150,8 +148,27 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
         self.hostPort = hostPort
         self.hostStaticPublicKey = hostStaticPublicKey
         self.staticKeys = staticKeys ?? NoiseKeyPair.generate()
-        self.attempts = attempts
-        self.attemptTimeoutMilliseconds = attemptTimeoutMilliseconds
+        self.retry = retry
+    }
+
+    /// The same, with the schedule spelled as attempts × milliseconds.
+    public convenience init(
+        hostAddress: String,
+        hostPort: UInt16,
+        hostStaticPublicKey: [UInt8],
+        staticKeys: NoiseKeyPair? = nil,
+        attempts: Int = 5,
+        attemptTimeoutMilliseconds: Int = 1_000
+    ) throws {
+        try self.init(
+            hostAddress: hostAddress,
+            hostPort: hostPort,
+            hostStaticPublicKey: hostStaticPublicKey,
+            staticKeys: staticKeys,
+            retry: .init(
+                attempts: attempts,
+                intervalMicroseconds:
+                    UInt64(max(1, attemptTimeoutMilliseconds)) * 1_000))
     }
 
     convenience init(
@@ -255,13 +272,8 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
         var initiator = try ClientHandshakeInitiator(
             hostStaticPublicKey: hostStaticPublicKey,
             clientStatic: staticKeys,
-            retry: .init(
-                attempts: attempts,
-                intervalMicroseconds: UInt64(max(1, attemptTimeoutMilliseconds))
-                    * 1_000))
-        var lastFailure = "no response from \(hostAddress):\(hostPort) "
-            + "after \(attempts) attempts"
-        var datagramsReceived = 0
+            retry: retry)
+        var lastRejection: String?
         try io.sendToHost(initiator.begin(
             nowMicros: SystemMonotonicClock.nowMicroseconds))
         while true {
@@ -273,21 +285,16 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
                 try io.sendToHost(carriage)
                 continue
             case .exhausted:
-                let counters = initiator.counters
-                throw TransportCryptoError.handshakeFailed(
-                    lastFailure + " [kernel accepted "
-                        + "\(counters.message1Transmissions + counters.retryChallengesAnswered) sends; "
-                        + "received \(datagramsReceived) datagrams: "
-                        + "\(counters.retryChallengesAnswered) retry challenges answered, "
-                        + "\(counters.otherDatagrams + counters.undecodableDatagrams) non-message-2, "
-                        + "\(counters.rejectedMessage2) rejected message-2]")
+                throw HandshakeExhausted(
+                    host: hostAddress, port: hostPort,
+                    counters: initiator.counters,
+                    lastRejection: lastRejection)
             }
             let remainingMs = Int(
                 (initiator.attemptDeadlineMicros &- now) / 1_000)
             guard let datagram = try io.receiveDatagram(
                 timeoutMilliseconds: max(1, min(remainingMs, 100))
             ) else { continue }
-            datagramsReceived += 1
             switch initiator.ingest(
                 datagram[...], nowMicros: SystemMonotonicClock.nowMicroseconds
             ) {
@@ -299,7 +306,7 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
                 retryChallengesAnswered += 1
                 stateLock.unlock()
             case .rejectedMessage2(let error):
-                lastFailure = "message 2 rejected: \(error)"
+                lastRejection = String(describing: error)
             case .established(let made):
                 // Lock order is state → send → receive everywhere; both
                 // copies and the hash publish as one atomic state.

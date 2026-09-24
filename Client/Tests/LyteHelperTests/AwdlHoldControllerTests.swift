@@ -18,14 +18,59 @@ final class AwdlHoldControllerTests: XCTestCase {
     }
 
     private func makeController(
-        _ recorder: Recorder, idleExitDelay: DispatchTimeInterval = .seconds(60)
+        _ recorder: Recorder, idleExitDelay: DispatchTimeInterval = .seconds(60),
+        heldMarker: URL? = nil
     ) -> AwdlHoldController {
         AwdlHoldController(configuration: .init(
             setAwdlUp: { recorder.record($0) },
             watchRoutes: false,
             backstopInterval: .seconds(60),
             idleExitDelay: idleExitDelay,
-            onIdle: { recorder.idle() }))
+            onIdle: { recorder.idle() },
+            heldMarker: heldMarker))
+    }
+
+    private func temporaryMarker() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lyte-helper-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        return directory.appendingPathComponent("awdl-held")
+    }
+
+    // MARK: - A killed predecessor
+
+    /// A daemon killed mid-hold (crash, SIGKILL) restores nothing; its
+    /// successor must raise awdl0 before serving anyone.
+    func testSuccessorRestoresTheRadioAKilledHolderLeftDown() throws {
+        let marker = try temporaryMarker()
+        let killed = makeController(Recorder(), heldMarker: marker)
+        killed.streamBegan(killed.makeOwner())
+        XCTAssertEqual(killed.outstandingHolds, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
+
+        let recorder = Recorder()
+        let successor = makeController(recorder, heldMarker: marker)
+        successor.reconcileAfterUncleanExit()
+        XCTAssertEqual(recorder.states, [true])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        successor.reconcileAfterUncleanExit()
+        XCTAssertEqual(recorder.states, [true], "reconciles once")
+    }
+
+    func testCleanReleaseLeavesNothingToReconcile() throws {
+        let marker = try temporaryMarker()
+        let clean = makeController(Recorder(), heldMarker: marker)
+        let owner = clean.makeOwner()
+        clean.streamBegan(owner)
+        clean.streamEnded(owner)
+        XCTAssertEqual(clean.outstandingHolds, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+
+        let recorder = Recorder()
+        makeController(recorder, heldMarker: marker).reconcileAfterUncleanExit()
+        XCTAssertEqual(recorder.states, [], "a clean exit is not second-guessed")
     }
 
     func testLastStreamOutRestoresTheRadio() {
@@ -122,6 +167,35 @@ final class AwdlHoldControllerTests: XCTestCase {
             Thread.sleep(forTimeInterval: 0.01)
         }
         XCTAssertEqual(recorder.idles, 1)
+    }
+
+    /// The app's launch-time version probe connects, asks, and leaves
+    /// without a hold: the daemon it spawned must still go idle.
+    func testConnectionThatNeverHeldStillLeadsToIdleExit() {
+        let recorder = Recorder()
+        let controller = makeController(recorder, idleExitDelay: .milliseconds(20))
+        controller.ownerVanished(controller.makeOwner())
+        let deadline = Date().addingTimeInterval(2)
+        while recorder.idles == 0, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertEqual(recorder.idles, 1)
+        XCTAssertEqual(recorder.states, [], "no hold, no radio change")
+    }
+
+    /// A daemon killed mid-hold is respawned by the app's end of that
+    /// stream, over a fresh connection that holds nothing. It must still
+    /// go idle rather than run until the app quits.
+    func testAnEndWithNothingHeldStillLeadsToIdleExit() {
+        let recorder = Recorder()
+        let controller = makeController(recorder, idleExitDelay: .milliseconds(20))
+        controller.streamEnded(controller.makeOwner())
+        let deadline = Date().addingTimeInterval(2)
+        while recorder.idles == 0, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertEqual(recorder.idles, 1)
+        XCTAssertEqual(recorder.states, [], "no hold, no radio change")
     }
 
     // MARK: - Interface control

@@ -59,6 +59,11 @@ public enum LyteUdpSessionEvent: Sendable {
     case bulkMessageReceived(BulkMessage)
     /// Our typed teardown left on the ordered stream.
     case teardownSent(SessionTeardownReason)
+    /// The host broke an ordered stream (CTRL or chan 8) with a message
+    /// over the shared ceiling; the session is ending with a typed
+    /// teardown because nothing on that stream can arrive in order again.
+    /// Fires once per session, before its `closed`.
+    case orderedStreamPoisoned
     /// The session reached `closed` — peer teardown, local teardown,
     /// or the 30 s liveness timeout. The owner stops the session.
     case closed(SessionCloseReason)
@@ -104,6 +109,8 @@ public struct LyteUdpSessionCounters: Sendable {
     public var malformedReliableMessages: UInt64 = 0
     /// 0x17 echo messages consumed.
     public var inputEchoMessagesReceived: UInt64 = 0
+    /// 0x03 path challenges answered with their 0x04 echo.
+    public var pathChallengesAnswered: UInt64 = 0
     /// Chan-1 datagrams routed to the audio receiver.
     public var audioDatagramsReceived: UInt64 = 0
     /// 0x18 flip requests sent, the session-start ask included.

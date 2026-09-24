@@ -149,7 +149,7 @@ public func makeSessionVectorFile() throws -> SessionVectorFile {
     return SessionVectorFile(
         format: SessionVectorFile.expectedFormat,
         formatVersion: 1,
-        wireVersion: Int(WireVersion.major),
+        wireVersion: 1,
         vectors: vectors
     )
 }

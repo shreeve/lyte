@@ -41,20 +41,31 @@ final class SessionBeaconClockTests: XCTestCase {
         XCTAssertNil(clock.takeDueBeacon(now: 5_499, hostMicroseconds: 4))
     }
 
+    /// Sends one beacon at host µs `t1` and returns its sequence.
+    private func sendBeacon(
+        _ clock: inout SessionBeaconClock, at t1: UInt64
+    ) -> UInt32 {
+        clock.armSessionStart(at: 0)
+        _ = clock.takeDueBeacon(now: 0, hostMicroseconds: t1)
+        return clock.noteBeaconSent()
+    }
+
     func testEchoOwnsSamplesMinimumRttAndNextBeaconMirror() {
         var clock = SessionBeaconClock(intervalNanoseconds: 1_000)
+        let firstSeq = sendBeacon(&clock, at: 1_000)
         let first = BeaconEcho(
-            beaconSeq: 7,
+            beaconSeq: firstSeq,
             hostSend: HostTimestamp(microseconds: 1_000),
             clientReceive: ClientTimestamp(microseconds: 3_100),
             clientSend: ClientTimestamp(microseconds: 3_200)
         )
         let firstSample = clock.accept(echo: first, hostMicroseconds: 1_300)
-        XCTAssertEqual(firstSample.offsetMicroseconds, 2_000)
-        XCTAssertEqual(firstSample.rttMicroseconds, 200)
+        XCTAssertEqual(firstSample?.offsetMicroseconds, 2_000)
+        XCTAssertEqual(firstSample?.rttMicroseconds, 200)
 
+        let slowerSeq = sendBeacon(&clock, at: 2_000)
         let slower = BeaconEcho(
-            beaconSeq: 8,
+            beaconSeq: slowerSeq,
             hostSend: HostTimestamp(microseconds: 2_000),
             clientReceive: ClientTimestamp(microseconds: 4_200),
             clientSend: ClientTimestamp(microseconds: 4_300)
@@ -73,10 +84,76 @@ final class SessionBeaconClockTests: XCTestCase {
         XCTAssertEqual(
             beacon.lastEcho,
             ClockBeacon.LastEcho(
-                beaconSeq: 8,
+                beaconSeq: slowerSeq,
                 clientSend: ClientTimestamp(microseconds: 4_300),
                 hostReceive: HostTimestamp(microseconds: 2_500)
             )
         )
+    }
+
+    func testRttComesFromTheHostsOwnT1NotTheEchoedOne() {
+        var clock = SessionBeaconClock(intervalNanoseconds: 1_000)
+        let seq = sendBeacon(&clock, at: 10_000)
+        // The echo lies about t1; the sample is still 10_400 − 10_000 −
+        // turnaround 100 = 300 µs.
+        let lying = BeaconEcho(
+            beaconSeq: seq,
+            hostSend: HostTimestamp(microseconds: UInt64.max),
+            clientReceive: ClientTimestamp(microseconds: 50_000),
+            clientSend: ClientTimestamp(microseconds: 50_100)
+        )
+        XCTAssertEqual(
+            clock.accept(echo: lying, hostMicroseconds: 10_400)?
+                .rttMicroseconds,
+            300)
+    }
+
+    func testHostileEchoesYieldNoSample() {
+        var clock = SessionBeaconClock(intervalNanoseconds: 1_000)
+        let seq = sendBeacon(&clock, at: 10_000)
+        func echo(
+            _ beaconSeq: UInt32, t2: UInt64, t3: UInt64
+        ) -> BeaconEcho {
+            BeaconEcho(
+                beaconSeq: beaconSeq,
+                hostSend: HostTimestamp(microseconds: 10_000),
+                clientReceive: ClientTimestamp(microseconds: t2),
+                clientSend: ClientTimestamp(microseconds: t3))
+        }
+        let hostile = [
+            // A beacon that never left.
+            echo(seq &+ 1, t2: 1, t3: 2),
+            // Turnaround longer than the whole round trip.
+            echo(seq, t2: 0, t3: 5_000),
+            // Negative turnaround: RTT past the round trip.
+            echo(seq, t2: 5_000, t3: 0),
+            // Turnaround that wraps the RTT to Int64.min.
+            echo(seq, t2: 0, t3: UInt64(Int64.max) + 1),
+            echo(seq, t2: 1, t3: UInt64.max),
+        ]
+        for message in hostile {
+            XCTAssertNil(clock.accept(echo: message, hostMicroseconds: 11_000))
+        }
+        XCTAssertEqual(clock.stats, SessionClockStats())
+
+        // The genuine echo still lands, once.
+        let genuine = echo(seq, t2: 70_000, t3: 70_200)
+        XCTAssertEqual(
+            clock.accept(echo: genuine, hostMicroseconds: 11_000)?
+                .rttMicroseconds,
+            800)
+        XCTAssertNil(clock.accept(echo: genuine, hostMicroseconds: 11_100),
+                     "one sample per beacon")
+    }
+
+    func testRoundTripsPastTenSecondsYieldNoSample() {
+        var clock = SessionBeaconClock(intervalNanoseconds: 1_000)
+        let seq = sendBeacon(&clock, at: 0)
+        let late = BeaconEcho(
+            beaconSeq: seq,
+            hostSend: HostTimestamp(microseconds: 0),
+            clientReceive: ClientTimestamp(microseconds: 1),
+            clientSend: ClientTimestamp(microseconds: 1))
+        XCTAssertNil(clock.accept(echo: late, hostMicroseconds: 10_000_001))
     }
 }

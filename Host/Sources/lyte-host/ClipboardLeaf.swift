@@ -38,6 +38,23 @@ import Foundation
 import HostWire
 import LyteWire
 
+/// A clipboard pipe transfer's stall clock. Transfers are pumped on the
+/// janitor tick through a 64 KiB pipe, so a large image takes many
+/// seconds; only a transfer that makes no progress for
+/// `timeoutSeconds` is abandoned.
+struct TransferStall {
+    static let timeoutSeconds = 2.0
+    private(set) var lastProgressAt: Double
+
+    init(at now: Double) { lastProgressAt = now }
+
+    mutating func progressed(at now: Double) { lastProgressAt = now }
+
+    func stalled(at now: Double) -> Bool {
+        now - lastProgressAt > Self.timeoutSeconds
+    }
+}
+
 #if os(Linux)
 import CDBus
 
@@ -64,8 +81,6 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
     private static let textReadCap = ClipboardWire.maxTextByteCount + 1
     private static let imageReadCap =
         ClipboardImageWire.maxImageByteCount + 1
-    /// A transfer with no progress for this long is abandoned, counted.
-    private static let transferTimeoutSeconds = 2.0
 
     /// What we own on the OS clipboard (the last applied client set),
     /// served on every SelectionTransfer while we stay owner.
@@ -97,7 +112,7 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
         var fd: Int32
         var kind: ReadKind
         var buffer: [UInt8] = []
-        var startedAt: Double
+        var stall: TransferStall
     }
     private var pendingRead: PendingRead?
 
@@ -106,7 +121,7 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
         var fd: Int32
         var data: [UInt8]
         var offset = 0
-        var startedAt: Double
+        var stall: TransferStall
     }
     private var pendingWrites: [PendingWrite] = []
 
@@ -129,7 +144,8 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
         bus = try SessionBus()
         let createReply = try bus.call(
             dest: Self.rdService, path: "/org/gnome/Mutter/RemoteDesktop",
-            interface: Self.rdService, method: "CreateSession")
+            interface: Self.rdService, method: "CreateSession",
+            timeoutMs: SessionBus.setupTimeoutMs)
         rdSession = try SessionBus.objectPathReply(createReply)
         dbus_message_unref(createReply)
     }
@@ -147,15 +163,17 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
             """)
         let startReply = try bus.call(
             dest: Self.rdService, path: rdSession,
-            interface: Self.sessionInterface, method: "Start")
+            interface: Self.sessionInterface, method: "Start",
+            timeoutMs: SessionBus.setupTimeoutMs)
         dbus_message_unref(startReply)
         // Empty options: observe only — becoming owner is apply()'s
         // job, never enablement's.
         let enableReply = try bus.call(
             dest: Self.rdService, path: rdSession,
             interface: Self.sessionInterface, method: "EnableClipboard",
+            timeoutMs: SessionBus.setupTimeoutMs,
             appendArgs: { iter in
-                try self.bus.appendOptions(&iter, [])
+                try self.bus.appendEmptyOptions(&iter)
             })
         dbus_message_unref(enableReply)
 
@@ -334,8 +352,8 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
             let fd = try SessionBus.unixFd(fromReply: reply)
             Self.setNonBlocking(fd)
             pendingRead = PendingRead(
-                fd: fd, kind: kind, startedAt: SystemMonotonicClock.nowSeconds
-            )
+                fd: fd, kind: kind,
+                stall: TransferStall(at: SystemMonotonicClock.nowSeconds))
             pumpRead()
         } catch {
             readsAbandoned += 1
@@ -353,6 +371,7 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
                 Glibc.read(read.fd, buf.baseAddress, buf.count)
             }
             if n > 0 {
+                read.stall.progressed(at: SystemMonotonicClock.nowSeconds)
                 read.buffer.append(contentsOf: scratch[0..<n])
                 if read.buffer.count >= cap {
                     // Over the ceiling: deliver what we have; the session
@@ -371,8 +390,7 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
                 return
             }
             if errno == EAGAIN || errno == EWOULDBLOCK {
-                if SystemMonotonicClock.nowSeconds - read.startedAt
-                    > Self.transferTimeoutSeconds {
+                if read.stall.stalled(at: SystemMonotonicClock.nowSeconds) {
                     close(read.fd)
                     pendingRead = nil
                     readsAbandoned += 1
@@ -432,7 +450,7 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
             Self.setNonBlocking(fd)
             pendingWrites.append(PendingWrite(
                 serial: serial, fd: fd, data: owned.bytes,
-                startedAt: SystemMonotonicClock.nowSeconds))
+                stall: TransferStall(at: SystemMonotonicClock.nowSeconds)))
             pumpWrites()
         } catch {
             transfersFailed += 1
@@ -451,12 +469,12 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
                 }
                 if n > 0 {
                     write.offset += n
+                    write.stall.progressed(at: SystemMonotonicClock.nowSeconds)
                     continue
                 }
                 if errno == EINTR { continue }
                 if errno == EAGAIN || errno == EWOULDBLOCK {
-                    if SystemMonotonicClock.nowSeconds - write.startedAt
-                        > Self.transferTimeoutSeconds {
+                    if write.stall.stalled(at: SystemMonotonicClock.nowSeconds) {
                         finished = true // requestor stalled: abandon
                     }
                     break
@@ -504,8 +522,7 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
     // MARK: - D-Bus plumbing
 
     /// Appends `a{sv}` holding one "mime-types" → `as` entry (the
-    /// SetSelection options shape; SessionBus's generic options helper
-    /// carries only scalar variants).
+    /// SetSelection options shape).
     private func appendMimeTypesOptions(
         _ iter: inout DBusMessageIter, _ mimes: [String]
     ) throws {
