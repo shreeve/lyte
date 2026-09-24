@@ -5,27 +5,20 @@ import LyteWire
 
 /// Publishes `globalThis.lyteBrowser`, the page's only door into the
 /// sans-IO core; this file converts values and owns the single session.
-/// Datagrams cross in one `Uint8Array` of `u16 big-endian length + bytes`
-/// records, so a burst costs one call and one copy each way. A step with
-/// nothing to act on returns `null`.
+/// A burst crosses as one `Uint8Array` each way, copied once into WASM
+/// memory and sliced there: received datagrams as `u16 big-endian length +
+/// u32 big-endian age µs + bytes` records, datagrams to send as `u16
+/// length + bytes`. A step with nothing to act on returns `null`.
 enum BrowserBridge {
     // The page's single-threaded pump owns this; JavaScriptKit calls are serial.
     nonisolated(unsafe) private static var session: BrowserControlSession?
     nonisolated(unsafe) private static var closures: [JSClosure] = []
 
-    static func runFrozenContracts() -> [ContractResult] {
-        [FrozenEnvelopeContract.verify(), FrozenNoiseContract.verify()]
-    }
-
     static func install() {
         var api: [String: JSValue] = [
-            "envelopeVectorHex": FrozenEnvelopeContract.datagramHex.jsValue,
-            "noiseMsg1CiphertextHex": DatagramCarrierProof.noiseMsg1CiphertextHex.jsValue,
-            "wireBudgetBytes": Double(DatagramCarrierProof.wireBudgetBytes).jsValue,
             "conductorBeatMicroseconds":
                 Double(VideoBeatConductor.Config().beatPeriodMicroseconds).jsValue,
-            "vectorNames": [FrozenEnvelopeContract.vectorName, FrozenNoiseContract.vectorName]
-                .joined(separator: "; ").jsValue,
+            "audioRingCeilingFrames": Double(BrowserAudioPlayout.ringCeilingFrames).jsValue,
         ]
         func expose(_ name: String, _ body: @escaping ([JSValue]) -> JSValue) {
             let closure = JSClosure { body($0) }
@@ -33,18 +26,6 @@ enum BrowserBridge {
             api[name] = closure.jsValue
         }
 
-        // Frozen contracts and carrier proofs.
-        expose("runFrozenContracts") { _ in resultsToJS(runFrozenContracts()) }
-        expose("verifyEnvelopeHex") { args in
-            verifyEnvelopeHex(string(args, 0) ?? FrozenEnvelopeContract.datagramHex)
-        }
-        expose("verifyCarrierEcho") { args in
-            carrierResultToJS(DatagramCarrierProof.verifyEcho(
-                kind: string(args, 0) ?? "opaque",
-                sentHex: string(args, 1) ?? "",
-                recvHex: string(args, 2) ?? ""
-            ))
-        }
         expose("classifyAnnexBBytes") { args in
             guard let bytes = bytes(args, 0) else {
                 return ["ok": false.jsValue, "detail": "not Uint8Array".jsValue].jsValue
@@ -68,15 +49,18 @@ enum BrowserBridge {
         expose("controlIngestBatch") { args in
             withSession { session in
                 // A malformed batch is a page bug, not session evidence.
-                guard let packed = bytes(args, 0), let datagrams = unpack(packed) else {
+                guard let packed = bytes(args, 0), let records = received(packed) else {
                     return .null
                 }
                 let now = micros(args, 1)
                 let before = session.currentStatus
                 var merged: BrowserControlSession.Step?
-                for datagram in datagrams {
-                    let step = session.ingest(datagram: datagram, nowMicros: now)
-                    merged = merged.map { merge($0, step) } ?? step
+                for record in records {
+                    let step = session.ingest(
+                        datagram: packed[record.bytes],
+                        arrivalMicros: now &- min(record.ageMicros, now),
+                        nowMicros: now)
+                    if merged == nil { merged = step } else { merged!.append(step) }
                 }
                 guard let merged else { return .null }
                 return quietOrStep(merged, statusBefore: before)
@@ -119,9 +103,15 @@ enum BrowserBridge {
             }
             return scheduledFrameToJS(frame)
         }
-        expose("mediaNotePresented") { args in
-            if let frame = uint32(args, 0) { session?.notePresented(frameNumber: frame) }
+        expose("mediaNotePresented") { _ in
+            session?.notePresented()
             return .undefined
+        }
+        expose("mediaTakeAbandoned") { _ in
+            guard let frames = session?.takeAbandonedFrames(), !frames.isEmpty else {
+                return .null
+            }
+            return frames.map { Double($0).jsValue }.jsValue
         }
         expose("mediaNoteDropped") { args in
             if let frame = uint32(args, 0) { session?.noteDropped(frameNumber: frame) }
@@ -134,6 +124,7 @@ enum BrowserBridge {
                 "presented": Double(counters.framesPresented).jsValue,
                 "skippedLate": Double(counters.framesSkippedLate).jsValue,
                 "notPresentable": Double(counters.framesNotPresentable).jsValue,
+                "undecodable": Double(counters.framesUndecodable).jsValue,
                 "decodeBacklogEvicted": Double(counters.decodeBacklogEvicted).jsValue,
                 "fecImpossible": Double(counters.fecImpossible).jsValue,
                 "shardsDropped": Double(counters.shardsDropped).jsValue,
@@ -163,34 +154,6 @@ enum BrowserBridge {
         }
 
         JSObject.global["lyteBrowser"] = api.jsValue
-    }
-
-    /// Paints the frozen-contract results. Page JS owns the session proofs
-    /// and `lyteSessionPassed`.
-    static func paintProofPage(results: [ContractResult]) {
-        let document = JSObject.global.document
-        let passed = results.allSatisfy(\.passed)
-        if let status = document.getElementById("status").object {
-            status.textContent = .string(passed ? "PASS" : "FAIL")
-            status.className = .string(passed ? "pass" : "fail")
-        }
-        if let log = document.getElementById("log").object {
-            log.textContent = .string(results.map(\.line).joined(separator: "\n"))
-        }
-        if let meta = document.getElementById("meta").object {
-            meta.textContent = .string(
-                """
-                LyteClientBrowser — proof harness over WebTransport
-                Contracts: \(FrozenEnvelopeContract.vectorName); \(FrozenNoiseContract.vectorName)
-                Carrier: opaque WT datagrams via lyte-wt-sidecar (ciphertext only)
-                Control: Noise IK + PIN PAKE + capabilities via LyteClientSession
-                Video: assemble → Conductor → WebCodecs → WebGPU
-                Input/clipboard: sealed CTRL (InputEvent/echo, ClipboardSet/Announce)
-                Audio: sealed Opus → AudioDepacketizer → WebCodecs → AudioWorklet
-                """
-            )
-        }
-        JSObject.global.lyteContractsPassed = .boolean(passed)
     }
 
     // MARK: Arguments (a page mistake never traps the WASM instance)
@@ -225,11 +188,17 @@ enum BrowserBridge {
         return UInt32(value)
     }
 
+    /// One copy, straight from the JS buffer into the array's storage.
     private static func bytes(_ args: [JSValue], _ index: Int) -> [UInt8]? {
         guard index < args.count,
               let typed = JSTypedArray<UInt8>(from: args[index])
         else { return nil }
-        return typed.withUnsafeBytes { Array($0) }
+        let count = typed.length
+        guard count > 0 else { return [] }
+        return [UInt8](unsafeUninitializedCapacity: count) { buffer, initialized in
+            typed.copyMemory(to: buffer)
+            initialized = count
+        }
     }
 
     private static func inputBody(_ args: [JSValue]) -> InputEvent.Body? {
@@ -295,17 +264,8 @@ enum BrowserBridge {
             "unsealFailures": Double(counters.unsealFailures).jsValue,
             "message1Transmissions": Double(counters.message1Transmissions).jsValue,
             "idrRequestsSent": Double(counters.idrRequestsSent).jsValue,
+            "feedbackReportsSent": Double(counters.feedbackReportsSent).jsValue,
         ].jsValue
-    }
-
-    private static func merge(
-        _ into: BrowserControlSession.Step, _ next: BrowserControlSession.Step
-    ) -> BrowserControlSession.Step {
-        var merged = next
-        merged.outbound = into.outbound + next.outbound
-        merged.events = into.events + next.events
-        merged.scheduled = into.scheduled + next.scheduled
-        return merged
     }
 
     private static func quietOrStep(
@@ -376,21 +336,28 @@ enum BrowserBridge {
         return out
     }
 
-    static func unpack(_ packed: [UInt8]) -> [[UInt8]]? {
-        var datagrams: [[UInt8]] = []
+    /// The received batch's records, or nil when it is malformed.
+    static func received(
+        _ packed: [UInt8]
+    ) -> [(bytes: Range<Int>, ageMicros: UInt64)]? {
+        var records: [(bytes: Range<Int>, ageMicros: UInt64)] = []
         var offset = 0
         while offset < packed.count {
-            guard offset + 2 <= packed.count else { return nil }
+            guard offset + 6 <= packed.count else { return nil }
             let length = Int(packed[offset]) << 8 | Int(packed[offset + 1])
-            offset += 2
+            var age: UInt64 = 0
+            for byte in packed[(offset + 2)..<(offset + 6)] {
+                age = age << 8 | UInt64(byte)
+            }
+            offset += 6
             guard offset + length <= packed.count else { return nil }
-            datagrams.append(Array(packed[offset..<offset + length]))
+            records.append((offset..<(offset + length), age))
             offset += length
         }
-        return datagrams
+        return records
     }
 
-    // MARK: Contracts
+    // MARK: Frames
 
     private static func classifyFrameBytes(_ bytes: [UInt8]) -> JSValue {
         let classification = AnnexBCheck.classifyFrame(bytes)
@@ -402,50 +369,16 @@ enum BrowserBridge {
             "summary": AnnexBCheck.summary(of: bytes).jsValue,
         ].jsValue
     }
+}
 
-    private static func resultsToJS(_ results: [ContractResult]) -> JSValue {
-        [
-            "passed": results.allSatisfy(\.passed).jsValue,
-            "lines": results.map(\.line).joined(separator: "\n").jsValue,
-            "count": Double(results.count).jsValue,
-        ].jsValue
-    }
-
-    private static func carrierResultToJS(_ result: ContractResult) -> JSValue {
-        [
-            "passed": result.passed.jsValue,
-            "detail": result.detail.jsValue,
-            "lines": result.line.jsValue,
-            "name": result.name.jsValue,
-        ].jsValue
-    }
-
-    private static func verifyEnvelopeHex(_ hex: String) -> JSValue {
-        let name = "envelope-hex/js-supplied"
-        if hex.filter({ !$0.isWhitespace }).lowercased() == FrozenEnvelopeContract.datagramHex {
-            return resultsToJS([FrozenEnvelopeContract.verify()])
-        }
-        guard let datagram = Hex.bytes(hex) else {
-            return resultsToJS([
-                ContractResult(name: name, passed: false, detail: "malformed hex from JavaScript"),
-            ])
-        }
-        do {
-            let (envelope, payload) = try Envelope.decode(datagram)
-            let matched = try envelope.encode(payload: Array(payload)) == datagram
-            return resultsToJS([
-                ContractResult(
-                    name: name,
-                    passed: matched,
-                    detail: matched
-                        ? "JS-supplied datagram round-tripped (\(datagram.count) B, chan=\(envelope.channel.rawValue))"
-                        : "re-encode diverged from JS-supplied bytes"
-                ),
-            ])
-        } catch {
-            return resultsToJS([
-                ContractResult(name: name, passed: false, detail: "codec threw: \(error)"),
-            ])
-        }
+extension BrowserControlSession.Step {
+    /// Folds a later step of the same burst into this one, in place.
+    fileprivate mutating func append(_ next: Self) {
+        outbound.append(contentsOf: next.outbound)
+        events.append(contentsOf: next.events)
+        scheduled.append(contentsOf: next.scheduled)
+        status = next.status
+        detail = next.detail
+        passed = next.passed
     }
 }

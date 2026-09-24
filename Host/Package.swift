@@ -12,6 +12,8 @@ var products: [Product] = [
     .library(name: "HostSession", targets: ["HostSession"]),
     .library(name: "HostAudio", targets: ["HostAudio"]),
     .library(name: "HostWire", targets: ["HostWire"]),
+    // Test equipment for other packages' gates; only test targets link it.
+    .library(name: "HostWireTestKit", targets: ["HostWireTestKit"]),
     // A DRM-free HostWire peer over UDP, the browser proof's host.
     .executable(name: "lyte-control-peer", targets: ["lyte-control-peer"]),
 ]

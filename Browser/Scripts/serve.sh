@@ -133,7 +133,7 @@ EOF
 )"
 echo "browser-serve: http://127.0.0.1:${PORT}/"
 echo "browser-serve: open that URL in Google Chrome (primary gate)"
-echo "browser-serve: expect PASS for the frozen contracts and every session-proof line"
+echo "browser-serve: expect PASS for every session-proof line"
 echo "browser-serve: control PIN ${PIN} (also in ${PEER_META})"
 echo "browser-serve: Ctrl-C to stop"
 cd "$SERVE_DIR"

@@ -1,6 +1,5 @@
 #!/usr/bin/env node
-// Drive system Chrome against the proof page: frozen WASM contracts, a
-// control session (Noise / pair / capabilities / teardown) through
+// Drive system Chrome against the proof page: a control session (Noise / pair / capabilities / teardown) through
 // lyte-wt-sidecar --udp-peer → lyte-control-peer --emit-corpus, then
 // Conductor-scheduled WebCodecs + WebGPU present, sealed input echo,
 // clipboard text round-trip, and Opus → AudioWorklet. Run it through
@@ -13,9 +12,7 @@ import { join, extname } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
 
-const require = createRequire(import.meta.url);
 const browserRoot = fileURLToPath(new URL("..", import.meta.url));
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const serveDir = join(browserRoot, ".serve");
@@ -42,20 +39,6 @@ const mime = {
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
-}
-
-async function ensureWs() {
-  try {
-    return require("ws");
-  } catch {
-    const prefix = await mkdtemp(join(tmpdir(), "lyte-b5-npm-"));
-    execFileSync(
-      "npm",
-      ["install", "--silent", "--no-fund", "--no-audit", "--prefix", prefix, "ws@8"],
-      { stdio: "inherit" }
-    );
-    return require(join(prefix, "node_modules", "ws"));
-  }
 }
 
 function buildControlPeer() {
@@ -199,16 +182,18 @@ async function startStaticServer() {
   return { server, port };
 }
 
-async function cdp(wsUrl, WebSocket) {
+// Node 24+ ships the browser WebSocket; the DevTools protocol needs no
+// package.
+async function cdp(wsUrl) {
   const ws = new WebSocket(wsUrl);
   await new Promise((resolve, reject) => {
-    ws.once("open", resolve);
-    ws.once("error", reject);
+    ws.addEventListener("open", resolve, { once: true });
+    ws.addEventListener("error", reject, { once: true });
   });
   let nextId = 0;
   const pending = new Map();
-  ws.on("message", (raw) => {
-    const msg = JSON.parse(String(raw));
+  ws.addEventListener("message", (event) => {
+    const msg = JSON.parse(String(event.data));
     if (msg.id && pending.has(msg.id)) {
       const { resolve, reject } = pending.get(msg.id);
       pending.delete(msg.id);
@@ -226,11 +211,10 @@ async function cdp(wsUrl, WebSocket) {
 }
 
 const mustPass = [
-  "PASS  envelope-v1/nominal-video-shard",
-  "PASS  noise-v1/snow-ik-25519-chachapoly-sha256",
   "PASS  control-session/noise-pair-caps",
   "PASS  control-session/clipboard-cap",
   "PASS  control-session/teardown",
+  "PASS  control-session/feedback",
   "PASS  frame-present/classify",
   "PASS  frame-present/webcodecs",
   "PASS  frame-present/webgpu",
@@ -249,7 +233,6 @@ if (!existsSync(join(serveDir, "LyteClientBrowser.wasm"))) {
   throw new Error("missing .serve/ — run Browser/Scripts/smoke-chrome.sh (it builds first)");
 }
 
-const WebSocket = await ensureWs();
 console.log("browser-smoke: building lyte-control-peer…");
 const peerBin = buildControlPeer();
 const { proc: peerProc, meta: peerMeta } = await startControlPeer(peerBin);
@@ -306,7 +289,7 @@ try {
     `http://127.0.0.1:${debugPort}/json/new?${encodeURIComponent(pageUrl)}`,
     { method: "PUT" }
   ).then((r) => r.json());
-  const { send, ws } = await cdp(created.webSocketDebuggerUrl, WebSocket);
+  const { send, ws } = await cdp(created.webSocketDebuggerUrl);
   await send("Runtime.enable");
   await send("Page.enable");
 
@@ -314,7 +297,6 @@ try {
   while (Date.now() < deadline) {
     const result = await send("Runtime.evaluate", {
       expression: `(() => JSON.stringify({
-        contracts: typeof lyteContractsPassed === 'boolean' ? lyteContractsPassed : null,
         session: typeof lyteSessionPassed === 'boolean' ? lyteSessionPassed : null,
         status: document.getElementById('status')?.textContent || '',
         log: document.getElementById('log')?.textContent || '',
@@ -323,8 +305,7 @@ try {
       returnByValue: true,
     });
     const payload = JSON.parse(result.result.value);
-    const settled = payload.session !== null || payload.contracts === false;
-    if (!settled) {
+    if (payload.session === null) {
       await sleep(250);
       continue;
     }
@@ -355,7 +336,6 @@ try {
         {
           passed: true,
           adapter: sidecarMeta.adapter,
-          shape: sidecarMeta.shape,
           url: sidecarMeta.url,
           controlPeerPort: peerMeta.listenPort,
           log: payload.log,

@@ -64,7 +64,9 @@ final class SansIOArchitectureTests: XCTestCase {
         // every effect.
         Boundary(
             path: "Browser/Sources/LyteClientBrowserCore",
-            allowedImports: ["LyteClientSession", "LyteCore", "LyteWire"]
+            allowedImports: [
+                "LyteClientCore", "LyteClientSession", "LyteCore", "LyteWire",
+            ]
         ),
     ]
 

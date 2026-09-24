@@ -4,6 +4,10 @@
 # Browser/.serve/ (the WASM package, the page, and the video corpus the
 # control peer emits). Idempotent; incremental after the first build.
 #
+# Nothing is fetched at run time: the WASI shim PackageToJS imports is the
+# pinned @bjorn3/browser_wasi_shim 0.4.1 npm build vendored under
+# Page/vendor/, which the page's import map resolves.
+#
 # Toolchain pins: Scripts/lib/wasm-toolchain.sh. Nothing is auto-installed.
 # Environment: LYTE_BROWSER_CONFIGURATION (release|debug; default release).
 set -eu
@@ -22,7 +26,7 @@ echo "browser-build: Swift ${LYTE_WASM_TOOLCHAIN_VERSION}, SDK ${LYTE_WASM_SDK},
 swiftly run swift package "+${LYTE_WASM_TOOLCHAIN_VERSION}" \
     --swift-sdk "$LYTE_WASM_SDK" \
     --allow-writing-to-package-directory \
-    js -c "$CONFIGURATION" --use-cdn --product LyteClientBrowser
+    js -c "$CONFIGURATION" --product LyteClientBrowser
 
 PACKAGE_OUT="${BROWSER_ROOT}/.build/plugins/PackageToJS/outputs/Package"
 [ -f "${PACKAGE_OUT}/LyteClientBrowser.wasm" ] || {
@@ -38,6 +42,7 @@ rm -rf "$SERVE_DIR"
 mkdir -p "$SERVE_DIR/corpus"
 cp -R "${PACKAGE_OUT}/." "$SERVE_DIR/"
 cp "${BROWSER_ROOT}"/Page/index.html "${BROWSER_ROOT}"/Page/*.js "$SERVE_DIR/"
+cp -R "${BROWSER_ROOT}/Page/vendor" "$SERVE_DIR/"
 # lyte-control-peer --emit-corpus reads frames from here.
 cp "${CORPUS_DIR}"/frame-00?-*.annexb "$SERVE_DIR/corpus/"
 

@@ -33,6 +33,10 @@ export class SessionPump {
     this.failure = null;
     this.ingested = 0;
     this.batches = 0;
+    // Page-clock time spent inside the WASM ingest call, and the bytes it
+    // consumed: the boundary's cost per inbound byte.
+    this.ingestMicros = 0;
+    this.ingestBytes = 0;
     this.onScheduled = null;
   }
 
@@ -90,17 +94,23 @@ export class SessionPump {
 
   /** Ingests everything the reader has queued as one batch. */
   drain() {
-    const batch = this.reader.take();
-    if (batch.length) {
-      this.ingested += batch.length;
+    const { datagrams, arrivals } = this.reader.take();
+    if (datagrams.length) {
+      this.ingested += datagrams.length;
       this.batches += 1;
-      this.apply(this.bridge.controlIngestBatch(packDatagrams(batch), nowMicros()));
+      const started = performance.now();
+      const now = nowMicros();
+      const packed = packDatagrams(datagrams, arrivals, now);
+      const step = this.bridge.controlIngestBatch(packed, now);
+      this.ingestMicros += (performance.now() - started) * 1000;
+      this.ingestBytes += packed.length;
+      this.apply(step);
     }
     if (this.reader.done && !this.failed && !this.closed) {
       this.status = "failed";
       this.failure = this.failure || `carrier closed: ${this.reader.error?.message || "EOF"}`;
     }
-    return batch.length;
+    return datagrams.length;
   }
 
   tick() {
