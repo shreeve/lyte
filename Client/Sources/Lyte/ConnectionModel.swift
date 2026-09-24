@@ -39,6 +39,12 @@ final class ConnectionModel {
 
     var phase: Phase = .pickHost
 
+    private let services: ConnectionServices
+
+    init(services: ConnectionServices = .live) {
+        self.services = services
+    }
+
     /// Fresh-connect patience (the respawn-gap hunt in connectLyte):
     /// silence keeps re-dialing until this budget runs out. Sized to
     /// cover a full host restart and hardware initialization
@@ -157,7 +163,7 @@ final class ConnectionModel {
     private var roaming: RoamingPolicy?
     private var roamingTask: Task<Void, Never>?
     private(set) var roamingStatus: RoamingStatus = .attached
-    private var pathWatcher: NetworkPathWatcher?
+    private var stopPathWatch: (@MainActor () -> Void)?
     private var sessionEpoch = 0
 
     /// The stream overlay's roaming banner; nil while the session is
@@ -207,7 +213,7 @@ final class ConnectionModel {
     /// window. Unpaired hosts go through the pairing sheet instead
     /// (ConnectView routes them there).
     func connectLyte(_ host: DiscoveredLyteHost) async {
-        guard let pinned = PinnedHostStore.load().host(publicKeyHash: host.publicKeyHash),
+        guard let pinned = services.loadPins().host(publicKeyHash: host.publicKeyHash),
               let hostStatic = pinned.staticPublicKey else {
             phase = .failed(.ordinary(
                 "\(host.name) is not paired — use Pair… first"))
@@ -239,8 +245,7 @@ final class ConnectionModel {
                 "authenticationUI":
                     identityAuthenticationUI == .allow ? "allow" : "fail",
             ])
-            identity = try await ClientNoiseIdentityProvider.shared.identity(
-                authenticationUI: identityAuthenticationUI)
+            identity = try await services.identity(identityAuthenticationUI)
             HandshakeWitness.record("identityLookupCompleted")
         } catch {
             HandshakeWitness.record("identityLookupFailed", fields: [
@@ -296,8 +301,7 @@ final class ConnectionModel {
         // still fails immediately: patience is only for silence.
         connectGeneration += 1
         let generation = connectGeneration
-        let deadline = SystemMonotonicClock.nowMicroseconds
-            + Self.freshConnectBudgetMicroseconds
+        let deadline = services.now() + Self.freshConnectBudgetMicroseconds
         var dialAddress = host.address
         var dialPort = host.port
         var round = 0
@@ -327,7 +331,7 @@ final class ConnectionModel {
                     "host": dialAddress,
                     "port": String(dialPort),
                 ])
-                try await Task.detached { try candidate.start() }.value
+                try await services.startSession(candidate)
                 HandshakeWitness.record("sessionStartCompleted", fields: [
                     "round": String(round),
                 ])
@@ -335,7 +339,7 @@ final class ConnectionModel {
                       case .connecting = phase else {
                     // The human cancelled mid-dial: this session has
                     // no owner — close it politely and walk away.
-                    Task.detached { candidate.close(reason: .shuttingDown) }
+                    services.endSession(candidate, .goodbye)
                     return
                 }
                 lyte = candidate
@@ -351,7 +355,7 @@ final class ConnectionModel {
                       case .connecting = phase else { return }
                 guard case TransportCryptoError.handshakeFailed(let why)
                         = error, why.hasPrefix("no response"),
-                      SystemMonotonicClock.nowMicroseconds < deadline else {
+                      services.now() < deadline else {
                     if let endpointError = error as? TransportEndpointError,
                        let problem = LocalNetworkAccessProblem.endpointError(
                         endpointError)
@@ -369,7 +373,7 @@ final class ConnectionModel {
                     + "it may be restarting; still trying…")
                 // The quiet re-browse: if the reborn host is already
                 // advertising, dial where it lives NOW.
-                let sighting = await LyteDiscovery.browse(duration: 2.0)
+                let sighting = await services.browse(2.0)
                     .first { $0.publicKeyHash == host.publicKeyHash }
                 guard generation == connectGeneration,
                       case .connecting = phase else { return }
@@ -405,7 +409,7 @@ final class ConnectionModel {
                 publicKeyHash: pkh, address: host.address, port: host.port)
         }
         phase = .streaming
-        AgentState.shared.streamBegan()
+        services.streamBegan()
     }
 
     /// The connecting screen's Cancel: invalidates the in-flight
@@ -508,7 +512,7 @@ final class ConnectionModel {
         view.hostCursor = HostCursorImage.cursor(from: shape, scale: scale)
     }
 
-    private func handleLyteEvent(_ event: LyteUdpSessionEvent) {
+    func handleLyteEvent(_ event: LyteUdpSessionEvent) {
         switch event {
         case .capabilitiesAgreed(let agreed):
             statusLine = "capabilities agreed — idle silence "
@@ -570,20 +574,37 @@ final class ConnectionModel {
         case .idleFrameReceived, .teardownSent, .protocolNote:
             break
         case .closed(let reason):
-            switch reason {
-            case .localTeardown:
-                break   // endLyteSession is already driving the close
-            case .peerTeardown(let why):
-                // A typed goodbye is a decision, not weather — the
-                // host MEANT to end this; roaming would fight it.
-                endLyteSession(reason: why == .takenOver
-                    ? "session taken over by another client" : nil)
-            case .livenessTimeout:
-                // F-5: the liveness verdict was the hotel experience —
-                // a dead frame and a "host unreachable" bounce. Now it
-                // begins roaming: keep the window, hunt the identity.
+            switch Self.closeVerdict(reason) {
+            case .ignore:
+                break
+            case .end(let message):
+                endLyteSession(reason: message)
+            case .roam:
                 beginRoamingAfterLoss()
             }
+        }
+    }
+
+    /// What a closed session means for its window.
+    enum CloseVerdict: Equatable {
+        /// Our own teardown; whoever closed it is already driving the end.
+        case ignore
+        /// Keep the window and hunt the host identity.
+        case roam
+        /// End the window; a message turns it into a failure screen.
+        case end(String?)
+    }
+
+    static func closeVerdict(_ reason: SessionCloseReason) -> CloseVerdict {
+        switch reason {
+        case .localTeardown:
+            return .ignore
+        case .peerTeardown(.takenOver):
+            return .end("session taken over by another client")
+        case .peerTeardown(.shuttingDown):
+            return .end(nil)
+        case .livenessTimeout:
+            return .roam
         }
     }
 
@@ -603,12 +624,7 @@ final class ConnectionModel {
         if let lyte = lyteSession {
             lyteSession = nil
             sessionEpoch += 1
-            Task.detached {
-                // A peer/liveness close has nobody to say goodbye to;
-                // a local end sends the typed 0x0A and lingers for
-                // its ACK.
-                lyte.close(reason: .shuttingDown)
-            }
+            services.endSession(lyte, .goodbye)
         }
         lyteFrozen = false
         hostAudioNegotiated = false
@@ -640,7 +656,7 @@ final class ConnectionModel {
         videoDeliveryBooks.reset()
         videoInMeter.reset()
         lyteVideoSize = .zero
-        AgentState.shared.streamEnded()
+        services.streamEnded()
         if let reason {
             phase = .failed(.ordinary(reason))
         } else {
@@ -692,9 +708,9 @@ final class ConnectionModel {
         guard tier.isSelectable, tier != chromaTier else { return }
         chromaTier = tier
         if let pkh = hostPublicKeyHash {
-            var store = PinnedHostStore.load()
+            var store = services.loadPins()
             store.setChromaTier(publicKeyHash: pkh, tier: tier)
-            try? store.save()
+            try? services.savePins(store)
         }
         // Flip = clean reconnect (typed goodbye + immediate re-dial;
         // the F-5 machinery is the proven path).
@@ -758,13 +774,11 @@ final class ConnectionModel {
             targetPublicKeyHash: publicKeyHash,
             address: address, port: port)
         roamingStatus = .attached
-        let watcher = NetworkPathWatcher()
-        pathWatcher = watcher
         // The Mac hopped networks: HS-12 migration gets the policy's
         // grace to carry the session (the feedback cadence keeps
         // sending from the new source unprompted); the ladder runs
         // only if the path stays dark.
-        watcher.start { [weak self] _ in
+        stopPathWatch = services.watchPath { [weak self] in
             Task { @MainActor [weak self] in
                 self?.roamingInput { policy, now in
                     policy.pathChanged(now: now)
@@ -778,8 +792,8 @@ final class ConnectionModel {
         roamingTask = nil
         roaming = nil
         roamingStatus = .attached
-        pathWatcher?.stop()
-        pathWatcher = nil
+        stopPathWatch?()
+        stopPathWatch = nil
     }
 
     /// The 30 s liveness verdict: the peer is gone. Keep the window
@@ -824,13 +838,7 @@ final class ConnectionModel {
         clipboardImagesNegotiated = false
         bulkCoordinator?.sessionEnded()
         bulkNegotiated = false
-        Task.detached {
-            if goodbye {
-                lyte.close(reason: .shuttingDown)
-            } else {
-                lyte.stop()   // machine closed — nobody to say it to
-            }
-        }
+        services.endSession(lyte, goodbye ? .goodbye : .silent)
     }
 
     /// One policy interaction: mutate under the injected wall clock,
@@ -840,7 +848,7 @@ final class ConnectionModel {
         _ mutate: (inout RoamingPolicy, UInt64) -> [RoamingAction]
     ) {
         guard var policy = roaming else { return }
-        let now = SystemMonotonicClock.nowMicroseconds
+        let now = services.now()
         let actions = mutate(&policy, now)
         roaming = policy
         roamingStatus = policy.status
@@ -862,9 +870,10 @@ final class ConnectionModel {
         roamingTask?.cancel()
         roamingTask = nil
         guard let deadline = roaming?.nextDeadline else { return }
+        let clock = services.now
         roamingTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                let now = SystemMonotonicClock.nowMicroseconds
+                let now = clock()
                 if now < deadline {
                     try? await Task.sleep(
                         nanoseconds: (deadline - now) * 1_000)
@@ -882,7 +891,8 @@ final class ConnectionModel {
     /// policy (the beginScan/scanCompleted contract).
     private func runRoamingScan() {
         Task { @MainActor [weak self] in
-            let hosts = await LyteDiscovery.browse(duration: 2.0)
+            guard let browse = self?.services.browse else { return }
+            let hosts = await browse(2.0)
             let sightings = hosts.compactMap { host -> RoamingSighting? in
                 guard let pkh = host.publicKeyHash else { return nil }
                 return RoamingSighting(
@@ -906,7 +916,7 @@ final class ConnectionModel {
     ) {
         detachWireSession(goodbye: true)
         guard let pkh = hostPublicKeyHash,
-              let pinned = PinnedHostStore.load().host(publicKeyHash: pkh),
+              let pinned = services.loadPins().host(publicKeyHash: pkh),
               let hostStatic = pinned.staticPublicKey else {
             endLyteSession(
                 reason: "\(hostName ?? "host") is no longer paired")
@@ -917,8 +927,7 @@ final class ConnectionModel {
             // A roaming dial follows a successfully established session,
             // so the process cache must already hold the authenticated
             // identity. Never summon SecurityAgent from an automatic path.
-            guard let identity =
-                    ClientNoiseIdentityProvider.shared.cachedIdentity
+            guard let identity = services.cachedIdentity()
             else {
                 roamingInput { policy, now in policy.dialFailed(now: now) }
                 return
@@ -948,9 +957,10 @@ final class ConnectionModel {
         config.core.capabilities = config.core.capabilities
             .declaringChroma(tier: chromaTier)
         let lyte = makeLyteSession(crypto: crypto, config: config)
+        let start = services.startSession
         Task { @MainActor [weak self] in
             do {
-                try await Task.detached { try lyte.start() }.value
+                try await start(lyte)
                 self?.adoptReconnectedSession(
                     lyte, crypto: crypto, address: address, port: port)
             } catch {
@@ -973,7 +983,7 @@ final class ConnectionModel {
         guard roaming != nil, case .streaming = phase else {
             // The human disconnected mid-dial: this session has no
             // owner — close it politely and walk away.
-            Task.detached { lyte.close(reason: .shuttingDown) }
+            services.endSession(lyte, .goodbye)
             return
         }
         lyteSession = lyte
@@ -993,14 +1003,14 @@ final class ConnectionModel {
         // The dial hints follow the host (identity-keyed pin; the
         // refresh keeps pairedAt and every per-host preference).
         if let pkh = hostPublicKeyHash {
-            var store = PinnedHostStore.load()
+            var store = services.loadPins()
             if let pinned = store.host(publicKeyHash: pkh),
                let key = pinned.staticPublicKey {
                 store.pin(
                     staticPublicKey: key, name: pinned.name,
                     address: address, port: port,
                     pairedAt: pinned.pairedAt)
-                try? store.save()
+                try? services.savePins(store)
             }
         }
         roamingInput { policy, now in
@@ -1049,15 +1059,15 @@ final class ConnectionModel {
     var startHostMutedPreference: Bool {
         get {
             guard let pkh = hostPublicKeyHash,
-                  let pinned = PinnedHostStore.load().host(publicKeyHash: pkh)
+                  let pinned = services.loadPins().host(publicKeyHash: pkh)
             else { return true }   // the CL-18 default posture
             return pinned.startHostAudioMuted != false
         }
         set {
             guard let pkh = hostPublicKeyHash else { return }
-            var store = PinnedHostStore.load()
+            var store = services.loadPins()
             store.setStartHostAudioMuted(publicKeyHash: pkh, muted: newValue)
-            try? store.save()
+            try? services.savePins(store)
         }
     }
 
@@ -1117,15 +1127,15 @@ final class ConnectionModel {
     var shareClipboardPreference: Bool {
         get {
             guard let pkh = hostPublicKeyHash else { return false }
-            return PinnedHostStore.load()
+            return services.loadPins()
                 .host(publicKeyHash: pkh)?.shareClipboard == true
         }
         set {
             guard let pkh = hostPublicKeyHash else { return }
-            var store = PinnedHostStore.load()
+            var store = services.loadPins()
             store.setShareClipboard(
                 publicKeyHash: pkh, share: newValue ? true : nil)
-            try? store.save()
+            try? services.savePins(store)
         }
     }
 
@@ -1133,15 +1143,15 @@ final class ConnectionModel {
     var shareClipboardImagesPreference: Bool {
         get {
             guard let pkh = hostPublicKeyHash else { return false }
-            return PinnedHostStore.load()
+            return services.loadPins()
                 .host(publicKeyHash: pkh)?.shareClipboardImages == true
         }
         set {
             guard let pkh = hostPublicKeyHash else { return }
-            var store = PinnedHostStore.load()
+            var store = services.loadPins()
             store.setShareClipboardImages(
                 publicKeyHash: pkh, share: newValue ? true : nil)
-            try? store.save()
+            try? services.savePins(store)
         }
     }
 

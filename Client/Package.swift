@@ -107,7 +107,10 @@ let package = Package(
         // testable without the app shell.
         .testTarget(
             name: "LyteUITests",
-            dependencies: ["LyteUI"]
+            dependencies: [
+                "LyteUI", "Lyte", "LyteClientCore", "LyteTransport",
+                .product(name: "LyteWire", package: "Wire"),
+            ]
         ),
         .testTarget(
             name: "LyteHelperSecurityTests",
