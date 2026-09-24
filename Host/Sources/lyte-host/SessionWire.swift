@@ -313,6 +313,7 @@ final class SessionWire {
     private var kernelPressureGovernor = KernelPressureGovernor()
     private var kernelPressureDecision: KernelPressureDecision?
     private(set) var lastSendError: String?
+    private(set) var sendErrors = 0
     /// HS-16 log throttle: the last rate a `rate:` line reported.
     private var lastPrintedRate: Int?
     /// HS-20: the encoder-VBV policy (armed by main once the encoder's
@@ -733,7 +734,7 @@ final class SessionWire {
                         now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
                     )
                     for event in events {
-                        self.log(event)
+                        self.execute(event)
                         if case .handshakeCompleted = event { established = true }
                     }
                 }
@@ -845,7 +846,7 @@ final class SessionWire {
             reason: reason,
             now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
         ) {
-            log(event)
+            execute(event)
         }
         lock.unlock()
         let deadline = SystemMonotonicClock.nowNanoseconds + UInt64(lingerSeconds * 1e9)
@@ -859,7 +860,7 @@ final class SessionWire {
                 try serviceOnce()
                 try flushOutbox()
             } catch {
-                lastSendError = String(describing: error)
+                noteSendError(error)
                 lock.unlock()
                 break
             }
@@ -1033,7 +1034,7 @@ final class SessionWire {
                     try flushOutbox()
                 } catch {
                     audioSendFailures += 1
-                    lastSendError = String(describing: error)
+                    noteSendError(error)
                 }
             }
             lock.unlock()
@@ -1072,7 +1073,7 @@ final class SessionWire {
                 audioPacketsSent += 1
             } catch {
                 audioSendFailures += 1
-                lastSendError = String(describing: error)
+                noteSendError(error)
             }
         }
     }
@@ -1086,12 +1087,7 @@ final class SessionWire {
             lock.unlock()
             return
         }
-        do {
-            try serviceOnce()
-            try flushOutbox()
-        } catch {
-            lastSendError = String(describing: error)
-        }
+        serviceAndFlushLocked()
         // Anything this pass enqueued but could not emit inside one
         // quantum (repair retransmits from a NACK, a burst of ARQ
         // segments) belongs to the sender thread, not the next tick.
@@ -1182,29 +1178,18 @@ final class SessionWire {
             }
         }
         guard !replies.isEmpty else { return }
-        lock.lock()
-        guard let session, session.phase == .established else {
-            lock.unlock()
-            return
-        }
-        for reply in replies {
-            do {
-                try session.sendBulk(
-                    reply.encode(),
-                    now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
-                )
-            } catch {
-                lastSendError = String(describing: error)
-                emit("files: bulk send failed: \(error)")
+        withEstablishedSession { session, now, hostMicroseconds in
+            for reply in replies {
+                do {
+                    try session.sendBulk(
+                        reply.encode(), now: now,
+                        hostMicroseconds: hostMicroseconds)
+                } catch {
+                    emit("files: bulk send failed: \(error)")
+                }
             }
+            return []
         }
-        do {
-            try serviceOnce()
-            try flushOutbox()
-        } catch {
-            lastSendError = String(describing: error)
-        }
-        lock.unlock()
         flushLogLines()
     }
 
@@ -1214,20 +1199,8 @@ final class SessionWire {
     /// 0x24 (or the suppression verdict) happens inside the core; a
     /// no-key-13 session stays silent (the rule-3 gate).
     func noteCursorShape(_ shape: CursorShape) {
-        lock.lock()
-        defer { lock.unlock() }
-        standingCursorShape = shape
-        guard let session, session.phase == .established else { return }
-        for event in session.noteCursorShapeChanged(
-            shape, now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
-        ) {
-            log(event)
-        }
-        do {
-            try serviceOnce()
-            try flushOutbox()
-        } catch {
-            lastSendError = String(describing: error)
+        withEstablishedSession(before: { standingCursorShape = shape }) {
+            $0.noteCursorShapeChanged(shape, now: $1, hostMicroseconds: $2)
         }
     }
 
@@ -1248,19 +1221,8 @@ final class SessionWire {
     /// suppression verdict) happens inside the core; a no-key-10
     /// session stays silent (the rule-3 gate).
     func noteHostClipboardChanged(_ text: String) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let session, session.phase == .established else { return }
-        for event in session.noteHostClipboardChanged(
-            text, now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
-        ) {
-            log(event)
-        }
-        do {
-            try serviceOnce()
-            try flushOutbox()
-        } catch {
-            lastSendError = String(describing: error)
+        withEstablishedSession {
+            $0.noteHostClipboardChanged(text, now: $1, hostMicroseconds: $2)
         }
     }
 
@@ -1270,19 +1232,8 @@ final class SessionWire {
     /// apart. Cargo (or the suppression verdict) happens inside the
     /// core; an ungated session stays silent (the keys-10∧12 gate).
     func noteHostClipboardImageChanged(_ data: [UInt8]) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let session, session.phase == .established else { return }
-        for event in session.noteHostClipboardImageChanged(
-            data, now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
-        ) {
-            log(event)
-        }
-        do {
-            try serviceOnce()
-            try flushOutbox()
-        } catch {
-            lastSendError = String(describing: error)
+        withEstablishedSession {
+            $0.noteHostClipboardImageChanged(data, now: $1, hostMicroseconds: $2)
         }
     }
 
@@ -1326,19 +1277,8 @@ final class SessionWire {
     /// The applied-posture 0x19 onto the reliable stream (a no-op at
     /// the session layer unless hostAudioRouting was negotiated).
     func noteAudioRoutingApplied(_ mode: HostAudioRoutingMode) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let session, session.phase == .established else { return }
-        for event in session.noteAudioRoutingApplied(
-            mode, now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
-        ) {
-            log(event)
-        }
-        do {
-            try serviceOnce()
-            try flushOutbox()
-        } catch {
-            lastSendError = String(describing: error)
+        withEstablishedSession {
+            $0.noteAudioRoutingApplied(mode, now: $1, hostMicroseconds: $2)
         }
     }
 
@@ -1364,22 +1304,11 @@ final class SessionWire {
     /// Video posture: one 0x26 announcement onto the reliable stream
     /// (a no-op at the session layer unless key 16 was agreed).
     func sendVideoPostureState(quiet: Bool, keepaliveSeconds: UInt8) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let session, session.phase == .established else { return }
         let state = VideoPostureState(
             posture: quiet ? .quiet : .active,
             keepaliveSeconds: keepaliveSeconds)
-        for event in session.noteVideoPostureState(
-            state, now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
-        ) {
-            log(event)
-        }
-        do {
-            try serviceOnce()
-            try flushOutbox()
-        } catch {
-            lastSendError = String(describing: error)
+        withEstablishedSession {
+            $0.noteVideoPostureState(state, now: $1, hostMicroseconds: $2)
         }
     }
 
@@ -1397,19 +1326,50 @@ final class SessionWire {
     /// Tripwire: one 0x25 track-state announcement onto the reliable
     /// stream (a no-op at the session layer unless key 15 was agreed).
     func sendAudioTrackState(_ state: AudioTrackState.State) {
+        withEstablishedSession {
+            $0.noteAudioTrackState(state, now: $1, hostMicroseconds: $2)
+        }
+    }
+
+    /// One session note from a shell thread, under `lock`: skipped
+    /// unless the session is established; its events execute, then one
+    /// service pass and flush so the note's sends leave now rather than
+    /// on the next tick. `before` runs under the lock either way.
+    private func withEstablishedSession(
+        before: () -> Void = {},
+        _ note: (Session, _ now: UInt64, _ hostMicroseconds: UInt64)
+            -> [SessionEvent]
+    ) {
         lock.lock()
         defer { lock.unlock() }
+        before()
         guard let session, session.phase == .established else { return }
-        for event in session.noteAudioTrackState(
-            state, now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
+        for event in note(
+            session, SystemMonotonicClock.nowNanoseconds,
+            SystemMonotonicClock.nowMicroseconds
         ) {
-            log(event)
+            execute(event)
         }
+        serviceAndFlushLocked()
+    }
+
+    /// Requires `lock`. A failure is recorded and printed; the drain
+    /// thread's own pass decides whether it ends the session.
+    private func serviceAndFlushLocked() {
         do {
             try serviceOnce()
             try flushOutbox()
         } catch {
-            lastSendError = String(describing: error)
+            noteSendError(error)
+        }
+    }
+
+    /// Requires `lock`.
+    private func noteSendError(_ error: Error) {
+        sendErrors += 1
+        lastSendError = String(describing: error)
+        if sendErrors <= 3 {
+            emit("session: send path error (\(sendErrors)): \(error)")
         }
     }
 
@@ -1540,7 +1500,7 @@ final class SessionWire {
                 datagram, from: tuple,
                 now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
             ) {
-                self.log(event)
+                self.execute(event)
             }
             // A recvmmsg burst can contain many feedback/control packets.
             // Do not let parsing the whole burst consume an audio period.
@@ -1553,7 +1513,7 @@ final class SessionWire {
         for event in session.advance(
             now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
         ) {
-            log(event)
+            execute(event)
         }
         // A nonempty outbox means the previous socket write hit EAGAIN.
         // Releasing another VIDEO quantum before retrying would turn kernel
@@ -1640,7 +1600,10 @@ final class SessionWire {
         for line in lines { print(line) }
     }
 
-    private func log(_ event: SessionEvent) {
+    /// Executes one session event: prints go through `emit`, side
+    /// effects (input injection, path rebinds, pairing, outbox purges,
+    /// buffered shell work) run here under `lock`.
+    private func execute(_ event: SessionEvent) {
         switch event {
         case .handshakeCompleted(let remote):
             emit("noise: handshake complete — client static "
