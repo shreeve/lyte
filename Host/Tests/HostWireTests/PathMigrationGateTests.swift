@@ -1,7 +1,7 @@
 import XCTest
 import Foundation
 import HostSession
-import HostWire
+@_spi(Testing) import HostWire
 import LyteWire
 import LyteWireTestKit
 
@@ -220,5 +220,112 @@ final class PathMigrationGateTests: XCTestCase {
         XCTAssertEqual(expiry, [.fallbackExpired(Self.tupleA)])
         XCTAssertNil(validator.fallback)
         XCTAssertNil(validator.nextDeadline)
+    }
+
+    // MARK: The estimator after a promotion
+
+    /// A validated migration lands on a path with 35 ms more base delay.
+    /// The old path's delay baseline must not read that as standing
+    /// queue: before the estimator forgot it, the rate fell every 500 ms.
+    func testPromotionForgetsTheOldPathsDelayBaseline() throws {
+        final class Box {
+            var sent: [(datagram: VideoChannelDatagram, at: UInt64)] = []
+            var now: UInt64 = 0
+        }
+        let box = Box()
+        let session = Session(
+            config: SessionConfig(
+                crypto: .testPassthrough,
+                rateBitsPerSecond: 20_000_000,
+                beaconIntervalNS: 1 << 62
+            ),
+            clientTuple: Self.tupleA,
+            now: 0,
+            rng: SplitMix64(seed: 0x9A7B)
+        ) { box.sent.append(($0, box.now)) }
+        let ms: UInt64 = 1_000_000
+        var now: UInt64 = 0
+        var reported = 0
+        var clientSeq: UInt16 = 0
+        func datagram(
+            _ channel: ChannelId, _ body: [UInt8],
+            extensions: [WireExtension] = []
+        ) throws -> [UInt8] {
+            defer { clientSeq &+= 1 }
+            return try Envelope(
+                channel: channel, seq: ChannelSeq(rawValue: clientSeq),
+                frame: FrameNumber(rawValue: 0), timestamp: now / 1_000,
+                fec: 0, extensions: extensions
+            ).encode(payload: body)
+        }
+        // One 25 ms beat: a small frame paced out, then a report of its
+        // arrivals `oneWayMicros` after release.
+        func beat(from tuple: FourTuple, oneWayMicros: UInt64) throws
+            -> [SessionEvent] {
+            _ = try session.ingestVideoFrame(
+                [0, 0, 0, 1, 0x02, 0x01]
+                    + [UInt8](repeating: 0x42, count: 4_000),
+                captureTimestampMicroseconds: now / 1_000,
+                isKeyframe: false, now: now)
+            for step in 0..<25 as Range<UInt64> {
+                box.now = now + step * ms
+                session.pump(now: box.now)
+            }
+            let video = box.sent[reported...]
+                .filter { $0.datagram.pacerClass == .freshVideo }
+            reported = box.sent.count
+            now += 25 * ms
+            let arrivals = video.map {
+                9_000_000_000 + $0.at / 1_000 + oneWayMicros
+            }
+            let base = arrivals.min() ?? 0
+            let report = FeedbackReport(
+                clientTimestamp: ClientTimestamp(microseconds: now / 1_000),
+                dispersion: FeedbackReport.Dispersion(
+                    base: ClientTimestamp(microseconds: base),
+                    samples: zip(video, arrivals).map {
+                        FeedbackReport.Dispersion.Sample(
+                            channel: .videoActive, seq: $0.0.datagram.seq,
+                            arrivalDeltaMicroseconds: UInt32($0.1 - base))
+                    }))
+            return session.receive(
+                try datagram(.feedback, try report.encode()), from: tuple,
+                now: now, hostMicroseconds: now / 1_000)
+        }
+
+        for _ in 0..<10 {
+            _ = try beat(from: Self.tupleA, oneWayMicros: 5_000)
+        }
+        XCTAssertEqual(session.queuingDelayMicroseconds, 0)
+
+        // The client roams to B: a conn-id datagram draws the challenge,
+        // the echo from B promotes it.
+        let probe = session.receive(
+            try datagram(.ctrl, [0x00],
+                         extensions: [session.connectionId.wireExtension]),
+            from: Self.tupleB, now: now, hostMicroseconds: now / 1_000)
+        var token: UInt64?
+        for case .path(.sendChallenge(_, let challenge)) in probe {
+            token = challenge.token
+        }
+        let promotion = session.receive(
+            try datagram(
+                .ctrl, PathResponse(token: try XCTUnwrap(token)).encode(),
+                extensions: [session.connectionId.wireExtension]),
+            from: Self.tupleB, now: now, hostMicroseconds: now / 1_000)
+        XCTAssertTrue(promotion.contains {
+            if case .path(.promoted) = $0 { return true }
+            return false
+        })
+
+        for _ in 0..<60 {
+            for event in try beat(from: Self.tupleB, oneWayMicros: 40_000) {
+                if case .rateChanged(_, .overuse) = event {
+                    XCTFail("the new path's base delay read as a queue")
+                }
+            }
+        }
+        XCTAssertEqual(session.queuingDelayMicroseconds, 0)
+        XCTAssertEqual(session.estimatedRateBitsPerSecond, 20_000_000)
     }
 }

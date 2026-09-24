@@ -695,21 +695,44 @@ public final class RateEstimator {
             // RECOVERY is a path discontinuity: belief = the applied
             // half-stale rate, and no old-path delivery sample, honest
             // vote or probe cadence survives. WAKE resets none of this.
-            beliefBits = Double(rate)
-            deliveryWindow.removeAll(keepingCapacity: true)
-            deliveryWindowMax = nil
-            recentRawDeliveries.removeAll(keepingCapacity: true)
-            recentHonestDeliveries.removeAll(keepingCapacity: true)
-            lastDeliveryRate = nil
-            lastDeliveryAt = nil
-            lastFullTrainRate = nil
-            lastFullTrainAt = nil
-            cadenceHoldUntilNS = 0
-            cadenceBandFloorBits = .infinity
+            forgetPathEvidence(belief: rate)
         }
         rateBitsPerSecond = rate
         lastAdjustAt = now
         return rate
+    }
+
+    /// The session moved to a new path (a validated migration): its base
+    /// delay and capacity are unknown, so the old path's delay baselines,
+    /// delivery samples, honest votes and probe cadence are forgotten and
+    /// the belief restarts at the standing rate, which is kept. Otherwise
+    /// a path with more base delay reads as standing inflation, and the
+    /// rate falls every 500 ms until the old baseline ages out.
+    public func notePathChanged(now: UInt64) {
+        forgetPathEvidence(belief: rateBitsPerSecond)
+        delayBaselineWindows.removeAll(keepingCapacity: true)
+        consecutiveInflatedReports = 0
+        inflatedStreakStartMicros = nil
+        inflatedStreakPeakMicros = nil
+        inflatedStreakSinceNS = nil
+        queuingDelayMicroseconds = nil
+        lastAdjustAt = now
+    }
+
+    /// No old-path delivery sample, honest vote or probe cadence survives;
+    /// the belief restarts at `belief`.
+    private func forgetPathEvidence(belief: Int) {
+        beliefBits = Double(belief)
+        deliveryWindow.removeAll(keepingCapacity: true)
+        deliveryWindowMax = nil
+        recentRawDeliveries.removeAll(keepingCapacity: true)
+        recentHonestDeliveries.removeAll(keepingCapacity: true)
+        lastDeliveryRate = nil
+        lastDeliveryAt = nil
+        lastFullTrainRate = nil
+        lastFullTrainAt = nil
+        cadenceHoldUntilNS = 0
+        cadenceBandFloorBits = .infinity
     }
 
     /// The burst-budget window B = min(2/fps, 25 ms) in ns, shared with

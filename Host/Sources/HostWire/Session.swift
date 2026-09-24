@@ -3097,6 +3097,11 @@ public final class Session {
                     events.append(.sendFailed("path challenge: \(error)"))
                 }
             }
+            // A promotion moves media to a path whose delay and capacity
+            // the estimator has never measured.
+            if case .promoted = event {
+                estimator.notePathChanged(now: now)
+            }
             // .freshKeyframeNeeded needs no execution here: the encoder
             // loop polls takeFreshKeyframeRequest(), which reads the
             // validator's latch directly.
