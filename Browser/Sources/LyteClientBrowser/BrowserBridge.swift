@@ -24,6 +24,7 @@ enum BrowserBridge {
             "wireBudgetBytes": Double(DatagramCarrierProof.wireBudgetBytes).jsValue,
             "conductorBeatMicroseconds":
                 Double(VideoBeatConductor.Config().beatPeriodMicroseconds).jsValue,
+            "audioRingCeilingFrames": Double(BrowserAudioPlayout.ringCeilingFrames).jsValue,
             "vectorNames": [FrozenEnvelopeContract.vectorName, FrozenNoiseContract.vectorName]
                 .joined(separator: "; ").jsValue,
         ]
@@ -119,9 +120,15 @@ enum BrowserBridge {
             }
             return scheduledFrameToJS(frame)
         }
-        expose("mediaNotePresented") { args in
-            if let frame = uint32(args, 0) { session?.notePresented(frameNumber: frame) }
+        expose("mediaNotePresented") { _ in
+            session?.notePresented()
             return .undefined
+        }
+        expose("mediaTakeAbandoned") { _ in
+            guard let frames = session?.takeAbandonedFrames(), !frames.isEmpty else {
+                return .null
+            }
+            return frames.map { Double($0).jsValue }.jsValue
         }
         expose("mediaNoteDropped") { args in
             if let frame = uint32(args, 0) { session?.noteDropped(frameNumber: frame) }
@@ -134,6 +141,7 @@ enum BrowserBridge {
                 "presented": Double(counters.framesPresented).jsValue,
                 "skippedLate": Double(counters.framesSkippedLate).jsValue,
                 "notPresentable": Double(counters.framesNotPresentable).jsValue,
+                "undecodable": Double(counters.framesUndecodable).jsValue,
                 "decodeBacklogEvicted": Double(counters.decodeBacklogEvicted).jsValue,
                 "fecImpossible": Double(counters.fecImpossible).jsValue,
                 "shardsDropped": Double(counters.shardsDropped).jsValue,

@@ -190,8 +190,13 @@ public final class BrowserControlSession {
         video.popDue(nowMicros: nowMicros)
     }
 
-    public func notePresented(frameNumber: UInt32) {
-        video.notePresented(frameNumber: frameNumber)
+    public func notePresented() {
+        video.notePresented()
+    }
+
+    /// Frames the page was told to present that will never be due.
+    public func takeAbandonedFrames() -> [UInt32] {
+        video.takeAbandoned()
     }
 
     public func noteDropped(frameNumber: UInt32) {

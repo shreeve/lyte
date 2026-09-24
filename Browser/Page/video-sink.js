@@ -1,11 +1,10 @@
 // The browser's VideoSink: WebCodecs HEVC decode and WebGPU present of what
-// the WASM Conductor schedules; decode order, presentation times and
-// recovery policy come from WASM. Decode takes every assembled frame in
-// order (late and refused frames included: later P-frames reference them);
-// presentation pops only what the Conductor says is due. With no
-// reordering, decode, output and PTS order agree, so once a due PTS is
-// named every held frame before it is dead. Decoded VideoFrames are
-// GPU-pool objects, so decode is throttled by what the page holds.
+// the WASM Conductor schedules. Every decision is WASM's: which frames are
+// decodable (Annex-B handed out, or null to skip), which are presentable
+// (`shouldPresent`, and the abandoned list), and when each is due. This
+// file decodes in the order it was told, holds what may be shown, and
+// closes what WASM says will not be. Decoded VideoFrames are GPU-pool
+// objects, so decode is throttled by what the page holds.
 import { nowMicros, pickHevcConfig } from "./lyte-io.js";
 
 const MAX_QUEUED_DECODES = 2;
@@ -126,14 +125,12 @@ export class VideoSink {
     this.inDecoder = new Map(); // presentation µs → metadata, submitted, not yet output
     this.decoded = new Map(); // presentation µs → { frame, meta, decodedAt }
     this.pendingDue = null;
-    this.awaitingKeyFrame = false;
     this.error = null;
     this.frameSize = null;
     this.stats = {
       decoded: 0,
       presented: 0,
-      missing: 0,
-      skippedForKey: 0,
+      undecodable: 0,
       closedUnshown: 0,
       dueNeverDecoded: 0,
     };
@@ -187,19 +184,11 @@ export class VideoSink {
       const meta = this.queue.shift();
       const bytes = this.bridge.mediaTakeAnnexB(meta.frameNumber);
       if (!bytes) {
-        // Evicted before decode: the reference chain is broken until the
-        // next IRAP (WASM has already asked the host for one).
-        this.stats.missing += 1;
-        this.bridge.mediaNoteDropped(meta.frameNumber);
-        this.awaitingKeyFrame = true;
-        continue;
-      }
-      if (this.awaitingKeyFrame && !meta.isRandomAccess) {
-        this.stats.skippedForKey += 1;
+        // Not decodable: its reference chain is broken until an IRAP.
+        this.stats.undecodable += 1;
         this.bridge.mediaNoteDropped(meta.frameNumber);
         continue;
       }
-      this.awaitingKeyFrame = false;
       if (meta.isRandomAccess && this.onFirstKeyFrame) {
         this.onFirstKeyFrame(bytes);
         this.onFirstKeyFrame = null;
@@ -226,25 +215,21 @@ export class VideoSink {
    * when a frame was presented.
    */
   pumpPresent(now) {
+    const abandoned = this.bridge.mediaTakeAbandoned();
+    if (abandoned) for (const frameNumber of abandoned) this.abandon(frameNumber);
     for (;;) {
       if (!this.pendingDue) {
         this.pendingDue = this.bridge.mediaPopDue(now);
-        if (!this.pendingDue) {
-          // Everything the Conductor will still present is due after
-          // `now`, so a held frame at or before it is never shown.
-          this.closeHeld((pts) => pts <= now);
-          return false;
-        }
+        if (!this.pendingDue) return false;
       }
       const due = this.pendingDue;
       const pts = due.presentationMicroseconds;
-      this.closeHeld((held) => held < pts);
       const held = this.decoded.get(pts);
       if (!held) {
         if (this.inDecoder.has(pts) || this.queue.some((m) => m.frameNumber === due.frameNumber)) {
           return false; // still on its way through the decoder
         }
-        // Dropped before decode (evicted or skipped for a key frame).
+        // Skipped as undecodable.
         this.stats.dueNeverDecoded += 1;
         this.pendingDue = null;
         continue;
@@ -269,14 +254,18 @@ export class VideoSink {
     }
   }
 
-  /** Closes held frames the Conductor will never present. */
-  closeHeld(isDead) {
+  /** WASM will never present this frame: close it now or when it decodes. */
+  abandon(frameNumber) {
     for (const [pts, held] of this.decoded) {
-      if (isDead(pts)) {
+      if (held.meta.frameNumber === frameNumber) {
         held.frame.close();
         this.decoded.delete(pts);
         this.stats.closedUnshown += 1;
+        return;
       }
+    }
+    for (const meta of [...this.inDecoder.values(), ...this.queue]) {
+      if (meta.frameNumber === frameNumber) meta.shouldPresent = false;
     }
   }
 

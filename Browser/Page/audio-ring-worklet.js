@@ -1,18 +1,17 @@
 // AudioWorklet PCM ring fed { pcm: Float32Array } of interleaved 48 kHz
-// stereo. Underruns play silence; past the bound the oldest audio drops, so
-// clock drift cannot grow latency without limit.
-
-const MAX_QUEUED_FRAMES = 9_600; // 200 ms at 48 kHz
+// stereo. Underruns play silence; past the ceiling WASM names
+// (processorOptions.maxQueuedFrames) the oldest audio drops.
 
 class LyteRingProcessor extends AudioWorkletProcessor {
-  constructor() {
+  constructor(options) {
     super();
+    this.maxQueuedFrames = options.processorOptions.maxQueuedFrames;
     /** @type {Float32Array[]} */
     this.chunks = [];
     this.offset = 0; // sample index into chunks[0]
     this.queuedFrames = 0;
     this.framesPlayed = 0;
-    this.underruns = 0;
+    this.underrunFrames = 0;
     this.framesDropped = 0;
     this.port.onmessage = (event) => {
       const pcm = event.data?.pcm;
@@ -24,7 +23,7 @@ class LyteRingProcessor extends AudioWorkletProcessor {
         this.port.postMessage({
           type: "stats",
           framesPlayed: this.framesPlayed,
-          underruns: this.underruns,
+          underrunFrames: this.underrunFrames,
           framesDropped: this.framesDropped,
           queuedFrames: this.queuedFrames,
         });
@@ -33,7 +32,7 @@ class LyteRingProcessor extends AudioWorkletProcessor {
   }
 
   trim() {
-    while (this.queuedFrames > MAX_QUEUED_FRAMES && this.chunks.length > 1) {
+    while (this.queuedFrames > this.maxQueuedFrames && this.chunks.length > 1) {
       const dropped = (this.chunks.shift().length - this.offset) >> 1;
       this.offset = 0;
       this.queuedFrames -= dropped;
@@ -51,7 +50,7 @@ class LyteRingProcessor extends AudioWorkletProcessor {
       if (!chunk) {
         left[i] = 0;
         right[i] = 0;
-        this.underruns += 1;
+        this.underrunFrames += 1;
         continue;
       }
       left[i] = chunk[this.offset];

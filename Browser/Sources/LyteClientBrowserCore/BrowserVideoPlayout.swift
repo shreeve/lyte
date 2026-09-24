@@ -5,10 +5,18 @@ import LyteWire
 /// Sans-IO browser video organ: `VideoAssembler` + `VideoBeatConductor` +
 /// `BoundedRendererHandoff`, with the shared repair policy
 /// (`ClientNackPolicy`) and IDR episode (`ClientIdrRecovery`) over them.
-/// Page JS owns WebCodecs decode and WebGPU present. Every assembled frame's Annex-B waits in the decode backlog
-/// until the page takes it (decode order is the only order a P-frame chain
-/// allows); presentation metadata lives only while the handoff holds the
-/// frame. Rejected or late frames are still decoded but never presented.
+/// Page JS owns WebCodecs decode and WebGPU present and executes what this
+/// type decides:
+///
+/// - Decode: a frame's Annex-B waits in the decode backlog until the page
+///   takes it, in decode order. Only a decodable frame is ever handed out:
+///   while a recovery episode is open only random-access frames enter the
+///   backlog, and a frame evicted from it takes every later dependent
+///   frame with it. `takeAnnexB` returning nil means "skip this frame".
+/// - Presentation: metadata lives only while the handoff holds the frame.
+///   A scheduled frame the page must never show says so in its
+///   `shouldPresent` (late, refused, or outside an open episode); one the
+///   handoff drops later is reported once through `takeAbandoned`.
 public struct BrowserVideoPlayout {
     public struct ScheduledFrame: Sendable, Equatable {
         public var frameNumber: UInt32
@@ -28,10 +36,14 @@ public struct BrowserVideoPlayout {
         public var framesAssembled: UInt64 = 0
         public var framesPresented: UInt64 = 0
         public var framesSkippedLate: UInt64 = 0
-        /// Frames the handoff refused or discarded (decoded, not presented).
+        /// Frames the handoff refused or discarded, or an open recovery
+        /// episode kept from it (never presented).
         public var framesNotPresentable: UInt64 = 0
         /// Annex-B evicted because the page stopped taking decode input.
         public var decodeBacklogEvicted: UInt64 = 0
+        /// Frames never handed out for decode: their reference chain was
+        /// broken (an open recovery episode, or an evicted predecessor).
+        public var framesUndecodable: UInt64 = 0
         public var fecImpossible: UInt64 = 0
         /// Shards the assembler dropped (mostly late FEC surplus).
         public var shardsDropped: UInt64 = 0
@@ -74,12 +86,14 @@ public struct BrowserVideoPlayout {
     /// frame anchors host capture to client arrival.
     private var anchor: (capture: UInt64, arrival: UInt64)?
 
-    private var annexBByFrame: [UInt32: [UInt8]] = [:]
+    private var annexBByFrame: [UInt32: (bytes: [UInt8], isRandomAccess: Bool)] = [:]
     /// Frame numbers in decode order; entries already taken are skipped
     /// when they reach the front.
     private var decodeOrder = Deque<UInt32>()
     private var scheduledByFrame: [UInt32: ScheduledFrame] = [:]
     private var pendingEarly: ScheduledFrame?
+    /// Frames the handoff dropped after the page was told to present them.
+    private var abandoned: [UInt32] = []
     public private(set) var counters = Counters()
 
     /// The IDR-request episode, the native requester's policy.
@@ -176,9 +190,17 @@ public struct BrowserVideoPlayout {
         return refused.events
     }
 
-    /// Hands out an assembled frame's Annex-B exactly once, for decode.
+    /// Hands out a decodable frame's Annex-B exactly once; nil means the
+    /// page skips the frame.
     public mutating func takeAnnexB(frameNumber: UInt32) -> [UInt8]? {
-        annexBByFrame.removeValue(forKey: frameNumber)
+        annexBByFrame.removeValue(forKey: frameNumber)?.bytes
+    }
+
+    /// Frames the page was told to present that will never be due: close
+    /// them wherever they are. Each is reported once.
+    public mutating func takeAbandoned() -> [UInt32] {
+        defer { abandoned.removeAll(keepingCapacity: true) }
+        return abandoned
     }
 
     /// Pops the next handoff entry whose Conductor beat is due. Frames late
@@ -220,7 +242,7 @@ public struct BrowserVideoPlayout {
         return frame
     }
 
-    public mutating func notePresented(frameNumber: UInt32) {
+    public mutating func notePresented() {
         counters.framesPresented &+= 1
     }
 
@@ -281,11 +303,12 @@ public struct BrowserVideoPlayout {
     /// Annex-B stays queued for decode so the reference chain holds.
     private mutating func absorb(discarded: [UInt32], recoveryRequested: Bool) {
         for frame in discarded {
-            if scheduledByFrame.removeValue(forKey: frame) != nil {
+            if let scheduled = scheduledByFrame.removeValue(forKey: frame) {
                 counters.framesNotPresentable &+= 1
+                if scheduled.shouldPresent { abandoned.append(frame) }
             }
             if pendingEarly?.frameNumber == frame {
-                pendingEarly = nil
+                abandon(early: pendingEarly!)
             }
         }
         if recoveryRequested, let newest = discarded.max() {
@@ -293,8 +316,14 @@ public struct BrowserVideoPlayout {
         }
     }
 
-    private mutating func storeForDecode(_ frameNumber: UInt32, _ annexB: [UInt8]) {
-        annexBByFrame[frameNumber] = annexB
+    private mutating func abandon(early frame: ScheduledFrame) {
+        pendingEarly = nil
+        abandoned.append(frame.frameNumber)
+    }
+
+    private mutating func storeForDecode(_ unit: DecodeUnit) {
+        let frameNumber = unit.frameNumber.rawValue
+        annexBByFrame[frameNumber] = (unit.annexB, unit.isIDR)
         decodeOrder.append(frameNumber)
         // Evict the oldest undrained entries past the bound; entries already
         // taken are skipped as the head advances.
@@ -304,12 +333,24 @@ public struct BrowserVideoPlayout {
             if annexBByFrame.removeValue(forKey: oldest) != nil {
                 counters.decodeBacklogEvicted &+= 1
                 demandRecovery(frame: oldest)
+                dropDependents()
             }
         }
         // Frames the page took leave dead entries behind; drop them once
         // they dominate so the log stays bounded.
         if decodeOrder.count > 4 * Self.decodeBacklogCapacity {
             decodeOrder.removeAll { annexBByFrame[$0] == nil }
+        }
+    }
+
+    /// An evicted frame breaks the chain behind it: every queued frame up
+    /// to the next random-access one references it.
+    private mutating func dropDependents() {
+        for frame in decodeOrder {
+            guard let entry = annexBByFrame[frame] else { continue }
+            if entry.isRandomAccess { return }
+            annexBByFrame.removeValue(forKey: frame)
+            counters.framesUndecodable &+= 1
         }
     }
 
@@ -331,7 +372,10 @@ public struct BrowserVideoPlayout {
             arrivalMicroseconds: arrival,
             sourceCaptureMicroseconds: capture
         )
-        let frame = ScheduledFrame(
+        // An open episode admits only random-access frames: nothing queued
+        // behind the damage may reach the decoder or race the IRAP.
+        let admitted = recovery.admits(isRandomAccess: unit.isIDR)
+        var frame = ScheduledFrame(
             frameNumber: unit.frameNumber.rawValue,
             sourceCaptureMicroseconds: capture,
             arrivalMicroseconds: arrival,
@@ -341,13 +385,19 @@ public struct BrowserVideoPlayout {
             reserveMicroseconds: decision.reserveMicroseconds,
             latenessMicroseconds: decision.latenessMicroseconds,
             isRandomAccess: unit.isIDR,
-            shouldPresent: decision.latenessMicroseconds == 0,
+            shouldPresent: admitted && decision.latenessMicroseconds == 0,
             annexBByteCount: unit.annexB.count
         )
-        storeForDecode(frame.frameNumber, unit.annexB)
+        if admitted {
+            storeForDecode(unit)
+        } else {
+            counters.framesUndecodable &+= 1
+            counters.framesNotPresentable &+= 1
+            return frame
+        }
 
         if decision.shouldFlush {
-            pendingEarly = nil
+            if let early = pendingEarly { abandon(early: early) }
             let flushed = handoff.failEpisode()
             absorb(flushed)
             // The queue may have been empty (or held only an early frame):
@@ -372,6 +422,7 @@ public struct BrowserVideoPlayout {
             scheduledByFrame[frame.frameNumber] = frame
         } else {
             counters.framesNotPresentable &+= 1
+            frame.shouldPresent = false
         }
         absorb(
             discarded: outcome.discarded.map(\.element)

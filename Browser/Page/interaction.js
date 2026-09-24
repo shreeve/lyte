@@ -187,11 +187,12 @@ export function installCanvasInput(canvas, { sendInput, hostSize }) {
 }
 
 /**
- * AudioWorklet PCM ring. Plays through a realtime AudioContext; `offline`
- * renders 100 ms into an OfflineAudioContext instead — for headless smoke
- * runs, where there is no output device to prove anything with.
+ * AudioWorklet PCM ring bounded at WASM's `maxQueuedFrames`. Plays through
+ * a realtime AudioContext; `offline` renders 100 ms into an
+ * OfflineAudioContext instead — for headless smoke runs, where there is no
+ * output device to prove anything with.
  */
-export async function createAudioRing({ offline = false } = {}) {
+export async function createAudioRing({ offline = false, maxQueuedFrames } = {}) {
   let ctx;
   if (offline) {
     if (typeof OfflineAudioContext !== "function") {
@@ -213,6 +214,7 @@ export async function createAudioRing({ offline = false } = {}) {
     numberOfInputs: 0,
     numberOfOutputs: 1,
     outputChannelCount: [2],
+    processorOptions: { maxQueuedFrames },
   });
   node.connect(ctx.destination);
   let framesPushed = 0;
@@ -228,11 +230,26 @@ export async function createAudioRing({ offline = false } = {}) {
     },
     framesPushed: () => framesPushed,
     renderOffline: () => (offline ? ctx.startRendering() : Promise.resolve(null)),
+    /** The ring's own counters (realtime only: an offline one has ended). */
+    stats: () =>
+      new Promise((resolve) => {
+        node.port.onmessage = (event) => resolve(event.data);
+        node.port.postMessage({ type: "stats" });
+      }),
     async close() {
       node.disconnect();
       if (!offline) await ctx.close().catch(() => {});
     },
   };
+}
+
+/** Frames of a rendered AudioBuffer carrying any non-zero sample. */
+function audibleFrames(buffer) {
+  if (!buffer) return 0;
+  const left = buffer.getChannelData(0);
+  let frames = 0;
+  for (let i = 0; i < left.length; i++) if (left[i] !== 0) frames += 1;
+  return frames;
 }
 
 /** WebCodecs Opus decode → interleaved stereo Float32. */
@@ -314,7 +331,10 @@ export async function runInteractionProofs({ pump, offlineAudio = false, timeout
   // Load the worklet while the input and clipboard legs run.
   let audioRing = null;
   let ringError = null;
-  const ringReady = createAudioRing({ offline: offlineAudio }).then(
+  const ringReady = createAudioRing({
+    offline: offlineAudio,
+    maxQueuedFrames: bridge.audioRingCeilingFrames,
+  }).then(
     (ring) => (audioRing = ring),
     (error) => (ringError = error)
   );
@@ -396,10 +416,18 @@ export async function runInteractionProofs({ pump, offlineAudio = false, timeout
         ? `PASS  audio/webcodecs — ${opus.detail} → ${pcmFrames} PCM frames`
         : `FAIL  audio/webcodecs — ${opus?.detail || "decoder produced no PCM"}`
     );
-    await Promise.race([audioRing.renderOffline(), sleep(2_000)]).catch(() => {});
+    const played = await Promise.race([
+      audioRing.mode === "offline"
+        ? audioRing.renderOffline().then(audibleFrames)
+        : audioRing.stats().then((stats) => stats.framesPlayed),
+      sleep(2_000).then(() => 0),
+    ]).catch(() => 0);
     note(
-      `PASS  audio-worklet/ring — AudioWorklet (${audioRing.mode}) loaded; ` +
-        `pushed ${audioRing.framesPushed()} frames (ctx=${audioRing.contextState})`
+      played > 0
+        ? `PASS  audio-worklet/ring — AudioWorklet (${audioRing.mode}) played ${played} ` +
+            `non-silent frames of ${audioRing.framesPushed()} pushed`
+        : `FAIL  audio-worklet/ring — AudioWorklet (${audioRing.mode}) played nothing ` +
+            `of ${audioRing.framesPushed()} pushed`
     );
   }
   opus?.close?.();
