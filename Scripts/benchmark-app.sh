@@ -14,6 +14,7 @@ ANALYZER="$ROOT/Scripts/analyze-app-benchmark.py"
 source "$ROOT/Scripts/lib/benchmark-process.sh"
 source "$ROOT/Scripts/lib/pup.sh"
 source "$ROOT/Scripts/AppArtifact/app-artifact.sh"
+source "$ROOT/Scripts/lib/source-fingerprint.sh"
 LSREGISTER="${LYTE_LSREGISTER:-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister}"
 PUP="$(lyte_pup_host)"
 # The standing host advertises on the ethernet leg (enxf8e43b7ede7c =
@@ -112,23 +113,8 @@ if [[ "$MODE" != all ]]; then
 fi
 codesign --verify --strict "$APP"
 
-source_fingerprint() {
-  (
-    cd "$ROOT"
-    git ls-files --cached --others --exclude-standard -- "$@" \
-      | LC_ALL=C sort \
-      | while IFS= read -r path; do
-          if [[ -f "$path" ]]; then
-            shasum -a 256 "$path"
-          fi
-        done
-  ) | shasum -a 256 | awk '{print $1}'
-}
-
-CLIENT_SOURCE_SHA256="$(source_fingerprint \
-  Client/Package.swift Client/Package.resolved Client/Sources \
-  Common/Package.swift Common/Sources \
-  Wire/Package.swift Wire/Package.resolved Wire/Sources)"
+# shellcheck disable=SC2086  # the path list is space-separated by design
+CLIENT_SOURCE_SHA256="$(lyte_source_fingerprint "$ROOT" $LYTE_CLIENT_SOURCE_PATHS)"
 recorded_client_source="$APP/Contents/Resources/client-source.sha256"
 [[ -s "$recorded_client_source" ]] || {
   echo "benchmark refused: Lyte.app has no signed source provenance" >&2
@@ -147,14 +133,11 @@ read -r APP_BUILD_UTC < "$APP/Contents/Resources/build-utc.txt" || {
 }
 
 if (( NO_BUILD )); then
+  # shellcheck disable=SC2086
   stale_client_source="$(
-    cd "$ROOT"
-    git ls-files --cached --others --exclude-standard -- \
-      Client/Package.swift Client/Package.resolved Client/Sources \
-      Common/Package.swift Common/Sources \
-      Wire/Package.swift Wire/Package.resolved Wire/Sources \
+    lyte_source_files "$ROOT" $LYTE_CLIENT_SOURCE_PATHS \
       | while IFS= read -r path; do
-          if [[ -f "$path" && "$path" -nt "$APP/Contents/MacOS/Lyte" ]]; then
+          if [[ -f "$ROOT/$path" && "$ROOT/$path" -nt "$APP/Contents/MacOS/Lyte" ]]; then
             printf '%s\n' "$path"
           fi
         done
@@ -248,7 +231,7 @@ disk_host_sha="$(printf '%s\n' "$host_hashes" | awk 'NR == 2 {print}')"
 
 APP_SHA256="$(shasum -a 256 "$APP/Contents/MacOS/Lyte" | awk '{print $1}')"
 HOST_SHA256="$running_host_sha"
-HOST_SOURCE_SHA256="$(source_fingerprint \
+HOST_SOURCE_SHA256="$(lyte_source_fingerprint "$ROOT" \
   Host Common/Package.swift Common/Sources \
   Wire/Package.swift Wire/Package.resolved Wire/Sources)"
 
@@ -453,134 +436,8 @@ ${freeze:+--freeze $freeze} \
   rsync -a "$PUP:$REMOTE_MOTION_LOG" "$MOTION_SOURCE_LOG"
   summary="$OUT_DIR/$run_id-motion-source-preflight.json"
   source_pass=1
-  python3 - "$MOTION_SOURCE_LOG" "$summary" \
-      "$QUALITY_WIDTH" "$QUALITY_HEIGHT" "$scale" "$freeze" <<'PY' || source_pass=0
-import json, math, sys
-from pathlib import Path
-
-source, destination, width, height, scale, freeze = sys.argv[1:]
-events = [json.loads(line) for line in Path(source).read_text().splitlines()]
-
-def fail(reason):
-    # Always leave a summary: the provenance step and the caller's message
-    # both read it.
-    result = {"pass": False, "error": reason}
-    Path(destination).write_text(json.dumps(result, separators=(",", ":")) + "\n")
-    print(json.dumps(result, sort_keys=True))
-    raise SystemExit(1)
-
-if freeze:
-    # Frozen presenter: the preflight proves the single authored frame
-    # reached the glass at exact dimensions; cadence has no meaning.
-    frozen_id = int(freeze)
-    rows = [row for row in events if row.get("event") == "sourceTick"]
-    if not rows:
-        fail("frozen source never ticked")
-    if any(row["frameID"] != frozen_id for row in rows):
-        fail("frozen source presented a foreign frame")
-    presented = [
-        row for row in events
-        if row.get("event") == "presentation"
-        and row.get("frameID") == frozen_id
-        and row.get("actualPresentationMicroseconds", 0) > 0
-    ]
-    scale = float(scale)
-    dimensions_exact = all(
-        row["textureWidth"] == int(width)
-        and row["textureHeight"] == int(height)
-        and abs(row["allocationWidthPoints"] * scale - int(width)) <= 1
-        and abs(row["allocationHeightPoints"] * scale - int(height)) <= 1
-        for row in rows
-    )
-    result = {
-        "samples": len(rows),
-        "actualPresentations": len(presented),
-        "width": int(width),
-        "height": int(height),
-        "logicalScale": scale,
-        "allocationWidthPoints": rows[-1]["allocationWidthPoints"],
-        "allocationHeightPoints": rows[-1]["allocationHeightPoints"],
-        "dimensionsExact": dimensions_exact,
-        "gapP50Milliseconds": 0.0,
-        "gapP95Milliseconds": 0.0,
-        "gapP99Milliseconds": 0.0,
-        "phaseDriftP99Milliseconds": 0.0,
-        "skippedSourceFrames": 0,
-        "kind": "frozen-frame",
-        "frozenFrameID": frozen_id,
-    }
-    result["pass"] = dimensions_exact and len(presented) >= 1
-    Path(destination).write_text(
-        json.dumps(result, separators=(",", ":")) + "\n")
-    print(json.dumps(result, sort_keys=True))
-    raise SystemExit(0 if result["pass"] else 1)
-
-rows = [row for row in events if row.get("event") == "sourceTick"][-180:]
-if len(rows) < 120:
-    fail("motion source produced fewer than 120 warm samples")
-actual_by_frame = {}
-for row in events:
-    if row.get("event") == "presentation" \
-            and row.get("actualPresentationMicroseconds", 0) > 0:
-        actual_by_frame.setdefault(
-            row["frameID"], row["actualPresentationMicroseconds"])
-presented = [
-    (row["frameID"], actual_by_frame[row["frameID"]])
-    for row in rows if row["frameID"] in actual_by_frame
-]
-
-def percentile(values, rank):
-    values = sorted(values)
-    return values[max(0, math.ceil(rank / 100 * len(values)) - 1)]
-
-gaps = [
-    (right[1] - left[1]) / 1000
-    for left, right in zip(presented, presented[1:])
-]
-if not gaps:
-    gaps = [1_000_000_000]
-period_us = 1_000_000 / 60
-origin_id, origin_us = presented[0] if presented else (0, 0)
-drift = [
-    abs(presentation - origin_us - (frame_id - origin_id) * period_us) / 1000
-    for frame_id, presentation in presented
-]
-if not drift:
-    drift = [1_000_000_000]
-scale = float(scale)
-dimensions_exact = all(
-    row["textureWidth"] == int(width)
-    and row["textureHeight"] == int(height)
-    and abs(row["allocationWidthPoints"] * scale - int(width)) <= 1
-    and abs(row["allocationHeightPoints"] * scale - int(height)) <= 1
-    for row in rows
-)
-result = {
-    "samples": len(rows),
-    "actualPresentations": len(presented),
-    "width": int(width),
-    "height": int(height),
-    "logicalScale": scale,
-    "allocationWidthPoints": rows[-1]["allocationWidthPoints"],
-    "allocationHeightPoints": rows[-1]["allocationHeightPoints"],
-    "dimensionsExact": dimensions_exact,
-    "gapP50Milliseconds": percentile(gaps, 50),
-    "gapP95Milliseconds": percentile(gaps, 95),
-    "gapP99Milliseconds": percentile(gaps, 99),
-    "phaseDriftP99Milliseconds": percentile(drift, 99),
-    "skippedSourceFrames": sum(row["skippedSourceFrames"] for row in rows),
-}
-result["pass"] = (
-    dimensions_exact
-    and len(presented) >= 120
-    and result["skippedSourceFrames"] == 0
-    and result["gapP99Milliseconds"] <= 25
-    and result["phaseDriftP99Milliseconds"] <= 8
-)
-Path(destination).write_text(json.dumps(result, separators=(",", ":")) + "\n")
-print(json.dumps(result, sort_keys=True))
-raise SystemExit(0 if result["pass"] else 1)
-PY
+  python3 "$ROOT/Scripts/motion_preflight.py" "$MOTION_SOURCE_LOG" "$summary" \
+      "$QUALITY_WIDTH" "$QUALITY_HEIGHT" "$scale" "$freeze" || source_pass=0
   motion_source_sha="$(shasum -a 256 "$MOTION_SOURCE_LOG" | awk '{print $1}')"
   python3 - "$OUT_DIR/$run_id.provenance.json" "$summary" \
       "$MOTION_PRESENTER_SHA256" "$MOTION_DEFINITION_SHA256" \

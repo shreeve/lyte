@@ -153,7 +153,10 @@ for script in "$benchmark" "$benchmark_netem" "$pup_gate" \
 do
     bash -n "$script"
 done
-for script in "$netem" "$build_cli" "$make_app"; do
+for script in "$netem" "$build_cli" "$make_app" \
+    "$repo_root/Scripts/lib/source-fingerprint.sh" \
+    "$repo_root/Scripts/lib/wasm-toolchain.sh"
+do
     sh -n "$script"
 done
 
@@ -164,10 +167,9 @@ grep -Fq -- '--package-path Client' "$build_cli"
 grep -Fq -- '--scratch-path .build' "$build_cli"
 grep -Fq -- '--package-path Client' "$make_app"
 grep -Fq -- '--scratch-path .build' "$make_app"
-grep -Fq 'Client/Package.swift Client/Package.resolved Client/Sources' \
-    "$make_app"
-grep -Fq 'Client/Package.swift Client/Package.resolved Client/Sources' \
-    "$benchmark"
+# The app records and the benchmark checks one client source identity.
+grep -Fq 'lyte_source_fingerprint "$ROOT" $LYTE_CLIENT_SOURCE_PATHS' "$make_app"
+grep -Fq 'lyte_source_fingerprint "$ROOT" $LYTE_CLIENT_SOURCE_PATHS' "$benchmark"
 grep -Fq 'run_package_tests "client" "$repo_root/Client" "$repo_root/Client/.build"' \
     "$macos_gate"
 if grep -Fq 'case .notRegistered, .notFound:' \
