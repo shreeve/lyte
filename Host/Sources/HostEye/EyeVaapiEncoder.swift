@@ -211,7 +211,7 @@ public final class EyeVaapiEncoder {
             count: inputSurfaceCount)
         try check(vaCreateSurfaces(
             display, rtFormat,
-            UInt32(width), UInt32(height),
+            recipe.codedWidth, recipe.codedHeight,
             &inputSurfaces, UInt32(inputSurfaceCount),
             &pixelFormat, 1
         ), "vaCreateSurfaces(input)")
@@ -219,12 +219,13 @@ public final class EyeVaapiEncoder {
             repeating: VASurfaceID(VA_INVALID_ID), count: 2)
         try check(vaCreateSurfaces(
             display, rtFormat,
-            UInt32(width), UInt32(height),
+            recipe.codedWidth, recipe.codedHeight,
             &reconSurfaces, 2, &pixelFormat, 1
         ), "vaCreateSurfaces(recon)")
 
         try check(vaCreateContext(
-            display, configID, width, height,
+            display, configID,
+            Int32(recipe.codedWidth), Int32(recipe.codedHeight),
             Int32(VA_PROGRESSIVE),
             &inputSurfaces, Int32(inputSurfaces.count), &contextID
         ), "vaCreateContext")
@@ -472,8 +473,10 @@ public final class EyeVaapiEncoder {
         seq.ip_period = 1
         seq.bits_per_second = bitrateBitsPerSecond > 0
             ? UInt32(bitrateBitsPerSecond) : 0
-        seq.pic_width_in_luma_samples = UInt16(width)
-        seq.pic_height_in_luma_samples = UInt16(height)
+        // The coded size the SPS pen writes; its conformance window
+        // crops back to the display.
+        seq.pic_width_in_luma_samples = UInt16(recipe.codedWidth)
+        seq.pic_height_in_luma_samples = UInt16(recipe.codedHeight)
         seq.seq_fields.bits.chroma_format_idc = chroma444 ? 3 : 1
         seq.seq_fields.bits.amp_enabled_flag = 1
         seq.seq_fields.bits.sample_adaptive_offset_enabled_flag = 1
