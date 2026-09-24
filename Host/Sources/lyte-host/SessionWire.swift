@@ -232,6 +232,9 @@ final class SessionWire {
     /// The posture the audio leaf is actually running (main seeds it;
     /// applied flips move it). Mutated under `lock`.
     private(set) var currentAudioRouting: HostAudioRoutingMode = .hostAudible
+    /// Pairing outcomes delivered under the lock, executed (keystore
+    /// write, console lines) outside it by `service()`.
+    private var pendingPairingEvents: [PairingResponderService.Event] = []
     /// 0x18 requests delivered by the session, awaiting the shell's
     /// flip outside the lock (drained by `service()`).
     private var pendingAudioRouting: [HostAudioRoutingMode] = []
@@ -846,6 +849,7 @@ final class SessionWire {
         // from here (and the thread holds `self` — this is also its
         // lifetime end).
         stopDrain()
+        runPendingPairingEvents()
         lock.lock()
         guard let session, session.phase == .established,
               session.lifecycleState != .closed, !peerGone else {
@@ -878,6 +882,7 @@ final class SessionWire {
             usleep(2_000)
         }
         flushLogLines()
+        runPendingPairingEvents()
         print(session.arqIsQuiescent
             ? "session: teardown acknowledged — clean close"
             : "session: teardown sent, unacknowledged after "
@@ -1146,9 +1151,14 @@ final class SessionWire {
         pendingClipboardImageApplies.removeAll()
         let bulk = pendingBulkMessages
         pendingBulkMessages.removeAll()
+        let pairingEvents = pendingPairingEvents
+        pendingPairingEvents.removeAll()
         lock.unlock()
         flushLogLines()
         if leftovers { signalDrain() }
+        for event in pairingEvents {
+            onPairingEvent(event)
+        }
 
         // The starting-posture 0x19 (capabilities just agreed) and any
         // client flips — both re-take the lock per send, neither holds
@@ -1282,6 +1292,16 @@ final class SessionWire {
         lock.lock()
         defer { lock.unlock() }
         currentAudioRouting = mode
+    }
+
+    /// A pairing that completed in the final service window still gets
+    /// its keystore write.
+    private func runPendingPairingEvents() {
+        lock.lock()
+        let events = pendingPairingEvents
+        pendingPairingEvents.removeAll()
+        lock.unlock()
+        for event in events { onPairingEvent(event) }
     }
 
     /// One 0x18 answered: flip the leaf via the shell's handler, then
@@ -1667,9 +1687,10 @@ final class SessionWire {
                         emit("pairing: reply send failed: \(error)")
                     }
                 }
-                for pairingEvent in output.events {
-                    onPairingEvent(pairingEvent)
-                }
+                // The keystore write and its prints run off the lock
+                // (service() drains these), never on the drain thread
+                // under it.
+                pendingPairingEvents.append(contentsOf: output.events)
                 return
             }
             emit("ctrl-arq: message group \(group.rawValue) "
