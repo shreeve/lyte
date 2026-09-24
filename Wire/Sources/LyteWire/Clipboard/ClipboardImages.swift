@@ -112,7 +112,7 @@ extension Capabilities {
 ///   9      1    mimeLen     1…255
 ///   10     …    mime        UTF-8; exactly its layout, trailing
 ///                           bytes reject
-public struct ClipboardImageCargo: Hashable, Sendable {
+public struct ClipboardImageCargo: Hashable, Sendable, SliceDecodable {
     public var transferId: UInt64
     public var mime: String
 
@@ -172,12 +172,6 @@ public struct ClipboardImageCargo: Hashable, Sendable {
             throw ClipboardImageCargoError.invalidUtf8
         }
         return try ClipboardImageCargo(transferId: transferId, mime: mime)
-    }
-
-    public static func decode(
-        _ payload: [UInt8]
-    ) throws -> ClipboardImageCargo {
-        try decode(payload[...])
     }
 }
 
