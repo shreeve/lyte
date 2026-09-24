@@ -110,6 +110,9 @@ let package = Package(
                 .product(name: "LyteCore", package: "Common"),
                 .product(name: "LyteIO", package: "Common"),
                 .product(name: "LyteWire", package: "Wire"),
+                // In-app updates (docs/RELEASING.md). The app is its only
+                // user; make-app.sh embeds the framework.
+                .product(name: "Sparkle", package: "Sparkle"),
             ]
         ),
         // The app's policies and lifecycle under injected services, plus
@@ -191,4 +194,7 @@ let portableTargets: Set<String> = [
 ]
 package.targets = package.targets.filter { portableTargets.contains($0.name) }
 package.products = package.products.filter { portableTargets.contains($0.name) }
+#else
+package.dependencies.append(
+    .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0"))
 #endif

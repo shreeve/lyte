@@ -9,6 +9,9 @@ struct LyteApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     init() {
+        // Before the menus are built, so Check for Updates… appears in a
+        // bundle that can update itself.
+        AppUpdater.shared.startIfConfigured()
         // The witnesses write only where a diagnostic bundle says to.
         PipelineWitness.configure(environment: DiagnosticEnvironment.current)
         HandshakeWitness.configure(environment: DiagnosticEnvironment.current)
@@ -37,6 +40,7 @@ struct LyteApp: App {
         }
         .defaultSize(width: 1024, height: 640)
         .commands {
+            CheckForUpdatesCommand()
             LyteCommands()
         }
 
