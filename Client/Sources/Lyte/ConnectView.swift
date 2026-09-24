@@ -45,7 +45,7 @@ struct ConnectView: View {
             }
             .ignoresSafeArea()
         }
-        .onAppear { pinnedStore = PinnedHostStore.load() }
+        .onAppear { pinnedStore = loadPinnedHosts() }
         .task { await browse() }
         .onChange(of: scenePhase) { _, newPhase in
             guard newPhase == .active, rescanWhenActive else { return }
@@ -54,7 +54,7 @@ struct ConnectView: View {
         }
         .sheet(item: $pairingTarget) { host in
             LytePairingSheet(host: host) { pairedNow in
-                if pairedNow { pinnedStore = PinnedHostStore.load() }
+                if pairedNow { pinnedStore = loadPinnedHosts() }
                 pairingTarget = nil
             }
         }
@@ -223,7 +223,7 @@ struct ConnectView: View {
         _ mutate: (inout PinnedHostStore, String) -> Bool
     ) {
         guard let pkh = host.publicKeyHash else { return }
-        var store = PinnedHostStore.load()
+        var store = loadPinnedHosts()
         guard mutate(&store, pkh) else { return }
         try? store.save()
         pinnedStore = store

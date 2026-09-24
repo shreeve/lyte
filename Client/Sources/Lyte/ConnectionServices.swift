@@ -43,7 +43,7 @@ struct ConnectionServices: Sendable {
     var now: @Sendable () -> UInt64
 
     static let live = ConnectionServices(
-        loadPins: { PinnedHostStore.load() },
+        loadPins: { loadPinnedHosts() },
         savePins: { try $0.save() },
         identity: { authenticationUI in
             try await ClientNoiseIdentityProvider.shared.identity(
@@ -70,4 +70,17 @@ struct ConnectionServices: Sendable {
         streamBegan: { AgentState.shared.streamBegan() },
         streamEnded: { AgentState.shared.streamEnded() },
         now: { SystemMonotonicClock.nowMicroseconds })
+}
+
+/// The app's one read of the pinned-host store. An unreadable file is
+/// moved aside by the store (so a later save cannot overwrite the only
+/// copy); the log line says where, since the picker then shows no pins.
+@MainActor
+func loadPinnedHosts() -> PinnedHostStore {
+    let loaded = PinnedHostStore.loadQuarantiningUnreadable()
+    if let quarantined = loaded.quarantinedTo {
+        NSLog("lyte: pinned hosts file was unreadable — moved aside to %@",
+              quarantined.path)
+    }
+    return loaded.store
 }

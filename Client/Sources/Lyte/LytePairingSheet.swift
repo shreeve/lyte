@@ -110,7 +110,7 @@ struct LytePairingSheet: View {
         .padding(28)
         .frame(minWidth: 460)
         .onAppear {
-            alreadyPinnedKey = PinnedHostStore.load()
+            alreadyPinnedKey = loadPinnedHosts()
                 .host(publicKeyHash: host.publicKeyHash)?.staticPublicKey
         }
     }
@@ -211,7 +211,7 @@ struct LytePairingSheet: View {
                 phase = .failed(outcome.failureMessage ?? "Pairing failed.")
                 return
             }
-            var store = PinnedHostStore.load()
+            var store = loadPinnedHosts()
             store.pinPaired(
                 staticPublicKey: key, name: target.name,
                 address: target.address, port: target.port)

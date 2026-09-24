@@ -65,7 +65,7 @@ struct ConnectionWindow: View {
                     diagnosticDetail: "autoconnect preflight: \(problem)"))
                 return
             }
-            let store = PinnedHostStore.load()
+            let store = loadPinnedHosts()
             var probe = in_addr()
             let requestedIsAddress =
                 inet_pton(AF_INET, requested, &probe) == 1
