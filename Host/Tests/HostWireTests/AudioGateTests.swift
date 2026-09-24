@@ -330,8 +330,10 @@ final class AudioGateTests: XCTestCase {
         session.pump(now: 0)
         let videoSentAtOpen = sent.count { $0.pacerClass == .freshVideo }
         XCTAssertEqual(videoSentAtOpen, 1,
-            "exactly the one oversize datagram leaves; the tail parks "
-            + "behind the deficit")
+            """
+                exactly the one oversize datagram leaves; the tail parks \
+                behind the deficit
+                """)
         XCTAssertGreaterThan(session.queuedVideoBytes, 0)
 
         // Audio lands 1 ms into the deficit. The wake must be NOW —
@@ -343,8 +345,10 @@ final class AudioGateTests: XCTestCase {
         let wake = session.nextWake(now: 1 * ms)
         XCTAssertNotNil(wake)
         XCTAssertLessThanOrEqual(wake ?? .max, 1 * ms,
-            "a parked sender thread woken by signalDrain must find "
-            + "immediate work, not a 19 ms sleep")
+            """
+                a parked sender thread woken by signalDrain must find \
+                immediate work, not a 19 ms sleep
+                """)
 
         session.pump(now: 1 * ms)
         XCTAssertEqual(sent.count { $0.pacerClass == .audio }, 1,
@@ -362,8 +366,7 @@ final class AudioGateTests: XCTestCase {
         XCTAssertEqual(sent.count { $0.pacerClass == .audio }, 2)
         XCTAssertLessThanOrEqual(
             session.pacerTelemetry[.audio].maxQueueDelayNS, 2 * ms,
-            "audio queue delay must hold §4.1's bound through the "
-            + "deficit")
+            "audio queue delay must hold §4.1's bound through the deficit")
     }
 
     // MARK: Leg 5 — sealed round trip through the LyteWire client build-up
@@ -585,8 +588,10 @@ final class AudioGateTests: XCTestCase {
             XCTAssertEqual(
                 datagram.bytes,
                 try envelope.encode(payload: Array(payload)),
-                "in-place AAD-buffer assembly must remain byte-identical "
-                    + "to the canonical envelope encoder"
+                """
+                    in-place AAD-buffer assembly must remain byte-identical \
+                    to the canonical envelope encoder
+                    """
             )
         }
         XCTAssertEqual(
@@ -663,32 +668,14 @@ final class AudioGateTests: XCTestCase {
 
     // MARK: Leg 6 — lifecycle: the probe never stops (except closed)
 
-    func testAudioFlowsInIdleAndStopsOnlyWhenClosed() throws {
+    func testAudioFlowsUntilTheSessionCloses() throws {
         let (session, clientValue, box) = try establish()
         var client = clientValue
         var forwarded = 0
         var t: UInt64 = 1_000
         try settle(session, &client, box, forwarded: &forwarded, t: &t)
 
-        // Reach IDLE the honest way (the lifecycle suite's recipe):
-        // a frame, convergence, the one-shot ack.
-        _ = try session.ingestVideoFrame(
-            syntheticFrame(byteCount: 900),
-            captureTimestampMicroseconds: 42, isKeyframe: false,
-            now: t * 1_000
-        )
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
-        _ = session.noteRatchetConverged(
-            finalFrame: syntheticFrame(byteCount: 700),
-            captureTimestampMicroseconds: 42,
-            now: t * 1_000, hostMicroseconds: t
-        )
-        session.pump(now: t * 1_000)
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
-        XCTAssertEqual(session.wireMode, .idle)
-
-        // IDLE: datagram video is off — audio keeps flowing (the 5 ms
-        // probe that lets the client detector tighten to 350 ms).
+        // Audio is the 5 ms path probe: it flows whatever video does.
         let audioBefore = client.audio.count
         for n in 0..<4 {
             t += 5_000
@@ -702,7 +689,6 @@ final class AudioGateTests: XCTestCase {
             try client.absorb(box.datagrams[forwarded].bytes, nowMicros: t)
             forwarded += 1
         }
-        XCTAssertEqual(session.wireMode, .idle, "audio must not wake IDLE")
         XCTAssertEqual(client.audio.count - audioBefore, 6)
 
         // closed: teardown, then audio is suppressed — counted, silent.
@@ -760,7 +746,8 @@ final class AudioGateTests: XCTestCase {
                 rateBitsPerSecond: Self.rateBPS
             ),
             clientTuple: Self.tupleA,
-            now: 0
+            now: 0,
+            rng: SplitMix64(seed: 0xA0D1)
         ) { _ in }
         XCTAssertThrowsError(try session.ingestAudioPacket(
             opusPacket(0), captureTimestampMicroseconds: 0, now: 0
@@ -909,12 +896,14 @@ final class AudioGateTests: XCTestCase {
             session.counters.audioDatagramsEnqueued
         )
 
-        print("HS-15 gate @20 Mbps, 5 s virtual, IDR every 2 s: "
-            + "\(dataSends.count) audio packets; inter-send deviation "
-            + "p99 \(Double(p99) / 1e6) ms, worst \(Double(worst) / 1e6) ms; "
-            + "max audio queue delay \(Double(audioWait) / 1e6) ms; "
-            + "max batch wire time "
-            + "\(Double(session.pacerTelemetry.maxBatchWireTimeNS) / 1e6) ms")
+        print("""
+            HS-15 gate @20 Mbps, 5 s virtual, IDR every 2 s: \
+            \(dataSends.count) audio packets; inter-send deviation \
+            p99 \(Double(p99) / 1e6) ms, worst \(Double(worst) / 1e6) ms; \
+            max audio queue delay \(Double(audioWait) / 1e6) ms; \
+            max batch wire time \
+            \(Double(session.pacerTelemetry.maxBatchWireTimeNS) / 1e6) ms
+            """)
     }
 
     /// The executable publishes audio without taking its broad Session

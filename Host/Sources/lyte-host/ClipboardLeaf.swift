@@ -27,8 +27,9 @@
 //     which the session's pre-armed sync book suppresses (the
 //     boomerang proof); the leaf stays dumb by design.
 //
-// Threading: NONE. Everything runs on the video-loop tick thread —
-// `service()` (SessionWire's off-lock clipboard hook) drains the bus
+// Threading: NONE. Everything runs on the janitor thread (the leg's
+// 10 ms shell-service sweep) — `service()` (SessionWire's off-lock
+// clipboard hook) drains the bus
 // non-blockingly and pumps the fd state machines with O_NONBLOCK
 // descriptors, so a slow selection owner can never stall a frame.
 // No new C shim: CDBus carries the D-Bus plumbing (fds ride the 'h'
@@ -152,10 +153,14 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
     deinit { stop() }
 
     func start() throws {
-        try bus.addMatch("type='signal',interface='\(Self.sessionInterface)',"
-            + "member='SelectionOwnerChanged',path='\(rdSession)'")
-        try bus.addMatch("type='signal',interface='\(Self.sessionInterface)',"
-            + "member='SelectionTransfer',path='\(rdSession)'")
+        try bus.addMatch("""
+            type='signal',interface='\(Self.sessionInterface)',\
+            member='SelectionOwnerChanged',path='\(rdSession)'
+            """)
+        try bus.addMatch("""
+            type='signal',interface='\(Self.sessionInterface)',\
+            member='SelectionTransfer',path='\(rdSession)'
+            """)
         let startReply = try bus.call(
             dest: Self.rdService, path: rdSession,
             interface: Self.sessionInterface, method: "Start")
@@ -191,9 +196,11 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
             }
         }
         if baselineReplaysSkipped > 0 {
-            print("clipboard: standing pre-session selection NOT "
-                + "announced (\(baselineReplaysSkipped) baseline "
-                + "replay(s) skipped — consent starts now)")
+            print("""
+                clipboard: standing pre-session selection NOT \
+                announced (\(baselineReplaysSkipped) baseline \
+                replay(s) skipped — consent starts now)
+                """)
         }
     }
 
@@ -231,8 +238,10 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
                 })
             dbus_message_unref(reply)
         } catch {
-            print("clipboard: SetSelection failed (\(error)) — "
-                + "apply dropped (\(byteCount) B)")
+            print("""
+                clipboard: SetSelection failed (\(error)) — \
+                apply dropped (\(byteCount) B)
+                """)
         }
     }
 
@@ -374,8 +383,10 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
                     close(read.fd)
                     pendingRead = nil
                     readsAbandoned += 1
-                    print("clipboard: selection read timed out "
-                        + "(\(read.buffer.count) B partial, abandoned)")
+                    print("""
+                        clipboard: selection read timed out \
+                        (\(read.buffer.count) B partial, abandoned)
+                        """)
                     return
                 }
                 pendingRead = read // progress retained across ticks
@@ -471,8 +482,10 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
                     transfersServed += 1
                 } else {
                     transfersFailed += 1
-                    print("clipboard: transfer serial \(write.serial) "
-                        + "failed at \(write.offset)/\(write.data.count) B")
+                    print("""
+                        clipboard: transfer serial \(write.serial) \
+                        failed at \(write.offset)/\(write.data.count) B
+                        """)
                 }
             } else {
                 remaining.append(write)

@@ -107,8 +107,10 @@ final class Sink {
         let frames = try decoder.decode(
             packet, byteCount: n, into: &decoded)
         guard frames == packetFrames else {
-            let message = "loop decode failed at packet \(packetSizes.count) "
-                + "(\(frames) frames)"
+            let message = """
+                loop decode failed at packet \(packetSizes.count) \
+                (\(frames) frames)
+                """
             callbackError = message
             throw CheckError(message)
         }
@@ -193,9 +195,11 @@ func run() throws {
     defer { lyte_pw_audio_free(capture) }
     sink.capture = capture
 
-    print("audio-check: capturing default-sink monitor for "
-        + String(format: "%.1f", seconds) + " s, opus \(bitrate) b/s "
-        + (useVBR ? "VBR (evidence mode)" : "hard CBR") + ", 5 ms frames")
+    print("""
+        audio-check: capturing default-sink monitor for \
+        \(String(format: "%.1f", seconds)) s, opus \(bitrate) b/s \
+        \(useVBR ? "VBR (evidence mode)" : "hard CBR"), 5 ms frames
+        """)
 
     let rc = lyte_pw_audio_run(capture, seconds, &err, err.count)
     guard rc >= 0 else {
@@ -204,8 +208,10 @@ func run() throws {
     if let ne = sink.negotiationError { throw CheckError(ne) }
     if let ce = sink.callbackError { throw CheckError(ce) }
     guard let fmt = sink.negotiated else {
-        throw CheckError("no audio buffers arrived in \(seconds) s "
-            + "(is a default sink present?)")
+        throw CheckError("""
+            no audio buffers arrived in \(seconds) s \
+            (is a default sink present?)
+            """)
     }
 
     try sink.packetData.write(to: URL(fileURLWithPath: pktsPath))
@@ -233,19 +239,27 @@ func run() throws {
     let avgDelta = Double(deltas.reduce(0, +)) / Double(deltas.count)
 
     print("negotiated: F32 interleaved \(fmt.rate) Hz \(fmt.channels)ch")
-    print("packets: \(count) over \(String(format: "%.3f", graphSpanS)) s "
-        + "graph-clock span (\(String(format: "%.3f", wallSpanS)) s wall) = "
-        + String(format: "%.1f", pktPerSec) + " pkt/s")
-    print("sizes: min \(sizes.min()!) avg "
-        + String(format: "%.1f", avgSize) + " max \(sizes.max()!) bytes")
-    print("ts deltas (µs): min \(deltas.min()!) avg "
-        + String(format: "%.1f", avgDelta) + " max \(deltas.max()!), "
-        + "\(nonMonotonic) non-monotonic, \(offCadence) outside 5000±1000")
-    print("wrote \(pktsPath) (\(sink.packetData.count) B) and "
-        + "\(wavPath) (\(sink.decodedPCM.count / channels) frames = "
-        + String(format: "%.3f",
-                 Double(sink.decodedPCM.count / channels) / Double(sampleRate))
-        + " s decoded-back)")
+    print("""
+        packets: \(count) over \(String(format: "%.3f", graphSpanS)) s \
+        graph-clock span (\(String(format: "%.3f", wallSpanS)) s wall) = \
+        \(String(format: "%.1f", pktPerSec)) pkt/s
+        """)
+    print("""
+        sizes: min \(sizes.min()!) avg \
+        \(String(format: "%.1f", avgSize)) max \(sizes.max()!) bytes
+        """)
+    print("""
+        ts deltas (µs): min \(deltas.min()!) avg \
+        \(String(format: "%.1f", avgDelta)) max \(deltas.max()!), \
+        \(nonMonotonic) non-monotonic, \(offCadence) outside 5000±1000
+        """)
+    let decodedFrames = sink.decodedPCM.count / channels
+    let decodedSeconds = String(
+        format: "%.3f", Double(decodedFrames) / Double(sampleRate))
+    print("""
+        wrote \(pktsPath) (\(sink.packetData.count) B) and \
+        \(wavPath) (\(decodedFrames) frames = \(decodedSeconds) s decoded-back)
+        """)
 
     var failures: [String] = []
     if nonMonotonic > 0 { failures.append("\(nonMonotonic) non-monotonic timestamps") }
@@ -256,10 +270,12 @@ func run() throws {
         failures.append("\(offCadence) deltas off 5 ms cadence (>1%)")
     }
     guard failures.isEmpty else {
-        throw CheckError("gate failed: " + failures.joined(separator: "; "))
+        throw CheckError("gate failed: \(failures.joined(separator: "; "))")
     }
-    print("audio-check: OK — 5 ms Opus cadence, monotonic graph-clock ts, "
-        + "clean loop decode")
+    print("""
+        audio-check: OK — 5 ms Opus cadence, monotonic graph-clock ts, \
+        clean loop decode
+        """)
 }
 
 do {

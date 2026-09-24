@@ -7,8 +7,8 @@
 extern "C" {
 #endif
 
-/* uinput injection leaf (HS-13's documented SECONDARY fallback; the
-   primary is Mutter's internal RemoteDesktop D-Bus API). Mechanism only:
+/* uinput injection leaf — the host's sole input backend,
+   compositor-agnostic. Mechanism only:
    three virtual evdev devices shaped like hardware libinput already
    understands, fed by ioctl/write — no protocol knowledge, no threads.
 

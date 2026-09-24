@@ -1,14 +1,8 @@
-// Thin Swift layer over libdbus: session-bus connection, method calls with
-// a{sv} options, and portal Request/Response signal waiting.
+// Thin Swift layer over libdbus: a private session- or system-bus
+// connection, blocking method calls, a{sv} option dictionaries, and reply
+// readers. Mutter's clipboard (RemoteDesktop) and Avahi ride it.
 
 import CDBus
-import Foundation
-
-struct HostError: Error, CustomStringConvertible {
-    let message: String
-    var description: String { message }
-    init(_ message: String) { self.message = message }
-}
 
 // D-Bus wire type codes (libdbus exposes these only as C macros).
 enum DType {
@@ -27,7 +21,7 @@ enum DType {
     static let unixFd: Int32 = 104 // 'h'
 }
 
-/// Values we place into portal option dictionaries (a{sv}).
+/// Values we place into a{sv} option dictionaries.
 enum DBusVariant {
     case u32(UInt32)
     case string(String)
@@ -37,9 +31,9 @@ enum DBusVariant {
 final class SessionBus {
     let conn: OpaquePointer
 
-    /// Which bus a private connection binds. The portal/Mutter surfaces
-    /// live on the user session bus; Avahi (HS-10 discovery) is a system
-    /// daemon on the system bus — same libdbus plumbing either way.
+    /// Which bus a private connection binds. Mutter lives on the user
+    /// session bus; Avahi is a system daemon on the system bus — same
+    /// libdbus plumbing either way.
     enum Kind {
         case session
         case system
@@ -54,8 +48,10 @@ final class SessionBus {
             dbus_error_free(&err)
             switch kind {
             case .session:
-                throw HostError("cannot connect to the D-Bus session bus: \(msg) "
-                    + "(is DBUS_SESSION_BUS_ADDRESS set? portal needs the user session bus)")
+                throw HostError("""
+                    cannot connect to the D-Bus session bus: \(msg) \
+                    (is DBUS_SESSION_BUS_ADDRESS set? Mutter needs the user session bus)
+                    """)
             case .system:
                 throw HostError("cannot connect to the D-Bus system bus: \(msg)")
             }
@@ -69,16 +65,6 @@ final class SessionBus {
         dbus_connection_unref(conn)
     }
 
-    var uniqueName: String {
-        String(cString: dbus_bus_get_unique_name(conn))
-    }
-
-    /// The token part of the sender name used in portal request object paths:
-    /// ":1.42" → "1_42".
-    var senderToken: String {
-        uniqueName.dropFirst().replacingOccurrences(of: ".", with: "_")
-    }
-
     func addMatch(_ rule: String) throws {
         var err = DBusError()
         dbus_error_init(&err)
@@ -88,44 +74,6 @@ final class SessionBus {
             dbus_error_free(&err)
             throw HostError("dbus add_match failed: \(msg)")
         }
-    }
-
-    /// Calls a method on the desktop portal. `objectPathArgs` are prepended
-    /// as OBJECT_PATH arguments, `stringArgs` as STRING arguments, then one
-    /// a{sv} options dict is appended.
-    func callPortal(interface: String, method: String,
-                    objectPathArgs: [String] = [],
-                    stringArgs: [String] = [],
-                    options: [(String, DBusVariant)],
-                    timeoutMs: Int32 = 30_000) throws -> OpaquePointer {
-        guard let msg = dbus_message_new_method_call(
-            "org.freedesktop.portal.Desktop",
-            "/org/freedesktop/portal/desktop",
-            interface, method)
-        else { throw HostError("cannot allocate D-Bus message") }
-        defer { dbus_message_unref(msg) }
-
-        var iter = DBusMessageIter()
-        dbus_message_iter_init_append(msg, &iter)
-        for path in objectPathArgs {
-            try appendBasicString(&iter, type: DType.objectPath, value: path)
-        }
-        for s in stringArgs {
-            try appendBasicString(&iter, type: DType.string, value: s)
-        }
-        try appendOptionsDict(&iter, options)
-
-        var err = DBusError()
-        dbus_error_init(&err)
-        guard let reply = dbus_connection_send_with_reply_and_block(
-            conn, msg, timeoutMs, &err)
-        else {
-            let name = err.name.map { String(cString: $0) } ?? "?"
-            let m = err.message.map { String(cString: $0) } ?? "?"
-            dbus_error_free(&err)
-            throw HostError("\(interface).\(method) failed: \(name): \(m)")
-        }
-        return reply // caller unrefs
     }
 
     private func appendBasicString(_ iter: inout DBusMessageIter,
@@ -168,107 +116,7 @@ final class SessionBus {
         dbus_message_iter_close_container(&iter, &arrayIter)
     }
 
-    // MARK: - Portal Request/Response
-
-    /// Blocks until the portal emits Response on `requestPath` (the match
-    /// rule must already be added). Returns the response code and results.
-    func waitForResponse(requestPath: String, timeout: TimeInterval,
-                         onWaiting: (() -> Void)? = nil) throws
-        -> (code: UInt32, results: PortalResults)
-    {
-        let deadline = Date().addingTimeInterval(timeout)
-        var announced = false
-        while Date() < deadline {
-            if dbus_connection_read_write(conn, 200) == 0 {
-                throw HostError("D-Bus connection closed while waiting for portal response")
-            }
-            while let msg = dbus_connection_pop_message(conn) {
-                defer { dbus_message_unref(msg) }
-                guard dbus_message_is_signal(msg, "org.freedesktop.portal.Request", "Response") != 0,
-                      let p = dbus_message_get_path(msg),
-                      String(cString: p) == requestPath
-                else { continue }
-                return try parseResponse(msg)
-            }
-            if !announced, let onWaiting {
-                announced = true
-                onWaiting()
-            }
-        }
-        throw HostError("timed out after \(Int(timeout))s waiting for the portal "
-            + "response on \(requestPath)")
-    }
-
-    private func parseResponse(_ msg: OpaquePointer) throws
-        -> (code: UInt32, results: PortalResults)
-    {
-        var iter = DBusMessageIter()
-        guard dbus_message_iter_init(msg, &iter) != 0 else {
-            throw HostError("portal Response signal carried no arguments")
-        }
-        guard dbus_message_iter_get_arg_type(&iter) == DType.uint32 else {
-            throw HostError("portal Response: first argument is not u32")
-        }
-        var code: UInt32 = 0
-        dbus_message_iter_get_basic(&iter, &code)
-
-        var results = PortalResults()
-        if dbus_message_iter_next(&iter) != 0,
-           dbus_message_iter_get_arg_type(&iter) == DType.array
-        {
-            var entryIter = DBusMessageIter()
-            dbus_message_iter_recurse(&iter, &entryIter)
-            while dbus_message_iter_get_arg_type(&entryIter) == DType.dictEntry {
-                var kvIter = DBusMessageIter()
-                dbus_message_iter_recurse(&entryIter, &kvIter)
-
-                var keyPtr: UnsafePointer<CChar>?
-                dbus_message_iter_get_basic(&kvIter, &keyPtr)
-                let key = keyPtr.map { String(cString: $0) } ?? ""
-                _ = dbus_message_iter_next(&kvIter)
-
-                var valueIter = DBusMessageIter()
-                dbus_message_iter_recurse(&kvIter, &valueIter) // into variant
-                readResult(key: key, iter: &valueIter, into: &results)
-
-                _ = dbus_message_iter_next(&entryIter)
-            }
-        }
-        return (code, results)
-    }
-
-    private func readResult(key: String, iter: inout DBusMessageIter,
-                            into results: inout PortalResults) {
-        let type = dbus_message_iter_get_arg_type(&iter)
-        switch key {
-        case "session_handle" where type == DType.string || type == DType.objectPath:
-            var ptr: UnsafePointer<CChar>?
-            dbus_message_iter_get_basic(&iter, &ptr)
-            results.sessionHandle = ptr.map { String(cString: $0) }
-        case "restore_token" where type == DType.string:
-            var ptr: UnsafePointer<CChar>?
-            dbus_message_iter_get_basic(&iter, &ptr)
-            results.restoreToken = ptr.map { String(cString: $0) }
-        case "streams" where type == DType.array:
-            // Signature a(ua{sv}): array of (node id, properties) structs.
-            var structIter = DBusMessageIter()
-            dbus_message_iter_recurse(&iter, &structIter)
-            while dbus_message_iter_get_arg_type(&structIter) == DType.structType {
-                var fieldIter = DBusMessageIter()
-                dbus_message_iter_recurse(&structIter, &fieldIter)
-                if dbus_message_iter_get_arg_type(&fieldIter) == DType.uint32 {
-                    var node: UInt32 = 0
-                    dbus_message_iter_get_basic(&fieldIter, &node)
-                    results.streamNodeIds.append(node)
-                }
-                _ = dbus_message_iter_next(&structIter)
-            }
-        default:
-            break
-        }
-    }
-
-    // MARK: - Generic calls (Mutter ScreenCast internal API)
+    // MARK: - Generic calls
 
     /// Issues a blocking method call; the closure appends arguments.
     func call(dest: String, path: String, interface: String, method: String,
@@ -326,33 +174,6 @@ final class SessionBus {
         return ptr.map { String(cString: $0) } ?? ""
     }
 
-    /// Waits for a signal carrying a single u32 (e.g. Mutter's
-    /// PipeWireStreamAdded). The match rule must already be added.
-    func waitForUInt32Signal(interface: String, member: String, path: String,
-                             timeout: TimeInterval) throws -> UInt32 {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if dbus_connection_read_write(conn, 200) == 0 {
-                throw HostError("D-Bus connection closed while waiting for \(member)")
-            }
-            while let msg = dbus_connection_pop_message(conn) {
-                defer { dbus_message_unref(msg) }
-                guard dbus_message_is_signal(msg, interface, member) != 0,
-                      let p = dbus_message_get_path(msg),
-                      String(cString: p) == path
-                else { continue }
-                var iter = DBusMessageIter()
-                guard dbus_message_iter_init(msg, &iter) != 0,
-                      dbus_message_iter_get_arg_type(&iter) == DType.uint32
-                else { throw HostError("\(member) signal missing its u32 node id") }
-                var node: UInt32 = 0
-                dbus_message_iter_get_basic(&iter, &node)
-                return node
-            }
-        }
-        throw HostError("timed out after \(Int(timeout))s waiting for \(member) on \(path)")
-    }
-
     /// Reads the unix fd out of a method reply whose first argument is 'h'.
     static func unixFd(fromReply reply: OpaquePointer) throws -> Int32 {
         var iter = DBusMessageIter()
@@ -361,13 +182,7 @@ final class SessionBus {
         else { throw HostError("reply does not carry a unix fd") }
         var fd: Int32 = -1
         dbus_message_iter_get_basic(&iter, &fd)
-        guard fd >= 0 else { throw HostError("portal returned an invalid pipewire fd") }
+        guard fd >= 0 else { throw HostError("reply carried an invalid unix fd") }
         return fd
     }
-}
-
-struct PortalResults {
-    var sessionHandle: String?
-    var restoreToken: String?
-    var streamNodeIds: [UInt32] = []
 }

@@ -19,8 +19,8 @@
 // Threading: CPipeWireAudio owns its own pw_main_loop, run here on a
 // dedicated Thread — the 5 ms cadence cannot ride the video loop's
 // ~16.7 ms tick. All slicing/encoding state below is confined to that
-// audio loop thread; the only cross-thread touch is sendAudioPacket
-// (locked inside SessionWire) and the stop flag. The slicing and
+// audio loop thread; the only cross-thread touches are the SessionWire
+// audio mailbox (packets and track states) and the stop flag. The slicing and
 // graph-clock timestamp bookkeeping have one sans-IO HostCore owner shared
 // with lyte-audio-check: a packet is stamped by the buffer its FIRST sample
 // arrived in, advanced by the sample offset within it — pure graph clock,
@@ -121,14 +121,18 @@ final class AudioWire: @unchecked Sendable {
                 // crash would strand the user's default sink silently.
                 // No frees here — deinit restores the routing and
                 // frees capture + encoder exactly once (finding 3b).
-                throw HostError("cannot persist the original default "
-                    + "sink for crash restore (\(error)) — refusing "
-                    + "hostMuted")
+                throw HostError("""
+                    cannot persist the original default \
+                    sink for crash restore (\(error)) — refusing \
+                    hostMuted
+                    """)
             }
-            print("audio: routing hostMuted — \"Lyte Audio\" sink is the "
-                + "default; original "
-                + (rc == 1 ? errString(saved) : "(unset)")
-                + " recorded for restore")
+            print("""
+                audio: routing hostMuted — \"Lyte Audio\" sink is the \
+                default; original \
+                \(rc == 1 ? errString(saved) : "(unset)")\
+                 recorded for restore
+                """)
         }
     }
 
@@ -164,8 +168,10 @@ final class AudioWire: @unchecked Sendable {
         } else {
             // The state file deliberately stays: the sweep finishes
             // the job on the next start.
-            print("audio: routing restore FAILED (\(errString(err))) — "
-                + "state file kept for the next-start sweep")
+            print("""
+                audio: routing restore FAILED (\(errString(err))) — \
+                state file kept for the next-start sweep
+                """)
         }
     }
 
@@ -187,13 +193,17 @@ final class AudioWire: @unchecked Sendable {
             : lyte_pw_audio_restore_default(record, &err, err.count)
         if rc == 0 {
             try? FileManager.default.removeItem(at: routingStatePath)
-            print("audio: swept a dirty previous run — default sink "
-                + "restored to "
-                + (record == unsetSentinel ? "(unset)" : record))
+            print("""
+                audio: swept a dirty previous run — default sink \
+                restored to \
+                \(record == unsetSentinel ? "(unset)" : record)
+                """)
         } else {
-            print("audio: leftover-routing sweep FAILED "
-                + "(\(errString(err))) — state file kept; restore by "
-                + "hand with wpctl set-default")
+            print("""
+                audio: leftover-routing sweep FAILED \
+                (\(errString(err))) — state file kept; restore by \
+                hand with wpctl set-default
+                """)
         }
     }
 
@@ -243,8 +253,10 @@ final class AudioWire: @unchecked Sendable {
             negotiated = (rate, chans)
             if rate != UInt32(sampleRate) || chans != UInt32(channels) {
                 negotiationError =
-                    "negotiated \(rate) Hz \(chans)ch, need "
-                    + "\(sampleRate)/\(channels)"
+                    """
+                        negotiated \(rate) Hz \(chans)ch, need \
+                        \(sampleRate)/\(channels)
+                        """
                 if let capture { lyte_pw_audio_quit(capture) }
                 return
             }
@@ -288,8 +300,8 @@ final class AudioWire: @unchecked Sendable {
         let encoded = Array(packet.prefix(n))
 
         // Capture never stops — the gate is transmission-side, and it
-        // exists at all only under the key-15 agreement (per-packet
-        // check: cheap locked read, and a fresh session re-decides).
+        // exists at all only under the key-15 agreement (a snapshot read
+        // under the narrow config lock, never the session lock).
         guard wire.audioQuietPostureAgreed() else {
             wire.sendAudioPacket(encoded, captureMicros: timestamp)
             return

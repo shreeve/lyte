@@ -19,8 +19,9 @@ struct lyte_uinput {
     int kbd;
     int mouse;
     int tablet;
-    /* Written by set_extent on the capture thread, read by absolute
-       moves on the wire-drain thread — atomics, not plain ints. A
+    /* Written by set_extent before the session starts, read by
+       absolute moves on whichever thread receives input — atomics, not
+       plain ints. A
        mid-change mismatched pair scales one event against the old
        axis; a mid-session geometry change tears the session down
        anyway (the P-3 law). */
@@ -37,22 +38,32 @@ static void fill_err(char *err, size_t errlen, const char *what) {
     }
 }
 
-static int emit(int fd, uint16_t type, uint16_t code, int32_t value,
-                char *err, size_t errlen) {
-    struct input_event ev;
-    memset(&ev, 0, sizeof(ev));
-    ev.type = type;
-    ev.code = code;
-    ev.value = value;
-    if (write(fd, &ev, sizeof(ev)) != sizeof(ev)) {
+/* One report's events, written to the device in a single write(2):
+   uinput accepts an array of input_event per write, so a key, a move
+   or a scroll costs one syscall instead of two or three. */
+typedef struct {
+    struct input_event ev[6];
+    size_t count;
+} event_batch;
+
+static void batch_add(event_batch *b, uint16_t type, uint16_t code,
+                      int32_t value) {
+    struct input_event *ev = &b->ev[b->count++];
+    memset(ev, 0, sizeof(*ev));
+    ev->type = type;
+    ev->code = code;
+    ev->value = value;
+}
+
+/* Appends SYN_REPORT and writes the whole report. */
+static int batch_send(int fd, event_batch *b, char *err, size_t errlen) {
+    batch_add(b, EV_SYN, SYN_REPORT, 0);
+    ssize_t bytes = (ssize_t)(b->count * sizeof(struct input_event));
+    if (write(fd, b->ev, (size_t)bytes) != bytes) {
         fill_err(err, errlen, "uinput write");
         return -1;
     }
     return 0;
-}
-
-static int emit_syn(int fd, char *err, size_t errlen) {
-    return emit(fd, EV_SYN, SYN_REPORT, 0, err, errlen);
 }
 
 /* Opens /dev/uinput and creates one device; caller sets the evbits via
@@ -203,10 +214,9 @@ int lyte_uinput_set_extent(lyte_uinput *u, uint32_t width, uint32_t height,
 int lyte_uinput_key(lyte_uinput *u, uint32_t code, int pressed,
                     char *err, size_t errlen) {
     int fd = (code >= BTN_MISC && code < KEY_OK) ? u->mouse : u->kbd;
-    if (emit(fd, EV_KEY, (uint16_t)code, pressed ? 1 : 0, err, errlen) != 0) {
-        return -1;
-    }
-    return emit_syn(fd, err, errlen);
+    event_batch b = {.count = 0};
+    batch_add(&b, EV_KEY, (uint16_t)code, pressed ? 1 : 0);
+    return batch_send(fd, &b, err, errlen);
 }
 
 int lyte_uinput_move_abs(lyte_uinput *u, double x, double y,
@@ -224,45 +234,36 @@ int lyte_uinput_move_abs(lyte_uinput *u, double x, double y,
     if (sy < 0) sy = 0;
     if (sx > ABS_RANGE) sx = ABS_RANGE;
     if (sy > ABS_RANGE) sy = ABS_RANGE;
-    if (emit(u->tablet, EV_ABS, ABS_X, (int32_t)sx, err, errlen) != 0 ||
-        emit(u->tablet, EV_ABS, ABS_Y, (int32_t)sy, err, errlen) != 0) {
-        return -1;
-    }
-    return emit_syn(u->tablet, err, errlen);
+    event_batch b = {.count = 0};
+    batch_add(&b, EV_ABS, ABS_X, (int32_t)sx);
+    batch_add(&b, EV_ABS, ABS_Y, (int32_t)sy);
+    return batch_send(u->tablet, &b, err, errlen);
 }
 
 int lyte_uinput_move_rel(lyte_uinput *u, int32_t dx, int32_t dy,
                          char *err, size_t errlen) {
-    if (dx && emit(u->mouse, EV_REL, REL_X, dx, err, errlen) != 0) return -1;
-    if (dy && emit(u->mouse, EV_REL, REL_Y, dy, err, errlen) != 0) return -1;
-    return emit_syn(u->mouse, err, errlen);
+    event_batch b = {.count = 0};
+    if (dx) batch_add(&b, EV_REL, REL_X, dx);
+    if (dy) batch_add(&b, EV_REL, REL_Y, dy);
+    return batch_send(u->mouse, &b, err, errlen);
 }
 
-static int scroll_axis(lyte_uinput *u, int hires_code, int click_code,
-                       int32_t v120, int32_t *rem, char *err, size_t errlen) {
-    if (!v120) return 0;
-    if (emit(u->mouse, EV_REL, (uint16_t)hires_code, v120, err, errlen) != 0) {
-        return -1;
-    }
+static void scroll_axis(event_batch *b, int hires_code, int click_code,
+                        int32_t v120, int32_t *rem) {
+    if (!v120) return;
+    batch_add(b, EV_REL, (uint16_t)hires_code, v120);
     *rem += v120;
     int32_t clicks = *rem / 120;
     if (clicks) {
         *rem -= clicks * 120;
-        if (emit(u->mouse, EV_REL, (uint16_t)click_code, clicks,
-                 err, errlen) != 0) {
-            return -1;
-        }
+        batch_add(b, EV_REL, (uint16_t)click_code, clicks);
     }
-    return 0;
 }
 
 int lyte_uinput_scroll(lyte_uinput *u, int32_t v120_x, int32_t v120_y,
                        char *err, size_t errlen) {
-    if (scroll_axis(u, REL_HWHEEL_HI_RES, REL_HWHEEL, v120_x,
-                    &u->wheel_rem_x, err, errlen) != 0 ||
-        scroll_axis(u, REL_WHEEL_HI_RES, REL_WHEEL, v120_y,
-                    &u->wheel_rem_y, err, errlen) != 0) {
-        return -1;
-    }
-    return emit_syn(u->mouse, err, errlen);
+    event_batch b = {.count = 0};
+    scroll_axis(&b, REL_HWHEEL_HI_RES, REL_HWHEEL, v120_x, &u->wheel_rem_x);
+    scroll_axis(&b, REL_WHEEL_HI_RES, REL_WHEEL, v120_y, &u->wheel_rem_y);
+    return batch_send(u->mouse, &b, err, errlen);
 }

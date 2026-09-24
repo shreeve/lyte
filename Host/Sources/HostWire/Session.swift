@@ -105,21 +105,6 @@ public struct SessionConfig: Sendable {
     /// The W4b lifecycle machine's knobs: the 350 ms blackout detector,
     /// the 30 s liveness clock, RECOVERY's clean-window count.
     public var lifecycle: SessionMachineConfig
-    /// HS-22: how long damage must stay quiet AFTER the ratchet
-    /// converges before the idle handoff starts (the one-shot ride
-    /// whose ack flips the mode to IDLE). The pillar's decision of
-    /// record stands — idle→active restarts with an IDR — which is
-    /// exactly why the flip must not be entered eagerly: a desktop
-    /// metronome (a 1 Hz clock, a ~1 Hz cursor blink) that keeps
-    /// converging and re-damaging would otherwise cycle
-    /// IDLE→WAKE→full-frame-IDR every beat — the owner's "1 Hz blur
-    /// while paused". 3 s is three missed beats of the slowest common
-    /// ticker: a genuinely static desktop still flips (3 s late, one
-    /// converged frame held meanwhile), a ticking one stays ACTIVE on
-    /// small P-frames at near-idle bandwidth. Convergence noted with
-    /// NO damage ever recorded flips immediately (the pre-HS-22
-    /// behavior — and the shape every existing pin drives).
-    public var idleFlipQuietNS: UInt64
     /// The HS-16 congestion estimator's knobs. Nil derives the default
     /// config with `rateBitsPerSecond` as the ceiling — the negotiated
     /// session rate IS the ceiling (no capability key carries bitrate
@@ -203,7 +188,6 @@ public struct SessionConfig: Sendable {
         handshakeGate: HandshakeGate.Config = HandshakeGate.Config(),
         capabilities: Capabilities = .wireDefault,
         lifecycle: SessionMachineConfig = SessionMachineConfig(),
-        idleFlipQuietNS: UInt64 = 3_000_000_000,
         estimator: RateEstimatorConfig? = nil,
         repairFreezeBudgetOverrideNS: UInt64? = nil,
         repairBudgetCadenceMultiplier: Double = 1.5,
@@ -228,7 +212,6 @@ public struct SessionConfig: Sendable {
         self.handshakeGate = handshakeGate
         self.capabilities = capabilities
         self.lifecycle = lifecycle
-        self.idleFlipQuietNS = idleFlipQuietNS
         self.estimator = estimator
         self.repairFreezeBudgetOverrideNS = repairFreezeBudgetOverrideNS
         self.repairBudgetCadenceMultiplier = repairBudgetCadenceMultiplier
@@ -308,9 +291,6 @@ public enum SessionEvent: Equatable, Sendable {
     /// A ModeTransition (0x09) left on the reliable stream — the
     /// mediaSender's ACTIVE⇄IDLE flip, as the wire hears it.
     case modeTransitionSent(SessionWireMode)
-    /// The converged ratchet frame left on its reliable one-shot group
-    /// (HS-11). Its `.reliableOneShotAcknowledged` is the idle flip.
-    case finalFrameSent(ArqGroupId)
     /// A typed SessionTeardown (0x0A) left on the reliable stream.
     case teardownSent(SessionTeardownReason)
     /// The W4b machine changed state (wire modes and the local
@@ -750,7 +730,6 @@ public final class Session {
     private var lifecycleLane: SessionLifecycleLane
     /// The W7 negotiation machine, host role.
     private var negotiator: CapabilityNegotiator
-    private var idleHandoff = SessionIdleHandoffBook()
     /// The HS-16 congestion estimator: send ledger + delivery-rate/
     /// queuing-delay/loss evidence → the pacer's setRate seam, W4b's
     /// RECOVERY window verdicts, and the IdrPacing numbers.
@@ -869,7 +848,7 @@ public final class Session {
         config: SessionConfig,
         clientTuple: FourTuple,
         now: UInt64,
-        rng: some RandomNumberGenerator = SystemRandomNumberGenerator(),
+        rng: some RandomNumberGenerator,
         sendAccounting: SessionSendAccounting = .pacerRelease,
         send: @escaping (VideoChannelDatagram) -> Void
     ) {
@@ -1063,6 +1042,7 @@ public final class Session {
             case .admit:
                 events += completeHandshake(
                     message1: message1,
+                    from: tuple,
                     hostStatic: hostStatic,
                     now: now,
                     hostMicroseconds: hostMicroseconds
@@ -1255,13 +1235,12 @@ public final class Session {
         // HS-25: a frame beyond what one FEC group can protect is
         // UNSHIPPABLE (the 255-shard GF(2⁸) block; the fec field binds
         // one group per frame number, so splitting is a wire-contract
-        // change, not an option here). Throwing killed the live session
-        // — the 279-shard IDR at the 50 Mbps/p4 recipe — so the frame
-        // is dropped instead: counted, its frame number unconsumed (the
-        // client sees no numbering gap), and a fresh IDR armed through
-        // the same coalesced latch client 0x10s pull, because whatever
-        // referenced the dropped frame must be re-anchored. The shell's
-        // opening VBV cap makes the re-encode fit by construction.
+        // change, not an option here). The frame is dropped: counted,
+        // its frame number unconsumed (the client sees no numbering
+        // gap), and a fresh IDR armed through the same coalesced latch
+        // client 0x10s pull, because whatever referenced the dropped
+        // frame must be re-anchored. The shell bounds the encoder's HRD
+        // buffer by this ceiling (EncoderHrd), so the re-encode fits.
         let ceiling = channel.maxProtectableFrameByteCount(
             hasLastInputSeq: lastInputSeq != nil
         )
@@ -1394,23 +1373,12 @@ public final class Session {
     private func encodeSealedAudio(
         envelope: Envelope, plaintext: [UInt8]
     ) throws -> [UInt8] {
-        var header = try envelope.encode(payload: [])
-        header.reserveCapacity(
-            header.count + plaintext.count + WireBudget.aeadTagByteCount
-        )
-        let sealed = try sealPayload(
-            plaintext[...], aad: header[...], envelope: envelope
-        )
-        guard sealed.count <= WireBudget.maxWirePayloadByteCount else {
-            throw WireError.payloadOverBudget(sealed.count)
+        let datagram = try envelope.sealedDatagram(plaintext[...]) {
+            plaintext, aad in
+            try sealPayload(plaintext, aad: aad, envelope: envelope)
         }
-        let total = header.count + sealed.count
-        guard total <= WireBudget.maxDatagramByteCount else {
-            throw WireError.datagramOverBudget(total)
-        }
-        header.append(contentsOf: sealed)
         counters.audioSealedDatagramsAssembledInPlace += 1
-        return header
+        return datagram
     }
 
     /// Audio datagrams still waiting in the shared pacer — the audio
@@ -1420,12 +1388,10 @@ public final class Session {
     }
 
     /// Video-class bytes (fresh + repair tail) still waiting in the
-    /// shared pacer — the capture loop's backpressure gate reads this
-    /// (the fps-ceiling fix): at 8×this/pacerRate of standing wire
-    /// time, encoding another capture frame only deepens the queue,
-    /// so the frame is skipped pre-encode instead (the same drop that
-    /// used to happen invisibly at the PipeWire buffer pool while the
-    /// loop thread sat inside a synchronous drain).
+    /// shared pacer or the shell's socket outbox. The kernel-pressure
+    /// governor turns them into wire time, which the capture leg's
+    /// pre-encode admission (VideoAdmissionGate) weighs against the
+    /// queue budget.
     public var queuedVideoBytes: Int {
         channel.queuedBytes(.freshVideo) + channel.queuedBytes(.videoTail)
             + socketPending.videoByteCount
@@ -1471,34 +1437,6 @@ public final class Session {
     }
 
     // MARK: Lifecycle inputs (HS-11)
-
-    /// The encoder loop's damage note: call when a FRESH damage frame
-    /// arrives from capture, BEFORE encoding it. In IDLE this is the
-    /// WAKE — mode=active leaves on the reliable stream and the damage
-    /// frame is owed as an IDR (`takeFreshKeyframeRequest` turns true,
-    /// paced at the healthy-path rate once HS-16 owns numbers). In
-    /// ACTIVE it aborts a pending idle flip: new damage during the
-    /// convergence handoff means the session never left ACTIVE.
-    public func noteDamage(
-        now: UInt64, hostMicroseconds: UInt64
-    ) -> [SessionEvent] {
-        idleHandoff.noteDamage(now: now)
-        return runLifecycle(
-            .damage, now: now, hostMicroseconds: hostMicroseconds
-        )
-    }
-
-    /// The HS-13 seam, now wired: an injected input event pre-arms the
-    /// wake IDR before its damage exists (W4b's pre-arm rule — a
-    /// keypress during a blackout persists through FROZEN and is
-    /// consumed exactly once by RECOVERY's IDR). `consumeReliable`'s
-    /// 0x16 arm calls this on every delivered input event; it stays
-    /// public for shells with input paths of their own.
-    public func notePreArmInput(
-        now: UInt64, hostMicroseconds: UInt64
-    ) -> [SessionEvent] {
-        runLifecycle(.preArmInput, now: now, hostMicroseconds: hostMicroseconds)
-    }
 
     /// The shell's injection report (HS-13): the event with `seq` was
     /// handed to the desktop session at `injectedAtMicroseconds` (host
@@ -1715,48 +1653,6 @@ public final class Session {
             .bulk, now: now, hostMicroseconds: hostMicroseconds
         )
         return events
-    }
-
-    /// The ratchet's all-skip stop (HS-3's detector via HS-11): retains
-    /// the final converged frame and starts the idle handoff — the
-    /// frame rides a reliable one-shot group, and ONLY its full
-    /// acknowledgment flips the wire mode to IDLE (the receiver must
-    /// hold the converged frame before it learns the session went
-    /// idle). When the agreed capabilities say the client does not
-    /// speak idle silence, the session stays ACTIVE.
-    ///
-    /// HS-22: the handoff additionally waits out `idleFlipQuietNS`
-    /// from the LAST damage note (the machine hears `.ratchetConverged`
-    /// from `advance` once the quiet holds; fresh damage meanwhile
-    /// drops the pending flip). A desktop metronome — a 1 Hz clock, a
-    /// blinking cursor — used to converge, flip to IDLE, and pay a
-    /// full-frame WAKE IDR on its next beat, every beat: the owner's
-    /// "1 Hz blur while paused". The idle→active-restarts-with-an-IDR
-    /// decision of record is untouched; the session just refuses to
-    /// enter IDLE between the beats of a ticker.
-    public func noteRatchetConverged(
-        finalFrame annexB: [UInt8],
-        captureTimestampMicroseconds: UInt64,
-        now: UInt64,
-        hostMicroseconds: UInt64
-    ) -> [SessionEvent] {
-        if let agreed = negotiator.agreed, !agreed.idleSilence { return [] }
-        guard !annexB.isEmpty,
-              let lastAdmittedVideoFrameNumber,
-              lastAdmittedVideoFrameNumber.next.rawValue > 0 else { return [] }
-        let ready = idleHandoff.noteConverged(
-            IdleFrame(
-                frame: lastAdmittedVideoFrameNumber,
-                captureTimestampMicroseconds: captureTimestampMicroseconds,
-                annexB: annexB
-            ),
-            now: now,
-            quietWindowNanoseconds: config.idleFlipQuietNS
-        )
-        guard ready else { return [] }
-        return runLifecycle(
-            .ratchetConverged, now: now, hostMicroseconds: hostMicroseconds
-        )
     }
 
     /// An orderly local close: the typed SessionTeardown leaves on the
@@ -2009,14 +1905,6 @@ public final class Session {
                 }
             case .oneShotAcknowledged(let group):
                 events.append(.reliableOneShotAcknowledged(group))
-                if idleHandoff.acknowledge(group) {
-                    // The converged frame landed: this ack IS the
-                    // idle-flip signal (W4b's ordering rule).
-                    events += runLifecycle(
-                        .finalFrameAcknowledged,
-                        now: now, hostMicroseconds: hostMicroseconds
-                    )
-                }
             case .ignored(let reason):
                 counters.arqIgnored += 1
                 events.append(.arqIgnored(reason))
@@ -2221,9 +2109,10 @@ public final class Session {
                     events.append(.sendFailed("teardown: \(error)"))
                 }
             case .sendFinalFrameReliably:
-                events += sendFinalFrame(
-                    now: now, hostMicroseconds: hostMicroseconds
-                )
+                // The lane asks for this only after `.ratchetConverged`,
+                // which the host never feeds: the direct eye has no
+                // convergence ratchet, so the session stays ACTIVE.
+                break
             case .armNextDamageAsIdr(let pacing), .forceIdr(let pacing):
                 switch pacing {
                 case .lastGoodRate: freshKeyframes.arm(.machineWake)
@@ -2251,26 +2140,6 @@ public final class Session {
             }
         }
         return events
-    }
-
-    /// The converged frame onto its one-shot group. A refused send is
-    /// loud, not fatal: the pending flip simply never completes, and
-    /// the next damage/convergence cycle starts fresh.
-    private func sendFinalFrame(
-        now: UInt64, hostMicroseconds: UInt64
-    ) -> [SessionEvent] {
-        guard let send = idleHandoff.pendingFinalFrameSend() else {
-            return [.sendFailed("final frame: no converged frame retained")]
-        }
-        do {
-            try sendReliableOneShot(
-                send.frame.encode(), group: send.group,
-                now: now, hostMicroseconds: hostMicroseconds
-            )
-            return [.finalFrameSent(idleHandoff.commitFinalFrameSent())]
-        } catch {
-            return [.sendFailed("final frame one-shot: \(error)")]
-        }
     }
 
     /// The W7 declaration: the session's first ARQ-carried message.
@@ -2698,13 +2567,6 @@ public final class Session {
             )
         }
         events += flushInputEchoes(now: now, hostMicroseconds: hostMicroseconds)
-        // HS-22: a convergence that waited out the idle-flip quiet —
-        // damage stayed silent, the handoff may start now.
-        if idleHandoff.takeDueHandoff(now: now) {
-            events += runLifecycle(
-                .ratchetConverged, now: now, hostMicroseconds: hostMicroseconds
-            )
-        }
         if let due = ctrlArqLane.nextDeadlineNanoseconds, now >= due {
             events += serviceArqLane(
                 .control, now: now, hostMicroseconds: hostMicroseconds
@@ -2746,20 +2608,48 @@ public final class Session {
     public static func prioritizeLatency(
         _ datagrams: [VideoChannelDatagram]
     ) -> [VideoChannelDatagram] {
+        var ordered = datagrams
+        prioritizeLatency(&ordered)
+        return ordered
+    }
+
+    /// In-place form. The pacer already releases in class order, so the
+    /// common case is a single ordered scan with no allocation.
+    public static func prioritizeLatency(
+        _ datagrams: inout [VideoChannelDatagram]
+    ) {
+        func rank(_ datagram: VideoChannelDatagram) -> Int {
+            switch datagram.pacerClass {
+            case .control: 0
+            case .audio: 1
+            default: 2
+            }
+        }
+        var previous = 0
+        var ordered = true
+        for datagram in datagrams {
+            let current = rank(datagram)
+            if current < previous {
+                ordered = false
+                break
+            }
+            previous = current
+        }
+        guard !ordered else { return }
         var control: [VideoChannelDatagram] = []
         var audio: [VideoChannelDatagram] = []
         var remaining: [VideoChannelDatagram] = []
-        control.reserveCapacity(datagrams.count)
-        audio.reserveCapacity(datagrams.count)
-        remaining.reserveCapacity(datagrams.count)
         for datagram in datagrams {
-            switch datagram.pacerClass {
-            case .control: control.append(datagram)
-            case .audio: audio.append(datagram)
+            switch rank(datagram) {
+            case 0: control.append(datagram)
+            case 1: audio.append(datagram)
             default: remaining.append(datagram)
             }
         }
-        return control + audio + remaining
+        datagrams.removeAll(keepingCapacity: true)
+        datagrams.append(contentsOf: control)
+        datagrams.append(contentsOf: audio)
+        datagrams.append(contentsOf: remaining)
     }
 
     /// The earliest instant anything here has work: the pacer's wake,
@@ -2772,7 +2662,6 @@ public final class Session {
             ctrlArqLane.nextDeadlineNanoseconds,
             bulkArqLane?.nextDeadlineNanoseconds,
             lifecycleLane.nextDeadlineNanoseconds, validator.nextDeadline,
-            idleHandoff.nextDeadlineNanoseconds,
         ] {
             guard let candidate else { continue }
             wake = wake.map { min($0, candidate) } ?? candidate
@@ -2883,12 +2772,26 @@ public final class Session {
     /// opaque to the cookie crypto), and it stays inside RetryCookie's
     /// 1…255-byte tuple bound — an "255.255.255.255:65535" is 21 bytes,
     /// an IPv6 literal with a port comfortably under the ceiling.
+    /// True when `datagram` is shaped like a client handshake initiation:
+    /// a bare CTRL carriage whose payload is typed 0x05 (Noise message 1)
+    /// or 0x14 (the W8 cookie resubmission). A shape check for choosing
+    /// what a listening shell feeds a session — admission, cookies, and
+    /// Noise still judge the bytes.
+    public static func looksLikeHandshakeInitiation(_ datagram: [UInt8]) -> Bool {
+        guard let (envelope, payload) = try? Envelope.decode(datagram),
+              envelope.channel == .ctrl
+        else { return false }
+        return payload.first == CtrlMessageType.noiseHandshake1
+            || payload.first == CtrlMessageType.retryHandshake1
+    }
+
     static func cookieTuple(_ tuple: FourTuple) -> [UInt8] {
         Array("\(tuple.remoteAddress):\(tuple.remotePort)".utf8)
     }
 
     private func completeHandshake(
         message1: ArraySlice<UInt8>,
+        from tuple: FourTuple,
         hostStatic: NoiseKeyPair,
         now: UInt64,
         hostMicroseconds: UInt64
@@ -2909,6 +2812,19 @@ public final class Session {
            !allowed.contains(remote) {
             counters.dropped += 1
             return [.dropped(.handshakeFailed("client static not in the paired set"))]
+        }
+        // Until a handshake completes the session is bound to no client:
+        // the first message 1 to authenticate names the client's path,
+        // whichever tuple the shell first saw. A spoofed or unpaired
+        // arrival therefore cannot pin the session to its source.
+        if tuple != validator.primary.tuple {
+            validator = PathValidator(
+                connectionId: connectionId,
+                initialPath: tuple,
+                now: now,
+                config: config.path,
+                rng: imageRng
+            )
         }
         do {
             let message2 = try responder.writeMessage2()
@@ -3123,14 +3039,12 @@ public final class Session {
             fec: 0,
             extensions: [connectionId.wireExtension]
         )
-        let payload: [UInt8]
-        if sealed {
-            let header = try envelope.encode(payload: [])
-            payload = try sealPayload(body[...], aad: header[...], envelope: envelope)
-        } else {
-            payload = body
+        guard sealed else {
+            return (envelope, try envelope.encode(payload: body))
         }
-        let bytes = try envelope.encode(payload: payload)
+        let bytes = try envelope.sealedDatagram(body[...]) { plaintext, aad in
+            try sealPayload(plaintext, aad: aad, envelope: envelope)
+        }
         return (envelope, bytes)
     }
 

@@ -1,16 +1,16 @@
-// DirectEyeLeg (direct-eye plan E1): the fused capture+encode backend
-// — a phase-stable screen beat paces it, HostEye observes pixels on the GPU,
-// grabs/blits/encodes changed scanout on the Arc
-// media engine, and encoded access units go straight to the session's
-// sendFrame (or the probe file). No PipeWire, no portal, no Mutter:
-// the compositor cannot wedge a register read.
+// DirectEyeLeg: the host's capture leg. A phase-stable 60 Hz screen beat
+// drives HostEye's EyePipeline (scanout import, GPU pixel fingerprint,
+// blit, native VAAPI encode), and encoded access units go straight to the
+// session's sendFrame (or the probe file). No PipeWire, no portal, no
+// Mutter: the compositor cannot wedge a register read.
 //
-// Honored session levers:
-//   - forced-IDR demands (0x0302 / opening) → forceIDR encode
-//   - capture timestamps: monotonic µs at ticket grab
-//   - encoder rate directives (E6b): the directive's bit cap rides
-//     the next frame's RC misc buffer — the native seat is the only
-//     seat since the E5 demolition.
+// Session levers it honors, from one snapshot per poll: forced-IDR
+// demands (a client 0x10, a path promotion, lifecycle recovery, an
+// unprotectable drop, a fall purge), served on a still screen by
+// re-encoding the retained frame; encoder rate directives (cap plus HRD
+// buffer, applied on the next frame with no reset); the agreed chroma
+// posture (the encoder opens once in it); the quiet video posture; and
+// pre-encode admission against the queued video's latency budget.
 
 #if os(Linux)
 
@@ -24,16 +24,21 @@ import LyteWire
 
 final class DirectEyeLeg {
     struct Config {
-        var device = "/dev/dri/card1"
+        static let defaultDevice = "/dev/dri/card1"
+        var device = Config.defaultDevice
         var renderNode = "/dev/dri/renderD128"
         var seconds: Double
         var qp: Int32 = 24
         var pollUs: UInt32 = 1000
         /// Wire rate → the encoder's VBR envelope (0 = CQP).
         var bitrateBitsPerSecond: Int64 = 0
+        /// The opening VBV (bits): the one-FEC-group frame ceiling the
+        /// encoder's HRD buffer must not exceed. Nil = no guard (file mode).
+        var vbvBits: Int?
     }
 
     private let config: Config
+    private let screen: DirectScreenSource
     private let wire: SessionWire?
     private let file: UnsafeMutablePointer<FILE>?
     private(set) var frames = 0
@@ -46,7 +51,18 @@ final class DirectEyeLeg {
     /// is static are served by re-encoding the last surface — armed
     /// here, counted for the books.
     private var staticIdrWanted = false
-    private var lastEncodedSurface: UInt32?
+    /// Why the owed IDR is owed (the IDR books' cause tags), attached to
+    /// the keyframe that finally leaves.
+    private var pendingCauses: [String] = []
+    /// Frames the session refused (prepare or send errors). Counted and
+    /// printed, never leg-fatal: the session's own end (peer gone, the
+    /// liveness timeout, a failed drain) stops the leg.
+    private(set) var deliveryFailures = 0
+    /// Changed frames skipped before encode because the queued video
+    /// already held its latency budget.
+    private(set) var admission = VideoAdmissionGate()
+    private var lastDeliveryFailureWallSeconds = 0.0
+    static let refusedIdrRetrySeconds = 1.0 / 60
     private var lastEncodedCaptureUs: UInt64 = 0
     private(set) var staticIdrsServed = 0
     /// E5 audit item 3: the quiet-desktop heartbeat cadence. One
@@ -54,14 +70,18 @@ final class DirectEyeLeg {
     /// model fed and the wire warm; the full-rate idle floor (and
     /// ratchet refinement) remain the portal's until post-E5 work.
     static let keepaliveSeconds = 1.0
+    /// The screen beat and the encoder's frame rate.
+    static let fps = 60
+    /// The cursor plane's poll period: one 60 Hz beat.
+    static let cursorPollMicroseconds: UInt64 = 16_667
     private var lastDeliveryWallSeconds = 0.0
     private(set) var keepalivesSent = 0
     /// The video quiet ladder (postures design): engaged only under
     /// the key-16 agreement; every step and wake is announced (0x26).
     private var quietPacer = VideoQuietPacer()
     private(set) var postureAnnouncements = 0
-    /// V-4: true once a Best-tier agreement reopened the encoder in
-    /// Rext 4:4:4 — the stats block reports the encoder that RAN.
+    /// V-4: true once the encoder runs Rext 4:4:4 — the stats block
+    /// reports the encoder that RAN.
     private(set) var chroma444Active = false
     /// E5 audit item 4: set when the leg ended because the display's
     /// geometry changed under it — a clean, deliberate exit, not an
@@ -99,11 +119,13 @@ final class DirectEyeLeg {
             deliverUs = max(deliverUs, other.deliverUs)
         }
         func described() -> String {
-            "cursor=\(Self.ms(cursorUs)) "
-            + "grab=\(Self.ms(grabUs)) "
-            + "fingerprint=\(Self.ms(fingerprintUs)) "
-            + "blit=\(Self.ms(blitUs)) "
-            + "encode=\(Self.ms(encodeUs)) deliver=\(Self.ms(deliverUs))"
+            """
+                cursor=\(Self.ms(cursorUs)) \
+                grab=\(Self.ms(grabUs)) \
+                fingerprint=\(Self.ms(fingerprintUs)) \
+                blit=\(Self.ms(blitUs)) \
+                encode=\(Self.ms(encodeUs)) deliver=\(Self.ms(deliverUs))
+                """
         }
         static func ms(_ us: UInt64) -> String {
             String(format: "%.1f", Double(us) / 1000)
@@ -123,100 +145,49 @@ final class DirectEyeLeg {
     private let serviceDone = DispatchSemaphore(value: 0)
     var lastError: String?
 
-    init(config: Config, wire: SessionWire?,
+    init(config: Config, screen: DirectScreenSource, wire: SessionWire?,
          file: UnsafeMutablePointer<FILE>?) {
         self.config = config
+        self.screen = screen
         self.wire = wire
         self.file = file
     }
 
-    /// Blocking loop, portal-run-shaped: returns when the clock (or a
-    /// session end / failure) says so.
-    func run() {
-        let screen: DirectScreenSource
+    /// Opens the scanout the leg will watch. The composition root opens it
+    /// before the session exists, so its geometry reaches the input
+    /// injector before the first client event can.
+    static func openScreen(device: String) throws -> DirectScreenSource {
         do {
-            screen = try DirectScreenSource(device: config.device)
+            return try DirectScreenSource(device: device)
         } catch DirectScreenSourceError.openDevice(let path, let code) {
-            lastError = "direct: open(\(path)) errno \(code)"
-            return
-        } catch DirectScreenSourceError.noActivePrimaryPlane(_) {
-            lastError = "direct: no active primary plane"
-            return
-        } catch DirectScreenSourceError.initialTicketDenied(_) {
-            lastError = "direct: GETFB2 refused — the direct backend "
-                + "needs CAP_SYS_ADMIN (run under sudo or the E4 unit)"
-            return
+            throw HostError("direct: open(\(path)) errno \(code)")
+        } catch DirectScreenSourceError.noActivePrimaryPlane {
+            throw HostError("direct: no active primary plane")
+        } catch DirectScreenSourceError.initialTicketDenied {
+            throw HostError("""
+                direct: GETFB2 refused — the direct backend \
+                needs CAP_SYS_ADMIN (run under sudo or the E4 unit)
+                """)
         } catch {
-            lastError = "direct: screen source failed: \(error)"
-            return
+            throw HostError("direct: screen source failed: \(error)")
         }
+    }
+
+    /// Blocking loop: returns when the clock (or a session end, a
+    /// termination signal, or a failure) says so.
+    func run() {
         let fd = screen.fileDescriptor
         let width = screen.width
         let height = screen.height
-        // HS-13: the uinput fallback maps absolute pointer coordinates
-        // against the monitor extent — tell the wire what we captured
-        // (the portal Sink used to do this at encoder open).
-        wire?.noteMonitorExtent(
-            width: UInt32(width), height: UInt32(height))
-
-        // The encoder seat (E6b, sole occupant since the demolition):
-        // the native VAAPI pens — zero libavcodec, rate directives
-        // apply live (the RC misc buffer rides the next frame).
-        let gl: EyeGL
-        var encoder: EyeVaapiEncoder
-        do {
-            gl = try EyeGL(renderNode: config.renderNode)
-            encoder = try EyeVaapiEncoder(
-                width: width, height: height, fps: 60, qp: config.qp,
-                renderNode: config.renderNode,
-                bitrateBitsPerSecond: config.bitrateBitsPerSecond)
-        } catch {
-            lastError = "direct: init failed: \(error)"
-            return
-        }
-        let rc = config.bitrateBitsPerSecond > 0
-            ? "vbr \(config.bitrateBitsPerSecond / 1_000_000) Mbps cap"
-            : "cqp \(config.qp)"
-        print("direct: eye open — \(width)x\(height) on "
-            + "\(config.device), native VAAPI \(rc) "
-            + "(rate directives apply live)")
-
-        // E3: the cursor plane travels as metadata, never as video.
-        // The watcher shares the DRM fd and loop cadence; a session-
-        // less (file-mode) leg has no one to tell, so it skips.
-        let cursorWatcher = wire != nil ? EyeCursorWatcher(fd: fd) : nil
-        if wire != nil {
-            print(cursorWatcher != nil
-                ? "direct: cursor watcher on plane "
-                    + "\(cursorWatcher!.planeId) — shapes ride 0x24"
-                : "direct: no cursor plane — shapes OFF this run")
-        }
-
-        var targets: [UInt32: NV12Target] = [:]
-        var targets444: [UInt32: AyuvTarget] = [:]
-        var scanoutSource: ImportedTexture?
-        var scanoutIdentity: UInt32?
-        var samplingCadence = ScreenSamplingCadence()
-        var observations: UInt64 = 0
-        var framebufferTransitions: UInt64 = 0
-        var changedObservations: UInt64 = 0
-        var skippedObservationBeats: UInt64 = 0
-        var observationSkipEvents: UInt64 = 0
-        var pendingCauses: [String] = []
-        let t0 = SystemMonotonicClock.nowSeconds
-        // The stillness clock: last pixel change or client input.
-        var lastActivityWallSeconds = t0
 
         // The shell service cadence: the agreed-time pendings (the
         // 0x19 starting posture, the standing 0x24 cursor shape,
-        // clipboard applies, bulk file I/O) flush ONLY through
-        // service() — sendFrame's serviceOnce covers protocol timers,
-        // not the shell. It used to ride this loop and the beat book
-        // convicted it (106 ms connect stall = a skipped capture
-        // beat); now the janitor sweeps on its own thread and the
-        // screen beat never goes blind for a mop bucket. SessionWire is
-        // cross-thread by design with `lock` as the discipline; this
-        // thread is service()'s ONLY caller.
+        // clipboard applies, bulk file I/O, pairing outcomes) flush ONLY
+        // through service() — sendFrame's serviceOnce covers protocol
+        // timers, not the shell. A dedicated janitor thread sweeps it
+        // every 10 ms so the screen beat never stalls on shell IO.
+        // SessionWire is cross-thread by design with `lock` as the
+        // discipline; this thread is service()'s ONLY caller.
         if let wire {
             nonisolated(unsafe) let leg = self
             nonisolated(unsafe) let wire = wire
@@ -248,37 +219,101 @@ final class DirectEyeLeg {
                 serviceLock.unlock()
                 serviceDone.wait()
             }
-            if var source = scanoutSource {
-                gl.destroy(&source)
-            }
         }
+
+        // Chroma is a session posture: the encoder opens once, in the
+        // posture the client's declaration picks. The janitor above is
+        // what receives that declaration, so it runs during the wait.
+        let chroma = awaitOpeningChroma()
+
+        // The encoder seat: the native VAAPI pens — zero libavcodec, rate
+        // directives apply live (the RC misc buffer rides the next frame).
+        let pipeline: EyePipeline
+        do {
+            pipeline = try EyePipeline(
+                width: width, height: height,
+                renderNode: config.renderNode, qp: config.qp,
+                bitrateBitsPerSecond: config.bitrateBitsPerSecond,
+                hrdBufferBits: config.bitrateBitsPerSecond > 0
+                    ? Int64(EncoderHrd.bufferBits(
+                        capBitsPerSecond: Int(config.bitrateBitsPerSecond),
+                        fps: Self.fps, vbvBits: config.vbvBits))
+                    : nil,
+                chroma444: chroma == .yuv444)
+        } catch {
+            lastError = "direct: init failed: \(error)"
+            return
+        }
+        chroma444Active = pipeline.chroma444
+        let rc = config.bitrateBitsPerSecond > 0
+            ? "vbr \(config.bitrateBitsPerSecond / 1_000_000) Mbps cap"
+            : "cqp \(config.qp)"
+        print("""
+            direct: eye open — \(width)x\(height) on \
+            \(config.device), native VAAPI \(rc), \
+            \(chroma == .yuv444 ? "Rext 4:4:4 (AYUV)" : "4:2:0")\
+             (rate directives apply live)
+            """)
+
+        // E3: the cursor plane travels as metadata, never as video.
+        // The watcher shares the DRM fd and loop cadence; a session-
+        // less (file-mode) leg has no one to tell, so it skips.
+        let cursorWatcher = wire != nil ? EyeCursorWatcher(fd: fd) : nil
+        if wire != nil {
+            print(cursorWatcher != nil
+                ? """
+                    direct: cursor watcher on plane \
+                    \(cursorWatcher!.planeId) — shapes ride 0x24
+                    """
+                : "direct: no cursor plane — shapes OFF this run")
+        }
+
+        var samplingCadence = ScreenSamplingCadence()
+        var observations: UInt64 = 0
+        var framebufferTransitions: UInt64 = 0
+        var changedObservations: UInt64 = 0
+        var skippedObservationBeats: UInt64 = 0
+        var observationSkipEvents: UInt64 = 0
+        let t0 = SystemMonotonicClock.nowSeconds
+        // The stillness clock: last pixel change or client input.
+        var lastActivityWallSeconds = t0
 
         // Recovery and quiet-desktop traffic do not depend on a fresh pixel
         // observation. This is deliberately serviced from the 1 ms shell
         // loop while screen reads stay on their independent 60 Hz grid.
-        func serveRetainedFrameIfNeeded() throws -> Bool {
-            if staticIdrWanted, let sid = lastEncodedSurface {
-                let packet = try encoder.encode(surface: sid, forceIDR: true)
-                let causes = packet.keyframe ? pendingCauses : []
-                if packet.keyframe { pendingCauses.removeAll() }
-                deliver(Data(packet.data),
-                        keyframe: packet.keyframe,
-                        causes: causes,
-                        captureUs: lastEncodedCaptureUs)
+        func serveRetainedFrameIfNeeded(
+            _ snapshot: SessionWire.LegSnapshot?
+        ) throws -> Bool {
+            // A refused IDR is retried no sooner than one beat later.
+            if staticIdrWanted,
+               SystemMonotonicClock.nowSeconds - lastDeliveryFailureWallSeconds
+                   >= Self.refusedIdrRetrySeconds {
                 staticIdrWanted = false
-                staticIdrsServed += 1
-                lastDeliveryWallSeconds = SystemMonotonicClock.nowSeconds
-                print("direct: static-screen IDR served "
-                    + "(re-encoded retained surface \(sid))")
-                return true
+                let served: Void? = try pipeline.encodeRetained(forceIDR: true) {
+                    bytes, keyframe in
+                    deliverTakingCauses(
+                        bytes, keyframe: keyframe,
+                        captureUs: lastEncodedCaptureUs)
+                }
+                if served == nil {
+                    staticIdrWanted = true // nothing retained yet
+                } else {
+                    staticIdrsServed += 1
+                    lastDeliveryWallSeconds = SystemMonotonicClock.nowSeconds
+                    print("""
+                        direct: static-screen IDR served \
+                        (re-encoded retained surface)
+                        """)
+                    return true
+                }
             }
 
             var keepaliveInterval = Self.keepaliveSeconds
-            if let wire {
-                let inputSeconds = Double(wire.lastInputActivityNS) / 1e9
+            if let wire, let snapshot {
+                let inputSeconds = Double(snapshot.lastInputActivityNS) / 1e9
                 let idle = SystemMonotonicClock.nowSeconds
                     - max(lastActivityWallSeconds, inputSeconds)
-                if wire.videoQuietPostureAgreed() {
+                if snapshot.videoQuietPostureAgreed {
                     let verdict = quietPacer.assess(idleSeconds: idle)
                     keepaliveInterval = verdict.keepaliveSeconds
                     if let announce = verdict.announce {
@@ -289,78 +324,78 @@ final class DirectEyeLeg {
                     }
                 }
             }
-            if wire != nil, let sid = lastEncodedSurface,
+            if wire != nil,
                SystemMonotonicClock.nowSeconds - lastDeliveryWallSeconds
                    >= keepaliveInterval {
-                let packet = try encoder.encode(
-                    surface: sid, forceIDR: false)
-                deliver(Data(packet.data),
-                        keyframe: packet.keyframe,
-                        causes: [],
-                        captureUs: lastEncodedCaptureUs)
-                keepalivesSent += 1
-                lastDeliveryWallSeconds = SystemMonotonicClock.nowSeconds
-                return true
+                let served: Void? = try pipeline.encodeRetained(forceIDR: false) {
+                    bytes, keyframe in
+                    _ = deliver(bytes, keyframe: keyframe, causes: [],
+                                captureUs: lastEncodedCaptureUs)
+                }
+                if served != nil {
+                    keepalivesSent += 1
+                    lastDeliveryWallSeconds = SystemMonotonicClock.nowSeconds
+                    return true
+                }
             }
             return false
         }
 
+        /// Between observations: a retained frame may be owed, otherwise
+        /// sleep one poll. False ends the leg (the error is recorded).
+        func idle(_ snapshot: SessionWire.LegSnapshot?) -> Bool {
+            do {
+                if try serveRetainedFrameIfNeeded(snapshot) { return true }
+            } catch {
+                lastError = "direct: retained frame: \(error)"
+                return false
+            }
+            usleep(config.pollUs)
+            return true
+        }
+
+        var lastCursorPollUs: UInt64 = 0
         while SystemMonotonicClock.nowSeconds - t0 < config.seconds {
-            if wire?.sessionEnded == true { break }
+            // One session-lock round trip per poll: end, agreement,
+            // directive, and IDR demand together.
+            let snapshot = wire?.takeLegSnapshot()
+            if snapshot?.ended == true { break }
             // HS-18: an interrupted run (SIGINT/SIGTERM) exits through
             // the same door as a completed one, so the audio-routing
-            // restore and the typed teardown both happen. (The portal
-            // Sink polled this on its tick; the leg is the only poller
-            // now that the Sink is demolished.)
+            // restore and the typed teardown both happen.
             if lyteTerminationRequested != 0 {
                 print("session: termination signal — closing cleanly")
                 break
             }
+            // The cursor plane is read on the screen's own 60 Hz grid, not
+            // every 1 ms poll.
             let cursorStart = SystemMonotonicClock.nowMicroseconds
-            pollCursor(cursorWatcher)
-            lastStages.cursorUs = SystemMonotonicClock.nowMicroseconds - cursorStart
+            if cursorStart &- lastCursorPollUs >= Self.cursorPollMicroseconds {
+                lastCursorPollUs = cursorStart
+                pollCursor(cursorWatcher)
+                lastStages.cursorUs =
+                    SystemMonotonicClock.nowMicroseconds - cursorStart
+            }
 
-            // V-4: the agreed chroma is connect-time truth that
-            // lands AFTER the leg opened its encoder (the declaration
-            // rides the handshake). One session per leg lifetime → at
-            // most one flip: a Best-tier agreement reopens the encoder
-            // in Rext 4:4:4. The fresh encoder's first frame is the
-            // IDR the joiner needs. Resetting the sampling/fingerprint
-            // state makes the current screen fresh immediately, even
-            // when the desktop is static.
-            if !chroma444Active,
+            // A Best agreement that lands after the opening wait lapsed
+            // reopens the encoder in Rext 4:4:4 (at most once per
+            // session). The fresh encoder's first frame is the IDR the
+            // client needs; resetting the sampling and identity state
+            // makes the current screen fresh even on a static desktop.
+            if !pipeline.chroma444,
                ChromaPosture.from(
-                   agreedChromaModes: wire?.agreedChromaModes
+                   agreedChromaModes: snapshot?.agreedChromaModes
                ) == .yuv444 {
                 do {
-                    for sid in targets.keys {
-                        gl.destroy(&targets[sid]!)
-                    }
-                    targets.removeAll()
-                    for sid in targets444.keys {
-                        gl.destroy(&targets444[sid]!)
-                    }
-                    targets444.removeAll()
-                    if var source = scanoutSource {
-                        gl.destroy(&source)
-                        scanoutSource = nil
-                    }
-                    scanoutIdentity = nil
-                    gl.resetFingerprint()
-                    samplingCadence.reset()
-                    lastEncodedSurface = nil
-                    screen.resetIdentityObservation()
-                    encoder = try EyeVaapiEncoder(
-                        width: width, height: height, fps: 60,
-                        qp: config.qp,
-                        renderNode: config.renderNode,
-                        bitrateBitsPerSecond:
-                            config.bitrateBitsPerSecond,
-                        chroma444: true)
+                    try pipeline.reopen(chroma444: true)
                     chroma444Active = true
-                    print("direct: Best tier agreed — encoder "
-                        + "reopened as Rext 4:4:4 (AYUV, one-pass "
-                        + "blit)")
+                    samplingCadence.reset()
+                    screen.resetIdentityObservation()
+                    print("""
+                        direct: Best tier agreed — encoder \
+                        reopened as Rext 4:4:4 (AYUV, one-pass \
+                        blit)
+                        """)
                 } catch {
                     lastError = "direct: 4:4:4 reopen: \(error)"
                     return
@@ -369,27 +404,31 @@ final class DirectEyeLeg {
 
             // Rate directives apply live: the cap becomes the VBR
             // envelope on the next frame's RC misc buffer.
-            if let directive = wire?.takeEncoderRateDirective() {
-                encoder.setRateBitsPerSecond(
-                    Int64(directive.maxBitsPerSecond))
+            if let directive = snapshot?.directive {
+                pipeline.setRateControl(
+                    bitsPerSecond: Int64(directive.maxBitsPerSecond),
+                    hrdBufferBits: Int64(EncoderHrd.bufferBits(
+                        capBitsPerSecond: directive.maxBitsPerSecond,
+                        fps: Self.fps, vbvBits: directive.vbvBits)))
                 directivesApplied += 1
                 if directivesApplied == 1 {
-                    print("direct: rate directive "
-                        + "(\(directive.kind.rawValue)) applied — "
-                        + "\(directive.maxBitsPerSecond / 1_000_000)"
-                        + " Mbps cap")
+                    print("""
+                        direct: rate directive \
+                        (\(directive.kind.rawValue)) applied — \
+                        \(directive.maxBitsPerSecond / 1_000_000)\
+                         Mbps cap
+                        """)
                 }
             }
 
-            // E5 audit GAP 1: demands are taken EVERY poll, not only
-            // when pixels change — a client recovering on a static
-            // desktop must not wait for the next damage to get its
-            // IDR. With no new fb, the last encoded surface still
-            // holds the screen: re-encode it as the IDR, stamped with
-            // its ORIGINAL capture time (the playout's retained-frame
-            // law: recovery re-encodes are quality/dependency events,
-            // not network-late frames).
-            let demand = wire?.takeForcedIdrDemand() ?? []
+            // Demands are taken EVERY poll, not only when pixels change —
+            // a client recovering on a static desktop must not wait for
+            // the next damage to get its IDR. With no new pixels, the
+            // retained surface still holds the screen: re-encode it as
+            // the IDR, stamped with its ORIGINAL capture time (recovery
+            // re-encodes are quality/dependency events, not network-late
+            // frames).
+            let demand = snapshot?.demand ?? []
             if !demand.isEmpty {
                 pendingCauses += demand.names
                 staticIdrWanted = true
@@ -399,82 +438,52 @@ final class DirectEyeLeg {
             guard case .sample(let skippedBeats) = samplingCadence.poll(
                 nowMicroseconds: observationClock)
             else {
-                do {
-                    if try serveRetainedFrameIfNeeded() { continue }
-                } catch {
-                    lastError = "direct: retained frame: \(error)"
-                    return
-                }
-                usleep(config.pollUs)
-                continue
+                if idle(snapshot) { continue } else { return }
             }
             observations += 1
             skippedObservationBeats += skippedBeats
             if skippedBeats > 0 {
                 observationSkipEvents += 1
                 if observationSkipEvents <= 40 {
-                    print("direct: observation beat skipped "
-                        + "\(skippedBeats) beat(s) "
-                        + "prev[\(lastStages.described())] ms")
+                    print("""
+                        direct: observation beat skipped \
+                        \(skippedBeats) beat(s) \
+                        prev[\(lastStages.described())] ms
+                        """)
                 }
             }
             guard let observation = screen.observe() else {
-                do {
-                    if try serveRetainedFrameIfNeeded() { continue }
-                } catch {
-                    lastError = "direct: retained frame: \(error)"
-                    return
-                }
-                usleep(config.pollUs)
-                continue
+                if idle(snapshot) { continue } else { return }
             }
             if observation.identityChanged { framebufferTransitions += 1 }
 
             let grabStart = SystemMonotonicClock.nowMicroseconds
-            if scanoutSource == nil
-                || scanoutIdentity != observation.framebufferIdentity {
-                guard let ticket = screen.capture(observation) else {
+            do {
+                switch try pipeline.refreshScanout(observation, from: screen) {
+                case .current, .imported:
+                    break
+                case .missedGrab:
                     missedGrabs += 1
                     continue
-                }
-                if Int32(ticket.width) != width
-                    || Int32(ticket.height) != height {
-                    ticket.release()
-                    print("direct: display mode changed \(width)x\(height)"
-                        + " → \(ticket.width)x\(ticket.height) — ending "
-                        + "session; the re-dial reads fresh geometry")
+                case .geometryChanged(let newWidth, let newHeight):
+                    print("""
+                        direct: display mode changed \(width)x\(height)\
+                         → \(newWidth)x\(newHeight) — ending \
+                        session; the re-dial reads fresh geometry
+                        """)
                     modeChangeEnded = true
                     return
                 }
-                do {
-                    let imported = try gl.importTexture(
-                        width: Int32(ticket.width),
-                        height: Int32(ticket.height),
-                        fourcc: ticket.fourcc,
-                        modifier: ticket.modifier,
-                        planes: ticket.planes)
-                    ticket.release()
-                    if var old = scanoutSource { gl.destroy(&old) }
-                    scanoutSource = imported
-                    scanoutIdentity = observation.framebufferIdentity
-                    gl.resetFingerprint()
-                } catch {
-                    ticket.release()
-                    lastError = "direct: scanout import: \(error)"
-                    return
-                }
+            } catch {
+                lastError = "direct: scanout import: \(error)"
+                return
             }
             lastStages.grabUs = SystemMonotonicClock.nowMicroseconds - grabStart
 
-            guard let source = scanoutSource else {
-                lastError = "direct: scanout import disappeared"
-                return
-            }
             let pixelsChanged: Bool
             let fingerprintStart = SystemMonotonicClock.nowMicroseconds
             do {
-                pixelsChanged = try gl.scanoutChanged(
-                    source: source, width: width, height: height)
+                pixelsChanged = try pipeline.scanoutChanged()
             } catch {
                 lastError = "direct: scanout fingerprint: \(error)"
                 return
@@ -483,17 +492,23 @@ final class DirectEyeLeg {
                 SystemMonotonicClock.nowMicroseconds - fingerprintStart
             maxStages.formMax(lastStages)
             guard pixelsChanged else {
-                do {
-                    if try serveRetainedFrameIfNeeded() { continue }
-                } catch {
-                    lastError = "direct: retained frame: \(error)"
-                    return
-                }
-                usleep(config.pollUs)
-                continue
+                if idle(snapshot) { continue } else { return }
             }
             changedObservations += 1
             lastActivityWallSeconds = SystemMonotonicClock.nowSeconds
+            // Pre-encode admission: a queue already holding its latency
+            // budget gets no new frame. The fingerprint resets so the
+            // newest pixels are re-observed — and encoded — next beat.
+            if let wire {
+                let posture = wire.videoAdmissionPosture
+                guard admission.admit(
+                    backlogWireTimeNS: posture.backlogWireTimeNS,
+                    budgetNS: posture.budgetNS)
+                else {
+                    pipeline.resetFingerprint()
+                    if idle(snapshot) { continue } else { return }
+                }
+            }
             // Pixel equality, not framebuffer identity, is damage truth.
             let captureUs = observationClock
 
@@ -502,79 +517,18 @@ final class DirectEyeLeg {
             if frames == 0 { pendingCauses.append("opening") }
 
             do {
-                func blitInto(
-                    _ sid: UInt32,
-                    export: () throws -> (y: ExportedPlane,
-                                          uv: ExportedPlane)
-                ) throws {
-                    if targets[sid] == nil {
-                        let exported = try export()
-                        let target = try gl.makeNV12Target(
-                            width: width, height: height,
-                            yFourcc: exported.y.fourcc,
-                            yModifier: exported.y.modifier,
-                            yPlane: (exported.y.fd, exported.y.offset,
-                                     exported.y.pitch),
-                            uvFourcc: exported.uv.fourcc,
-                            uvModifier: exported.uv.modifier,
-                            uvPlane: (exported.uv.fd, exported.uv.offset,
-                                      exported.uv.pitch))
-                        close(exported.y.fd)
-                        if exported.uv.fd != exported.y.fd {
-                            close(exported.uv.fd)
-                        }
-                        targets[sid] = target
-                    }
-                    gl.blit(
-                        source: source,
-                        srcWidth: width,
-                        srcHeight: height,
-                        into: targets[sid]!)
+                // 1-in-1-out: keyframe truth rides ON THE PACKET, and the
+                // armed causes attach to the IDR when it emerges.
+                var deliverStart: UInt64 = 0
+                try pipeline.encodeFresh(forceIDR: forceIdr) {
+                    bytes, keyframe in
+                    deliverStart = SystemMonotonicClock.nowMicroseconds
+                    lastEncodedCaptureUs = captureUs
+                    deliverTakingCauses(
+                        bytes, keyframe: keyframe, captureUs: captureUs)
                 }
-
-                func blit444Into(_ sid: UInt32) throws {
-                    if targets444[sid] == nil {
-                        let plane = try encoder.exportSurfacePacked(sid)
-                        let target = try gl.makeAyuvTarget(
-                            width: width, height: height,
-                            modifier: plane.modifier,
-                            plane: (plane.fd, plane.offset,
-                                    plane.pitch))
-                        close(plane.fd)
-                        targets444[sid] = target
-                    }
-                    gl.blit444(
-                        source: source,
-                        srcWidth: width,
-                        srcHeight: height,
-                        into: targets444[sid]!)
-                }
-
-                // Synchronous seat: vaSyncSurface inside encode
-                // means the round-robin input is free by return —
-                // no in-flight aliasing. 1-in-1-out: keyframe truth
-                // rides ON THE PACKET, and the armed causes attach
-                // to the IDR when it emerges.
-                let sid = encoder.inputSurfaces[
-                    frames % encoder.inputSurfaces.count]
-                let blitStart = SystemMonotonicClock.nowMicroseconds
-                if chroma444Active {
-                    try blit444Into(sid)
-                } else {
-                    try blitInto(sid) { try encoder.exportSurface(sid) }
-                }
-                let encodeStart = SystemMonotonicClock.nowMicroseconds
-                lastStages.blitUs = encodeStart - blitStart
-                let packet = try encoder.encode(
-                    surface: sid, forceIDR: forceIdr)
-                let deliverStart = SystemMonotonicClock.nowMicroseconds
-                lastStages.encodeUs = deliverStart - encodeStart
-                lastEncodedSurface = sid
-                lastEncodedCaptureUs = captureUs
-                let causes = packet.keyframe ? pendingCauses : []
-                if packet.keyframe { pendingCauses.removeAll() }
-                deliver(Data(packet.data), keyframe: packet.keyframe,
-                        causes: causes, captureUs: captureUs)
+                lastStages.blitUs = pipeline.lastBlitMicroseconds
+                lastStages.encodeUs = pipeline.lastEncodeMicroseconds
                 lastStages.deliverUs = SystemMonotonicClock.nowMicroseconds - deliverStart
                 maxStages.formMax(lastStages)
                 frames += 1
@@ -587,28 +541,34 @@ final class DirectEyeLeg {
 
         // No drain: the native seat is 1-in-1-out; nothing is held
         // back at close.
-        print("direct: eye closed — \(frames) frames, \(bytes) bytes, "
-            + "\(keyframes) IDRs, missed_grabs=\(missedGrabs), "
-            + "directives_applied=\(directivesApplied), "
-            + "static_idrs=\(staticIdrsServed), "
-            + "keepalives=\(keepalivesSent), "
-            + "observations=\(observations), "
-            + "framebuffer_transitions=\(framebufferTransitions), "
-            + "pixel_changes=\(changedObservations), "
-            + "observation_beats_skipped=\(skippedObservationBeats), "
-            + "posture_announcements=\(postureAnnouncements), "
-            + "cursor_shapes=\(cursorShapesSeen), "
-            + "hotspot_corrections=\(cursorHotspotCorrections)")
+        print("""
+            direct: eye closed — \(frames) frames, \(bytes) bytes, \
+            \(keyframes) IDRs, missed_grabs=\(missedGrabs), \
+            directives_applied=\(directivesApplied), \
+            static_idrs=\(staticIdrsServed), \
+            keepalives=\(keepalivesSent), \
+            observations=\(observations), \
+            framebuffer_transitions=\(framebufferTransitions), \
+            pixel_changes=\(changedObservations), \
+            observation_beats_skipped=\(skippedObservationBeats), \
+            posture_announcements=\(postureAnnouncements), \
+            delivery_failures=\(deliveryFailures), \
+            admission_skips=\(admission.skipped), \
+            cursor_shapes=\(cursorShapesSeen), \
+            hotspot_corrections=\(cursorHotspotCorrections)
+            """)
         serviceLock.lock()
         let serviceMaxUs = serviceMaxMicroseconds
         serviceLock.unlock()
-        print("direct: observation-book — beats=\(observations), "
-            + "skip_events=\(observationSkipEvents), "
-            + "beats_skipped=\(skippedObservationBeats), "
-            + "pixel_changes=\(changedObservations), "
-            + "stage_max[\(maxStages.described())] ms, "
-            + "service_max=\(StageClocks.ms(serviceMaxUs)) ms "
-            + "(janitor thread)")
+        print("""
+            direct: observation-book — beats=\(observations), \
+            skip_events=\(observationSkipEvents), \
+            beats_skipped=\(skippedObservationBeats), \
+            pixel_changes=\(changedObservations), \
+            stage_max[\(maxStages.described())] ms, \
+            service_max=\(StageClocks.ms(serviceMaxUs)) ms \
+            (janitor thread)
+            """)
     }
 
     /// E3: one cursor poll — fb changes become 0x24s. The hotspot is
@@ -650,12 +610,14 @@ final class DirectEyeLeg {
                     ?? "nil"
                 let pointerDesc = pointer.map { "\($0.x),\($0.y)" }
                     ?? "none"
-                print("direct: cursor derive #\(cursorShapesSeen): "
-                    + "\(frame.width)x\(frame.height) "
-                    + "crop(\(frame.cropX),\(frame.cropY)) "
-                    + "plane(\(planeDesc)) "
-                    + "pointer(\(pointerDesc)) "
-                    + "→ hotspot(\(hot.x),\(hot.y))")
+                print("""
+                    direct: cursor derive #\(cursorShapesSeen): \
+                    \(frame.width)x\(frame.height) \
+                    crop(\(frame.cropX),\(frame.cropY)) \
+                    plane(\(planeDesc)) \
+                    pointer(\(pointerDesc)) \
+                    → hotspot(\(hot.x),\(hot.y))
+                    """)
             }
             lastCursorFrame = frame
             sentHotspot = (hot.x, hot.y)
@@ -706,10 +668,12 @@ final class DirectEyeLeg {
         hotspotRecheckArmed = false
         guard hot.x != sent.x || hot.y != sent.y else { return }
         cursorHotspotCorrections += 1
-        print("direct: cursor hotspot corrected "
-            + "(\(sent.x),\(sent.y)) → (\(hot.x),\(hot.y)) at rest — "
-            + "plane(\(plane.x),\(plane.y)) "
-            + "pointer(\(Int(pointer.x)),\(Int(pointer.y)))")
+        print("""
+            direct: cursor hotspot corrected \
+            (\(sent.x),\(sent.y)) → (\(hot.x),\(hot.y)) at rest — \
+            plane(\(plane.x),\(plane.y)) \
+            pointer(\(Int(pointer.x)),\(Int(pointer.y)))
+            """)
         sentHotspot = (hot.x, hot.y)
         wire.noteCursorShape(CursorShape(
             width: UInt16(frame.width),
@@ -718,33 +682,74 @@ final class DirectEyeLeg {
             pixels: frame.pixels))
     }
 
-    private func deliver(_ packet: Data, keyframe: Bool,
-                         causes: [String], captureUs: UInt64) {
-        packet.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-            let base = raw.baseAddress!.assumingMemoryBound(to: UInt8.self)
-            if firstPacket.isEmpty {
-                firstPacket = Array(raw.bindMemory(to: UInt8.self))
+    /// The chroma posture to open the encoder in: the agreed one, or 4:2:0
+    /// when no declaration lands within the opening wait (a pre-W7 peer)
+    /// or there is no session (file mode).
+    private func awaitOpeningChroma() -> ChromaPosture {
+        guard let wire else { return .yuv420 }
+        let start = SystemMonotonicClock.nowNanoseconds
+        while true {
+            if let posture = ChromaPosture.opening(
+                agreedChromaModes: wire.agreedChromaModes,
+                waitedNS: SystemMonotonicClock.nowNanoseconds - start) {
+                return posture
             }
-            if let wire {
-                do {
-                    try wire.sendFrame(
-                        data: base, size: packet.count,
-                        isKeyframe: keyframe, captureMicros: captureUs)
-                    wire.annotateLastVideoFrame(
-                        averageQP: nil,
-                        idrCauses: keyframe
-                            ? (causes.isEmpty ? ["spontaneous"] : causes)
-                            : [])
-                } catch {
-                    lastError = "direct: session send failed: \(error)"
-                    return
+            if lyteTerminationRequested != 0 { return .yuv420 }
+            usleep(config.pollUs)
+        }
+    }
+
+    /// Delivers one access unit with the owed IDR causes attached when it
+    /// is a keyframe. A keyframe the session refused leaves the IDR owed —
+    /// causes included — so the next poll serves it again.
+    private func deliverTakingCauses(
+        _ packet: UnsafeRawBufferPointer, keyframe: Bool, captureUs: UInt64
+    ) {
+        let causes = keyframe ? pendingCauses : []
+        if keyframe { pendingCauses.removeAll() }
+        if !deliver(packet, keyframe: keyframe, causes: causes,
+                    captureUs: captureUs), keyframe {
+            pendingCauses = causes + pendingCauses
+            staticIdrWanted = true
+        }
+    }
+
+    /// One encoded access unit, borrowed from the encoder's coded buffer
+    /// for the duration of the call. False when the session refused it.
+    private func deliver(_ packet: UnsafeRawBufferPointer, keyframe: Bool,
+                         causes: [String], captureUs: UInt64) -> Bool {
+        guard let base = packet.baseAddress?.assumingMemoryBound(
+            to: UInt8.self) else { return false }
+        if firstPacket.isEmpty {
+            firstPacket = Array(packet)
+        }
+        if let wire {
+            do {
+                try wire.sendFrame(
+                    data: base, size: packet.count,
+                    isKeyframe: keyframe, captureMicros: captureUs)
+                wire.annotateLastVideoFrame(
+                    averageQP: nil,
+                    idrCauses: keyframe
+                        ? (causes.isEmpty ? ["spontaneous"] : causes)
+                        : [])
+            } catch {
+                deliveryFailures += 1
+                lastDeliveryFailureWallSeconds = SystemMonotonicClock.nowSeconds
+                if deliveryFailures <= 3 {
+                    print("""
+                        direct: session refused frame \
+                        (\(keyframe ? "IDR" : "P")): \(error)
+                        """)
                 }
-            } else if let file {
-                fwrite(base, 1, packet.count, file)
+                return false
             }
+        } else if let file {
+            fwrite(base, 1, packet.count, file)
         }
         bytes += packet.count
         if keyframe { keyframes += 1 }
+        return true
     }
 }
 

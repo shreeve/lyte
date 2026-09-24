@@ -25,9 +25,11 @@ final class SniffFormatTests: XCTestCase {
 
         XCTAssertEqual(
             SniffFormat.line(datagram: datagram),
-            "chan=2(video-active) seq=00042 frame=7 ts=1234567us "
-                + "fec=rs idx=5/20 k=17 m=3 group=18400B "
-                + "payload=1083B total=1107B"
+            """
+                chan=2(video-active) seq=00042 frame=7 ts=1234567us \
+                fec=rs idx=5/20 k=17 m=3 group=18400B \
+                payload=1083B total=1107B
+                """
         )
     }
 
@@ -42,8 +44,10 @@ final class SniffFormatTests: XCTestCase {
         let datagram = try envelope.encode(payload: [1, 2, 3])
         XCTAssertEqual(
             SniffFormat.line(datagram: datagram),
-            "chan=0(ctrl) seq=00000 frame=0 ts=99us fec=none "
-                + "payload=3B total=27B"
+            """
+                chan=0(ctrl) seq=00000 frame=0 ts=99us fec=none \
+                payload=3B total=27B
+                """
         )
 
         let reserved = Envelope(

@@ -28,4 +28,22 @@ public enum ChromaPosture: String, Equatable, Sendable {
             == ChromaPairing.bestSingleton(CapabilityChroma.yuv444)
             ? .yuv444 : .yuv420
     }
+
+    /// How long the capture leg holds its first encode for the client's
+    /// declaration. The declaration rides the reliable stream right after
+    /// the handshake (one round trip on a LAN); a pre-W7 peer never sends
+    /// one and gets the 4:2:0 posture when the wait lapses.
+    public static let openingAgreementWaitNS: UInt64 = 500_000_000
+
+    /// The posture to open the encoder in, or nil to keep waiting. Chroma
+    /// is a session posture, never a mid-stream encoder dial: opening in
+    /// the agreed posture means no 4:2:0 frame precedes a Best agreement.
+    public static func opening(
+        agreedChromaModes: [UInt64]?, waitedNS: UInt64
+    ) -> ChromaPosture? {
+        if agreedChromaModes != nil || waitedNS >= openingAgreementWaitNS {
+            return from(agreedChromaModes: agreedChromaModes)
+        }
+        return nil
+    }
 }

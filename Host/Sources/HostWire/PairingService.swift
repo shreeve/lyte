@@ -29,6 +29,18 @@
 import LyteWire
 
 public final class PairingResponderService {
+    /// A fresh 6-digit pairing PIN, zero-padded (10⁶ space; with the
+    /// 3-guess budget an online attacker has 3-in-a-million odds per
+    /// displayed PIN, and CPace makes the PIN untestable offline). Pass a
+    /// CSPRNG in production.
+    public static func mintPin(
+        using rng: inout some RandomNumberGenerator
+    ) -> String {
+        let digits = String(rng.next(upperBound: UInt32(1_000_000)))
+        let padding = PairingPin.digitCount - digits.count
+        return String(repeating: "0", count: padding) + digits
+    }
+
     public struct Config: Sendable {
         /// Share-B issuances (online PIN guesses) before the PIN burns.
         public var maxAttempts: Int

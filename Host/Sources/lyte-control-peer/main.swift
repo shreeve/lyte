@@ -158,7 +158,7 @@ func loadCorpusFrames(from directory: String) throws -> [[UInt8]] {
 
 func logPeer(_ message: String) {
     print(message)
-    fflush(stdout)
+    fflush(nil)
 }
 
 final class UdpSocket: @unchecked Sendable {
@@ -167,7 +167,12 @@ final class UdpSocket: @unchecked Sendable {
     let localPort: UInt16
 
     init(host: String, port: UInt16) throws {
-        let fd = socket(AF_INET, SOCK_DGRAM, 0)
+        #if canImport(Darwin)
+        let datagram = SOCK_DGRAM
+        #else
+        let datagram = Int32(SOCK_DGRAM.rawValue)
+        #endif
+        let fd = socket(AF_INET, datagram, 0)
         guard fd >= 0 else { throw PeerError.message("socket() failed") }
         var yes: Int32 = 1
         _ = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout.size(ofValue: yes)))
@@ -251,18 +256,6 @@ final class UdpSocket: @unchecked Sendable {
     }
 }
 
-func looksLikeHandshakeInitiation(_ datagram: [UInt8]) -> Bool {
-    guard let (envelope, payload) = try? Envelope.decode(datagram),
-          envelope.channel == .ctrl
-    else { return false }
-    return payload.first == CtrlMessageType.noiseHandshake1
-        || payload.first == CtrlMessageType.retryHandshake1
-}
-
-func mintPin() -> String {
-    String(format: "%06d", Int.random(in: 0...999_999))
-}
-
 func loadHostStatic(hex: String?) throws -> NoiseKeyPair {
     if let hex {
         guard let bytes = Hex.bytes(hex), bytes.count == 32 else {
@@ -313,7 +306,8 @@ final class ControlPeer {
             throw PeerError.message("refusing standing host UDP 41151")
         }
         hostStatic = try loadHostStatic(hex: opts.hostStaticHex)
-        pin = opts.pin ?? mintPin()
+        var rng = SystemRandomNumberGenerator()
+        pin = opts.pin ?? PairingResponderService.mintPin(using: &rng)
         pairing = PairingResponderService(
             pin: Array(pin.utf8),
             hostStaticPublicKey: hostStatic.publicKey
@@ -337,9 +331,11 @@ final class ControlPeer {
         print("pairing: PIN \(pin) — enter it in the browser client")
         if let frames = corpusFrames {
             print(
-                "corpus: will emit \(frames.count) sealed frames + "
-                    + "\(tonePacketCount) Opus tone packets after ready "
-                    + "(no Direct Eye)"
+                """
+                    corpus: will emit \(frames.count) sealed frames + \
+                    \(tonePacketCount) Opus tone packets after ready \
+                    (no Direct Eye)
+                    """
             )
         }
         print("features: input echo + in-memory clipboardText (not Wayland OS)")
@@ -379,8 +375,10 @@ final class ControlPeer {
             if session.isIdle {
                 corpusEmitFinished = true
                 print(
-                    "corpus: emitted \(frames.count) frames "
-                        + "(sealed Lyte-UDP video; not live Direct Eye)"
+                    """
+                        corpus: emitted \(frames.count) frames \
+                        (sealed Lyte-UDP video; not live Direct Eye)
+                        """
                 )
             }
             return
@@ -418,8 +416,10 @@ final class ControlPeer {
         if toneIndex >= tonePacketCount {
             toneEmitFinished = true
             print(
-                "tone: emitted \(tonePacketCount) Opus packets "
-                    + "(\(toneHz) Hz; sealed chan-1; not live host audio)"
+                """
+                    tone: emitted \(tonePacketCount) Opus packets \
+                    (\(toneHz) Hz; sealed chan-1; not live host audio)
+                    """
             )
             return
         }
@@ -516,9 +516,11 @@ final class ControlPeer {
             case .capabilitiesAgreed(let caps):
                 capabilitiesAgreed = true
                 print(
-                    "capabilities: agreed codecs=\(caps.videoCodecs) "
-                        + "chroma=\(caps.chromaModes) maxDatagram=\(caps.maxDatagramBytes)"
-                        + " clipboardText=\(caps.clipboardText)"
+                    """
+                        capabilities: agreed codecs=\(caps.videoCodecs) \
+                        chroma=\(caps.chromaModes) maxDatagram=\(caps.maxDatagramBytes)\
+                         clipboardText=\(caps.clipboardText)
+                        """
                 )
             case .capabilitiesFailed(let why):
                 print("capabilities: FAILED — \(why)")
@@ -533,8 +535,10 @@ final class ControlPeer {
                 inputEventsEchoed += 1
                 if inputEventsEchoed <= 3 || inputEventsEchoed % 25 == 0 {
                     logPeer(
-                        "input: echoed seq=\(event.seq) "
-                            + "(total \(inputEventsEchoed); no OS inject)"
+                        """
+                            input: echoed seq=\(event.seq) \
+                            (total \(inputEventsEchoed); no OS inject)
+                            """
                     )
                 }
             case .clipboardSetReceived(let text):
@@ -556,8 +560,10 @@ final class ControlPeer {
                 }
                 clipboardSetsAcked += 1
                 logPeer(
-                    "clipboard: set \(text.utf8.count) B → announce ack "
-                        + "(in-memory; not OS clipboard)"
+                    """
+                        clipboard: set \(text.utf8.count) B → announce ack \
+                        (in-memory; not OS clipboard)
+                        """
                 )
             case .clipboardAnnounceSent(let byteCount):
                 logPeer("clipboard: announce sent (\(byteCount) B)")
@@ -584,7 +590,7 @@ final class ControlPeer {
             let now = SystemMonotonicClock.nowNanoseconds
             if let packet = sock.recv() {
                 if session == nil {
-                    guard looksLikeHandshakeInitiation(packet.bytes) else { continue }
+                    guard Session.looksLikeHandshakeInitiation(packet.bytes) else { continue }
                     peerHost = packet.host
                     peerPort = packet.port
                     let tuple = FourTuple(
@@ -615,7 +621,8 @@ final class ControlPeer {
                             lifecycle: lifecycle
                         ),
                         clientTuple: tuple,
-                        now: now
+                        now: now,
+                        rng: SystemRandomNumberGenerator()
                     ) { [weak self] datagram in
                         self?.outbox.append(datagram)
                     }
@@ -666,8 +673,10 @@ final class ControlPeer {
         if let frames = corpusFrames, !corpusEmitFinished {
             if closed {
                 print(
-                    "WARN — corpus emit incomplete after client close "
-                        + "(index=\(corpusIndex)/\(frames.count))"
+                    """
+                        WARN — corpus emit incomplete after client close \
+                        (index=\(corpusIndex)/\(frames.count))
+                        """
                 )
             } else {
                 throw PeerError.message(
@@ -677,23 +686,29 @@ final class ControlPeer {
         }
         if corpusFrames != nil, !toneEmitFinished, !closed {
             print(
-                "WARN — tone emit incomplete "
-                    + "(index=\(toneIndex)/\(tonePacketCount))"
+                """
+                    WARN — tone emit incomplete \
+                    (index=\(toneIndex)/\(tonePacketCount))
+                    """
             )
         }
         if corpusFrames != nil, corpusEmitFinished {
             print(
-                "PASS — control + corpus video + tone "
-                    + "(Noise + pair + capabilities + \(corpusIndex) frames "
-                    + "+ \(toneIndex) Opus; inputEchoed=\(inputEventsEchoed) "
-                    + "clipboardAcked=\(clipboardSetsAcked))"
+                """
+                    PASS — control + corpus video + tone \
+                    (Noise + pair + capabilities + \(corpusIndex) frames \
+                    + \(toneIndex) Opus; inputEchoed=\(inputEventsEchoed) \
+                    clipboardAcked=\(clipboardSetsAcked))
+                    """
             )
         } else if corpusFrames == nil {
             print("PASS — control-only session (Noise + pair + capabilities)")
         } else {
             print(
-                "PASS — control session (corpus partial "
-                    + "\(corpusIndex)/\(corpusFrames?.count ?? 0))"
+                """
+                    PASS — control session (corpus partial \
+                    \(corpusIndex)/\(corpusFrames?.count ?? 0))
+                    """
             )
         }
         if let session, !closed {
@@ -716,6 +731,6 @@ do {
     try peer.run()
     exit(0)
 } catch {
-    fputs("lyte-control-peer: \(error)\n", stderr)
+    FileHandle.standardError.write(Data("lyte-control-peer: \(error)\n".utf8))
     exit(1)
 }

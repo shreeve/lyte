@@ -77,7 +77,7 @@ final class HostCompositionRootTests: XCTestCase {
 
     private func source(_ name: String) throws -> String {
         try String(
-            contentsOfFile: packageRoot + "/Sources/lyte-host/" + name,
+            contentsOfFile: packageRoot + "/Sources/lyte-host/\(name)",
             encoding: .utf8
         )
     }

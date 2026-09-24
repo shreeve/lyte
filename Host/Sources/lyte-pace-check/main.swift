@@ -133,10 +133,12 @@ func run() throws {
     }
 
     let arrivals = schedule()
-    print("pace-check: \(arrivals.count) tokens over \(runLength / ms) ms "
-        + "at \(rateBPS / 1_000_000) Mbps to 127.0.0.1:\(port); forced IDR "
-        + "\(idrShards)×\(idrShardBytes) B (\(idrShards * idrShardBytes) B) "
-        + "at +\(idrAt / ms) ms")
+    print("""
+        pace-check: \(arrivals.count) tokens over \(runLength / ms) ms \
+        at \(rateBPS / 1_000_000) Mbps to 127.0.0.1:\(port); forced IDR \
+        \(idrShards)×\(idrShardBytes) B (\(idrShards * idrShardBytes) B) \
+        at +\(idrAt / ms) ms
+        """)
 
     let pacer = Pacer(rateBitsPerSecond: rateBPS, now: 0)
     let scratch = UnsafeMutablePointer<UInt8>.allocate(
@@ -240,15 +242,17 @@ func run() throws {
     }
 
     var failures = 0
-    print("sent \(packets.count) datagrams in \(batches.count) batches, "
-        + "received \(received), tx stamps \(stamps.count)/\(packets.count)")
+    print("""
+        sent \(packets.count) datagrams in \(batches.count) batches, \
+        received \(received), tx stamps \(stamps.count)/\(packets.count)
+        """)
 
     // Per-class TOS marking, verified at the receiver via IP_RECVTOS.
     var sentTosTally: [UInt8: Int] = [:]
     for p in packets { sentTosTally[tos(for: p.cls), default: 0] += 1 }
     let tallyLine = sentTosTally.keys.sorted(by: >).map { t in
-        Hex.string(t, uppercase: true, prefix: true)
-            + " sent \(sentTosTally[t] ?? 0) recv \(rxTosTally[t] ?? 0)"
+        let hex = Hex.string(t, uppercase: true, prefix: true)
+        return "\(hex) sent \(sentTosTally[t] ?? 0) recv \(rxTosTally[t] ?? 0)"
     }.joined(separator: "; ")
     print("per-class TOS (IP_RECVTOS): \(tallyLine)")
     if sentTosTally != rxTosTally {
@@ -280,11 +284,13 @@ func run() throws {
                 idrSpacings.append(spacing)
             }
         }
-        print("\(String(format: "%4d", b.index))  \(fmtMS(b.emittedAtRel))  "
-            + "\(String(format: "%5d", b.bytes))  "
-            + "\(String(format: "%7.0f", Double(b.wireNS) / 1e3))  "
-            + (spacing.isNaN ? "        -  " : "\(fmtMS(spacing))     ")
-            + classes)
+        print("""
+            \(String(format: "%4d", b.index))  \(fmtMS(b.emittedAtRel))  \
+            \(String(format: "%5d", b.bytes))  \
+            \(String(format: "%7.0f", Double(b.wireNS) / 1e3))  \
+            \(spacing.isNaN ? "        -  " : "\(fmtMS(spacing))     ")\
+            \(classes)
+            """)
         if stamp != 0 { prevStamp = stamp }
         if b.wireNS > pacer.quantumNS {
             print("FAIL: batch \(b.index) exceeds the 1 ms quantum")
@@ -297,8 +303,10 @@ func run() throws {
        idrEnqueuedRealNS != 0 {
         let drain = last - idrEnqueuedRealNS
         let span = last - first
-        print("IDR drain (enqueue → last TX stamp): \(fmtMS(drain)) ms "
-            + "(budget min(2×16.67, 25) = 25 ms); stamp span \(fmtMS(span)) ms")
+        print("""
+            IDR drain (enqueue → last TX stamp): \(fmtMS(drain)) ms \
+            (budget min(2×16.67, 25) = 25 ms); stamp span \(fmtMS(span)) ms
+            """)
         if drain > 25 * ms {
             print("FAIL: IDR drain exceeded 25 ms")
             failures += 1
@@ -306,8 +314,10 @@ func run() throws {
         if !idrSpacings.isEmpty {
             let mn = idrSpacings.min()!, mx = idrSpacings.max()!
             let avg = idrSpacings.reduce(0, +) / Double(idrSpacings.count)
-            print("IDR-drain batch spacing min/avg/max: \(fmtMS(mn)) / "
-                + "\(fmtMS(avg)) / \(fmtMS(mx)) ms (quantum 1.000)")
+            print("""
+                IDR-drain batch spacing min/avg/max: \(fmtMS(mn)) / \
+                \(fmtMS(avg)) / \(fmtMS(mx)) ms (quantum 1.000)
+                """)
             if avg < 0.5e6 {
                 print("FAIL: spacing collapsed — pacing not in effect")
                 failures += 1
@@ -320,20 +330,26 @@ func run() throws {
 
     let audioWait = pacer.telemetry[.audio].maxQueueDelayNS
     let controlWait = pacer.telemetry[.control].maxQueueDelayNS
-    print("max queue delay: audio \(fmtMS(audioWait)) ms, control "
-        + "\(fmtMS(controlWait)) ms, video "
-        + "\(fmtMS(pacer.telemetry[.freshVideo].maxQueueDelayNS)) ms "
-        + "(audio bound: 1 quantum + ε)")
+    print("""
+        max queue delay: audio \(fmtMS(audioWait)) ms, control \
+        \(fmtMS(controlWait)) ms, video \
+        \(fmtMS(pacer.telemetry[.freshVideo].maxQueueDelayNS)) ms \
+        (audio bound: 1 quantum + ε)
+        """)
     if audioWait > pacer.quantumNS + pacer.quantumNS / 5 {
         print("FAIL: audio waited more than a quantum (+20% sched slack)")
         failures += 1
     }
-    print("max batch wire time \(fmtMS(pacer.telemetry.maxBatchWireTimeNS)) ms; "
-        + "\(pacer.telemetry.bytesSent) B in \(pacer.telemetry.batches) batches")
+    print("""
+        max batch wire time \(fmtMS(pacer.telemetry.maxBatchWireTimeNS)) ms; \
+        \(pacer.telemetry.bytesSent) B in \(pacer.telemetry.batches) batches
+        """)
 
     guard failures == 0 else { throw CheckError("\(failures) check(s) failed") }
-    print("pace-check: OK — pacer schedule drove sendmmsg with per-class TOS; "
-        + "gate bounds hold at the kernel TX stamp point")
+    print("""
+        pace-check: OK — pacer schedule drove sendmmsg with per-class TOS; \
+        gate bounds hold at the kernel TX stamp point
+        """)
 }
 
 do {
