@@ -49,20 +49,16 @@ final class AvahiAdvertiser {
     /// How often `service()` actually looks at the bus.
     private static let serviceIntervalNS: UInt64 = 100_000_000
 
-    /// Files the service record now. Throws only for a configuration
-    /// error (an unknown interface); an unreachable bus or daemon is
-    /// printed and retried by `service()`.
+    /// Files the service record now if it can. An unreachable bus or
+    /// daemon, or a named interface that does not exist yet (a USB NIC
+    /// not plugged in at startup), is printed and retried by `service()`.
     ///
     /// `interfaceName` pins the advertisement to ONE interface: a host
     /// on wired+wireless otherwise advertises on both and sessions may
     /// silently ride the radio. Empty = all interfaces.
     init(port: UInt16, staticPublicKey: [UInt8], name: String? = nil,
-         interfaceName: String = "") throws {
+         interfaceName: String = "") {
         self.port = port
-        guard Self.interfaceIndex(named: interfaceName) != nil else {
-            throw HostError(
-                "--advertise-interface \(interfaceName): no such interface")
-        }
         self.interfaceName = interfaceName
         txtRecords = [
             "v=\(WireVersion.major)",
@@ -203,6 +199,10 @@ final class AvahiAdvertiser {
     /// Connects (once per bus connection, with its signal matches),
     /// creates an entry group, adds the service and commits it.
     private func file() throws -> String {
+        // Resolved first: a missing interface costs no bus connection.
+        guard let ifIndex = Self.interfaceIndex(named: interfaceName) else {
+            throw HostError("\(interfaceName) does not exist right now")
+        }
         if bus == nil {
             let fresh = try SessionBus(kind: .system)
             try fresh.addMatch("""
@@ -224,10 +224,6 @@ final class AvahiAdvertiser {
         )
         let daemonVersion = try SessionBus.stringReply(versionReply)
         dbus_message_unref(versionReply)
-
-        guard let ifIndex = Self.interfaceIndex(named: interfaceName) else {
-            throw HostError("\(interfaceName) does not exist right now")
-        }
 
         let groupReply = try bus.call(
             dest: Self.dest, path: "/",
@@ -407,7 +403,7 @@ func advertiseMain(_ args: [String]) -> Never {
             i += 1
         }
         let hostStatic = try HostStaticKey.loadOrCreate()
-        let advertiser = try AvahiAdvertiser(
+        let advertiser = AvahiAdvertiser(
             port: port, staticPublicKey: hostStatic.publicKey, name: name
         )
         guard advertiser.isFiled else {

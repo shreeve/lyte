@@ -581,20 +581,12 @@ final class SessionHost {
 
         // Up before the first handshake wait; the advertiser re-files
         // the record whenever it is withdrawn (`serviceOrgans`).
-        var published: AvahiAdvertiser?
-        if opts.advertise, let listenPort = opts.wireListen {
-            do {
-                published = try AvahiAdvertiser(
-                    port: listenPort,
-                    staticPublicKey: keys.publicKey,
-                    interfaceName: opts.advertiseInterface
-                )
-            } catch {
-                print(
-                    "discovery: off (\(error)) — manual host:port still works")
-            }
-        }
-        advertiser = published
+        advertiser = opts.advertise ? opts.wireListen.map {
+            AvahiAdvertiser(
+                port: $0,
+                staticPublicKey: keys.publicKey,
+                interfaceName: opts.advertiseInterface)
+        } : nil
 
         // Injection is ready before any client connects and stays up
         // across sessions; each session's end releases what it held.
