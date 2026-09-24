@@ -37,6 +37,54 @@ final class ConnectionLifecycleTests: XCTestCase {
                       "the orphaned session must be closed")
     }
 
+    /// A first dial retries message 1 for ~10 s. Disconnect (and the
+    /// window closing, which calls it) must stop that dial now — not
+    /// leave it handshaking until it gives up — and end it exactly once.
+    func testDisconnectStopsTheDialInFlightAtOnce() async throws {
+        let harness = LifecycleHarness()
+        harness.startPlan = [.hold]
+        let model = ConnectionModel(services: harness.services)
+
+        let connect = Task { await model.connectLyte(harness.host) }
+        try await harness.waitForStarts(1)
+        model.disconnect()
+        XCTAssertEqual(harness.endings(of: harness.started[0]), [.goodbye],
+                       "the dial kept running after Disconnect")
+
+        harness.resolveStart(0, with: .failure(TransportEndpointError.cancelled))
+        await connect.value
+        XCTAssertEqual(harness.endings(of: harness.started[0]), [.goodbye],
+                       "the cancelled dial was ended a second time")
+        guard case .pickHost = model.phase else {
+            return XCTFail("a cancelled dial's failure resurfaced: \(model.phase)")
+        }
+    }
+
+    /// Quit reaches every window through `disconnectAll`; a roaming
+    /// re-dial in flight must stop with it, or quitting mid-hunt leaves a
+    /// socket that can still complete a handshake nobody will close.
+    func testQuitStopsARoamingDialInFlight() async throws {
+        let harness = LifecycleHarness()
+        harness.startPlan = [.succeed, .hold]
+        let model = ConnectionModel(services: harness.services)
+        await model.connectLyte(harness.host)
+        OpenConnections.shared.insert(model)
+
+        model.reconnectNow()
+        try await harness.waitForStarts(2)
+        let dial = harness.started[1]
+        XCTAssertFalse(harness.wasEnded(dial))
+        OpenConnections.shared.disconnectAll()
+        XCTAssertEqual(harness.endings(of: dial), [.goodbye],
+                       "quit left the roaming dial running")
+
+        harness.resolveStart(1, with: .failure(TransportEndpointError.cancelled))
+        try await harness.settle()
+        XCTAssertEqual(harness.endings(of: dial), [.goodbye])
+        XCTAssertEqual(harness.started.count, 2,
+                       "a cancelled dial's failure fed the dead ladder")
+    }
+
     func testConnectingScreenCancelReturnsToThePicker() async throws {
         let harness = LifecycleHarness()
         harness.startPlan = [.hold]

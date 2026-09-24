@@ -75,6 +75,12 @@ final class ConnectionModel {
 
     /// The Lyte-UDP session; nil while connecting, roaming, or idle.
     private(set) var lyteSession: LyteUdpSession?
+    /// The session a dial is still starting (first connect or roaming
+    /// re-dial), until the dial claims it back. Every exit — Disconnect,
+    /// the window closing, quit, a newer dial — stops it at once, so no
+    /// socket keeps handshaking for a window that moved on and no host
+    /// keeps a just-answered session for a client that left.
+    private(set) var dialingSession: LyteUdpSession?
     /// Fences late events from detached sessions: each session built
     /// mints an epoch, and only the current epoch's events apply.
     private var sessionEpoch = 0
@@ -214,6 +220,7 @@ final class ConnectionModel {
     /// window. Unpaired hosts go through the pairing sheet instead
     /// (ConnectView routes them there).
     func connectLyte(_ host: DiscoveredLyteHost) async {
+        abandonDial()
         let generation = advanceLifecycle()
         guard let pinned = services.loadPins().host(publicKeyHash: host.publicKeyHash),
               let hostStatic = pinned.staticPublicKey else {
@@ -309,6 +316,7 @@ final class ConnectionModel {
                 return
             }
             let candidate = makeLyteSession(crypto: crypto, config: sessionConfig)
+            beginDial(candidate)
             do {
                 HandshakeWitness.record("sessionStartBegin", fields: [
                     "round": String(round),
@@ -319,8 +327,9 @@ final class ConnectionModel {
                 HandshakeWitness.record("sessionStartCompleted", fields: [
                     "round": String(round),
                 ])
+                // Abandoned mid-dial: whoever abandoned it ended it.
+                guard claimDial(candidate) else { return }
                 guard isCurrent(generation) else {
-                    // Cancelled mid-dial: this session has no owner.
                     services.endSession(candidate, .goodbye)
                     return
                 }
@@ -331,6 +340,7 @@ final class ConnectionModel {
                     "round": String(round),
                     "error": String(describing: error),
                 ])
+                guard claimDial(candidate) else { return }
                 // A dial that failed after binding still holds its socket.
                 services.endSession(candidate, .silent)
                 guard isCurrent(generation) else { return }
@@ -532,6 +542,7 @@ final class ConnectionModel {
     /// `reason` turns the end into a failure screen.
     func endLyteSession(reason: String?) {
         guard lyteSession != nil || roaming != nil else { return }
+        abandonDial()
         stopRoamingMachinery()
         lyteInputCapture?.stop()
         lyteInputCapture = nil
@@ -562,9 +573,35 @@ final class ConnectionModel {
     /// In-flight work is invalidated first — a dial that completes
     /// afterward closes its session — then whatever stands ends.
     func disconnect() {
+        abandonDial()
         advanceLifecycle()
         if case .connecting = phase { phase = .pickHost }
         endLyteSession(reason: nil)
+    }
+
+    /// Stops the dial in flight now rather than when its handshake gives
+    /// up. The goodbye close cancels a handshake still retrying (there is
+    /// no core to linger for) and says goodbye to one the host just
+    /// answered. Its events are fenced off with a fresh epoch.
+    func abandonDial() {
+        guard let dialing = dialingSession else { return }
+        dialingSession = nil
+        sessionEpoch += 1
+        services.endSession(dialing, .goodbye)
+    }
+
+    /// `session` is now the dial in flight. Callers abandon any earlier
+    /// dial before building `session`: the abandon mints a new epoch.
+    func beginDial(_ session: LyteUdpSession) {
+        dialingSession = session
+    }
+
+    /// A dial's completion takes its session back; false when the dial
+    /// was abandoned meanwhile (the abandoner already ended the session).
+    func claimDial(_ session: LyteUdpSession) -> Bool {
+        guard dialingSession === session else { return false }
+        dialingSession = nil
+        return true
     }
 
     // MARK: - Events
