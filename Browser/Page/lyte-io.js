@@ -139,17 +139,29 @@ export class DatagramReader {
   }
 }
 
-/** Opens WebTransport to the sidecar with its pinned certificate hash. */
+// A datagram this old is past any use (the Conductor's cue ceiling is
+// 150 ms and the ARQ retransmits what must arrive): the carrier drops it
+// rather than delivering it late.
+const DATAGRAM_MAX_AGE_MS = 100;
+
+/**
+ * Opens WebTransport to the sidecar with its pinned certificate hash, over
+ * HTTP/3 only (never a reliable HTTP/2 fallback), with bounded datagram
+ * queues each way.
+ */
 export async function openWebTransport(sidecar) {
   if (typeof WebTransport !== "function") {
     throw new Error("WebTransport unavailable");
   }
   const wt = new WebTransport(sidecar.url, {
+    requireUnreliable: true,
     serverCertificateHashes: [
       { algorithm: "sha-256", value: bytesFromHex(sidecar.hashHex) },
     ],
   });
   await wt.ready;
+  wt.datagrams.incomingMaxAge = DATAGRAM_MAX_AGE_MS;
+  wt.datagrams.outgoingMaxAge = DATAGRAM_MAX_AGE_MS;
   return wt;
 }
 

@@ -194,7 +194,8 @@ export async function runSessionProof({
     `inputsSent=${ix.inputsSent} inputEchoes=${ix.inputEchoes} ` +
     `clipboardSent=${ix.clipboardSent} audioAssembled=${ix.audioAssembled} ` +
     `audioDroppedStale=${ix.audioDroppedStale}\n` +
-    `codec=${sink?.codec || "?"} adapter=${sink?.presenter.adapter || "?"}\n` +
+    `codec=${sink?.codec || "?"} adapter=${sink?.presenter.adapter || "?"} ` +
+    `maxDatagramSize=${pump?.wt?.datagrams?.maxDatagramSize ?? "?"}\n` +
     `sink=${JSON.stringify(sink?.stats || {})}\n` +
     `pacing frame:decoded/presented ms vs PTS=${recent.map(pacingEntry).join(" ")}`;
 
