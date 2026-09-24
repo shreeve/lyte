@@ -11,9 +11,7 @@ import LyteWireTestKit
 
 final class VideoVectorFileTests: XCTestCase {
 
-    private static let packageRoot = WireTestPaths.packageRoot
-
-    private static let corpusDirectory = packageRoot + "/Vectors/video-corpus-v1"
+    private static let corpusDirectory = WireVectors.path("video-corpus-v1")
 
     private func loadFile() throws -> VideoVectorFile {
         try VideoVectorFile.loadCommitted()
