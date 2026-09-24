@@ -253,13 +253,7 @@ public final class AudioJitterBuffer {
         // concealing across the void.
         let gap = Int32(bitPattern: oldest &- nextNumber)
         if gap >= Int32(config.recenterJumpPackets) {
-            stats.recenterEvents += 1
-            nextNumber = oldest
-            consecutiveConcealments = 0
-            let entry = pending.removeValue(forKey: nextNumber)!
-            nextNumber &+= 1
-            stats.packetsPlayed += 1
-            return .packet(entry.packet)
+            return resume(at: oldest)
         }
 
         // The missing packet may still be riding reorder or FEC repair
@@ -273,6 +267,11 @@ public final class AudioJitterBuffer {
             stats.starvedVerdicts += 1
             return .starved
         }
+        // A spent concealment budget means the blackout already went
+        // quiet: the audio waiting behind the gap resumes now rather than
+        // after the backlog overgrows and a recenter discards it.
+        guard consecutiveConcealments < config.maxConsecutiveConcealments
+        else { return resume(at: oldest) }
         return concealOrGoQuiet()
     }
 
@@ -289,6 +288,17 @@ public final class AudioJitterBuffer {
     }
 
     // MARK: - Interior
+
+    /// Re-primes playout at a pending packet and plays it: a new playout
+    /// epoch after a blackout, never concealment across the void.
+    private func resume(at number: UInt32) -> AudioPullVerdict {
+        stats.recenterEvents += 1
+        consecutiveConcealments = 0
+        let entry = pending.removeValue(forKey: number)!
+        nextNumber = number &+ 1
+        stats.packetsPlayed += 1
+        return .packet(entry.packet)
+    }
 
     private func concealOrGoQuiet() -> AudioPullVerdict {
         guard consecutiveConcealments < config.maxConsecutiveConcealments
