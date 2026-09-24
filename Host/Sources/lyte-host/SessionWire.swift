@@ -225,13 +225,14 @@ final class SessionWire {
         get { withConfigLock { _clipboardImageApplyHandler } }
         set { withConfigLock { _clipboardImageApplyHandler = newValue } }
     }
-    /// HS-19: the leaf's off-lock service pass (D-Bus signal drain +
-    /// fd transfer pumps), run once per `service()` like the routing
-    /// work — never under the lock, never on the audio thread.
-    private var _clipboardServiceHook: (() -> Void)?
-    var clipboardServiceHook: (() -> Void)? {
-        get { withConfigLock { _clipboardServiceHook } }
-        set { withConfigLock { _clipboardServiceHook = newValue } }
+    /// The host organs' off-lock service pass (the clipboard leaf's
+    /// D-Bus drain and fd transfer pumps, the Avahi record's watch), run
+    /// once per `service()` like the routing work — never under the
+    /// lock, never on the audio thread.
+    private var _shellServiceHook: (() -> Void)?
+    var shellServiceHook: (() -> Void)? {
+        get { withConfigLock { _shellServiceHook } }
+        set { withConfigLock { _shellServiceHook = newValue } }
     }
     /// 0x1A texts delivered by the session (under the lock), awaiting
     /// the shell's apply outside it (drained by `service()`).
@@ -611,7 +612,7 @@ final class SessionWire {
         audioRoutingHandler = nil
         clipboardApplyHandler = nil
         clipboardImageApplyHandler = nil
-        clipboardServiceHook = nil
+        shellServiceHook = nil
         bulkShell = nil
         lock.lock()
         closeSessionDescriptors()
@@ -1369,7 +1370,7 @@ final class SessionWire {
         for data in imageApplies {
             clipboardImageApplyHandler?(data)
         }
-        clipboardServiceHook?()
+        shellServiceHook?()
         // F-3: drive the file-drop shell (disk writes, fsync, the
         // verify hash) off the lock; its replies re-take it per send.
         driveBulkShell(bulk)

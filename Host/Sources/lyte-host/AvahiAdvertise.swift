@@ -13,32 +13,46 @@
 //                       the key itself still travels only through pairing
 //                       (W6 PAKE) or today's printed-banner hand-carry.
 //
-// Lifetime is the whole API: an Avahi entry group lives exactly as long
-// as the D-Bus connection that created it, so retaining this object keeps
-// the advertisement up and dropping it (or exiting) withdraws the record.
-// Avahi being unreachable is never fatal — discovery degrades to manual
-// host:port with a doctor-style line (build-plan risk register).
+// Lifetime: an Avahi entry group lives as long as the D-Bus connection
+// that created it — and as long as the daemon does. The listening
+// service outlives daemon restarts and LAN name collisions, so the
+// advertiser is serviced (`service()`, on the host's between-session
+// idle pass and a session's janitor — never both at once): it watches
+// the daemon's bus name and its entry group's StateChanged, and files
+// the record again with back-off (AdvertisementSchedule) when either
+// says it is gone. Dropping the object (or exiting) withdraws the
+// record. Avahi being unreachable is never fatal — discovery degrades
+// to manual host:port with a doctor-style line (build-plan risk
+// register) and keeps retrying.
 
 import CDBus
 import Foundation
+import HostCore
 import LyteCore
+import LyteIO
 import LyteWire
 
 final class AvahiAdvertiser {
     static let serviceType = "_lyte._udp"
 
-    private let bus: SessionBus
-    let serviceName: String
     let port: UInt16
     let txtRecords: [String]
+    private let ifIndex: Int32
+    private(set) var serviceName: String
+    private var bus: SessionBus?
+    private var groupPath: String?
+    private var schedule = AdvertisementSchedule()
+    private var nextServiceNS: UInt64 = 0
 
     private static let dest = "org.freedesktop.Avahi"
     private static let serverInterface = "org.freedesktop.Avahi.Server"
     private static let groupInterface = "org.freedesktop.Avahi.EntryGroup"
+    /// How often `service()` actually looks at the bus.
+    private static let serviceIntervalNS: UInt64 = 100_000_000
 
-    /// Registers and commits the service. Throws when the system bus or
-    /// the Avahi daemon is unavailable — the caller decides whether that
-    /// is fatal (it never is for the session path).
+    /// Files the service record now. Throws only for a configuration
+    /// error (an unknown interface); an unreachable bus or daemon is
+    /// printed and retried by `service()`.
     ///
     /// `interfaceName` pins the advertisement to ONE interface (e.g.
     /// pup's Ethernet NIC): a host on wired+wireless otherwise
@@ -59,11 +73,132 @@ final class AvahiAdvertiser {
             }
             ifIndex = Int32(index)
         }
+        self.ifIndex = ifIndex
         txtRecords = [
             "v=\(WireVersion.major)",
             "pkh=\(Hex.string(Sha256.digest(staticPublicKey)))",
         ]
-        bus = try SessionBus(kind: .system)
+        serviceName = name ?? Self.machineName()
+        fileIfDue(nowNS: SystemMonotonicClock.nowNanoseconds)
+    }
+
+    /// Whether a filed record currently stands (it may still be
+    /// registering on the LAN).
+    var isFiled: Bool { groupPath != nil }
+
+    /// Watches the daemon and the record; files it again when due.
+    /// Non-blocking unless a filing is due (then a few method calls).
+    func service() {
+        let now = SystemMonotonicClock.nowNanoseconds
+        guard now >= nextServiceNS else { return }
+        nextServiceNS = now + Self.serviceIntervalNS
+        if let bus {
+            if dbus_connection_get_is_connected(bus.conn) == 0 {
+                withdraw("the system bus connection closed", nowNS: now)
+                self.bus = nil
+            } else {
+                _ = dbus_connection_read_write(bus.conn, 0)
+                while let msg = dbus_connection_pop_message(bus.conn) {
+                    defer { dbus_message_unref(msg) }
+                    handle(msg, nowNS: now)
+                }
+            }
+        }
+        fileIfDue(nowNS: now)
+    }
+
+    private func handle(_ msg: OpaquePointer, nowNS: UInt64) {
+        if dbus_message_is_signal(
+            msg, "org.freedesktop.DBus", "NameOwnerChanged") != 0 {
+            let names = Self.stringArguments(msg)
+            guard names.first == Self.dest, groupPath != nil else { return }
+            withdraw(names.count > 2 && !names[2].isEmpty
+                ? "avahi-daemon restarted" : "avahi-daemon went away",
+                nowNS: nowNS)
+            return
+        }
+        guard dbus_message_is_signal(
+                msg, Self.groupInterface, "StateChanged") != 0,
+              let path = dbus_message_get_path(msg),
+              String(cString: path) == groupPath
+        else { return }
+        var iter = DBusMessageIter()
+        guard dbus_message_iter_init(msg, &iter) != 0,
+              dbus_message_iter_get_arg_type(&iter) == DType.int32
+        else { return }
+        var raw: Int32 = 0
+        dbus_message_iter_get_basic(&iter, &raw)
+        guard let state = AvahiEntryGroupState(rawValue: raw) else { return }
+        if state == .established { schedule.established() }
+        switch state.reaction {
+        case .keep:
+            break
+        case .refile:
+            withdraw("the record's entry group was \(state)", nowNS: nowNS)
+        case .refileRenamed:
+            let taken = serviceName
+            if let bus, let alternative = try? Self.alternativeName(
+                bus: bus, for: taken) {
+                serviceName = alternative
+            }
+            withdraw(
+                "\"\(taken)\" is taken on the LAN, renaming to \"\(serviceName)\"",
+                nowNS: nowNS)
+        }
+    }
+
+    /// The filed record is gone: free what is left of its group and
+    /// schedule the next filing.
+    private func withdraw(_ why: String, nowNS: UInt64) {
+        if let bus, let groupPath {
+            if let reply = try? bus.call(
+                dest: Self.dest, path: groupPath,
+                interface: Self.groupInterface, method: "Free",
+                timeoutMs: 1_000) {
+                dbus_message_unref(reply)
+            }
+        }
+        groupPath = nil
+        schedule.retry(nowNS: nowNS)
+        print("discovery: record withdrawn (\(why)) — filing it again")
+    }
+
+    private func fileIfDue(nowNS: UInt64) {
+        guard groupPath == nil, schedule.isDue(nowNS: nowNS) else { return }
+        do {
+            let daemonVersion = try file()
+            schedule.filed()
+            print("""
+                discovery: advertising \"\(serviceName)\" \(Self.serviceType) \
+                port \(port) [\(txtRecords.joined(separator: " "))] \
+                (\(daemonVersion))
+                """)
+        } catch {
+            schedule.retry(nowNS: nowNS)
+            print("""
+                discovery: unavailable (\(error)) — manual host:port \
+                still works; retrying
+                """)
+        }
+    }
+
+    /// Connects (once per bus connection, with its signal matches),
+    /// creates an entry group, adds the service and commits it.
+    private func file() throws -> String {
+        if bus == nil {
+            let fresh = try SessionBus(kind: .system)
+            try fresh.addMatch("""
+                type='signal',sender='org.freedesktop.DBus',\
+                interface='org.freedesktop.DBus',member='NameOwnerChanged',\
+                arg0='\(Self.dest)'
+                """)
+            try fresh.addMatch("""
+                type='signal',interface='\(Self.groupInterface)',\
+                member='StateChanged'
+                """)
+            bus = fresh
+        }
+        guard let bus else { throw HostError("no system bus") }
 
         let versionReply = try bus.call(
             dest: Self.dest, path: "/",
@@ -76,18 +211,17 @@ final class AvahiAdvertiser {
             dest: Self.dest, path: "/",
             interface: Self.serverInterface, method: "EntryGroupNew"
         )
-        let groupPath = try SessionBus.objectPathReply(groupReply)
+        let group = try SessionBus.objectPathReply(groupReply)
         dbus_message_unref(groupReply)
 
         // A same-name service already registered on this machine collides
         // at AddService time; ask the daemon for its canonical alternative
         // ("name #2") and retry rather than failing discovery outright.
-        var candidate = name ?? Self.machineName()
         var attempt = 0
         while true {
             do {
-                try Self.addService(bus: bus, groupPath: groupPath,
-                                    name: candidate, port: port,
+                try Self.addService(bus: bus, groupPath: group,
+                                    name: serviceName, port: port,
                                     txtRecords: txtRecords,
                                     ifIndex: ifIndex)
                 break
@@ -95,22 +229,31 @@ final class AvahiAdvertiser {
                 where error.message.contains("CollisionError") && attempt < 4
             {
                 attempt += 1
-                candidate = try Self.alternativeName(bus: bus, for: candidate)
+                serviceName = try Self.alternativeName(bus: bus, for: serviceName)
             }
         }
-        serviceName = candidate
 
         let commitReply = try bus.call(
-            dest: Self.dest, path: groupPath,
+            dest: Self.dest, path: group,
             interface: Self.groupInterface, method: "Commit"
         )
         dbus_message_unref(commitReply)
+        groupPath = group
+        return daemonVersion
+    }
 
-        print("""
-            discovery: advertising \"\(serviceName)\" \(Self.serviceType) \
-            port \(port) [\(txtRecords.joined(separator: " "))] \
-            (\(daemonVersion))
-            """)
+    /// The leading string arguments of a signal.
+    private static func stringArguments(_ msg: OpaquePointer) -> [String] {
+        var out: [String] = []
+        var iter = DBusMessageIter()
+        guard dbus_message_iter_init(msg, &iter) != 0 else { return out }
+        repeat {
+            guard dbus_message_iter_get_arg_type(&iter) == DType.string else { break }
+            var ptr: UnsafePointer<CChar>?
+            dbus_message_iter_get_basic(&iter, &ptr)
+            out.append(ptr.map { String(cString: $0) } ?? "")
+        } while dbus_message_iter_next(&iter) != 0
+        return out
     }
 
     /// EntryGroup.AddService(i interface, i protocol, u flags, s name,
@@ -235,11 +378,18 @@ func advertiseMain(_ args: [String]) -> Never {
         let advertiser = try AvahiAdvertiser(
             port: port, staticPublicKey: hostStatic.publicKey, name: name
         )
+        guard advertiser.isFiled else {
+            throw HostError("the Avahi daemon did not take the record")
+        }
         print("""
             advertise: up for \(Int(seconds))s — browse with \
             `dns-sd -B \(AvahiAdvertiser.serviceType)`
             """)
-        Thread.sleep(forTimeInterval: seconds)
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            advertiser.service()
+            Thread.sleep(forTimeInterval: 0.1)
+        }
         withExtendedLifetime(advertiser) {}
         print("advertise: done — record withdrawn")
         exit(0)
