@@ -19,6 +19,30 @@ final class ClientNackPolicyTests: XCTestCase {
             frame, presumedLostDataShards: 3, bestCaseParityShards: 1)))
     }
 
+    /// A host that jumps frame numbers by ~2^32 makes the assembler skip a
+    /// range that wide. The policy's work is bounded by its books, not the
+    /// range: the one asked frame inside escalates and heals the rest.
+    func testHugeGoneRangeCostsOnlyTheBooks() {
+        var escalated: [FrameNumber] = []
+        let policy = NackBench(
+            rtt: { 1_000 },
+            emit: { _ in },
+            escalate: { frame, _ in escalated.append(frame) })
+        let t0 = ClientTimestamp(microseconds: 1_000)
+        let asked = FrameNumber(rawValue: 0xFFFF_FFF0)
+        policy.handle(.nackCandidates(
+            frame: asked, missingShardIndices: [0, 1],
+            parityShards: 1, frameAgeMicroseconds: 0), now: t0)
+        let started = ContinuousClock.now
+        policy.handle(.framesGone(
+            from: FrameNumber(rawValue: 0xFFFF_FF00),
+            through: FrameNumber(rawValue: 0xFFFF_FEFF)), now: t0)
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(1))
+        XCTAssertEqual(escalated, [asked])
+        XCTAssertEqual(policy.snapshotStats().framesEscalatedToIdr, 1)
+        XCTAssertEqual(policy.snapshotStats().whollyLostEscalations, 0)
+    }
+
     /// The RTT is host-influenced: an absurd one refuses the ask as
     /// stale instead of overflowing rule 3's sum.
     func testHostileRttRefusesTheAskWithoutTrapping() {

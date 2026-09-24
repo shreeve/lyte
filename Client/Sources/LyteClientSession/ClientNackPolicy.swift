@@ -198,30 +198,31 @@ public struct ClientNackPolicy: Sendable {
                 books[frame.rawValue] = book
             }
         case .framesGone(let from, let through):
+            // The range is host-chosen and may span ~2^32 frames: walk the
+            // books (at most maxTrackedFrames), never the range.
+            let span = through.rawValue &- from.rawValue
             var expired: [FrameNumber] = []
             var brokeUnhealed = false
-            var frame = from
-            while true {
-                if var book = books[frame.rawValue] {
-                    if !book.settled {
-                        if !book.askedIndices.isEmpty {
-                            // Asked, never completed: rule 4, now.
-                            stats.framesEscalatedToIdr += 1
-                            expired.append(frame)
-                        } else {
-                            brokeUnhealed = true
-                        }
-                        book.fate = .gone
-                        book.lastTouched = now
-                        books[frame.rawValue] = book
-                    }
-                    // Settled books never re-fire.
+            var booked: UInt64 = 0
+            for (key, var book) in books where key &- from.rawValue <= span {
+                booked += 1
+                // Settled books never re-fire.
+                guard !book.settled else { continue }
+                if !book.askedIndices.isEmpty {
+                    // Asked, never completed: rule 4, now.
+                    stats.framesEscalatedToIdr += 1
+                    expired.append(FrameNumber(rawValue: key))
                 } else {
-                    // Nothing ever arrived for this frame.
                     brokeUnhealed = true
                 }
-                if frame == through { break }
-                frame = frame.next
+                book.fate = .gone
+                book.lastTouched = now
+                books[key] = book
+            }
+            // A frame with no book never landed a shard.
+            if UInt64(span) + 1 > booked { brokeUnhealed = true }
+            expired.sort {
+                $0.rawValue &- from.rawValue < $1.rawValue &- from.rawValue
             }
             // Whole-loss rule: an unasked frame that died undecoded
             // breaks the reference chain, and no other path reaches the
