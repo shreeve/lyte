@@ -95,6 +95,12 @@ final class HostServiceLoopTests: XCTestCase {
             interrupted.sessionEnded(.terminationRequested, leg: empty),
             .exit(failure: "direct eye produced no frames in 5s"))
 
+        var unbounded = HostServiceLoop(posture: .singleSession(seconds: .infinity))
+        XCTAssertEqual(
+            unbounded.sessionEnded(.terminationRequested, leg: empty),
+            .exit(failure: "direct eye produced no frames"),
+            "a bound too large for an Int is still reported, not trapped on")
+
         var paired = HostServiceLoop(posture: .singleSession(seconds: 5))
         XCTAssertEqual(
             paired.sessionEnded(.sessionEnded, leg: empty),

@@ -89,7 +89,7 @@ Client never depends on Host and Host never depends on Client. Only
 
 | Target | Kind | Owns |
 |---|---|---|
-| `LyteClientBrowserCore` | sans-IO (not lint-registered) | `BrowserControlSession` over `LyteClientSession`, `BrowserVideoPlayout`, `BrowserAudioPlayout`, frozen-contract checks |
+| `LyteClientBrowserCore` | sans-IO | `BrowserControlSession` over `LyteClientSession`, `BrowserVideoPlayout`, `BrowserAudioPlayout`, frozen-contract checks |
 | `LyteClientBrowser` | WASM exe | `BrowserBridge`: the `globalThis.lyteBrowser` JS↔WASM API (JavaScriptKit) |
 
 Page JavaScript (`Browser/Page/`) owns WebTransport IO, WebCodecs decode,

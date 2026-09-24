@@ -13,6 +13,10 @@ final class HandshakeGateTests: XCTestCase {
         [UInt8](repeating: seed, count: 96)
     }
 
+    private func address(_ index: Int) -> [UInt8] {
+        Array("10.0.\(index / 256).\(index % 256):61000".utf8)
+    }
+
     /// A verified cookie proves an address, not good intent: replaying the
     /// same RetryHandshake1 must not buy a Noise handshake per datagram.
     func testReplayedCookieIsAdmittedOnce() throws {
@@ -46,13 +50,13 @@ final class HandshakeGateTests: XCTestCase {
             cookieEnterThreshold: 1, cookieExitThreshold: 0,
             cookieAdmissionsPerSecond: 10, cookieAdmissionBurst: 5))
         var admits = 0
-        for seed in 0..<20 {
-            let msg1 = message1(UInt8(seed))
+        for index in 0..<20 {
+            let msg1 = message1(UInt8(index))
             let cookie = try RetryCookie.mint(
-                clientTuple: Self.tuple, message1: msg1[...],
+                clientTuple: address(index), message1: msg1[...],
                 now: 1_000, secret: Self.secret)
             let decision = gate.admitMessage1(
-                presentedCookie: cookie[...], clientTuple: Self.tuple,
+                presentedCookie: cookie[...], clientTuple: address(index),
                 message1: msg1[...], now: 2_000)
             if decision.admission == .admit { admits += 1 }
         }
@@ -60,12 +64,91 @@ final class HandshakeGateTests: XCTestCase {
 
         let later = message1(0xEE)
         let cookie = try RetryCookie.mint(
-            clientTuple: Self.tuple, message1: later[...],
+            clientTuple: address(99), message1: later[...],
             now: 100_002_000, secret: Self.secret)
         XCTAssertEqual(gate.admitMessage1(
-            presentedCookie: cookie[...], clientTuple: Self.tuple,
+            presentedCookie: cookie[...], clientTuple: address(99),
             message1: later[...], now: 100_002_000
         ).admission, .admit, "100 ms refills one cookie admission")
+    }
+
+    /// One proven address minting fresh cookies (fresh ephemerals dodge
+    /// the replay memory) spends only its own share: another client's
+    /// cookie still admits in the same instant, and the holder's share
+    /// refills at its own rate.
+    func testOneProvenAddressCannotSpendEveryonesCookieAdmissions() throws {
+        var gate = HandshakeGate(config: .init(
+            cookieSecret: Self.secret,
+            cookieEnterThreshold: 1, cookieExitThreshold: 0))
+        let holder = address(1)
+        var admits = 0
+        for seed in 0..<200 {
+            let msg1 = message1(UInt8(seed))
+            let cookie = try RetryCookie.mint(
+                clientTuple: holder, message1: msg1[...],
+                now: 1_000, secret: Self.secret)
+            if gate.admitMessage1(
+                presentedCookie: cookie[...], clientTuple: holder,
+                message1: msg1[...], now: 2_000
+            ).admission == .admit { admits += 1 }
+        }
+        XCTAssertEqual(admits, 2, "one address's share of the cookie budget")
+
+        let honest = address(2)
+        let msg1 = message1(0xAB)
+        let cookie = try RetryCookie.mint(
+            clientTuple: honest, message1: msg1[...],
+            now: 1_000, secret: Self.secret)
+        XCTAssertEqual(gate.admitMessage1(
+            presentedCookie: cookie[...], clientTuple: honest,
+            message1: msg1[...], now: 2_000
+        ).admission, .admit)
+
+        let refilled = message1(0xCD)
+        let fresh = try RetryCookie.mint(
+            clientTuple: holder, message1: refilled[...],
+            now: 500_002_000, secret: Self.secret)
+        XCTAssertEqual(gate.admitMessage1(
+            presentedCookie: fresh[...], clientTuple: holder,
+            message1: refilled[...], now: 500_002_000
+        ).admission, .admit, "500 ms refills one of the holder's admissions")
+    }
+
+    /// A spoofed msg1 flood above the bucket's rate (10/s) but below the
+    /// dial's threshold (20 in a second) drains the bucket without ever
+    /// engaging require-cookie mode. With a secret, an honest msg1 that
+    /// meets the empty bucket is challenged instead of dropped, and its
+    /// echoed cookie gets it in.
+    func testFloodBelowTheDialStillLetsACookiedClientIn() throws {
+        var gate = HandshakeGate(config: .init(cookieSecret: Self.secret))
+        let floodInterval: UInt64 = 1_000_000_000 / 15
+        var now: UInt64 = 0
+        for index in 0..<45 {
+            now = UInt64(index) * floodInterval
+            _ = gate.admitMessage1(
+                presentedCookie: nil, clientTuple: address(index),
+                message1: message1(UInt8(index))[...], now: now)
+        }
+        XCTAssertFalse(gate.cookieMode, "15/s never engages the dial")
+
+        let honest = address(500)
+        let msg1 = message1(0x77)
+        guard case .challenge(let cookie) = gate.admitMessage1(
+            presentedCookie: nil, clientTuple: honest,
+            message1: msg1[...], now: now
+        ).admission else {
+            return XCTFail("the drained bucket must challenge, not drop")
+        }
+        for index in 45..<48 {
+            now = UInt64(index) * floodInterval
+            _ = gate.admitMessage1(
+                presentedCookie: nil, clientTuple: address(index),
+                message1: message1(UInt8(index))[...], now: now)
+        }
+        XCTAssertEqual(gate.admitMessage1(
+            presentedCookie: cookie[...], clientTuple: honest,
+            message1: msg1[...], now: now
+        ).admission, .admit)
     }
 
     /// Without cookies the flood detector still counts only the window:
@@ -88,7 +171,7 @@ final class HandshakeGateTests: XCTestCase {
         XCTAssertEqual(quiet.cookieModeChangedTo, false)
     }
 
-    /// No secret = the pure HS-9 posture: the token bucket admits the
+    /// No secret = the pure token-bucket posture: the bucket admits the
     /// burst and throttles the rest; require-cookie never engages.
     func testDisabledWithoutSecretIsThePureTokenBucket() {
         var gate = HandshakeGate(config: .init(ratePerSecond: 10, burst: 10))

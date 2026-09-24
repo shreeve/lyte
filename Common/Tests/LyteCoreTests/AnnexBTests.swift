@@ -46,9 +46,9 @@ final class AnnexBTests: XCTestCase {
             var end = index + 1 < payloadStarts.count
                 ? payloadStarts[index + 1] - 3
                 : data.endIndex
-            if index + 1 < payloadStarts.count,
-               end > start,
-               data[end - 1] == 0 {
+            while index + 1 < payloadStarts.count,
+                  end > start,
+                  data[end - 1] == 0 {
                 end -= 1
             }
             let length = end - start
@@ -80,6 +80,19 @@ final class AnnexBTests: XCTestCase {
             AnnexBCheck.nalUnits(in: padded[2...]),
             [HevcNalUnit(offset: 3, length: 3, type: 1)]
         )
+    }
+
+    /// trailing_zero_8bits between units belong to the byte stream, not
+    /// to the unit before them, however many there are.
+    func testTrailingZeroBytesBeforeAStartCodeLeaveTheUnit() {
+        let stream: [UInt8] = [
+            0, 0, 1, 0x40, 0x01, 0xAA, 0, 0, 0,
+            0, 0, 0, 1, 0x42, 0x01, 0xBB,
+        ]
+        XCTAssertEqual(AnnexBCheck.nalUnits(in: stream), [
+            HevcNalUnit(offset: 3, length: 3, type: 32),
+            HevcNalUnit(offset: 13, length: 3, type: 33),
+        ])
     }
 
     func testMalformedPrefixShortUnitsAndEmulationPrevention() {

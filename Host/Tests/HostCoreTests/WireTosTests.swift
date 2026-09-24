@@ -2,14 +2,12 @@ import XCTest
 import HostCore
 import LyteCore
 
-// THE GATE (HS-20, D-2): the wire-marking policy, pinned as data. The
-// protected CS6 lane carries control, audio, and — since HS-20 — the
-// videoTail repair class (a NACK repair is deadline traffic; riding
-// video's own DSCP meant a bottleneck squeezing video starved exactly
-// the datagrams sent to heal the squeeze's damage). Fresh video and
-// ratchet refinement stay on CS5; telemetry stays unmarked. The map is
-// what SessionWire and lyte-pace-check both apply — one policy, pinned
-// once.
+// The wire-marking policy, pinned as data. The protected CS6 lane
+// carries control, audio and the videoTail repair class (a NACK repair
+// is deadline traffic: on video's own DSCP, a bottleneck squeezing video
+// starves exactly the datagrams sent to heal the damage). Fresh video
+// and ratchet refinement stay on CS5; telemetry stays unmarked. The map
+// is what SessionWire and lyte-pace-check both apply — one policy.
 final class WireTosTests: XCTestCase {
 
     func testMarkingPolicyPinned() {
@@ -17,7 +15,7 @@ final class WireTosTests: XCTestCase {
         XCTAssertEqual(WireTos.byte(for: .control), WireTos.protected)
         XCTAssertEqual(WireTos.byte(for: .audio), WireTos.protected)
         XCTAssertEqual(WireTos.byte(for: .videoTail), WireTos.protected,
-                       "repairs ride the protected lane (HS-20)")
+                       "repairs ride the protected lane")
         // The video lane (CS5 / DSCP 40).
         XCTAssertEqual(WireTos.byte(for: .freshVideo), WireTos.video)
         XCTAssertEqual(WireTos.byte(for: .refinement), WireTos.video)

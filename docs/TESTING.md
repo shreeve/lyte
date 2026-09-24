@@ -80,7 +80,7 @@ fakes:
 
 | Package | Test targets |
 |---|---|
-| Common | `LyteCoreTests` (with the single-owner ratchets), `LyteIOTests`, `LyteTestKitTests` (the sans-IO lint), `COpusTests` |
+| Common | `LyteCoreTests`, `LyteIOTests`, `LyteTestKitTests` (the sans-IO lint and the single-owner ratchets), `COpusTests` |
 | Wire | `LyteWireTests` — codecs, vector files, `VectorRegenerationTests`, ARQ/FEC/Noise/pairing simulations |
 | Host | `HostCoreTests`, `HostSessionTests`, `HostWireTests` (session gates), `HostAudioTests`, `HostLayoutTests`; Linux only: `HostEyeTests`, `CNetIOTests`, `CPipeWireAudioTests` (against a silent PipeWire socket in a temp runtime dir, never the desktop's server), `LyteHostIntegrationTests` |
 | Client | `LyteTransportTests`, `LyteClientSessionTests`, `LyteClientCoreTests`, `LyteCorpusTests` (slow corpus legs), `LyteAppTests` (app lifecycle under injected services), `LyteHelperTests` |
@@ -91,14 +91,20 @@ fakes:
 
 - `SansIOArchitectureTests`: import allowlists for every sans-IO target
   (`LyteCore`, `LyteClientCore`, `LyteClientSession`, `LyteWire`,
-  `HostCore`, `HostSession`, `HostWire`), `Crypto` confined to
-  `LyteWire/Crypto/`, `CNanorsWire` confined to `Fec/NanorsBackend.swift`,
-  and a forbidden-token scan (Foundation IO, locks, threads, OS clocks,
-  system randomness).
-- Single-owner ratchets (`LyteCoreTests/*RatchetTests`): one
-  implementation of each shared concept (Annex-B, hex, SHA-256, histogram,
-  Wire TOS, renderer handoff, video sink, screen source, …) across all
-  production sources, Browser included.
+  `HostCore`, `HostSession`, `HostWire`, `LyteClientBrowserCore`),
+  `Crypto` confined to `LyteWire/Crypto/`, `CNanorsWire` confined to
+  `Fec/NanorsBackend.swift`, and a forbidden-token scan (Foundation IO,
+  stdout, tasks and actors, locks, threads, OS clocks, and system
+  randomness — including `random`/`shuffled` calls handed no generator).
+- Single-owner ratchets (`LyteTestKitTests/SingleOwnerTests`, one table
+  matched on scanner tokens, so comments, strings and longer names never
+  trip it): every top-level type `LyteCore` and `LyteIO` declare (and
+  `HostSession`, within Host) is declared nowhere else; the `ScreenSource`
+  and `VideoSink` seams are declared once by their owners; the monotonic
+  clock, SHA-256, the eye pipeline's constructors, scanout grabs and the
+  host lifecycle machine are spelled only by their owners. The Opus leaf
+  ratchet (`LyteCoreTests/COpusDeclarationRatchetTests`) scans every
+  package manifest.
 - Layout tests (`HostLayoutTests`, `ClientLayoutTests`,
   `SystemTestsLayoutTests`) check the `Sources/<Target>` /
   `Tests/<Target>Tests` grammar and role boundaries, not file lists.

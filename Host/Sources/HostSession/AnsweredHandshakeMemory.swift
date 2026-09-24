@@ -15,34 +15,24 @@
 public struct AnsweredHandshakeMemory: Sendable {
     public static let ephemeralByteCount = 32
 
-    public let capacity: Int
-    private var order: [[UInt8]] = []
-    private var next = 0
-    private var known: Set<[UInt8]> = []
+    private var known: BoundedFifoMap<[UInt8], Void>
 
     public init(capacity: Int = 1_024) {
-        precondition(capacity > 0)
-        self.capacity = capacity
+        known = BoundedFifoMap(capacity: capacity)
     }
 
+    public var capacity: Int { known.capacity }
     public var count: Int { known.count }
 
     /// Remembers an answered message 1.
     public mutating func record(message1: some Collection<UInt8>) {
-        guard let key = Self.key(message1), known.insert(key).inserted
-        else { return }
-        if order.count < capacity {
-            order.append(key)
-        } else {
-            known.remove(order[next])
-            order[next] = key
-            next = (next + 1) % capacity
-        }
+        guard let key = Self.key(message1) else { return }
+        known.set((), for: key)
     }
 
     /// Whether this message 1 was answered before.
     public func contains(message1: some Collection<UInt8>) -> Bool {
-        Self.key(message1).map(known.contains) ?? false
+        Self.key(message1).map { known[$0] != nil } ?? false
     }
 
     private static func key(_ message1: some Collection<UInt8>) -> [UInt8]? {
