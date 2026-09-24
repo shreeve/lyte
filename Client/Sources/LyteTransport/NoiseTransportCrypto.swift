@@ -435,12 +435,8 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
         aad: ArraySlice<UInt8>,
         envelope: Envelope
     ) throws -> [UInt8] {
-        stateLock.lock()
-        let ready = handshakeHash != nil
-        stateLock.unlock()
-        guard ready else {
-            throw TransportCryptoError.handshakeFailed("unseal before handshake")
-        }
+        // The directional transport is published under every lock at
+        // once, so its presence alone proves the handshake completed.
         receiveLock.lock()
         defer { receiveLock.unlock() }
         guard receiveTransport != nil else {
@@ -448,14 +444,12 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
         }
         operationProbe?.enteredUnseal()
         defer { operationProbe?.exitedUnseal() }
-        do {
-            // The AEAD's fresh buffer IS the result — no re-slice, no
-            // second copy at the demux.
-            return try receiveTransport!.unseal(
-                wirePayload: wirePayload, aad: aad, envelope: envelope)
-        } catch {
-            throw TransportCryptoError.unsealFailed(String(describing: error))
-        }
+        // The AEAD's fresh buffer IS the result — no re-slice, no second
+        // copy at the demux. Failures surface as the Wire transport's own
+        // typed error (replay, stale, authentication): a flood of junk
+        // datagrams costs no per-failure string.
+        return try receiveTransport!.unseal(
+            wirePayload: wirePayload, aad: aad, envelope: envelope)
     }
 
     public func seal(
@@ -463,12 +457,6 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
         aad: ArraySlice<UInt8>,
         envelope: Envelope
     ) throws -> [UInt8] {
-        stateLock.lock()
-        let ready = handshakeHash != nil
-        stateLock.unlock()
-        guard ready else {
-            throw TransportCryptoError.handshakeFailed("seal before handshake")
-        }
         sendLock.lock()
         defer { sendLock.unlock() }
         guard sendTransport != nil else {

@@ -23,6 +23,9 @@ public struct ChannelStats: Sendable {
     public var payloadBytes: UInt64 = 0
 
     public var seqHighest: UInt16?
+    /// Datagrams still missing: gaps detected minus the late arrivals
+    /// that filled them. Already net of `seqLateFilled` — subtracting
+    /// that again double-counts every reordered datagram.
     public var seqMissing: UInt64 = 0
     public var seqDuplicates: UInt64 = 0
     public var seqLateFilled: UInt64 = 0
@@ -62,7 +65,9 @@ public struct DemuxTotals: Sendable {
 public struct ArrivalSample: Sendable {
     public var channel: UInt8
     public var seq: UInt16
-    /// Client arrival instant, kernel stamp when available (CL-1's craft).
+    /// The endpoint's arrival stamp: kernel SCM_TIMESTAMP (wall clock)
+    /// when present, else monotonic. Meaningful only as spacing between
+    /// samples of one drain.
     public var arrivalMicroseconds: UInt64
 }
 
@@ -82,31 +87,36 @@ public final class ReceiveDemux: @unchecked Sendable {
         self.crypto = crypto
     }
 
-    /// Feeds one raw datagram. `arrivalMicroseconds` is the client-monotonic
-    /// arrival instant (kernel stamp when available).
+    /// Feeds one raw datagram. `arrivalMicroseconds` is the endpoint's
+    /// arrival stamp (see `UdpReceiveEndpoint`: kernel wall-clock when the
+    /// cmsg is present, monotonic otherwise); it only feeds arrival
+    /// spacing, never an absolute clock.
+    ///
+    /// Decode and unseal run outside the lock, so snapshot readers never
+    /// wait behind an AEAD open; the lock covers only the books.
     @discardableResult
     public func ingest(
         datagram: ArraySlice<UInt8>,
         arrivalMicroseconds: UInt64
     ) -> IngestOutcome {
-        lock.lock()
-        defer { lock.unlock() }
-        totals.datagrams += 1
-
         let envelope: Envelope
         let payload: ArraySlice<UInt8>
         do {
             (envelope, payload) = try Envelope.decode(datagram)
-        } catch let error as WireError {
-            totals.malformed += 1
-            return .malformed(error)
         } catch {
+            let wireError = error as? WireError ?? .truncatedEnvelope
+            lock.lock()
+            totals.datagrams += 1
             totals.malformed += 1
-            return .malformed(.truncatedEnvelope)
+            lock.unlock()
+            return .malformed(wireError)
         }
 
         guard !envelope.channel.isReserved else {
+            lock.lock()
+            totals.datagrams += 1
             totals.reservedDropped += 1
+            lock.unlock()
             return .reservedChannel(envelope.channel.rawValue)
         }
 
@@ -117,11 +127,17 @@ public final class ReceiveDemux: @unchecked Sendable {
         do {
             plaintext = try crypto.unseal(wirePayload: payload, aad: aad, envelope: envelope)
         } catch {
+            lock.lock()
+            totals.datagrams += 1
             totals.unsealFailures += 1
             channels[envelope.channel.rawValue, default: ChannelAccount()].stats.unsealFailures += 1
+            lock.unlock()
             return .unsealFailed(error)
         }
 
+        lock.lock()
+        defer { lock.unlock() }
+        totals.datagrams += 1
         totals.accepted += 1
         channels[envelope.channel.rawValue, default: ChannelAccount()]
             .record(envelope, payloadByteCount: plaintext.count,

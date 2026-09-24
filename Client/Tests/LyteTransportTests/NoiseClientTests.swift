@@ -13,25 +13,29 @@ import LyteWire
 
 final class NoiseClientTests: XCTestCase {
 
-    func testHandshakeHashAloneOwnsEstablishedPosture() throws {
-        var components = #filePath.split(
-            separator: "/", omittingEmptySubsequences: false
-        )
-        components.removeLast(3)
-        let packageRoot = components.joined(separator: "/")
-        let source = try String(
-            contentsOfFile:
-                packageRoot
-                    + "/Sources/LyteTransport/NoiseTransportCrypto.swift",
-            encoding: .utf8
-        )
-
-        XCTAssertFalse(source.contains("private var established"))
-        XCTAssertFalse(source.contains("established ="))
-        XCTAssertGreaterThanOrEqual(
-            source.components(separatedBy: "handshakeHash != nil").count - 1,
-            4
-        )
+    /// Before the handshake publishes a transport, both directions refuse
+    /// as a handshake failure and no snapshot claims an established state.
+    func testTransportRefusesBothDirectionsBeforeTheHandshake() throws {
+        let crypto = try NoiseTransportCrypto(
+            hostAddress: "127.0.0.1", hostPort: 9,
+            hostStaticPublicKey: NoiseKeyPair.generate().publicKey)
+        let envelope = Envelope(
+            channel: .ctrl, seq: ChannelSeq(rawValue: 1),
+            frame: FrameNumber(rawValue: 0), timestamp: 0, fec: 0)
+        for attempt in [
+            { try crypto.seal(plaintext: [1][...], aad: [][...],
+                              envelope: envelope) },
+            { try crypto.unseal(wirePayload: [UInt8](repeating: 0, count: 17)[...],
+                                aad: [][...], envelope: envelope) },
+        ] as [() throws -> [UInt8]] {
+            XCTAssertThrowsError(try attempt()) {
+                guard case TransportCryptoError.handshakeFailed = $0 else {
+                    return XCTFail("expected handshakeFailed, got \($0)")
+                }
+            }
+        }
+        XCTAssertThrowsError(try crypto.open())
+        XCTAssertNil(crypto.handshakeHashSnapshot)
     }
 
     /// The host's half, in-process: answers a carried message 1 from
