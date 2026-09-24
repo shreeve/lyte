@@ -70,6 +70,18 @@ requirement="$(codesign -d -r- "$app" 2>&1)"
 helper_requirement="$(codesign -d -r- \
     "$app/Contents/MacOS/lyte-helperd" 2>&1)"
 [[ "$helper_authority" == "$authority" ]]
+# Hardened runtime on both: the helper trusts whatever satisfies the app's
+# designated requirement, so neither process may accept injected code.
+hardened_runtime='^CodeDirectory .*flags=0x[[:xdigit:]]+\([^)]*runtime'
+grep -Eq "$hardened_runtime" <<< "$app_signature"
+grep -Eq "$hardened_runtime" <<< "$helper_signature"
+for signed in "$app" "$app/Contents/MacOS/lyte-helperd"; do
+    if codesign -d --entitlements - --xml "$signed" 2>/dev/null \
+        | grep -Fq 'get-task-allow'; then
+        echo "$signed permits task-port attach (get-task-allow)" >&2
+        exit 1
+    fi
+done
 case "$authority" in
     "Apple Development: "*)
         team_identifier="$(printf '%s\n' "$app_signature" \
