@@ -62,17 +62,17 @@ expected_revision="$(git -C "$repo_root" rev-parse --short=12 HEAD)"
 
 codesign --verify --strict "$app/Contents/MacOS/lyte-helperd"
 codesign --verify --strict "$app"
-identifier="$(codesign -d --verbose=4 "$app" 2>&1 \
-    | awk -F= '/^Identifier=/{print $2; exit}')"
-[[ "$identifier" == dev.shreeve.lyte ]] \
-    || fail "app signing identifier is $identifier; want dev.shreeve.lyte"
-
+# Tool output is captured before it is parsed: under pipefail, a reader
+# that stops early (`awk … exit`, `grep -q`) can SIGPIPE the producer and
+# fail the pipeline.
 app_signature="$(codesign -dvvv "$app" 2>&1)"
 helper_signature="$(codesign -dvvv "$app/Contents/MacOS/lyte-helperd" 2>&1)"
-authority="$(printf '%s\n' "$app_signature" \
-    | awk -F= '/^Authority=/{print $2; exit}')"
-helper_authority="$(printf '%s\n' "$helper_signature" \
-    | awk -F= '/^Authority=/{print $2; exit}')"
+identifier="$(awk -F= '/^Identifier=/{print $2; exit}' <<< "$app_signature")"
+[[ "$identifier" == dev.shreeve.lyte ]] \
+    || fail "app signing identifier is $identifier; want dev.shreeve.lyte"
+authority="$(awk -F= '/^Authority=/{print $2; exit}' <<< "$app_signature")"
+helper_authority="$(awk -F= '/^Authority=/{print $2; exit}' \
+    <<< "$helper_signature")"
 requirement="$(codesign -d -r- "$app" 2>&1)"
 helper_requirement="$(codesign -d -r- \
     "$app/Contents/MacOS/lyte-helperd" 2>&1)"
@@ -83,8 +83,6 @@ helper_requirement="$(codesign -d -r- \
 hardened_runtime='^CodeDirectory .*flags=0x[[:xdigit:]]+\([^)]*runtime'
 grep -Eq "$hardened_runtime" <<< "$app_signature"
 grep -Eq "$hardened_runtime" <<< "$helper_signature"
-# Output is captured before grep: with pipefail, `grep -q` exiting early can
-# SIGPIPE the producer and turn a match into a failed pipeline.
 for signed in "$app" "$app/Contents/MacOS/lyte-helperd"; do
     entitlements="$(codesign -d --entitlements - --xml "$signed" 2>/dev/null)"
     if grep -Fq 'get-task-allow' <<< "$entitlements"; then
@@ -93,10 +91,10 @@ for signed in "$app" "$app/Contents/MacOS/lyte-helperd"; do
 done
 case "$authority" in
     "Apple Development: "*)
-        team_identifier="$(printf '%s\n' "$app_signature" \
-            | awk -F= '/^TeamIdentifier=/{print $2; exit}')"
-        helper_team_identifier="$(printf '%s\n' "$helper_signature" \
-            | awk -F= '/^TeamIdentifier=/{print $2; exit}')"
+        team_identifier="$(awk -F= '/^TeamIdentifier=/{print $2; exit}' \
+            <<< "$app_signature")"
+        helper_team_identifier="$(awk -F= '/^TeamIdentifier=/{print $2; exit}' \
+            <<< "$helper_signature")"
         [[ "$team_identifier" =~ ^[A-Z0-9]{10}$ ]] \
             || fail "app team identifier is malformed: $team_identifier"
         [[ "$helper_team_identifier" == "$team_identifier" ]] \
@@ -127,8 +125,8 @@ client_requirement="$(
     "$app/Contents/MacOS/lyte-helperd" --print-client-requirement
 )"
 app_designated_requirement="$(
-    printf '%s\n' "$requirement" \
-        | awk '/^designated => / {sub(/^designated => /, ""); print; exit}'
+    awk '/^designated => / {sub(/^designated => /, ""); print; exit}' \
+        <<< "$requirement"
 )"
 [[ "$client_requirement" == "$app_designated_requirement" ]] \
     || fail "helper client requirement differs from the app's designated requirement"
@@ -148,8 +146,8 @@ for executable in Lyte lyte-helperd; do
     uuids="$(dwarfdump --uuid "$app/Contents/MacOS/$executable")"
     grep -Eq '^UUID: [0-9A-F-]{36} ' <<< "$uuids" \
         || fail "$executable carries no Mach-O UUID"
-    minos="$(xcrun vtool -show-build "$app/Contents/MacOS/$executable" \
-        | awk '$1 == "minos" { print $2; exit }')"
+    build="$(xcrun vtool -show-build "$app/Contents/MacOS/$executable")"
+    minos="$(awk '$1 == "minos" { print $2; exit }' <<< "$build")"
     [[ "$minos" == 15.0 ]] || fail "$executable minos is $minos; want 15.0"
 done
 
