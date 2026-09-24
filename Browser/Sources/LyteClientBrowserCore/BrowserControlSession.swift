@@ -1,3 +1,4 @@
+import LyteClientCore
 import LyteClientSession
 import LyteCore
 import LyteWire
@@ -39,6 +40,12 @@ public final class BrowserControlSession {
     /// Message-1 retransmit schedule (the native initiator's defaults).
     public typealias HandshakeRetry = ClientHandshakeInitiator.Retry
 
+    /// The chan-3 report cadence, the native shell's: inside the 25–50 ms
+    /// band the host's estimator and its 350 ms freeze detector expect.
+    public static let feedbackIntervalMicroseconds: UInt64 = 40_000
+    /// Arrival samples kept between reports.
+    public static let maxRetainedArrivalSamples = 512
+
     public struct Counters: Sendable, Equatable {
         /// Datagrams whose envelope did not decode.
         public var undecodableDatagrams: UInt64 = 0
@@ -55,6 +62,11 @@ public final class BrowserControlSession {
         public var idrRequestsSent: UInt64 = 0
         /// Input events dropped because the reliable queue was full.
         public var inputsRefused: UInt64 = 0
+        public var feedbackReportsSent: UInt64 = 0
+        /// Reports that did not encode or seal (the next beat rebuilds).
+        public var feedbackReportsFailed: UInt64 = 0
+        /// Arrival samples past the per-report retention bound.
+        public var arrivalSamplesDropped: UInt64 = 0
 
         public init() {}
     }
@@ -87,6 +99,12 @@ public final class BrowserControlSession {
     private var video = BrowserVideoPlayout()
     private var audio = BrowserAudioPlayout()
     private var nextInputSeq: UInt32 = 0
+    /// Receive ledgers per channel, cumulative since establishment: every
+    /// authenticated datagram counts, whichever organ consumes it.
+    private var ledgers: [ChannelId: SeqGapTracker] = [:]
+    private var arrivals: [ClientFeedbackReporter.Arrival] = []
+    private var feedback = ClientFeedbackReporter()
+    private var nextFeedbackMicros: UInt64 = 0
 
     public private(set) var counters = Counters()
     public private(set) var handshakeCompleted = false
@@ -212,6 +230,9 @@ public final class BrowserControlSession {
                     note(line)
                 }
                 outbound += try idrRequestsDue(nowMicros: nowMicros)
+                if status != .closed, nowMicros >= nextFeedbackMicros {
+                    outbound += feedbackReport(nowMicros: nowMicros)
+                }
             }
             outbound += try pollArq(nowMicros: nowMicros)
             return step(outbound: outbound)
@@ -366,6 +387,7 @@ public final class BrowserControlSession {
         transport = made
         status = .established
         handshakeCompleted = true
+        nextFeedbackMicros = nowMicros &+ Self.feedbackIntervalMicroseconds
         note("noise: handshake completed")
 
         var control = ClientControlSession(
@@ -413,6 +435,7 @@ public final class BrowserControlSession {
         }
         self.transport = transport
         pendingEvidenceMicros = nowMicros
+        record(envelope, arrivalMicros: nowMicros)
 
         // Learned only from an authenticated datagram: a forged first
         // datagram must not choose the conn-id every later send carries.
@@ -629,6 +652,48 @@ public final class BrowserControlSession {
         return [try sealCtrl(plaintext: request.encode(), nowMicros: nowMicros)]
     }
 
+    // MARK: Feedback
+
+    private func record(_ envelope: Envelope, arrivalMicros: UInt64) {
+        ledgers[envelope.channel, default: SeqGapTracker()].record(envelope.seq)
+        guard arrivals.count < Self.maxRetainedArrivalSamples else {
+            counters.arrivalSamplesDropped += 1
+            return
+        }
+        arrivals.append(ClientFeedbackReporter.Arrival(
+            channel: envelope.channel, seq: envelope.seq,
+            arrivalMicroseconds: arrivalMicros))
+    }
+
+    /// This beat's chan-3 report: the ledgers, the arrivals since the last
+    /// one and any queued NACK entries. Unreliable and bare, as native
+    /// sends it; a lost report is superseded by the next.
+    private func feedbackReport(nowMicros: UInt64) -> [[UInt8]] {
+        nextFeedbackMicros = nowMicros &+ Self.feedbackIntervalMicroseconds
+        let report = feedback.report(
+            ledgers: ledgers.keys.sorted { $0.rawValue < $1.rawValue }.map {
+                let tracker = ledgers[$0]!
+                return ClientFeedbackReporter.Ledger(
+                    channel: $0, highestSeq: tracker.highest,
+                    datagrams: tracker.received,
+                    duplicates: tracker.duplicates,
+                    missing: tracker.datagramsMissing)
+            },
+            arrivals: arrivals,
+            now: ClientTimestamp(microseconds: nowMicros))
+        arrivals.removeAll(keepingCapacity: true)
+        do {
+            let datagram = try seal(
+                channel: .feedback, plaintext: try report.encode(),
+                extensions: [], nowMicros: nowMicros)
+            counters.feedbackReportsSent += 1
+            return [datagram]
+        } catch {
+            counters.feedbackReportsFailed += 1
+            return []
+        }
+    }
+
     // MARK: Wire helpers
 
     private func pollArq(nowMicros: UInt64) throws -> [[UInt8]] {
@@ -639,13 +704,22 @@ public final class BrowserControlSession {
     private func sealCtrl(
         plaintext: [UInt8], nowMicros: UInt64
     ) throws -> [UInt8] {
+        try seal(
+            channel: .ctrl, plaintext: plaintext,
+            extensions: connectionIds.extensions, nowMicros: nowMicros)
+    }
+
+    private func seal(
+        channel: ChannelId, plaintext: [UInt8],
+        extensions: [WireExtension], nowMicros: UInt64
+    ) throws -> [UInt8] {
         guard var transport else {
             throw BrowserControlError.notEstablished
         }
         let envelope = sequencer.envelope(
-            channel: .ctrl,
+            channel: channel,
             timestamp: nowMicros,
-            extensions: connectionIds.extensions
+            extensions: extensions
         )
         let datagram = try transport.sealDatagram(envelope, plaintext: plaintext)
         self.transport = transport

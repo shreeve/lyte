@@ -4,9 +4,10 @@ import PackageDescription
 // LyteClientBrowser — the browser platform adapter.
 //
 // LyteClientBrowserCore is sans-IO policy over LyteWire / LyteCore /
-// LyteClientSession: the control-plane initiator for WebTransport carriage,
-// video assemble + Conductor/handoff policy, audio depacketize, input and
-// clipboard on sealed CTRL. It has no JavaScriptKit dependency, so it builds
+// LyteClientCore / LyteClientSession: the control-plane initiator for
+// WebTransport carriage, feedback and repair, video assemble +
+// Conductor/handoff policy, audio depacketize, input and clipboard on
+// sealed CTRL. It has no JavaScriptKit dependency, so it builds
 // and tests natively on macOS as well as for WebAssembly.
 //
 // LyteClientBrowser is the thin executable that owns the JS↔WASM boundary
@@ -39,6 +40,7 @@ let package = Package(
             dependencies: [
                 .product(name: "LyteWire", package: "Wire"),
                 .product(name: "LyteCore", package: "Common"),
+                .product(name: "LyteClientCore", package: "Client"),
                 .product(name: "LyteClientSession", package: "Client"),
             ]
         ),
