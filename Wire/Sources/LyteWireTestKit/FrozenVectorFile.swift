@@ -78,3 +78,9 @@ extension FrozenVectorFile {
         return try encoder.encode(self) + Data("\n".utf8)
     }
 }
+
+/// The name vector files give a codec error: its Swift case name, without
+/// any associated values.
+public func vectorErrorName(_ error: some Error) -> String {
+    String(String(describing: error).prefix { $0 != "(" })
+}

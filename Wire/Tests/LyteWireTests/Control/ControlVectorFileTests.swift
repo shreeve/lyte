@@ -96,7 +96,7 @@ final class ControlVectorFileTests: XCTestCase {
                 guard let error = $0 as? IdleFrameError else {
                     return XCTFail("\(vector.name): foreign error \($0)")
                 }
-                XCTAssertEqual(idleFrameErrorName(error), vector.error,
+                XCTAssertEqual(vectorErrorName(error), vector.error,
                                vector.name)
             }
         }
@@ -122,7 +122,7 @@ final class ControlVectorFileTests: XCTestCase {
                 guard let error = $0 as? InputMessageError else {
                     return XCTFail("\(vector.name): foreign error \($0)")
                 }
-                XCTAssertEqual(inputMessageErrorName(error), vector.error,
+                XCTAssertEqual(vectorErrorName(error), vector.error,
                                vector.name)
             }
         }
@@ -155,7 +155,7 @@ final class ControlVectorFileTests: XCTestCase {
                 guard let error = $0 as? InputMessageError else {
                     return XCTFail("\(vector.name): foreign error \($0)")
                 }
-                XCTAssertEqual(inputMessageErrorName(error), vector.error,
+                XCTAssertEqual(vectorErrorName(error), vector.error,
                                vector.name)
             }
         }
@@ -187,7 +187,7 @@ final class ControlVectorFileTests: XCTestCase {
                 guard let error = $0 as? InputMessageError else {
                     return XCTFail("\(vector.name): foreign error \($0)")
                 }
-                XCTAssertEqual(inputMessageErrorName(error), vector.error,
+                XCTAssertEqual(vectorErrorName(error), vector.error,
                                vector.name)
             }
         }
@@ -210,7 +210,7 @@ final class ControlVectorFileTests: XCTestCase {
                 guard let error = $0 as? AudioRoutingMessageError else {
                     return XCTFail("\(vector.name): foreign error \($0)")
                 }
-                XCTAssertEqual(audioRoutingMessageErrorName(error),
+                XCTAssertEqual(vectorErrorName(error),
                                vector.error, vector.name)
             }
         }

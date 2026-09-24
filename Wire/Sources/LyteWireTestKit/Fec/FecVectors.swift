@@ -189,23 +189,3 @@ public struct FecRecoveryMatrix: Codable, Sendable {
         )
     }
 }
-
-/// Stable names for `FecError` cases, as they appear in vector files.
-public func fecErrorName(_ error: FecError) -> String {
-    switch error {
-    case .unknownScheme: return "unknownScheme"
-    case .nonZeroNoneField: return "nonZeroNoneField"
-    case .dataShardsOutOfRange: return "dataShardsOutOfRange"
-    case .parityShardsOutOfRange: return "parityShardsOutOfRange"
-    case .groupByteCountOutOfRange: return "groupByteCountOutOfRange"
-    case .overProvisionedDataShards: return "overProvisionedDataShards"
-    case .shardIndexOutOfRange: return "shardIndexOutOfRange"
-    case .shardBudgetOutOfRange: return "shardBudgetOutOfRange"
-    case .unprotectableDataShardCount: return "unprotectableDataShardCount"
-    case .groupByteCountMismatch: return "groupByteCountMismatch"
-    case .shardSlotCountMismatch: return "shardSlotCountMismatch"
-    case .shardByteCountMismatch: return "shardByteCountMismatch"
-    case .unrecoverableGroup: return "unrecoverableGroup"
-    case .backendFailure: return "backendFailure"
-    }
-}

@@ -85,19 +85,3 @@ public struct ClipboardImageVector: Codable, Sendable {
         self.error = error
     }
 }
-
-/// Stable names for `ClipboardImageCargoError` cases, as they appear
-/// in vectors.
-public func clipboardImageCargoErrorName(
-    _ error: ClipboardImageCargoError
-) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .unexpectedType: return "unexpectedType"
-    case .trailingBytes: return "trailingBytes"
-    case .zeroTransferId: return "zeroTransferId"
-    case .emptyMime: return "emptyMime"
-    case .mimeOverBudget: return "mimeOverBudget"
-    case .invalidUtf8: return "invalidUtf8"
-    }
-}

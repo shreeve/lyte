@@ -106,7 +106,7 @@ final class ClipboardImageVectorFileTests: XCTestCase {
                 guard let error = $0 as? ClipboardImageCargoError else {
                     return XCTFail("\(vector.name): foreign error \($0)")
                 }
-                XCTAssertEqual(clipboardImageCargoErrorName(error),
+                XCTAssertEqual(vectorErrorName(error),
                                vector.error, vector.name)
             }
         case .encodeReject:
@@ -122,7 +122,7 @@ final class ClipboardImageVectorFileTests: XCTestCase {
                 guard let error = $0 as? ClipboardImageCargoError else {
                     return XCTFail("\(vector.name): foreign error \($0)")
                 }
-                XCTAssertEqual(clipboardImageCargoErrorName(error),
+                XCTAssertEqual(vectorErrorName(error),
                                vector.error, vector.name)
             }
         }

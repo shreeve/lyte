@@ -107,7 +107,7 @@ final class CursorVectorFileTests: XCTestCase {
                 guard let error = $0 as? CursorMessageError else {
                     return XCTFail("\(vector.name): foreign error \($0)")
                 }
-                XCTAssertEqual(cursorMessageErrorName(error),
+                XCTAssertEqual(vectorErrorName(error),
                                vector.error, vector.name)
             }
         }

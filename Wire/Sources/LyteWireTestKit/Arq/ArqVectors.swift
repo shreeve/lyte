@@ -126,22 +126,6 @@ public struct ArqVector: Codable, Sendable {
     }
 }
 
-/// Stable names for `ArqFrameError` cases, as they appear in vectors.
-public func arqFrameErrorName(_ error: ArqFrameError) -> String {
-    switch error {
-    case .truncatedFrame: return "truncatedFrame"
-    case .unknownFrameType: return "unknownFrameType"
-    case .emptyPayload: return "emptyPayload"
-    case .zeroLengthSegmentBody: return "zeroLengthSegmentBody"
-    case .segmentBodyOverBudget: return "segmentBodyOverBudget"
-    case .zeroAckBlocks: return "zeroAckBlocks"
-    case .tooManyAckBlocks: return "tooManyAckBlocks"
-    case .ackBitmapTooLong: return "ackBitmapTooLong"
-    case .nonCanonicalAckBitmap: return "nonCanonicalAckBitmap"
-    case .payloadOverBudget: return "payloadOverBudget"
-    }
-}
-
 /// Builds the LyteWire frame a typed vector frame describes. Traps on a
 /// malformed vector file — vectors are trusted repo artifacts.
 public func arqFrame(from vector: ArqVector.Frame) throws -> ArqFrame {

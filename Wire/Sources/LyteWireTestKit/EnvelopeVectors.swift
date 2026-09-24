@@ -169,16 +169,3 @@ public struct SeqComparison: Codable, Sendable {
 public enum VectorFileError: Error, Equatable, Sendable {
     case malformedField(String)
 }
-
-/// Stable names for `WireError` cases, as they appear in vector files.
-public func wireErrorName(_ error: WireError) -> String {
-    switch error {
-    case .truncatedEnvelope: return "truncatedEnvelope"
-    case .truncatedExtensions: return "truncatedExtensions"
-    case .tooManyExtensions: return "tooManyExtensions"
-    case .extensionValueTooLong: return "extensionValueTooLong"
-    case .shardOverBudget: return "shardOverBudget"
-    case .payloadOverBudget: return "payloadOverBudget"
-    case .datagramOverBudget: return "datagramOverBudget"
-    }
-}

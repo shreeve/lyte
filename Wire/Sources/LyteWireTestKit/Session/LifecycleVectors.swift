@@ -75,15 +75,3 @@ public struct LifecycleVector: Codable, Sendable {
         self.error = error
     }
 }
-
-/// Stable names for `LifecycleMessageError` cases, as they appear in
-/// vectors.
-public func lifecycleMessageErrorName(_ error: LifecycleMessageError) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .trailingBytes: return "trailingBytes"
-    case .unexpectedType: return "unexpectedType"
-    case .unknownMode: return "unknownMode"
-    case .unknownReason: return "unknownReason"
-    }
-}

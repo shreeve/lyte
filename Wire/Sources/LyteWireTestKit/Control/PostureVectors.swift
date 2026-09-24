@@ -86,26 +86,3 @@ public struct PostureVector: Codable, Sendable {
         self.error = error
     }
 }
-
-/// Stable names for `AudioTrackStateError` cases, as they appear in
-/// vectors.
-public func audioTrackStateErrorName(_ error: AudioTrackStateError) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .unexpectedType: return "unexpectedType"
-    case .trailingBytes: return "trailingBytes"
-    case .unknownState: return "unknownState"
-    }
-}
-
-/// Stable names for `VideoPostureStateError` cases, as they appear in
-/// vectors.
-public func videoPostureStateErrorName(_ error: VideoPostureStateError) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .unexpectedType: return "unexpectedType"
-    case .trailingBytes: return "trailingBytes"
-    case .unknownPosture: return "unknownPosture"
-    case .zeroInterval: return "zeroInterval"
-    }
-}

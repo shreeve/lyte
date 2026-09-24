@@ -104,7 +104,7 @@ final class ClipboardVectorFileTests: XCTestCase {
                 guard let error = $0 as? ClipboardMessageError else {
                     return XCTFail("\(vector.name): foreign error \($0)")
                 }
-                XCTAssertEqual(clipboardMessageErrorName(error),
+                XCTAssertEqual(vectorErrorName(error),
                                vector.error, vector.name)
             }
         }

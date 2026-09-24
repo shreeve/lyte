@@ -241,38 +241,3 @@ public func controlVectorMode(
     case .streamOff: return .streamOff
     }
 }
-
-/// Stable names for `IdleFrameError` cases, as they appear in vectors.
-public func idleFrameErrorName(_ error: IdleFrameError) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .unexpectedType: return "unexpectedType"
-    }
-}
-
-/// Stable names for `InputMessageError` cases, as they appear in vectors.
-public func inputMessageErrorName(_ error: InputMessageError) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .unexpectedType: return "unexpectedType"
-    case .unknownKind: return "unknownKind"
-    case .bodyLengthMismatch: return "bodyLengthMismatch"
-    case .malformedFlag: return "malformedFlag"
-    case .reservedBitsSet: return "reservedBitsSet"
-    case .malformedTupleCount: return "malformedTupleCount"
-    case .duplicateLastInputSeqTlv: return "duplicateLastInputSeqTlv"
-    case .malformedLastInputSeqTlv: return "malformedLastInputSeqTlv"
-    }
-}
-
-/// Stable names for `AudioRoutingMessageError` cases.
-public func audioRoutingMessageErrorName(
-    _ error: AudioRoutingMessageError
-) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .unexpectedType: return "unexpectedType"
-    case .unknownMode: return "unknownMode"
-    case .trailingBytes: return "trailingBytes"
-    }
-}

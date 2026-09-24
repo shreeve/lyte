@@ -54,7 +54,7 @@ final class SessionVectorFileTests: XCTestCase {
                 guard let error = $0 as? PathMessageError else {
                     return XCTFail("\(vector.name): foreign error \($0)")
                 }
-                XCTAssertEqual(pathMessageErrorName(error), vector.error,
+                XCTAssertEqual(vectorErrorName(error), vector.error,
                                vector.name)
             }
         }
@@ -79,7 +79,7 @@ final class SessionVectorFileTests: XCTestCase {
                 guard let error = $0 as? PathMessageError else {
                     return XCTFail("\(vector.name): foreign error \($0)")
                 }
-                XCTAssertEqual(pathMessageErrorName(error), vector.error,
+                XCTAssertEqual(vectorErrorName(error), vector.error,
                                vector.name)
             }
         }
@@ -109,7 +109,7 @@ final class SessionVectorFileTests: XCTestCase {
                 guard let error = $0 as? IdrRequestError else {
                     return XCTFail("\(vector.name): foreign error \($0)")
                 }
-                XCTAssertEqual(idrRequestErrorName(error), vector.error,
+                XCTAssertEqual(vectorErrorName(error), vector.error,
                                vector.name)
             }
         }
@@ -140,7 +140,7 @@ final class SessionVectorFileTests: XCTestCase {
                 guard let error = $0 as? ConnectionIdError else {
                     return XCTFail("\(vector.name): foreign error \($0)")
                 }
-                XCTAssertEqual(connectionIdErrorName(error), vector.error,
+                XCTAssertEqual(vectorErrorName(error), vector.error,
                                vector.name)
             }
         }

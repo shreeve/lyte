@@ -135,7 +135,7 @@ public func makeBeaconVectorFile() throws -> BeaconVectorFile {
                 name: name, description: description,
                 kind: .decodeReject, decoder: decoder,
                 messageHex: Hex.string(bytes),
-                error: beaconErrorName(error)
+                error: vectorErrorName(error)
             )
         )
     }
@@ -320,7 +320,7 @@ public func makeBeaconVectorFile() throws -> BeaconVectorFile {
             FeedbackVector(
                 name: name, description: description, kind: .encodeReject,
                 report: FeedbackFields(from: report),
-                error: feedbackErrorName(error)
+                error: vectorErrorName(error)
             )
         )
     }
@@ -395,7 +395,7 @@ public func makeBeaconVectorFile() throws -> BeaconVectorFile {
             FeedbackVector(
                 name: name, description: description, kind: .decodeReject,
                 reportHex: Hex.string(bytes),
-                error: feedbackErrorName(error)
+                error: vectorErrorName(error)
             )
         )
     }

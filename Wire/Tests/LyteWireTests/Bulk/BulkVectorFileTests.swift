@@ -265,7 +265,7 @@ final class BulkVectorFileTests: XCTestCase {
                 return XCTFail("\(vector.name): foreign error \($0)")
             }
             XCTAssertEqual(
-                bulkMessageErrorName(error), vector.error, vector.name
+                vectorErrorName(error), vector.error, vector.name
             )
         }
     }
@@ -280,7 +280,7 @@ final class BulkVectorFileTests: XCTestCase {
                 return XCTFail("\(vector.name): foreign error \($0)")
             }
             XCTAssertEqual(
-                bulkMessageErrorName(error), vector.error, vector.name
+                vectorErrorName(error), vector.error, vector.name
             )
         }
     }

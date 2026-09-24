@@ -93,18 +93,3 @@ public struct CursorVector: Codable, Sendable {
         self.error = error
     }
 }
-
-/// Stable names for `CursorMessageError` cases, as they appear in
-/// vectors.
-public func cursorMessageErrorName(
-    _ error: CursorMessageError
-) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .unexpectedType: return "unexpectedType"
-    case .invalidDimensions: return "invalidDimensions"
-    case .imageOverBudget: return "imageOverBudget"
-    case .pixelCountMismatch: return "pixelCountMismatch"
-    case .hotspotOutsideImage: return "hotspotOutsideImage"
-    }
-}

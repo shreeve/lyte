@@ -82,17 +82,3 @@ public struct ClipboardVector: Codable, Sendable {
         self.error = error
     }
 }
-
-/// Stable names for `ClipboardMessageError` cases, as they appear in
-/// vectors.
-public func clipboardMessageErrorName(
-    _ error: ClipboardMessageError
-) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .unexpectedType: return "unexpectedType"
-    case .emptyText: return "emptyText"
-    case .textOverBudget: return "textOverBudget"
-    case .invalidUtf8: return "invalidUtf8"
-    }
-}

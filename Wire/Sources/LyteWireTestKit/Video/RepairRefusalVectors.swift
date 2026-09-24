@@ -68,14 +68,3 @@ public struct RepairRefusalVector: Codable, Sendable {
         self.error = error
     }
 }
-
-/// Stable names for `RepairRefusalError` cases, as they appear in
-/// vectors.
-public func repairRefusalErrorName(_ error: RepairRefusalError) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .trailingBytes: return "trailingBytes"
-    case .unexpectedType: return "unexpectedType"
-    case .unknownReason: return "unknownReason"
-    }
-}

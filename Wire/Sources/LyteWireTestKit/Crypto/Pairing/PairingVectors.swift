@@ -279,15 +279,3 @@ public struct PairingMessageVector: Codable, Sendable {
         self.error = error
     }
 }
-
-/// The error-name mapper the file tests assert against.
-public func pairingMessageErrorName(_ error: PairingMessageError) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .trailingBytes: return "trailingBytes"
-    case .unexpectedType: return "unexpectedType"
-    case .unknownReason: return "unknownReason"
-    case .invalidShareLength: return "invalidShareLength"
-    case .invalidTagLength: return "invalidTagLength"
-    }
-}

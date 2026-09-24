@@ -239,29 +239,6 @@ public struct BulkTransferSessionVector: Codable, Sendable {
     }
 }
 
-/// Stable names for `BulkMessageError` cases, as they appear in
-/// vectors.
-public func bulkMessageErrorName(_ error: BulkMessageError) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .unexpectedType: return "unexpectedType"
-    case .trailingBytes: return "trailingBytes"
-    case .zeroTransferId: return "zeroTransferId"
-    case .emptyTransfer: return "emptyTransfer"
-    case .chunkSizeOutOfBounds: return "chunkSizeOutOfBounds"
-    case .invalidSha256ByteCount: return "invalidSha256ByteCount"
-    case .emptyName: return "emptyName"
-    case .nameOverBudget: return "nameOverBudget"
-    case .mimeHintOverBudget: return "mimeHintOverBudget"
-    case .invalidUtf8: return "invalidUtf8"
-    case .emptyChunkData: return "emptyChunkData"
-    case .chunkDataOverBudget: return "chunkDataOverBudget"
-    case .bitmapOverBudget: return "bitmapOverBudget"
-    case .nonCanonicalBitmap: return "nonCanonicalBitmap"
-    case .unknownAbortReason: return "unknownAbortReason"
-    }
-}
-
 /// Stable names for `BulkAbortReason` cases.
 public func bulkAbortReasonName(_ reason: BulkAbortReason) -> String {
     switch reason {

@@ -87,7 +87,7 @@ final class VectorFileTests: XCTestCase {
             guard let wireError = error as? WireError else {
                 return XCTFail("\(vector.name): non-WireError \(error)")
             }
-            XCTAssertEqual(wireErrorName(wireError), expected, vector.name)
+            XCTAssertEqual(vectorErrorName(wireError), expected, vector.name)
         }
     }
 
@@ -103,7 +103,7 @@ final class VectorFileTests: XCTestCase {
             guard let wireError = error as? WireError else {
                 return XCTFail("\(vector.name): non-WireError \(error)")
             }
-            XCTAssertEqual(wireErrorName(wireError), expected, vector.name)
+            XCTAssertEqual(vectorErrorName(wireError), expected, vector.name)
         }
     }
 

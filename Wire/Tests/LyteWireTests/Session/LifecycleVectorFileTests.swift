@@ -77,7 +77,7 @@ final class LifecycleVectorFileTests: XCTestCase {
                         return XCTFail("\(vector.name): foreign error")
                     }
                     XCTAssertEqual(
-                        lifecycleMessageErrorName(error), vector.error,
+                        vectorErrorName(error), vector.error,
                         vector.name
                     )
                 }
@@ -89,7 +89,7 @@ final class LifecycleVectorFileTests: XCTestCase {
                         return XCTFail("\(vector.name): foreign error")
                     }
                     XCTAssertEqual(
-                        lifecycleMessageErrorName(error), vector.error,
+                        vectorErrorName(error), vector.error,
                         vector.name
                     )
                 }

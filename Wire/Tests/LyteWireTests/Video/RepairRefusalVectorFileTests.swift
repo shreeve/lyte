@@ -65,7 +65,7 @@ final class RepairRefusalVectorFileTests: XCTestCase {
                         return XCTFail("\(vector.name): foreign error")
                     }
                     XCTAssertEqual(
-                        repairRefusalErrorName(error), vector.error,
+                        vectorErrorName(error), vector.error,
                         vector.name
                     )
                 }

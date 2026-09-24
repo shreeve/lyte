@@ -358,32 +358,3 @@ public struct ClockWorkedExample: Codable, Sendable {
         self.rttMicroseconds = rttMicroseconds
     }
 }
-
-/// Stable names for `BeaconError` cases, as they appear in vector files.
-public func beaconErrorName(_ error: BeaconError) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .trailingBytes: return "trailingBytes"
-    case .unexpectedType: return "unexpectedType"
-    case .nonZeroAbsentEchoFields: return "nonZeroAbsentEchoFields"
-    }
-}
-
-/// Stable names for `FeedbackError` cases, as they appear in vector files.
-public func feedbackErrorName(_ error: FeedbackError) -> String {
-    switch error {
-    case .truncatedReport: return "truncatedReport"
-    case .trailingBytes: return "trailingBytes"
-    case .tooManyChannelBlocks: return "tooManyChannelBlocks"
-    case .tooManyDispersionSamples: return "tooManyDispersionSamples"
-    case .tooManyNackEntries: return "tooManyNackEntries"
-    case .emptyDispersionSection: return "emptyDispersionSection"
-    case .arrivalDeltaOutOfRange: return "arrivalDeltaOutOfRange"
-    case .nonZeroBaseWithoutSamples: return "nonZeroBaseWithoutSamples"
-    case .emptyNackShardList: return "emptyNackShardList"
-    case .nackBitmapByteCountOutOfRange: return "nackBitmapByteCountOutOfRange"
-    case .nonCanonicalNackBitmap: return "nonCanonicalNackBitmap"
-    case .tooManyExtensions: return "tooManyExtensions"
-    case .reportOverBudget: return "reportOverBudget"
-    }
-}

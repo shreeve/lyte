@@ -92,28 +92,3 @@ public struct SessionVector: Codable, Sendable {
         self.error = error
     }
 }
-
-/// Stable names for `PathMessageError` cases, as they appear in vectors.
-public func pathMessageErrorName(_ error: PathMessageError) -> String {
-    switch error {
-    case .truncated: return "truncated"
-    case .unexpectedType: return "unexpectedType"
-    }
-}
-
-/// Stable names for `IdrRequestError` cases, as they appear in vectors.
-public func idrRequestErrorName(_ error: IdrRequestError) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .trailingBytes: return "trailingBytes"
-    case .unexpectedType: return "unexpectedType"
-    }
-}
-
-/// Stable names for `ConnectionIdError` cases, as they appear in vectors.
-public func connectionIdErrorName(_ error: ConnectionIdError) -> String {
-    switch error {
-    case .invalidValueLength: return "invalidValueLength"
-    case .duplicateTlv: return "duplicateTlv"
-    }
-}

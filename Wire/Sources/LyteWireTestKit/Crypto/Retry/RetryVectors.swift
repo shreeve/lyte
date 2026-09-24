@@ -139,15 +139,3 @@ public struct RetryMessageVector: Codable, Sendable {
         self.error = error
     }
 }
-
-/// The error-name mapper the file tests assert against.
-public func retryMessageErrorName(_ error: RetryMessageError) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .trailingBytes: return "trailingBytes"
-    case .unexpectedType: return "unexpectedType"
-    case .zeroCookieLength: return "zeroCookieLength"
-    case .invalidCookieLength: return "invalidCookieLength"
-    case .message1TooShort: return "message1TooShort"
-    }
-}
