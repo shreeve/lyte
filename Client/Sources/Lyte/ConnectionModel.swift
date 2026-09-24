@@ -170,9 +170,9 @@ final class ConnectionModel {
     // F-5: roaming/reconnect. The policy exists for the whole
     // streaming life of a window (it IS the "can this window
     // reconnect" verdict); its status drives the stream overlay's
-    // banner. `sessionEpoch` fences late events from detached
-    // sessions — a re-dial mints a new epoch and the dead session's
-    // stragglers (a .closed racing the teardown, mostly) are noise.
+    // banner. `sessionEpoch` fences late EVENTS from detached
+    // sessions (a .closed racing the teardown, mostly);
+    // `lifecycleGeneration` fences late dial and browse RESULTS.
     private var roaming: RoamingPolicy?
     private var roamingTask: Task<Void, Never>?
     private(set) var roamingStatus: RoamingStatus = .attached
@@ -780,6 +780,7 @@ final class ConnectionModel {
     private func startRoamingMachinery(
         publicKeyHash: String, address: String, port: UInt16
     ) {
+        advanceLifecycle()
         roaming = RoamingPolicy(
             targetPublicKeyHash: publicKeyHash,
             address: address, port: port)
@@ -798,6 +799,7 @@ final class ConnectionModel {
     }
 
     private func stopRoamingMachinery() {
+        advanceLifecycle()
         roamingTask?.cancel()
         roamingTask = nil
         roaming = nil
@@ -897,19 +899,21 @@ final class ConnectionModel {
         }
     }
 
-    /// One quiet browse pass; the completion ALWAYS answers the
-    /// policy (the beginScan/scanCompleted contract).
+    /// One quiet browse pass; the completion answers the policy that
+    /// asked (the beginScan/scanCompleted contract) and nobody else.
     private func runRoamingScan() {
+        let generation = lifecycleGeneration
+        let browse = services.browse
         Task { @MainActor [weak self] in
-            guard let browse = self?.services.browse else { return }
             let hosts = await browse(2.0)
+            guard let self, self.isCurrent(generation) else { return }
             let sightings = hosts.compactMap { host -> RoamingSighting? in
                 guard let pkh = host.publicKeyHash else { return nil }
                 return RoamingSighting(
                     publicKeyHash: pkh,
                     address: host.address, port: host.port)
             }
-            self?.roamingInput { policy, now in
+            self.roamingInput { policy, now in
                 policy.scanCompleted(sightings: sightings, now: now)
             }
         }
@@ -967,17 +971,28 @@ final class ConnectionModel {
         config.core.capabilities = config.core.capabilities
             .declaringChroma(tier: chromaTier)
         let lyte = makeLyteSession(crypto: crypto, config: config)
+        let generation = lifecycleGeneration
         let start = services.startSession
+        let endSession = services.endSession
         Task { @MainActor [weak self] in
             do {
                 try await start(lyte)
-                self?.adoptReconnectedSession(
-                    lyte, crypto: crypto, address: address, port: port)
             } catch {
-                self?.roamingInput { policy, now in
+                guard let self, self.isCurrent(generation) else { return }
+                self.roamingInput { policy, now in
                     policy.dialFailed(now: now)
                 }
+                return
             }
+            // The window disconnected (and perhaps connected afresh)
+            // while this dial ran: the session has no owner.
+            guard let self, self.isCurrent(generation),
+                  self.lyteSession == nil else {
+                endSession(lyte, .goodbye)
+                return
+            }
+            self.adoptReconnectedSession(
+                lyte, crypto: crypto, address: address, port: port)
         }
     }
 
@@ -990,12 +1005,6 @@ final class ConnectionModel {
         _ lyte: LyteUdpSession, crypto: NoiseTransportCrypto,
         address: String, port: UInt16
     ) {
-        guard roaming != nil, case .streaming = phase else {
-            // The human disconnected mid-dial: this session has no
-            // owner — close it politely and walk away.
-            services.endSession(lyte, .goodbye)
-            return
-        }
         lyteSession = lyte
         lyte.setAudioMuted(muted)
         lyteWireMode = .active

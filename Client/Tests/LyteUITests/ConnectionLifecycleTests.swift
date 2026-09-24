@@ -96,6 +96,47 @@ final class ConnectionLifecycleTests: XCTestCase {
         XCTAssertEqual(model.roamingStatus, .attached)
     }
 
+    func testStaleRoamingDialSuccessNeverReplacesAFreshSession() async throws {
+        let harness = LifecycleHarness()
+        harness.startPlan = [.succeed, .hold, .succeed]
+        let model = ConnectionModel(services: harness.services)
+        await model.connectLyte(harness.host)
+
+        model.reconnectNow()
+        try await harness.waitForStarts(2)
+        model.disconnect()
+        await model.connectLyte(harness.host)
+        let fresh = try XCTUnwrap(model.lyteSession)
+        XCTAssertTrue(fresh === harness.started[2])
+
+        harness.resolveStart(1, with: .success(()))
+        try await harness.waitUntil { harness.wasEnded(harness.started[1]) }
+
+        XCTAssertTrue(model.lyteSession === fresh,
+                      "a stale roaming dial replaced the live session")
+        XCTAssertFalse(harness.wasEnded(fresh))
+        XCTAssertEqual(model.roamingStatus, .attached)
+    }
+
+    func testStaleRoamingDialFailureLeavesTheFreshPolicyAttached() async throws {
+        let harness = LifecycleHarness()
+        harness.startPlan = [.succeed, .hold, .succeed]
+        let model = ConnectionModel(services: harness.services)
+        await model.connectLyte(harness.host)
+
+        model.reconnectNow()
+        try await harness.waitForStarts(2)
+        model.disconnect()
+        await model.connectLyte(harness.host)
+
+        harness.resolveStart(1, with: .failure(harness.silence))
+        try await harness.settle()
+
+        XCTAssertEqual(model.roamingStatus, .attached,
+                       "a stale dial failure set a healthy session hunting")
+        XCTAssertTrue(model.lyteSession === harness.started[2])
+    }
+
     // MARK: - Host goodbyes
 
     func testHostTakeoverGoodbyeEndsTheWindow() async throws {
