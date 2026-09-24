@@ -20,8 +20,10 @@
 // `consumed + window` and refreshes when the grant has advanced by at
 // least max(1, window/2) — plus always once more when possession
 // completes, so the sender always learns the end arrived. The sender
-// consumes credit at READ-REQUEST time, so both ends' memory is
-// bounded by the same window. Enforcement lives receiver-side where
+// consumes credit at READ-REQUEST time and never holds more than
+// `maxReadAheadChunks` reads the receiver has not reported holding, so
+// its memory is bounded locally even against an over-generous grant.
+// Enforcement lives receiver-side where
 // the memory is: a chunk beyond granted credit is a violation — a
 // hostile sender can waste its own credit, never the receiver's
 // memory.
@@ -75,10 +77,11 @@ public struct BulkPossession: Hashable, Sendable {
     /// grows).
     public mutating func merge(_ map: BulkChunkMap) {
         if map.contiguousCount > contiguousCount {
-            extras.formUnion(contiguousCount..<map.contiguousCount)
+            contiguousCount = map.contiguousCount
+            extras = extras.filter { $0 >= contiguousCount }
         }
-        extras.formUnion(map.bitmapChunkIndices)
-        extras = extras.filter { $0 >= contiguousCount }
+        let prefix = contiguousCount
+        extras.formUnion(map.bitmapChunkIndices.lazy.filter { $0 >= prefix })
         normalize()
     }
 
@@ -157,12 +160,22 @@ public struct BulkTransferConfig: Hashable, Sendable {
     /// Receiver window: the ceiling on admitted-but-not-yet-stored
     /// chunks, which is exactly the receiver's un-persisted memory
     /// bound (16 × 64 KiB = 1 MiB at the defaults) and the sender's
-    /// read-ahead bound alike. Clamped to ≥ 1 — a zero window could
-    /// never move a byte.
+    /// read-ahead bound alike. Clamped to 1…`maxReceiveWindowChunks` —
+    /// a zero window could never move a byte.
     public var receiveWindowChunks: Int
 
+    /// The receive-window ceiling. The receiver refreshes credit after
+    /// window/2 stores, and the sender stops at
+    /// `BulkSendEngine.defaultMaxReadAheadChunks` unconfirmed reads, so
+    /// a window above twice that could wait on a refresh the sender
+    /// never earns.
+    public static let maxReceiveWindowChunks =
+        2 * BulkSendEngine.defaultMaxReadAheadChunks
+
     public init(receiveWindowChunks: Int = 16) {
-        self.receiveWindowChunks = max(1, receiveWindowChunks)
+        self.receiveWindowChunks = min(
+            max(1, receiveWindowChunks), Self.maxReceiveWindowChunks
+        )
     }
 }
 
@@ -240,13 +253,28 @@ public struct BulkSendEngine: Sendable {
     /// consumption is what bounds sender-side memory by the window).
     public private(set) var issuedReadCount: UInt64 = 0
 
+    /// Reads issued this session that the receiver has not yet reported
+    /// holding — the sender's own memory, bounded by
+    /// `maxReadAheadChunks` whatever credit the peer grants.
+    private var unconfirmedReads: Set<UInt64> = []
+    /// The sender-local ceiling on `unconfirmedReads`. Credit is the
+    /// receiver's promise about ITS memory; this bounds ours (and the
+    /// ARQ queue the chunks wait in) against an over-generous grant.
+    public let maxReadAheadChunks: Int
+
     private var outstandingReads: Set<UInt64> = []
-    /// Indices issued or sent this session — never re-dispatched.
-    private var issued: Set<UInt64> = []
     private var dispatchCursor: UInt64 = 0
 
-    public init(offer: BulkOffer) {
+    /// 128 chunks: 8 MiB at the default chunk size, and at the 128 KiB
+    /// maximum still under half of `ArqBounds.maxQueuedSegmentsPerGroup`.
+    public static let defaultMaxReadAheadChunks = 128
+
+    public init(
+        offer: BulkOffer,
+        maxReadAheadChunks: Int = BulkSendEngine.defaultMaxReadAheadChunks
+    ) {
         self.offer = offer
+        self.maxReadAheadChunks = max(1, maxReadAheadChunks)
     }
 
     public var chunkCount: UInt64 { offer.chunkCount }
@@ -402,24 +430,18 @@ public struct BulkSendEngine: Sendable {
         return issueReads()
     }
 
-    /// Requests reads for the next missing chunks while credit
-    /// allows. Credit is consumed here, at issue time.
+    /// Requests reads for the next missing chunks while credit and the
+    /// local read-ahead ceiling allow. Credit is consumed here, at issue
+    /// time; the cursor only advances, so no index is issued twice.
     private mutating func issueReads() -> [Action] {
+        unconfirmedReads = unconfirmedReads.filter { !remoteHeld.holds($0) }
         var actions: [Action] = []
-        while issuedReadCount < creditTotal {
-            var cursor = dispatchCursor
-            var candidate: UInt64?
-            while let next = remoteHeld.nextMissing(
-                from: cursor, below: chunkCount
-            ) {
-                if !issued.contains(next) {
-                    candidate = next
-                    break
-                }
-                cursor = next + 1
-            }
-            guard let index = candidate else { break }
-            issued.insert(index)
+        while issuedReadCount < creditTotal,
+              unconfirmedReads.count < maxReadAheadChunks,
+              let index = remoteHeld.nextMissing(
+                  from: dispatchCursor, below: chunkCount
+              ) {
+            unconfirmedReads.insert(index)
             outstandingReads.insert(index)
             issuedReadCount += 1
             dispatchCursor = index + 1
@@ -493,7 +515,9 @@ public struct BulkReceiveEngine: Sendable {
     }
 
     public let config: BulkTransferConfig
-    public private(set) var state: State = .awaitingOffer
+    public private(set) var state: State = .awaitingOffer {
+        didSet { if isTerminal { pendingStores.removeAll() } }
+    }
     public private(set) var offer: BulkOffer?
     public private(set) var possession: BulkPossession = .empty
     /// The session's grant, as last emitted (monotonic).
@@ -622,7 +646,10 @@ public struct BulkReceiveEngine: Sendable {
     /// The shell durably stored a requested chunk. Advances
     /// possession and the credit clock; completion emits the final
     /// ack plus the verify request.
+    /// A store that completes after the transfer ended (cancel, abort,
+    /// violation) is dropped: a terminal engine never revives.
     public mutating func chunkStored(index: UInt64) throws -> [Action] {
+        if isTerminal { return [] }
         guard pendingStores.contains(index) else {
             throw BulkReceiveError.storeNotPending(index)
         }

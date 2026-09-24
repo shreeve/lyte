@@ -261,10 +261,14 @@ public struct BulkOffer: Hashable, Sendable {
         guard totalByteCount >= 1 else {
             throw BulkMessageError.emptyTransfer
         }
-        guard (BulkWire.minChunkByteCount...BulkWire.maxChunkByteCount)
-            .contains(Int(chunkByteCount))
+        // Compared as UInt32: a peer-supplied size ≥ 2^31 must throw,
+        // not trap, where Int is 32 bits (wasm32).
+        guard (UInt32(BulkWire.minChunkByteCount)...UInt32(BulkWire.maxChunkByteCount))
+            .contains(chunkByteCount)
         else {
-            throw BulkMessageError.chunkSizeOutOfBounds(Int(chunkByteCount))
+            throw BulkMessageError.chunkSizeOutOfBounds(
+                Int(clamping: chunkByteCount)
+            )
         }
         guard sha256.count == BulkWire.sha256ByteCount else {
             throw BulkMessageError.invalidSha256ByteCount(sha256.count)
