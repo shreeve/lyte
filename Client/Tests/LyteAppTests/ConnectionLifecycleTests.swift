@@ -486,6 +486,57 @@ final class ConnectionLifecycleTests: XCTestCase {
         XCTAssertFalse(model.canReconnect)
     }
 
+    // MARK: - Poisoned streams
+
+    /// The core ends a session whose host sent a control message over the
+    /// shared ceiling; its close reads as our own teardown. The first such
+    /// end re-dials, but a host that does it again within a minute would
+    /// cycle reconnect → IDR → poison forever: the window ends instead.
+    func testAHostThatKeepsPoisoningItsStreamEndsTheWindow() async throws {
+        let harness = LifecycleHarness()
+        harness.startPlan = [.succeed, .succeed, .succeed]
+        let model = ConnectionModel(services: harness.services)
+        await model.connectLyte(harness.host)
+        defer { model.disconnect() }
+
+        harness.poison(model)
+        try await harness.waitUntil { model.lyteSession === harness.started.last
+            && harness.started.count == 2 }
+        guard case .streaming = model.phase else {
+            return XCTFail("one poisoned end must re-dial: \(model.phase)")
+        }
+
+        harness.poison(model)
+        guard case .failed(.ordinary(let message)) = model.phase else {
+            return XCTFail("a repeat poisoner kept the window: \(model.phase)")
+        }
+        XCTAssertEqual(message, ConnectionModel.poisonedStreamMessage("pup"))
+        XCTAssertFalse(model.canReconnect)
+        try await harness.settle()
+        XCTAssertEqual(harness.started.count, 2, "the ended window re-dialed")
+        XCTAssertEqual(harness.streamsEnded, 1)
+    }
+
+    func testPoisonedEndsAMinuteApartEachReDial() async throws {
+        let harness = LifecycleHarness()
+        harness.startPlan = [.succeed, .succeed, .succeed]
+        let model = ConnectionModel(services: harness.services)
+        await model.connectLyte(harness.host)
+        defer { model.disconnect() }
+
+        harness.poison(model)
+        try await harness.waitUntil { harness.started.count == 2
+            && model.lyteSession === harness.started[1] }
+        harness.advanceClock(microseconds:
+            ConnectionModel.poisonedStreamWindowMicroseconds)
+        harness.poison(model)
+        try await harness.waitUntil { harness.started.count == 3
+            && model.lyteSession === harness.started[2] }
+        guard case .streaming = model.phase else {
+            return XCTFail("isolated poisoned ends ended the window: \(model.phase)")
+        }
+    }
+
     func testSessionCloseVerdicts() {
         XCTAssertEqual(ConnectionModel.closeVerdict(.localTeardown(.shuttingDown)),
                        .ignore)
@@ -542,6 +593,7 @@ final class LifecycleHarness: @unchecked Sendable {
     private var _streamsEnded = 0
     private var _pinLoads = 0
     private var _pinSaves = 0
+    private var clockOffset: UInt64 = 0
 
     init() {
         let key = (0..<32).map { UInt8($0 &* 7 &+ 3) }
@@ -666,7 +718,21 @@ final class LifecycleHarness: @unchecked Sendable {
             watchPath: { _ in {} },
             streamBegan: { [self] in locked { _streamsBegan += 1 } },
             streamEnded: { [self] in locked { _streamsEnded += 1 } },
-            now: { SystemClockForTests.nowMicroseconds })
+            now: { [self] in
+                SystemClockForTests.nowMicroseconds + locked { clockOffset }
+            })
+    }
+
+    /// Moves the harness clock forward (roaming deadlines, budgets).
+    func advanceClock(microseconds: UInt64) {
+        locked { clockOffset += microseconds }
+    }
+
+    /// The core's end of a session whose host broke its ordered stream.
+    @MainActor
+    func poison(_ model: ConnectionModel) {
+        model.handleLyteEvent(.orderedStreamPoisoned)
+        model.handleLyteEvent(.closed(.localTeardown(.shuttingDown)))
     }
 
     func waitForStarts(_ count: Int) async throws {

@@ -277,6 +277,8 @@ struct WireView: AsyncParsableCommand {
                     print("wire-view: reliable idle frame \(frame) — \(outcome)")
                 case .teardownSent(let reason):
                     print("wire-view: teardown 0x0A sent (\(reason))")
+                case .orderedStreamPoisoned:
+                    break   // its protocol note says which lane
                 case .closed(let reason):
                     print("wire-view: session CLOSED — \(reason)")
                     finishBox.value?("session closed: \(reason)")

@@ -89,6 +89,12 @@ final class ConnectionModel {
     /// yet. Adoption replays it, so a session that died during its own
     /// start never becomes a live-looking stream.
     private var pendingTerminal: LyteUdpSessionEvent?
+    /// The current epoch's session was ended by the core because the host
+    /// broke an ordered stream (its close reads as our own teardown).
+    private var hostPoisonedStream = false
+    /// When this window's sessions ended on a poisoned stream, oldest
+    /// first, within `poisonedStreamWindowMicroseconds`.
+    private var poisonedStreamEnds: [UInt64] = []
     /// The session machine's FROZEN pill.
     private(set) var lyteFrozen = false
     /// What the current session's capability agreement made available.
@@ -232,6 +238,7 @@ final class ConnectionModel {
         hostName = host.name
         hostPublicKeyHash = host.publicKeyHash
         pinnedHost = pinned
+        poisonedStreamEnds.removeAll()
         phase = .connecting("Connecting to \(host.name) over Lyte-UDP…")
         HandshakeWitness.record("autoconnectBegin", fields: [
             "host": host.address,
@@ -425,6 +432,7 @@ final class ConnectionModel {
         sessionEpoch += 1
         negotiated = .none
         pendingTerminal = nil
+        hostPoisonedStream = false
         let epoch = sessionEpoch
         let session = LyteUdpSession(
             crypto: crypto,
@@ -473,7 +481,11 @@ final class ConnectionModel {
            case .localTeardown = reason {
             // The core closed itself before anyone owned it: nobody else
             // is driving this end.
-            beginRoamingAfterLoss(reason)
+            if hostPoisonedStream {
+                endAfterPoisonedStream(reason)
+            } else {
+                beginRoamingAfterLoss(reason)
+            }
         } else {
             handleLyteEvent(event)
         }
@@ -648,15 +660,17 @@ final class ConnectionModel {
             } else {
                 roamingInput { policy, now in policy.evidenceReturned(now: now) }
             }
+        case .orderedStreamPoisoned:
+            // The core's own teardown and close follow; the close acts.
+            hostPoisonedStream = true
         case .capabilityUpdateAnswered, .modeChanged, .idleFrameReceived,
              .teardownSent, .protocolNote:
             break
         case .closed(let reason):
             switch Self.closeVerdict(reason) {
-            case .ignore where lyteSession?.core?.orderedStreamPoisoned == true:
-                // The core ended a session whose host broke its control
-                // stream; a fresh session is the only way back.
-                beginRoamingAfterLoss(reason)
+            case .ignore where hostPoisonedStream
+                || lyteSession?.core?.orderedStreamPoisoned == true:
+                endAfterPoisonedStream(reason)
             case .ignore:
                 break
             case .end(let message):
@@ -665,6 +679,32 @@ final class ConnectionModel {
                 beginRoamingAfterLoss(reason)
             }
         }
+    }
+
+    /// A host that poisons its stream again this soon is broken, not
+    /// unlucky: every re-dial resets the roaming ladders and costs an IDR,
+    /// so a second poisoned end inside the window ends the window.
+    static let poisonedStreamWindowMicroseconds: UInt64 = 60_000_000
+    static let poisonedStreamEndsTolerated = 1
+
+    /// The core ended a session whose host broke an ordered stream. The
+    /// first time a fresh session is the only way back; a repeat inside
+    /// `poisonedStreamWindowMicroseconds` ends the window with a reason.
+    private func endAfterPoisonedStream(_ reason: SessionCloseReason) {
+        let now = services.now()
+        poisonedStreamEnds.removeAll {
+            now &- $0 >= Self.poisonedStreamWindowMicroseconds
+        }
+        poisonedStreamEnds.append(now)
+        guard poisonedStreamEnds.count > Self.poisonedStreamEndsTolerated
+        else { return beginRoamingAfterLoss(reason) }
+        poisonedStreamEnds.removeAll()
+        endLyteSession(reason: Self.poisonedStreamMessage(hostName))
+    }
+
+    static func poisonedStreamMessage(_ hostName: String?) -> String {
+        "\(hostName ?? "The host") keeps sending control messages over the "
+            + "size limit — reconnecting cannot fix it"
     }
 
     /// True when a host advertises under the pinned host's name with a

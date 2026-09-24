@@ -61,9 +61,17 @@ final class OrderedStreamPoisonTests: XCTestCase {
         XCTAssertEqual(harness.core.state, .closed)
         XCTAssertEqual(host.teardowns, [.shuttingDown],
                        "the host hears the typed goodbye exactly once")
-        XCTAssertTrue(harness.events.contains {
+        // The close reads as our own teardown; the owner learns why first,
+        // exactly once, so it can tell a broken host from a local end.
+        let poisoned = harness.events.indices.filter {
+            if case .orderedStreamPoisoned = harness.events[$0] { return true }
+            return false
+        }
+        let closed = harness.events.firstIndex {
             if case .closed(.localTeardown(.shuttingDown)) = $0 { return true }
             return false
-        })
+        }
+        XCTAssertEqual(poisoned.count, 1)
+        XCTAssertLessThan(try XCTUnwrap(poisoned.first), try XCTUnwrap(closed))
     }
 }

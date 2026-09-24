@@ -1065,6 +1065,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         onEvent(.protocolNote(
             "\(lane) ordered stream poisoned by an over-budget host "
             + "message — session ends"))
+        onEvent(.orderedStreamPoisoned)
         applyMachine(.teardownRequest(.shuttingDown), now: now())
     }
 
