@@ -183,6 +183,21 @@ final class AwdlHoldControllerTests: XCTestCase {
         XCTAssertEqual(recorder.states, [], "no hold, no radio change")
     }
 
+    /// A daemon killed mid-hold is respawned by the app's end of that
+    /// stream, over a fresh connection that holds nothing. It must still
+    /// go idle rather than run until the app quits.
+    func testAnEndWithNothingHeldStillLeadsToIdleExit() {
+        let recorder = Recorder()
+        let controller = makeController(recorder, idleExitDelay: .milliseconds(20))
+        controller.streamEnded(controller.makeOwner())
+        let deadline = Date().addingTimeInterval(2)
+        while recorder.idles == 0, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertEqual(recorder.idles, 1)
+        XCTAssertEqual(recorder.states, [], "no hold, no radio change")
+    }
+
     // MARK: - Interface control
 
     func testFlagRequestsMatchTheSDKEncoding() {
