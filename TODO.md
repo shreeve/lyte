@@ -11,6 +11,17 @@ live state: [HANDOFF.md](HANDOFF.md).
   full session before it pairs. Wanted: require-paired by default, and a
   pairing arm inside the running service (a signal or control socket that
   mints a PIN) instead of stop, hand-run, restart.
+- **Pre-1.0 hardening: run a root-owned binary (or file caps on a
+  root-owned copy) instead of a user-writable path under ambient
+  CAP_SYS_ADMIN.** The unit execs the seat user's `~/.local/bin/lyte-host`
+  symlink with ambient `CAP_SYS_ADMIN` and `Restart=always`, so seat-user
+  code can plant a binary, kill the host and get it re-executed with the
+  capability (user → root). Accepted for now
+  ([OPERATIONS.md](docs/OPERATIONS.md#safety)). Wanted: `deploy-host.sh`
+  installs versions root-owned (e.g. `/usr/local/lib/lyte/versions/`) and
+  the unit execs a root-owned link, or ambient caps are dropped for
+  `setcap` on a root-owned copy; `host.conf` must not choose the
+  executable.
 - **Noise send counter.** The transport's send side keeps a u16 seq API, so
   a forward jump of more than half the space cannot be told from a
   backwards seal. A real fix moves seq allocation into the transport and
