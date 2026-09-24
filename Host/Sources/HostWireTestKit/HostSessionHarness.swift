@@ -178,7 +178,10 @@ extension PeerBackedClient {
         set { peer.arq = newValue }
     }
 
-    public var transport: NoiseTransport? { peer.transport }
+    public var transport: NoiseTransport? {
+        get { peer.transport }
+        set { peer.transport = newValue }
+    }
 
     public var received: [(group: ArqGroupId, bytes: [UInt8])] {
         get { peer.received }
@@ -187,6 +190,18 @@ extension PeerBackedClient {
 
     public mutating func take(type: UInt8) -> [[UInt8]] {
         peer.take(type: type)
+    }
+
+    public mutating func message1Datagram(
+        clientMicros: UInt64
+    ) throws -> [UInt8] {
+        try peer.message1Datagram(timestamp: clientMicros)
+    }
+
+    public mutating func ctrlDatagram(
+        body: [UInt8], sealed: Bool, clientMicros: UInt64
+    ) throws -> [UInt8] {
+        try peer.datagram(body: body, sealed: sealed, timestamp: clientMicros)
     }
 
     public mutating func pollOut(nowMicros: UInt64) throws -> [[UInt8]] {

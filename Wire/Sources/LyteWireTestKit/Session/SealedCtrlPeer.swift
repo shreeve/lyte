@@ -20,9 +20,10 @@ public struct SealedCtrlPeer<ClockDomain>: Sendable {
         /// The transport's replay window refused it (a network
         /// duplicate or a stale sequence) — routine, never an error.
         case duplicate
-        /// ARQ bytes, ingested by that channel's endpoint. Ordered
-        /// CTRL messages are already appended to `received`.
-        case reliable(channel: ChannelId, events: [ArqEvent])
+        /// ARQ bytes (the opened plaintext), ingested by the envelope
+        /// channel's endpoint. Ordered CTRL messages are already appended
+        /// to `received`.
+        case reliable(Envelope, [UInt8], [ArqEvent])
         /// Any other opened plaintext (beacons, exempt CTRL types,
         /// media shards) for the caller to judge.
         case plain(Envelope, [UInt8])
@@ -248,12 +249,10 @@ public struct SealedCtrlPeer<ClockDomain>: Sendable {
             for case .message(let group, let bytes) in events {
                 received.append((group, bytes))
             }
-            return .reliable(channel: .ctrl, events: events)
+            return .reliable(envelope, plaintext, events)
         case .bulkTransfer where bulkArq != nil:
-            return .reliable(
-                channel: .bulkTransfer,
-                events: bulkArq!.ingest(payload: plaintext, now: now)
-            )
+            let events = bulkArq!.ingest(payload: plaintext, now: now)
+            return .reliable(envelope, plaintext, events)
         default:
             return .plain(envelope, plaintext)
         }

@@ -172,7 +172,7 @@ final class InputGateTests: XCTestCase {
                 "host datagram over the 1152 B budget"
             )
             switch try peer.absorb(bytes, nowMicros: nowMicros) {
-            case .reliable(_, let events):
+            case .reliable(_, _, let events):
                 for case .message(_, let bytes) in events
                 where bytes.first == CtrlMessageType.inputEcho {
                     let echo = try InputEcho.decode(bytes)
