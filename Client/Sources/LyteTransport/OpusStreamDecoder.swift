@@ -4,6 +4,7 @@
 
 import COpus
 import LyteWire
+import Synchronization
 
 public enum OpusStreamDecoderError: Error, Sendable {
     case createFailed(Int32)
@@ -11,7 +12,9 @@ public enum OpusStreamDecoderError: Error, Sendable {
 
 public final class OpusStreamDecoder {
     private let decoder: OpaquePointer
-    public private(set) var decodeFailures: UInt64 = 0
+    private let failures = Atomic<UInt64>(0)
+    /// Read from any thread (the stats rows); counted on the pump.
+    public var decodeFailures: UInt64 { failures.load(ordering: .relaxed) }
 
     public init() throws {
         var status: Int32 = 0
@@ -49,7 +52,7 @@ public final class OpusStreamDecoder {
                 decoder, nil, 0, outBase, Int32(frames), 0)
         }
         if decoded != Int32(frames) {
-            decodeFailures += 1
+            failures.add(1, ordering: .relaxed)
             return [Float](repeating: 0, count: frames * AudioWire.channels)
         }
         return pcm
