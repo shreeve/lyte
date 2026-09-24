@@ -777,10 +777,14 @@ final class SessionWire {
     /// session is unconfirmed replaces it; an unconfirmed session whose
     /// lifecycle closes is discarded. A replayed, spoofed, abandoned or
     /// unanswered message 1 therefore cannot lock out the next client.
+    ///
+    /// `idle` runs off the lock once per wait pass (every ~2 ms): the
+    /// host's between-session service work.
     func awaitClient(
         hostStatic: NoiseKeyPair,
         timeoutSeconds: Double?,
-        stopRequested: () -> Bool = { false }
+        stopRequested: () -> Bool = { false },
+        idle: () -> Void = {}
     ) throws -> ClientAwaitOutcome {
         print("""
             noise: host static public key \
@@ -850,6 +854,7 @@ final class SessionWire {
                 signalDrain()
                 return .established
             }
+            idle()
             usleep(2_000)
         }
         if stopRequested() {

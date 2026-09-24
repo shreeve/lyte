@@ -893,10 +893,14 @@ static func serveSession(
     do {
         // A listening service waits for its client as long as it
         // takes; a wire-out run gives its peer two minutes.
+        // The clipboard leaf is serviced while no session is live: host
+        // pastes of the content a client set last are still served, and
+        // host copies are drained unread (consent starts at attach).
         awaitOutcome = try w.awaitClient(
             hostStatic: host.hostStatic,
             timeoutSeconds: opts.wireListen != nil ? nil : 120,
-            stopRequested: { lyteTerminationRequested != 0 })
+            stopRequested: { lyteTerminationRequested != 0 },
+            idle: { host.clipboardLeaf?.service() })
     } catch {
         w.shutdown(reason: .shuttingDown, lingerSeconds: 0)
         throw error
@@ -954,8 +958,10 @@ static func serveSession(
     // the leaf; leaf-observed changes (genuine copies AND the
     // applies' own echoes, which the session's book suppresses)
     // flow back through noteHostClipboardChanged. All of it rides
-    // the video tick's off-lock service pass.
+    // the video tick's off-lock service pass. Attaching first drains
+    // what changed while no session was live, unread.
     if let leaf = host.clipboardLeaf {
+        leaf.attach()
         w.clipboardApplyHandler = { [weak leaf] text in
             leaf?.apply(text: text)
         }
@@ -1086,7 +1092,9 @@ static func serveSession(
     // E2: the uinput devices outlive the session; nothing its client
     // held may stay pressed.
     host.injector?.releaseHeld()
-    // HS-19: the leaf outlives the session; stop reporting into it.
+    // HS-19: the leaf outlives the session; stop reading host copies
+    // and reporting into it (it keeps serving what it owns).
+    host.clipboardLeaf?.detach()
     host.clipboardLeaf?.onLocalChange = nil
     host.clipboardLeaf?.onLocalImageChange = nil
     // F-3: the receiving end's one resume obligation — persist the
@@ -1183,7 +1191,8 @@ static func printSessionBooks(
         clipboardLeafStats += ", \(leaf.transfersFailed) failed"
         clipboardLeafStats += ", \(leaf.readsAbandoned) reads abandoned"
         clipboardLeafStats += ", \(leaf.nonTextChangesIgnored) non-text ignored"
-        clipboardLeafStats += ", \(leaf.baselineReplaysSkipped) baseline skipped)"
+        clipboardLeafStats += ", \(leaf.baselineReplaysSkipped) baseline skipped"
+        clipboardLeafStats += ", \(leaf.changesOutsideSessionSkipped) outside a session)"
     }
     print("""
     session: \(c.framesIngested) frames → \(c.shardsEnqueued) shards → \

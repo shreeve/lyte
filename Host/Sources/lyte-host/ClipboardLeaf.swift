@@ -27,11 +27,19 @@
 //     which the session's pre-armed sync book suppresses (the
 //     boomerang proof); the leaf stays dumb by design.
 //
-// Threading: NONE. Everything runs on the janitor thread (the leg's
-// 10 ms shell-service sweep) — `service()` (SessionWire's off-lock
-// clipboard hook) drains the bus
-// non-blockingly and pumps the fd state machines with O_NONBLOCK
-// descriptors, so a slow selection owner can never stall a frame.
+// Lifetime: one leaf (one RemoteDesktop session) serves every session
+// of the process. It is live only between `attach()` and `detach()`:
+// outside a session a foreign copy is never read (HostSelectionChange —
+// consent starts at session start), yet the leaf is still serviced, so
+// a host app pasting the content a client set last is served from the
+// owned bytes instead of hanging until Mutter's transfer timeout.
+//
+// Threading: NONE. `service()` drains the bus non-blockingly and pumps
+// the fd state machines with O_NONBLOCK descriptors, so a slow selection
+// owner can never stall a frame. During a session it runs on the
+// janitor thread (the leg's 10 ms shell-service sweep, SessionWire's
+// off-lock clipboard hook); between sessions on the main thread, from
+// the handshake wait's idle hook — never both at once.
 // No new C shim: CDBus carries the D-Bus plumbing (fds ride the 'h'
 // type SessionBus already decodes) and Glibc carries the fd syscalls.
 // Payloads never log — byte counts only, the CL-15 rule.
@@ -101,6 +109,8 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
     }
     private var owned: OwnedContent = .none
     private var sessionIsOwner = false
+    /// A session is live: foreign copies are read and reported.
+    private var attached = false
 
     private enum ReadKind {
         case text
@@ -132,6 +142,7 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
     private(set) var readsAbandoned = 0
     private(set) var nonTextChangesIgnored = 0
     private(set) var baselineReplaysSkipped = 0
+    private(set) var changesOutsideSessionSkipped = 0
     // P-1: the image lane's own books.
     private(set) var imageChangesReported = 0
     private(set) var imageAppliesTaken = 0
@@ -201,6 +212,26 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
                 announced (\(baselineReplaysSkipped) baseline \
                 replay(s) skipped — consent starts now)
                 """)
+        }
+    }
+
+    /// A session is live: whatever changed on the host clipboard while
+    /// none was is drained unread first (consent starts now), then
+    /// foreign copies are read and reported through the callbacks.
+    func attach() {
+        service()
+        attached = true
+    }
+
+    /// The session ended: stop reading foreign copies. Ownership and the
+    /// owned bytes stay, so host pastes keep being served (`service()`
+    /// between sessions) until another owner takes the selection.
+    func detach() {
+        attached = false
+        if let read = pendingRead {
+            close(read.fd)
+            pendingRead = nil
+            readsAbandoned += 1
         }
     }
 
@@ -287,6 +318,10 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
     private func handleOwnerChanged(_ msg: OpaquePointer) {
         let (mimeTypes, isOwner) = Self.parseOwnerChanged(msg)
         sessionIsOwner = isOwner
+        if !isOwner {
+            // Another owner took the selection: nothing is ours to serve.
+            owned = .none
+        }
 
         // A change always supersedes any read in flight.
         if let read = pendingRead {
@@ -295,7 +330,16 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
             readsAbandoned += 1
         }
 
-        if isOwner {
+        let kind: ReadKind
+        let mime: String
+        switch HostSelectionChange.judge(
+            sessionLive: attached, sessionIsOwner: isOwner,
+            offered: mimeTypes, imagesEnabled: imagesEnabled
+        ) {
+        case .ignoreOutsideSession:
+            changesOutsideSessionSkipped += 1
+            return
+        case .reportOwnEcho:
             // Our own SetSelection landing — the apply's echo. Report
             // it upward; the session's pre-armed book suppresses it
             // (the boomerang proof runs through the REAL signal path).
@@ -308,26 +352,12 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
                 deliverImage(bytes)
             }
             return
-        }
-
-        // Text always wins when an owner offers both (the
-        // ClipboardImageFlavor rule); images are the fallback flavor,
-        // and only on the images tier.
-        let kind: ReadKind
-        let mime: String
-        if let textMime = ClipboardTextMime.pickForRead(
-            fromOffered: mimeTypes) {
-            kind = .text
-            mime = textMime
-        } else if imagesEnabled, let imageMime =
-            ClipboardImageFlavor.pickForRead(fromOffered: mimeTypes) {
-            kind = .image
-            mime = imageMime
-        } else {
-            // Rich/unknown flavors (or a cleared selection): ignored,
-            // never an error.
+        case .ignoreFlavor:
             nonTextChangesIgnored += 1
             return
+        case .read(let flavor, let image):
+            kind = image ? .image : .text
+            mime = flavor
         }
         do {
             let reply = try bus.call(
