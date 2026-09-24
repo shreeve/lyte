@@ -450,10 +450,15 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         return ring.filter { $0.ordinal > ordinal }
     }
 
+    /// The periodic log line: the snapshot without the recovery-lifecycle
+    /// ring, which grows by one event per renderer sample and would make
+    /// every line carry a thousand events.
     public func summaryJSONLine() throws -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        return String(decoding: try encoder.encode(snapshot()), as: UTF8.self)
+        var summary = snapshot()
+        summary.recoveryLifecycle = []
+        return String(decoding: try encoder.encode(summary), as: UTF8.self)
     }
 
     public func reset() {

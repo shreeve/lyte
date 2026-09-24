@@ -579,7 +579,9 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
                     sampledAfterFrame: frame,
                     sampledAfterIsRandomAccess: isRandomAccess)
             }
-            if let json = try? recorder.summaryJSONLine() {
+            // Diagnostic runs only: the summary sorts every percentile.
+            if PipelineWitness.isEnabled,
+               let json = try? recorder.summaryJSONLine() {
                 NSLog("lyte video flight: %@", json)
             }
         }
