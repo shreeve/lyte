@@ -79,7 +79,7 @@ Client never depends on Host and Host never depends on Client. Only
 | `LyteClientSession` | sans-IO | The initiator shared by native and browser shells: handshake and its retry schedules (`ClientHandshakeInitiator`), pairing, capabilities, lifecycle and the blackout-detector posture, IDR recovery and the render gate, NACK repair (`ClientNackPolicy`), feedback report content (`ClientFeedbackReporter`), the host-clock fit (`ClientHostClock`), beacon echo, exempt CTRL (`ClientExemptControl`: beacon, path challenge, repair refusal), carriage and conn-id books, clipboard/cursor/audio-routing/media-posture sessions |
 | `LyteTransport` | macOS IO | `LyteUdpSession` (shell) and `LyteUdpSessionCore` (locked core), UDP endpoint, demux, ARQ endpoints, video pipeline, renderer handoff, audio receiver and player, input, the feedback cadence, the locks around the session's shared values (`HostClockModel`, `NackPolicy`, `IdrRequester`), pairing, discovery, identity, stats formatter |
 | `LyteCorpus` | diagnostic | Corpus frames and gates, PSNR/SSIM, readback tap, synthetic motion reference |
-| `LyteUI` | AppKit shims | Control-strip policy, pasteboard sync, video layer view |
+| `LyteUI` | AppKit shims | Control-strip policy, pasteboard sync, video layer view, menu-bar glyph |
 | `LyteHelperProtocol` / `LyteHelperSecurity` | helper | XPC contract; code-requirement derivation |
 | `LyteClientTestKit` | test kit | Client test equipment (`ScriptedHost`, `ClientCoreHarness`) |
 | `Lyte` | app | SwiftUI app: `ConnectionModel`, windows, input capture, diagnostics |

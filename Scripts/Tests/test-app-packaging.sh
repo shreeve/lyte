@@ -50,6 +50,14 @@ assert_hash SwiftASN1-LICENSE.txt \
 assert_hash SwiftASN1-NOTICE.txt \
     11dd3b3b783e6ec26098dd38ebc962986ea109b85447e28e62867b83bd0f8c5b
 
+# The bundle carries the committed icon (Finder and the Dock read it before
+# the app ever runs), under the name its Info.plist gives.
+[[ "$(plutil -extract CFBundleIconFile raw -o - "$plist")" == AppIcon ]] \
+    || fail "CFBundleIconFile is not AppIcon"
+cmp -s "$app/Contents/Resources/AppIcon.icns" \
+    "$repo_root/Client/AppIcon/AppIcon.icns" \
+    || fail "the bundle's AppIcon.icns is not Client/AppIcon/AppIcon.icns"
+
 bundle_version="$(plutil -extract CFBundleVersion raw -o - "$plist")"
 short_version="$(
     plutil -extract CFBundleShortVersionString raw -o - "$plist"
