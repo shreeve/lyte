@@ -30,7 +30,13 @@ final class AvahiAdvertiser {
 
     let port: UInt16
     let txtRecords: [String]
-    private let ifIndex: Int32
+    /// Empty = every interface.
+    private let interfaceName: String
+    /// The ifindex the standing record was filed on. A named interface
+    /// is resolved again at every filing and watched between them: a
+    /// re-plugged USB NIC comes back under the same name with a new
+    /// index, and the old group stays pinned to the dead one.
+    private var filedIfIndex: Int32?
     private(set) var serviceName: String
     private var bus: SessionBus?
     private var groupPath: String?
@@ -53,16 +59,11 @@ final class AvahiAdvertiser {
     init(port: UInt16, staticPublicKey: [UInt8], name: String? = nil,
          interfaceName: String = "") throws {
         self.port = port
-        var ifIndex: Int32 = -1 // AVAHI_IF_UNSPEC: all interfaces
-        if !interfaceName.isEmpty {
-            let index = if_nametoindex(interfaceName)
-            guard index != 0 else {
-                throw HostError(
-                    "--advertise-interface \(interfaceName): no such interface")
-            }
-            ifIndex = Int32(index)
+        guard Self.interfaceIndex(named: interfaceName) != nil else {
+            throw HostError(
+                "--advertise-interface \(interfaceName): no such interface")
         }
-        self.ifIndex = ifIndex
+        self.interfaceName = interfaceName
         txtRecords = [
             "v=\(WireVersion.major)",
             "pkh=\(Hex.string(Sha256.digest(staticPublicKey)))",
@@ -74,6 +75,28 @@ final class AvahiAdvertiser {
     /// Whether a filed record currently stands (it may still be
     /// registering on the LAN).
     var isFiled: Bool { groupPath != nil }
+
+    /// The Avahi interface index for `name`: AVAHI_IF_UNSPEC (-1) for
+    /// every interface, nil while the named one does not exist.
+    static func interfaceIndex(
+        named name: String,
+        resolve: (String) -> UInt32 = { if_nametoindex($0) }
+    ) -> Int32? {
+        guard !name.isEmpty else { return -1 }
+        let index = resolve(name)
+        return index == 0 ? nil : Int32(index)
+    }
+
+    /// Why a standing record filed on `filed` must be filed again now
+    /// that the interface resolves to `current`; nil while it is right.
+    static func refileReason(
+        interfaceName: String, filed: Int32, current: Int32?
+    ) -> String? {
+        guard current != filed else { return nil }
+        return current == nil
+            ? "\(interfaceName) went away"
+            : "\(interfaceName) came back as a new interface"
+    }
 
     /// Watches the daemon and the record; files it again when due.
     /// Non-blocking unless a filing is due (then a few method calls).
@@ -92,6 +115,12 @@ final class AvahiAdvertiser {
                     handle(msg, nowNS: now)
                 }
             }
+        }
+        if groupPath != nil, let filed = filedIfIndex,
+           let why = Self.refileReason(
+               interfaceName: interfaceName, filed: filed,
+               current: Self.interfaceIndex(named: interfaceName)) {
+            withdraw(why, nowNS: now)
         }
         fileIfDue(nowNS: now)
     }
@@ -147,6 +176,7 @@ final class AvahiAdvertiser {
             }
         }
         groupPath = nil
+        filedIfIndex = nil
         schedule.retry(nowNS: nowNS)
         print("discovery: record withdrawn (\(why)) — filing it again")
     }
@@ -195,6 +225,10 @@ final class AvahiAdvertiser {
         let daemonVersion = try SessionBus.stringReply(versionReply)
         dbus_message_unref(versionReply)
 
+        guard let ifIndex = Self.interfaceIndex(named: interfaceName) else {
+            throw HostError("\(interfaceName) does not exist right now")
+        }
+
         let groupReply = try bus.call(
             dest: Self.dest, path: "/",
             interface: Self.serverInterface, method: "EntryGroupNew"
@@ -202,31 +236,45 @@ final class AvahiAdvertiser {
         let group = try SessionBus.objectPathReply(groupReply)
         dbus_message_unref(groupReply)
 
-        // A same-name service already registered on this machine collides
-        // at AddService time; ask the daemon for its canonical alternative
-        // ("name #2") and retry rather than failing discovery outright.
-        var attempt = 0
-        while true {
-            do {
-                try Self.addService(bus: bus, groupPath: group,
-                                    name: serviceName, port: port,
-                                    txtRecords: txtRecords,
-                                    ifIndex: ifIndex)
-                break
-            } catch let error as HostError
-                where error.message.contains("CollisionError") && attempt < 4
-            {
-                attempt += 1
-                serviceName = try Self.alternativeName(bus: bus, for: serviceName)
+        do {
+            // A same-name service already registered on this machine
+            // collides at AddService time; ask the daemon for its
+            // canonical alternative ("name #2") and retry rather than
+            // failing discovery outright.
+            var attempt = 0
+            while true {
+                do {
+                    try Self.addService(bus: bus, groupPath: group,
+                                        name: serviceName, port: port,
+                                        txtRecords: txtRecords,
+                                        ifIndex: ifIndex)
+                    break
+                } catch let error as HostError
+                    where error.message.contains("CollisionError") && attempt < 4
+                {
+                    attempt += 1
+                    serviceName = try Self.alternativeName(
+                        bus: bus, for: serviceName)
+                }
             }
-        }
 
-        let commitReply = try bus.call(
-            dest: Self.dest, path: group,
-            interface: Self.groupInterface, method: "Commit"
-        )
-        dbus_message_unref(commitReply)
+            let commitReply = try bus.call(
+                dest: Self.dest, path: group,
+                interface: Self.groupInterface, method: "Commit"
+            )
+            dbus_message_unref(commitReply)
+        } catch {
+            // Every retry would otherwise leak one group toward the
+            // daemon's per-client object limit.
+            if let reply = try? bus.call(
+                dest: Self.dest, path: group,
+                interface: Self.groupInterface, method: "Free") {
+                dbus_message_unref(reply)
+            }
+            throw error
+        }
         groupPath = group
+        filedIfIndex = ifIndex
         return daemonVersion
     }
 
