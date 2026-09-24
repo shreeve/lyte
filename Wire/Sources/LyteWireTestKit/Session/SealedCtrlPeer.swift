@@ -282,12 +282,15 @@ public struct SealedCtrlPeer<ClockDomain>: Sendable {
         self.negotiator = negotiator
     }
 
-    /// Feeds the peer's 0x0F to the negotiator; the agreed set, or nil
-    /// when it is malformed or does not settle.
-    public mutating func receiveDeclaration(_ message: [UInt8]) -> Capabilities? {
+    /// Feeds the peer's 0x0F to the negotiator: the agreed set, or nil
+    /// when the bytes are not a declaration or nothing settled.
+    /// Negotiation failures throw.
+    public mutating func receiveDeclaration(
+        _ message: [UInt8]
+    ) throws -> Capabilities? {
         guard negotiator != nil,
               let declaration = try? CapabilityDeclaration.decode(message),
-              case .agreed(let set) = try? negotiator!.receive(declaration)
+              case .agreed(let set) = try negotiator!.receive(declaration)
         else { return nil }
         return set
     }

@@ -24,6 +24,11 @@ public protocol ScriptedHost: AnyObject, NoiseHandshakeIO {
 extension ScriptedHost {
     public var staticKeys: NoiseKeyPair { peer.staticKeys }
 
+    public var transport: NoiseTransport? {
+        get { peer.transport }
+        set { peer.transport = newValue }
+    }
+
     public func didEstablish() throws {}
 
     // NoiseHandshakeIO — answered in process.

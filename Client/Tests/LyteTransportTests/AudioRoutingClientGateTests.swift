@@ -157,7 +157,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         XCTAssertFalse(declared.intersecting(refusing).hostAudioRouting)
     }
 
-    // MARK: - The scripted host (HS-18's discipline from Wire parts)
+    // MARK: - The scripted host
 
     /// A key-9-capable host stand-in: Noise responder, host-clock ARQ,
     /// capability negotiator (declaration = first reliable word), and
@@ -165,15 +165,10 @@ final class AudioRoutingClientGateTests: XCTestCase {
     /// 0x19 per applied flip, a scriptable FAILED flip that re-reports
     /// the old posture. No video/beacons: this gate is about the
     /// ordered CTRL stream.
-    private final class RoutingHostStandIn: NoiseHandshakeIO {
-        let staticKeys = NoiseKeyPair.generate()
-        let connectionId: ConnectionId
-        var transport: NoiseTransport?
-        var ctrlSeq: UInt16 = 0
-        var arq: ArqEndpoint<HostClock>
-        var negotiator: CapabilityNegotiator
-        var capabilitiesDeclared = false
-        private var handshakeOutbox: [[UInt8]] = []
+    fileprivate final class RoutingHostStandIn: ScriptedHost {
+        var peer: SealedCtrlPeer<HostClock>
+        var handshakeOutbox: [[UInt8]] = []
+        let localCapabilities: Capabilities
 
         /// The host's shell posture (--host-audio seeds it live).
         var posture: HostAudioRoutingMode = .hostAudible
@@ -187,124 +182,55 @@ final class AudioRoutingClientGateTests: XCTestCase {
         var receivedReliableTypes: [UInt8] = []
         var statusesSent: [HostAudioRoutingMode] = []
 
+        var progressMark: Int { receivedReliableTypes.count }
+
         init(localCapabilities: Capabilities) {
             var rng = SplitMix64(seed: 0xC1_13)
-            connectionId = ConnectionId.random(using: &rng)
-            var config = ArqConfig()
-            config.maxDatagramPayloadByteCount =
-                WireBudget.maxConnectionIdTaggedPlaintextByteCount
-            arq = ArqEndpoint(channel: .ctrl, config: config)
-            negotiator = CapabilityNegotiator(
-                role: .host, local: localCapabilities)
+            peer = SealedCtrlPeer(
+                connectionId: ConnectionId.random(using: &rng))
+            peer.openChannels = [.ctrl]
+            self.localCapabilities = localCapabilities
         }
 
-        // NoiseHandshakeIO — answered in-process.
-
-        func sendToHost(_ datagram: [UInt8]) throws {
-            guard let (envelope, payload) = try? Envelope.decode(datagram[...]),
-                  envelope.channel == .ctrl,
-                  payload.first == CtrlMessageType.noiseHandshake1
-            else { return }
-            var responder = try NoiseSession(
-                role: .responder, staticKeys: staticKeys)
-            _ = try responder.readMessage1(payload.dropFirst())
-            let message2 = try responder.writeMessage2()
-            transport = try responder.makeTransport()
-            // HS-11's rule, load-bearing here: the host's declaration
-            // is the FIRST reliable word at establishment — BEFORE any
-            // client message can be consumed. Queuing it lazily would
-            // let the agreement's 0x19 jump ahead of it on the ordered
-            // stream, and the client would (rightly) drop that loud.
-            capabilitiesDeclared = true
-            try arq.send(
-                message: try XCTUnwrap(negotiator.start()).encode(),
-                now: HostTimestamp(microseconds: 0)
-            )
-            let carriage = Envelope(
-                channel: .ctrl,
-                seq: ChannelSeq(rawValue: ctrlSeq),
-                frame: FrameNumber(rawValue: 0),
-                timestamp: 0,
-                fec: 0,
-                extensions: [connectionId.wireExtension]
-            )
-            ctrlSeq &+= 1
-            handshakeOutbox.append(try carriage.encode(
-                payload: [CtrlMessageType.noiseHandshake2] + message2))
-        }
-
-        func receiveDatagram(timeoutMilliseconds: Int) throws -> [UInt8]? {
-            handshakeOutbox.isEmpty ? nil : handshakeOutbox.removeFirst()
-        }
-
-        private func sealedCtrl(
-            body: [UInt8], hostMicros: UInt64
-        ) throws -> [UInt8] {
-            let envelope = Envelope(
-                channel: .ctrl,
-                seq: ChannelSeq(rawValue: ctrlSeq),
-                frame: FrameNumber(rawValue: 0),
-                timestamp: hostMicros,
-                fec: 0,
-                extensions: [connectionId.wireExtension]
-            )
-            ctrlSeq &+= 1
-            let header = try envelope.encode(payload: [])
-            let payload = try transport!.seal(
-                plaintext: body[...], aad: header[...], envelope: envelope
-            )
-            return try envelope.encode(payload: payload)
+        /// HS-11's rule, load-bearing here: the host's declaration is
+        /// the FIRST reliable word at establishment — BEFORE any client
+        /// message can be consumed. Queuing it lazily would let the
+        /// agreement's 0x19 jump ahead of it on the ordered stream, and
+        /// the client would (rightly) drop that loud.
+        func didEstablish() throws {
+            try declare(localCapabilities)
         }
 
         /// One client datagram: unseal → the ARQ ingest → HS-18's
         /// dispatch. Feedback/echoes/IDRs are not this gate's business.
         func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
-            let (envelope, payload) = try Envelope.decode(bytes)
-            guard envelope.channel == .ctrl else { return }
-            let aad = bytes[bytes.startIndex..<payload.startIndex]
-            let plaintext: [UInt8]
-            do {
-                plaintext = try transport!.unseal(
-                    wirePayload: payload, aad: aad, envelope: envelope
-                )
-            } catch NoiseError.replayedSequence, NoiseError.staleSequence {
-                return
-            }
-            switch plaintext.first {
-            case CtrlMessageType.arqSegment, CtrlMessageType.arqAck:
-                for event in arq.ingest(
-                    payload: plaintext,
-                    now: HostTimestamp(microseconds: nowMicros)
-                ) {
-                    if case .message(_, let message) = event {
-                        receivedReliableTypes.append(message.first ?? 0)
-                        try dispatchReliable(message, nowMicros: nowMicros)
-                    }
-                }
-            default:
-                break   // beacon echoes etc. — not this gate's business
+            guard case .reliable(_, _, let events) =
+                try peer.absorb(bytes, nowMicros: nowMicros)
+            else { return }
+            for case .message(_, let message) in events {
+                receivedReliableTypes.append(message.first ?? 0)
+                try dispatchReliable(message, nowMicros: nowMicros)
             }
         }
 
         private func dispatchReliable(
             _ message: [UInt8], nowMicros: UInt64
         ) throws {
-            let instant = HostTimestamp(microseconds: nowMicros)
             switch message.first {
             case CtrlMessageType.capabilityDeclaration:
                 guard let declaration =
                     try? CapabilityDeclaration.decode(message)
                 else { return XCTFail("malformed client declaration") }
                 if case .agreed(let intersection) =
-                    try negotiator.receive(declaration) {
+                    try peer.negotiator!.receive(declaration) {
                     agreed = intersection
                     // HS-18: the starting posture rides a 0x19 at
                     // capability agreement — negotiated sessions only.
                     if intersection.hostAudioRouting {
                         statusesSent.append(posture)
-                        try arq.send(
-                            message: AudioRoutingStatus(mode: posture).encode(),
-                            now: instant)
+                        try injectReliable(
+                            AudioRoutingStatus(mode: posture).encode(),
+                            nowMicros: nowMicros)
                     }
                 }
             case CtrlMessageType.audioRoutingRequest:
@@ -316,140 +242,21 @@ final class AudioRoutingClientGateTests: XCTestCase {
                 if !flipFails { posture = request.mode }
                 // Applied (or failed — old posture) → one 0x19.
                 statusesSent.append(posture)
-                try arq.send(
-                    message: AudioRoutingStatus(mode: posture).encode(),
-                    now: instant)
-            case CtrlMessageType.sessionTeardown:
-                break
+                try injectReliable(
+                    AudioRoutingStatus(mode: posture).encode(),
+                    nowMicros: nowMicros)
             default:
                 break
             }
         }
-
-        /// Hostile injection: a raw reliable message, bypassing the
-        /// host's own rules (the unnegotiated-0x19 / role-confusion
-        /// legs).
-        func injectReliable(_ message: [UInt8], nowMicros: UInt64) throws {
-            try arq.send(
-                message: message,
-                now: HostTimestamp(microseconds: nowMicros))
-        }
-
-        /// One host beat: first-word declaration + due ARQ output.
-        func advance(nowMicros: UInt64) throws -> [[UInt8]] {
-            guard transport != nil else { return [] }
-            if !capabilitiesDeclared {
-                capabilitiesDeclared = true
-                try arq.send(
-                    message: try XCTUnwrap(negotiator.start()).encode(),
-                    now: HostTimestamp(microseconds: nowMicros)
-                )
-            }
-            let (payloads, _) = arq.poll(
-                now: HostTimestamp(microseconds: nowMicros))
-            return try payloads.map {
-                try sealedCtrl(body: $0, hostMicros: nowMicros)
-            }
-        }
     }
 
-    // MARK: - The client harness (the LyteUdpSessionGateTests shape)
+    // MARK: - The client harness
 
     /// The REAL production core minus the socket, on a virtual clock,
     /// piped directly to the stand-in (this gate needs determinism,
     /// not impairment — CL-8's gate owns the storm legs).
-    private final class Harness: @unchecked Sendable {
-        let host: RoutingHostStandIn
-        let crypto: NoiseTransportCrypto
-        let demux: ReceiveDemux
-        var core: LyteUdpSessionCore!
-        private var outbound: [[UInt8]] = []
-        private var forwarded = 0
-        let clock = LockedClock()
-
-        var events: [LyteUdpSessionEvent] = []
-
-        init(
-            host: RoutingHostStandIn,
-            coreConfig: LyteUdpSessionCoreConfig = LyteUdpSessionCoreConfig()
-        ) throws {
-            self.host = host
-            let crypto = try NoiseTransportCrypto(
-                hostAddress: "10.0.0.249", hostPort: 41_121,
-                hostStaticPublicKey: host.staticKeys.publicKey,
-                staticKeys: NoiseKeyPair.generate(),
-                attempts: 3, attemptTimeoutMilliseconds: 200)
-            try crypto.performHandshake(io: host)
-            self.crypto = crypto
-            self.demux = ReceiveDemux(crypto: crypto)
-            let clock = self.clock
-            let sender = TransportSender(crypto: crypto, transmit: {
-                [weak self] datagram in
-                self?.outbound.append(datagram)
-                return true
-            })
-            self.core = LyteUdpSessionCore(
-                demux: demux,
-                sender: sender,
-                config: coreConfig,
-                now: { ClientTimestamp(microseconds: clock.value) },
-                videoSink: HeadlessVideoSink(),
-                onEvent: { [weak self] event in
-                    self?.events.append(event)
-                })
-        }
-
-        func absorb(_ bytes: [UInt8], tMicros: UInt64) {
-            let outcome = demux.ingest(
-                datagram: bytes[...], arrivalMicroseconds: tMicros)
-            if case .accepted = outcome {
-                core.handleDatagram(outcome, arrivalMicroseconds: tMicros)
-            }
-        }
-
-        /// Direct-pipe beats 2 ms apart until both ends quiesce (the
-        /// AudioRoutingGateTests settle shape, roles swapped).
-        func settle(t: inout UInt64) throws {
-            var idle = 0
-            while idle < 3 {
-                t += 2_000
-                clock.value = t
-                let before = (forwarded, host.receivedReliableTypes.count,
-                              events.count)
-                core.tick(now: ClientTimestamp(microseconds: t))
-                while forwarded < outbound.count {
-                    try host.absorb(outbound[forwarded], nowMicros: t)
-                    forwarded += 1
-                }
-                for datagram in try host.advance(nowMicros: t) {
-                    absorb(datagram, tMicros: t)
-                }
-                core.tick(now: ClientTimestamp(microseconds: t))
-                while forwarded < outbound.count {
-                    try host.absorb(outbound[forwarded], nowMicros: t)
-                    forwarded += 1
-                }
-                idle = (forwarded, host.receivedReliableTypes.count,
-                        events.count) == before ? idle + 1 : 0
-            }
-        }
-
-        var postureEvents: [HostAudioRoutingMode] {
-            events.compactMap {
-                if case .hostAudioRoutingStatus(let mode) = $0 { return mode }
-                return nil
-            }
-        }
-    }
-
-    final class LockedClock: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: UInt64 = 1_000
-        var value: UInt64 {
-            get { lock.lock(); defer { lock.unlock() }; return stored }
-            set { lock.lock(); stored = newValue; lock.unlock() }
-        }
-    }
+    private typealias Harness = ClientCoreHarness<RoutingHostStandIn>
 
     // MARK: Leg 3 — the negotiated flip, end to end
 
@@ -1047,5 +854,22 @@ final class AudioRoutingClientGateTests: XCTestCase {
         }, "the drop must be loud")
         print("video-posture gate (in vivo): steps land, wake lands, "
             + "unnegotiated drops loud")
+    }
+}
+
+fileprivate extension ClientCoreHarness
+where Host == AudioRoutingClientGateTests.RoutingHostStandIn {
+    convenience init(
+        host: Host,
+        coreConfig: LyteUdpSessionCoreConfig = LyteUdpSessionCoreConfig()
+    ) throws {
+        try self.init(host: host, hostPort: 41_121, coreConfig: coreConfig)
+    }
+
+    var postureEvents: [HostAudioRoutingMode] {
+        events.compactMap {
+            if case .hostAudioRoutingStatus(let mode) = $0 { return mode }
+            return nil
+        }
     }
 }
