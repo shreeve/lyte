@@ -84,11 +84,18 @@ final class ClientLayoutTests: XCTestCase {
         let files = try swiftFiles(beneath: sources).map {
             ($0, try String(contentsOf: $0, encoding: .utf8))
         }
+        // Components below Sources/, compared on symlink-resolved paths:
+        // a checkout under /tmp enumerates as /private/tmp.
+        let root = sources.resolvingSymlinksInPath().pathComponents
+        func relative(_ file: URL) -> String {
+            let parts = file.resolvingSymlinksInPath().pathComponents
+            guard parts.starts(with: root) else { return file.path }
+            return parts.dropFirst(root.count).joined(separator: "/")
+        }
         for (token, owner) in owners.sorted(by: { $0.key < $1.key }) {
             let holders = files
                 .filter { $0.1.contains(token) }
-                .map { $0.0.path.replacingOccurrences(
-                    of: sources.path + "/", with: "") }
+                .map { relative($0.0) }
             XCTAssertEqual(holders, ["LyteClientSession/\(owner)"],
                            "\(token) must live only in \(owner)")
         }
