@@ -308,12 +308,21 @@ extension ConnectionModel {
 /// often `schedule()` is called from any thread: one hop is pending at a
 /// time, and it reads the latest state when it runs.
 final class CoalescedMainActorHop: Sendable {
+    /// Waits out one interval; injected so tests run in virtual time.
+    typealias Sleep = @Sendable (Duration) async -> Void
+
     private let pending = Mutex(false)
     private let interval: Duration
+    private let sleep: Sleep
     private let body: @MainActor @Sendable () -> Void
 
-    init(interval: Duration, body: @escaping @MainActor @Sendable () -> Void) {
+    init(
+        interval: Duration,
+        sleep: @escaping Sleep = { try? await Task.sleep(for: $0) },
+        body: @escaping @MainActor @Sendable () -> Void
+    ) {
         self.interval = interval
+        self.sleep = sleep
         self.body = body
     }
 
@@ -324,7 +333,7 @@ final class CoalescedMainActorHop: Sendable {
         }
         guard !alreadyPending else { return }
         Task { @MainActor [self] in
-            try? await Task.sleep(for: interval)
+            await sleep(interval)
             pending.withLock { $0 = false }
             body()
         }
