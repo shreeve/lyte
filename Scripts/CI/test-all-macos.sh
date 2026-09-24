@@ -149,6 +149,7 @@ Scripts/Tests/test-host-installer.sh --self-test
 
 echo "==> signing policy tests"
 Scripts/Tests/test-sign-dev.sh
+Scripts/Tests/test-setup-dev-signing.sh
 
 echo "==> analyzer tests"
 python_env="$repo_root/.build/ci-python"
