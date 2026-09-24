@@ -181,10 +181,34 @@ or certificate-root requirement. If selection is absent or ambiguous it fails
 closed; an ad-hoc Keychain client would invalidate the ACL invariant and Local
 Network identity.
 
+## Hardened runtime
+
+`sign-dev.sh` signs every target — `Lyte.app`, `lyte-helperd` and
+`lyte-cli` — with `--options runtime` and no entitlements, and fails closed
+("not signed with the hardened runtime") when the signed CodeDirectory
+lacks the `runtime` flag. `test-app-packaging.sh` checks the flag on the
+app and the helper and rejects `get-task-allow`.
+
+Why: the helper admits any process that satisfies the app's designated
+requirement, and `lyte-cli` holds the Keychain pairing key. Without the
+hardened runtime a same-user process could inject into either
+(`DYLD_*` variables, task-port attach) and inherit that trust. No
+exception entitlement is needed: the binaries link only system libraries
+(`test-hermetic-linkage.sh`), use no JIT or unsigned executable memory,
+and only play audio (no microphone or camera). Runtime flags are not part
+of the designated requirement, so Keychain ACLs and the helper's
+requirement are unaffected.
+
+Debugging consequence: `DYLD_*` variables are ignored, and lldb,
+Instruments and other tools cannot attach to a signed build. Debug the
+unsigned SwiftPM binary, or re-sign a scratch copy ad hoc with
+`codesign --force --sign - <copy>`. If a future feature loads third-party
+in-process plugins it will need `com.apple.security.cs.disable-library-validation`.
+
 ## Verifying a signature
 
 ```sh
-codesign -dvv .build/debug/lyte-cli        # Identifier / Authority
+codesign -dvv .build/debug/lyte-cli        # Identifier / Authority / flags=0x10000(runtime)
 codesign -d -r- .build/debug/lyte-cli      # the designated requirement (DR)
 codesign --verify --strict .build/debug/lyte-cli
 ```
@@ -196,7 +220,27 @@ hash. If the DR changes, expect one fresh Keychain and Local Network grant.
 The packaging gate also requires Mach-O UUIDs on the app and helper, as TN3179
 recommends for reliable program identity.
 
-## Privileged helper client authentication
+## The privileged helper
+
+`lyte-helperd` is a root launchd daemon, registered through `SMAppService`
+from `Lyte.app/Contents/Library/LaunchDaemons`. It holds `awdl0` down while
+a stream is active, because AWDL's channel hopping stalls the Wi-Fi radio
+in bursts.
+
+Security surface:
+
+- One Mach service, `dev.shreeve.lyte.helper`, exporting three calls that
+  take no arguments: `streamBegan`, `streamEnded`, `version`.
+- The only privileged effect is the `IFF_UP` flag of `awdl0`, changed with
+  `SIOCGIFFLAGS`/`SIOCSIFFLAGS` in process (no `ifconfig` subprocess).
+- Holds are counted per XPC connection. A connection that ends, however it
+  ends, releases its holds; the last release restores `awdl0`, and the
+  daemon exits a few seconds after it goes idle.
+- `SIGTERM` (launchd stop, `SMAppService` re-registration, shutdown)
+  restores `awdl0` before the daemon exits.
+- A route watcher reasserts the hold only on `awdl0`'s own up edge.
+
+### Client authentication
 
 `lyte-helperd` does not trust Mach-service reachability. Before its listener
 activates, `LyteHelperSecurity` validates the running helper signature, reads

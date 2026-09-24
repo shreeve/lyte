@@ -49,7 +49,7 @@ commissioning record on the current encoder seat.
 |---|---|---|---|---|---|
 | Primary goal | local-computer feel | WAN meetings and many viewers | simple remote pixels | managed desktop work | low-latency games |
 | Media path | damage-driven HEVC | buffered adaptive video | region/pixel updates | mixed graphics and video | continuous hardware video |
-| Static desktop | converges, then becomes quiet | continues sending | efficient | efficient | usually continues encoding |
+| Static desktop | encodes only pixel changes, plus a sparse keepalive | continues sending | efficient | efficient | usually continues encoding |
 | Motion | hardware 60 fps path | trades cadence for reach | often degrades sharply | capable, workload-dependent | excellent |
 | Loss response | FEC plus targeted shard repair | transport-managed | commonly TCP-bound | transport-managed | FEC, usually coarse recovery |
 | Application security | Noise on every Lyte datagram | mature service security | implementation-dependent | mature enterprise security | protocol-dependent |
@@ -78,15 +78,13 @@ recovery policy it owns end to end.
 
 ## Honest gaps
 
-The shipping combination is a macOS client and Linux host. Native packaging,
-the macOS host role, Windows/Linux role shells, printing, and managed remote
-reach remain future work. The browser client is the active peer-platform
-slice (B-0 landed): wire contracts pass 511 tests under WebAssembly, and
-WebTransport, browser runtime integration, WebCodecs/WebGPU rendering, and
-AudioWorklet playout follow the B-1…B-6 ladder. See [BROWSER.md](BROWSER.md)
-and
-[20260807-021425-browser-client-platform-slice.md](decisions/20260807-021425-browser-client-platform-slice.md).
+The shipping combination is a macOS client and a Linux host (GNOME/Mutter
+with an Intel GPU). Native packaging, the macOS host role, Windows and Linux
+role shells, printing and managed remote reach are future work. The browser
+client is a Chrome proof harness against a test peer, not yet a product
+client ([BROWSER.md](BROWSER.md)). Hosts do not yet require pairing by
+default ([TODO.md](../TODO.md)).
 
-Keep this page short and honest. Product direction belongs in `README.md` and
-`DESIGN.md`; protocol law belongs in the frozen specification; detailed gate
-history belongs in Git and dated records.
+Keep this page short and honest. Product direction belongs in
+[README.md](../README.md) and [DESIGN.md](DESIGN.md); the wire contract in
+[PROTOCOL.md](PROTOCOL.md); gate history in Git and the dated records.

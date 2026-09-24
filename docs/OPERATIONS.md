@@ -158,6 +158,7 @@ copied from `~/.config/lyte-host/` once (0600, verified byte-for-byte).
 |---|---|---|
 | `~/.config/lyte-host/{noise_static.key,paired_clients}` | pre-XDG identity, kept as a read-only backup | owner's decision; the pup gate verifies it unchanged while present and tolerates its absence |
 | `/etc/lyte/lyte-host.conf` | pre-XDG knob file | `sudo rm /etc/lyte/lyte-host.conf && sudo rmdir /etc/lyte` |
+| `/usr/local/bin/lyte-host` | pre-XDG installed binary | `sudo rm /usr/local/bin/lyte-host` |
 | `/tmp/lyte-host-session.log` | pre-XDG log (world-readable) | `rm -f /tmp/lyte-host-session.log` |
 | `~/.config/lyte-host/portal_token` | portal-era state, unused since the portal was removed | owner's decision |
 

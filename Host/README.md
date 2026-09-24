@@ -1,207 +1,120 @@
 # Lyte Host (Linux)
 
-The Swift Linux host: a full Lyte-UDP session host — the
-direct eye's KMS capture → native VAAPI HEVC (our own bitstream pens),
-5 ms Opus audio, uinput injection, Noise-sealed datagrams,
-congestion control and targeted repair, Avahi discovery. H2 parity
-closed 2026-07-22 (gate report in git history); the portal era ended
-2026-08-02 at the `self-hosted` tag.
+The Swift Linux host: a Lyte-UDP session host that captures the KMS
+scanout with its own Direct Eye, encodes HEVC through native VAAPI with
+Lyte's own bitstream writers, sends 5 ms Opus audio, injects input through
+uinput, and advertises itself over Avahi. No portal, ffmpeg or libav.
 
-## Layout
+This page is the package developer's view. Installing a host:
+[INSTALL.md](INSTALL.md). Deploying to and operating the reference host:
+[docs/OPERATIONS.md](../docs/OPERATIONS.md). How the host fits the whole
+system: [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md).
 
-- `Sources/HostCore` — pure Swift, no platform deps: Annex-B/HEVC NAL
-  helpers, **the HEVC bitstream pens** (parameter sets, slice headers,
-  the bit writer — the host authors its own bitstream), the
-  strict-priority send pacer, the kernel-pressure governor, histograms.
-  Builds and tests on macOS so the contracts are verifiable off-target.
-- `Sources/HostSession` — IO-free responder policy over LyteWire: handshake
-  admission and stateless retry cookies, lifecycle projection, and validated
-  path migration. Time and randomness are mandatory inputs; decisions are
-  values. Builds and tests on macOS and Linux.
-- `Sources/HostWire` — the session execution layer on LyteWire (also
-  cross-platform, IO-free): Noise responder orchestration, VideoChannel
-  (packetize/FEC/pace/repair store), AudioFramer, RateEstimator, the socket
-  outbox (lane batching, backpressure, stale-video shedding), pre-encode
-  admission, the encoder VBV/HRD policy, pairing responder, and client
-  keystore. It executes `HostSession` decisions but does not own their policy.
-- `Sources/HostIO` — the host's cross-platform OS adapters over HostWire's
-  seams: the POSIX file-drop store.
-- `Sources/HostEye` — the direct eye (Linux): the scanout identity and GETFB2
-  ticket, the `EyePipeline` (dmabuf import of the current scanout, the 16×16
-  tile pixel fingerprint, the NV12/AYUV EGL blit, and the native VAAPI encoder
-  seat fed by HostCore's pens), and cursor-plane tracking.
-- `Sources/CDBus`, `CPipeWire`, `CDRM`, `CGBM`, `CEGL`, `CVA`,
-  `CNvEnc`, `CCuda` — pkg-config/systemLibrary module maps (Linux only).
-- `Sources/CPipeWireAudio` — C leaf: default-sink monitor audio capture
-  at the 5 ms quantum (PipeWire survives E5 for AUDIO only).
-- `Sources/HostAudio` — Swift host-side Opus policy: 5 ms hard-CBR encode
-  (+ decode for loop verification) over the one pinned static `COpus` source
-  leaf in `Common/`.
-- `Sources/CNetIO` — C leaf: the UDP socket (sendmmsg/recvmmsg, per-packet
-  TOS cmsgs, kernel TX timestamps, line-buffered stdout).
-- `Sources/CInputUinput` — C leaf: virtual evdev devices, the sole input
-  backend.
-- `Sources/lyte-host` — the Linux application composition root:
-  `HostApplication` is the native Swift `@main` type and selects direct-eye
-  capture, session wiring, Avahi advertisement, pairing (`--pair`), audio,
-  clipboard, files, and input backends (`--input auto|uinput|off`). Its
-  injected argument doorway keeps composition testable without a second entry
-  file.
-- `Sources/lyte-eye` / `lyte-nvenc` — the standalone direct-eye probe and
-  the banked NVENC-native probe (E6a).
-- `Sources/lyte-netio-check`, `lyte-pace-check`, `lyte-audio-check` —
-  on-host verification harnesses.
+## Targets
 
-C lives only at the hardware/OS leaves (DRM/EGL/VAAPI module maps,
-PipeWire audio, D-Bus, libopus, the socket, uinput), per the repository
-architecture doctrine in `AGENTS.md` —
-since E5 that includes no media library: the HEVC bitstream itself is
-Swift (HostCore's pens).
+Pure targets build and test on macOS as well as Linux. Everything that
+touches hardware or the OS is Linux-only (`#if os(Linux)` in
+`Package.swift`).
 
-## Test (macOS or Linux)
+| Target | Platforms | Owns |
+|---|---|---|
+| `HostCore` | all | HEVC parameter-set and slice-header writers (the pens), `Pacer`, kernel-pressure governor, `HostServiceLoop`, audio tripwire, quiet-video pacer, screen sampling cadence |
+| `HostSession` | all | Sans-IO responder policy: handshake admission and retry cookies, lifecycle lane, path validation. Time and randomness are inputs |
+| `HostWire` | all | Sans-IO session execution: Noise responder, sealing, ARQ lanes, `VideoChannel` (packetize, FEC, repair store), `RateEstimator`, `SocketOutbox`, pre-encode admission, encoder VBV/HRD policy, pairing responder, client keystore |
+| `HostIO` | all | OS adapters over HostWire's seams: `HostPaths` (XDG layout, pre-XDG identity adoption), `SecretFile` (0600 atomic writes), `BulkFileStore` (file drops) |
+| `HostAudio` | all | 5 ms hard-CBR Opus over Common's pinned `COpus` |
+| `HostWireTestKit` | all | Test-only: `HostSessionHarness`, a shipping `Session` in virtual time |
+| `HostEye` | Linux | Direct Eye: GETFB2 scanout ticket, dmabuf import, 16×16-tile GPU pixel fingerprint, NV12/AYUV EGL blit (BT.709 limited range), VAAPI encoder seat, cursor plane |
+| `CDRM` `CGBM` `CEGL` `CVA` `CPipeWire` `CDBus` `CNvEnc` `CCuda` | Linux | System-library module maps |
+| `CPipeWireAudio` | Linux | Default-sink monitor capture at the 5 ms quantum |
+| `CNetIO` | Linux | UDP sockets: `sendmmsg`/`recvmmsg`, per-packet TOS, kernel timestamps |
+| `CInputUinput` | Linux | Virtual evdev devices, the only input backend |
+| `lyte-host` | Linux | The composition root (`HostApplication`): Direct Eye leg, session wiring, service loop, Avahi, pairing, audio, clipboard (Mutter RemoteDesktop session), files, input |
+| `lyte-control-peer` | all | DRM-free `HostWire.Session` over UDP for the browser proof |
+| `lyte-eye` | Linux | Standalone Direct Eye probe |
+| `lyte-nvenc` | Linux | Banked NVENC probe |
+| `lyte-netio-check`, `lyte-pace-check`, `lyte-audio-check`, `lyte-uinput-check` | Linux | On-host verification harnesses |
 
-```
-swift test           # pure cores + HostWire (the executable/C leaves are Linux-only)
+C lives only at hardware and OS leaves, per the doctrine in
+[AGENTS.md](../AGENTS.md). The HEVC bitstream itself is Swift.
+
+## Test
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  swift test --package-path Host --scratch-path Host/.build -Xswiftc -warnings-as-errors
 ```
 
-On macOS use `DEVELOPER_DIR=/Applications/Xcode.app swift test` (CLT lacks XCTest).
+On macOS this runs `HostCoreTests`, `HostSessionTests`, `HostWireTests`,
+`HostAudioTests` and `HostLayoutTests`. On Linux it adds `HostEyeTests`,
+`CNetIOTests` and `LyteHostIntegrationTests` (loopback sockets, the
+service loop, identity files). Building on pup, including the
+`LD_LIBRARY_PATH` shim: [docs/OPERATIONS.md](../docs/OPERATIONS.md#build-on-pup).
+All gates: [docs/TESTING.md](../docs/TESTING.md).
 
-## Machine prerequisites (one-time, per host box)
+## Run by hand
 
-A fresh host needs a few things beyond the binary. All are applied (or
-checked, with the exact commands printed) by one idempotent script — run
-it as the seat user:
+Hand-run binaries need the DRM capability (`sudo setcap cap_sys_admin+ep
+BINARY`, re-applied after every rebuild) and must live off `/tmp`. Never
+run one on the standing port 41151 or beside the standing service's
+Direct Eye; see the safety rules in
+[docs/OPERATIONS.md](../docs/OPERATIONS.md#safety).
 
+```sh
+# File mode: capture the scanout to an Annex-B file.
+./.build/release/lyte-host --out /tmp/lyte-eye.hevc --seconds 5
+ffprobe /tmp/lyte-eye.hevc                        # hevc, the panel's resolution
+ffmpeg -v error -i /tmp/lyte-eye.hevc -f null -   # decodes without errors
+
+# A session host on a fresh test port. Without --seconds or --pair a
+# listening host is the service: it serves sessions in turn in one process.
+./.build/release/lyte-host --wire-listen 41000 --no-advertise
+./.build/release/lyte-host --wire-listen 41000 --no-advertise --seconds 330
+
+# Mute the host's speakers for the session: desktop audio goes to a
+# session-owned "Lyte Audio" sink whose monitor feeds the wire; the
+# original default sink is restored at teardown (or on the next start
+# after a crash).
+./.build/release/lyte-host --wire-listen 41000 --no-advertise --host-audio muted --seconds 330
 ```
-Host/Scripts/setup-host.sh
-```
 
-1. **CAP_SYS_ADMIN** — the direct eye reads the KMS scanout, which
-   needs the DRM ticket. `lyte-host.service` grants it ambiently, so
-   the deployed binary needs nothing; only a hand-run binary (a probe,
-   `lyte-eye`, a test port) needs
-   `sudo -n setcap cap_sys_admin+ep BINARY`, re-armed after every
-   rebuild. A capless binary fails loudly at startup — never silently.
-   The script reports whether the unit and a deployed binary exist.
-   (The portal era's `MUTTER_DEBUG_PAINT=disable-direct-scanout`
-   login-env flag is obsolete — the direct eye reads the scanout
-   itself; the script offers to remove a leftover
-   `90-lyte-screencast.conf`.)
+Other flags: `--pair` (PIN pairing, one session), `--require-paired`
+(admit only paired clients), `--input auto|uinput|off`,
+`--clipboard=images`, `--advertise-interface IFACE`. `lyte-host --help`
+lists them all. `--backend direct`, `--encoder native` and `--ratchet` are
+accepted no-ops kept for old conf lines. The host self-checks that its
+first encoded packet starts with VPS/SPS/PPS and an IDR.
 
-2. **Seat access to `/dev/uinput`** for the `CInputUinput` input
-   backend — the udev rule at
-   `/etc/udev/rules.d/60-lyte-uinput.rules`. Needs root; the script
-   prints the exact `sudo tee` command rather than escalating itself.
+## Capture
 
-3. **(Optional) realtime scheduling for the latency threads.** The
-   pacing drain and the 5 ms audio thread ask for SCHED_RR at startup
-   and degrade gracefully without it (`sched:` lines say which rung
-   they got). To grant it, add an rtprio rlimit for the seat user and
-   re-login:
+Capture is change-driven by pixels. On a 60 Hz beat the Direct Eye
+fingerprints the current scanout on the GPU; framebuffer identity only
+decides when to re-import, because a compositor may redraw one buffer for
+minutes. Unchanged pixels encode nothing, so the frame rate runs from 0 fps
+(blank) through about 1 fps (a blinking caret) to 60 fps (video). A still
+screen is kept warm by re-encoding the retained frame once a second, less
+often under an announced quiet video posture, and a demanded IDR on a still
+screen re-encodes that frame. A changed frame is skipped before encode
+while queued video already holds its latency budget, and the encoder's HRD
+buffer is bounded so a frame at the rate ceiling fits one FEC group. Rate
+changes apply on the next frame with no encoder reset and no IDR.
 
-   ```
+## Machine prerequisites
+
+`Host/Scripts/setup-host.sh` checks each of these and prints the exact
+repair command; it never escalates itself. Run it as the seat user.
+
+1. **`CAP_SYS_ADMIN`** for the Direct Eye's DRM ticket. The installed
+   service grants it ambiently; only hand-run binaries need `setcap`. A
+   binary without it fails loudly at startup.
+2. **`/dev/uinput` access** through `/etc/udev/rules.d/60-lyte-uinput.rules`.
+   Without it client input is off.
+3. **Optional realtime scheduling.** The pacing and audio threads ask for
+   `SCHED_RR` and degrade gracefully (`sched:` log lines say which rung
+   they got). To grant it:
+
+   ```sh
    echo "$USER - rtprio 20" | sudo tee /etc/security/limits.d/90-lyte-rtprio.conf
    ```
 
-   Unprivileged runs are fully supported — this only buys scheduling
-   tail behavior when the box is loaded (compilers, browsers) while
-   hosting.
-
-## Build and run on the Linux host (`pup`)
-
-Source lives in this repo; sync it to the host and build there. This package
-depends on the sibling `Wire/` and `Common/` packages, so all three must be
-synced as siblings on the host:
-
-```
-rsync -a --delete --exclude .build Wire/ pup:src/Wire/
-rsync -a --delete --exclude .build Common/ pup:src/Common/
-rsync -a --delete --exclude .build Host/ pup:src/lyte-host/
-ssh pup 'cd ~/src/lyte-host && \
-  LD_LIBRARY_PATH=$HOME/.local/lib/swift-compat swift build -c release && \
-  Scripts/deploy-host.sh --restart'
-```
-
-No media-library env exists anymore: Opus is built from Common's pinned source
-leaf. A release build succeeding (with `ldd` showing zero libav and zero
-libopus) is itself a gate. Debug builds remain for tests and harness
-development, never for the standing service.
-
-The standing service (see `INSTALL.md`) runs `~/.local/bin/lyte-host`, a link
-that `Host/Scripts/deploy-host.sh` flips atomically to an immutable
-`~/.local/share/lyte/versions/<sha256-12>/` copy of the release build
-(`--status`, `--rollback`). Its knobs live in `~/.config/lyte/host.conf`, its
-identity in `~/.config/lyte/`, its log in `~/.local/state/lyte/host.log`; the
-unit grants CAP_SYS_ADMIN ambiently, so a deploy needs no setcap. Only a
-hand-run binary needs `sudo setcap cap_sys_admin+ep BINARY` — the direct eye's
-DRM ticket — and a rebuild drops it.
-
-`Host/Scripts/stage-host-image.sh DESTINATION` creates the rootless package
-image (binary, conf seed, unit template, notices, SHA-256 manifest);
-`Scripts/Tests/test-host-package-image.sh DESTINATION` verifies it, and
-`Host/Scripts/install-host.sh [IMAGE]` installs it (or stages the current
-release build when no image is supplied), preserving operator configuration and
-leaving start/restart explicit. Rate moves apply with zero reset and zero IDR
-by construction — our own pens never emit a reset.
-
-The `LD_LIBRARY_PATH` shim points Swift 6.1.2's build tools at the system
-`libxml2.so.16` (Ubuntu 26.04 does not ship `libxml2.so.2`):
-
-```
-ln -sf /usr/lib/x86_64-linux-gnu/libxml2.so.16 ~/.local/lib/swift-compat/libxml2.so.2
-```
-
-Run. Capture needs no graphical session, no consent dialog, and no
-unlock — the direct eye reads the scanout with CAP_SYS_ADMIN; **pairing
-is the consent model**. Input is injected through kernel uinput devices
-(compositor-agnostic); the opt-in clipboard sync uses its own Mutter
-RemoteDesktop session.
-
-```
-# File mode — capture the live scanout to an Annex-B file.
-./.build/release/lyte-host --out /tmp/lyte-eye.hevc --seconds 5
-
-# The real thing — a Lyte-UDP session host (prints its Noise static pubkey;
-# audio + Avahi advertisement default-on; --pair for PIN pairing;
-# --require-paired to enforce the keystore). A listening host waits for its
-# client as long as it takes. Without --seconds it is the service: it serves
-# sessions in turn in one process, keeping the eye, listening socket,
-# advertisement and input devices up between them, with no session clock.
-# --seconds N (or --pair) serves one session, bounded to N s once it starts.
-# 41000-range ports by convention; test hosts take fresh 41xxx ports with
-# --no-advertise.
-./.build/release/lyte-host --wire-listen 41000
-./.build/release/lyte-host --wire-listen 41000 --seconds 330
-
-# HS-18: mute the host's own speakers for the session — desktop audio is
-# routed to a session-owned "Lyte Audio" virtual sink (its monitor feeds
-# the wire) and the original default sink is restored at teardown; a
-# crashed run is swept on the next start.
-./.build/release/lyte-host --wire-listen 41000 --host-audio muted --seconds 330
-```
-
-(`--backend direct`, `--encoder native`, and `--ratchet` are accepted
-no-ops kept for older conf lines; the demolished portal/mutter backends
-and the libav seat fail loudly by name.)
-
-## Verify the output
-
-```
-ffprobe /tmp/lyte-h0a.hevc                     # hevc, correct resolution
-ffmpeg -v error -i /tmp/lyte-h0a.hevc -f null - # decodes with no errors
-```
-
-The tool also self-checks that the first encoded packet begins with
-VPS/SPS/PPS + an IDR.
-
-Capture is change-driven by pixels: on a 60 Hz beat the direct eye
-fingerprints the current scanout on the GPU (framebuffer identity only
-decides when to re-import, since a compositor may redraw one buffer for
-minutes). Unchanged pixels encode nothing, so cadence scales from 0 fps
-(blank) through ~1 fps (caret blink) to 60 fps (video). A still screen
-is kept warm by re-encoding the retained frame once a second (backing
-off further under the negotiated quiet video posture), and a demanded
-IDR on a still screen re-encodes that retained frame. Changed frames
-are skipped before encode while the queued video already holds its
-latency budget, and the encoder's HRD buffer is bounded so a frame at
-the rate ceiling still fits one FEC group.
+The script also reports portal-era and pre-XDG leftovers.
