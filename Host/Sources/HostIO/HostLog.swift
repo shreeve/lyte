@@ -41,13 +41,13 @@ public enum HostLog {
         else { return false }
         let previous = path + ".1"
         guard rename(path, previous) == 0 else {
-            throw HostPathError.write("cannot move \(path) aside: \(errnoText())")
+            throw HostPathError.write("cannot move \(path) aside: \(Posix.errnoText())")
         }
         let fresh = open(
             path, O_WRONLY | O_CREAT | O_EXCL | O_APPEND | O_CLOEXEC, 0o600)
         guard fresh >= 0 else {
             // Writes keep landing in the moved file: nothing is lost.
-            throw HostPathError.write("cannot create \(path): \(errnoText())")
+            throw HostPathError.write("cannot create \(path): \(Posix.errnoText())")
         }
         defer { close(fresh) }
         _ = fchmod(fresh, 0o600)
@@ -58,7 +58,7 @@ public enum HostLog {
             else { continue }
             guard dup2(fresh, descriptor) >= 0 else {
                 throw HostPathError.write(
-                    "cannot point fd \(descriptor) at \(path): \(errnoText())")
+                    "cannot point fd \(descriptor) at \(path): \(Posix.errnoText())")
             }
         }
         return true
@@ -71,9 +71,5 @@ public enum HostLog {
     ) throws -> Bool {
         fflush(nil)
         return try rotateIfNeeded(path: path, limitBytes: limitBytes)
-    }
-
-    private static func errnoText() -> String {
-        String(cString: strerror(errno))
     }
 }

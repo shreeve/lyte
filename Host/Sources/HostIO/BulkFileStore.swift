@@ -6,8 +6,8 @@
 //                                          pwritten at exact offsets,
 //                                          fsync'd before every ack
 //   .lyte-bulk-<16-hex transferId>.resume  the persisted
-//                                          BulkResumeState (atomic
-//                                          tmp+fsync+rename)
+//                                          BulkResumeState (SecretFile:
+//                                          atomic tmp+fsync+rename)
 // Completion promotes the .part by fsync-then-rename to the sanitized
 // final name, then fsyncs the directory: a kill -9 at any instant leaves
 // the dotted staging pair or the finished file, never a visible partial.
@@ -44,7 +44,11 @@ public final class BulkFileStore: BulkReceiveStore {
     /// Creates the directory (and its ancestors) if missing.
     public init(directoryPath: String) throws {
         self.directoryPath = directoryPath
-        try Self.makeDirectories(directoryPath)
+        do {
+            try Posix.makeDirectories(directoryPath, mode: 0o755)
+        } catch {
+            throw BulkStoreError.directoryUnavailable(error.text)
+        }
     }
 
     deinit {
@@ -58,7 +62,7 @@ public final class BulkFileStore: BulkReceiveStore {
         let path = stagingPath(transferId)
         let descriptor = open(path, O_RDWR | O_CREAT, 0o600)
         guard descriptor >= 0 else {
-            throw BulkStoreError.openFailed("\(path): \(Self.errnoText())")
+            throw BulkStoreError.openFailed("\(path): \(Posix.errnoText())")
         }
         fd = descriptor
         openTransferId = transferId
@@ -80,12 +84,12 @@ public final class BulkFileStore: BulkReceiveStore {
             }
             if result < 0 {
                 if errno == EINTR { continue }
-                throw BulkStoreError.writeFailed(Self.errnoText())
+                throw BulkStoreError.writeFailed(Posix.errnoText())
             }
             written += result
         }
         guard fsync(fd) == 0 else {
-            throw BulkStoreError.writeFailed("fsync: \(Self.errnoText())")
+            throw BulkStoreError.writeFailed("fsync: \(Posix.errnoText())")
         }
     }
 
@@ -100,7 +104,7 @@ public final class BulkFileStore: BulkReceiveStore {
             }
             if count < 0 {
                 if errno == EINTR { continue }
-                throw BulkStoreError.readFailed(Self.errnoText())
+                throw BulkStoreError.readFailed(Posix.errnoText())
             }
             if count == 0 { break }
             stream.update(buffer[0..<count])
@@ -119,7 +123,7 @@ public final class BulkFileStore: BulkReceiveStore {
             throw BulkStoreError.invalidFinalName(name)
         }
         guard fsync(fd) == 0 else {
-            throw BulkStoreError.writeFailed("fsync: \(Self.errnoText())")
+            throw BulkStoreError.writeFailed("fsync: \(Posix.errnoText())")
         }
         close(fd)
         fd = -1
@@ -127,10 +131,10 @@ public final class BulkFileStore: BulkReceiveStore {
         let destination = directoryPath + "/\(name)"
         guard rename(stagingPath(transferId), destination) == 0 else {
             throw BulkStoreError.renameFailed(
-                "\(destination): \(Self.errnoText())"
+                "\(destination): \(Posix.errnoText())"
             )
         }
-        syncDirectory()
+        Posix.syncDirectory(directoryPath)
     }
 
     public func removeStaging(transferId: UInt64) {
@@ -172,7 +176,7 @@ public final class BulkFileStore: BulkReceiveStore {
             guard name.hasPrefix(Self.stagingPrefix),
                   name.hasSuffix(".resume") else { continue }
             let path = directoryPath + "/\(name)"
-            guard let bytes = try? Self.readWholeFile(path),
+            guard let bytes = try? Posix.readFile(path),
                   let state = try? BulkResumeStateCodec.decode(bytes),
                   access(stagingPath(state.transferId), F_OK) == 0
             else {
@@ -187,50 +191,16 @@ public final class BulkFileStore: BulkReceiveStore {
     }
 
     public func persistResumeState(_ state: BulkResumeState) throws {
-        let path = resumePath(state.transferId)
-        let temporary = path + ".tmp"
-        let descriptor = open(
-            temporary, O_WRONLY | O_CREAT | O_TRUNC, 0o600
-        )
-        guard descriptor >= 0 else {
-            throw BulkStoreError.openFailed(
-                "\(temporary): \(Self.errnoText())"
-            )
-        }
-        defer { if descriptor >= 0 { close(descriptor) } }
-        let bytes = BulkResumeStateCodec.encode(state)
-        var written = 0
-        while written < bytes.count {
-            let result = bytes.withUnsafeBytes { buffer -> Int in
-                write(
-                    descriptor,
-                    buffer.baseAddress!.advanced(by: written),
-                    bytes.count - written
-                )
-            }
-            if result < 0 {
-                if errno == EINTR { continue }
-                throw BulkStoreError.writeFailed(Self.errnoText())
-            }
-            written += result
-        }
-        guard fsync(descriptor) == 0 else {
-            throw BulkStoreError.writeFailed("fsync: \(Self.errnoText())")
-        }
-        close(descriptor)
-        guard rename(temporary, path) == 0 else {
-            throw BulkStoreError.renameFailed(
-                "\(path): \(Self.errnoText())"
-            )
-        }
-        syncDirectory()
+        try SecretFile.write(
+            BulkResumeStateCodec.encode(state),
+            to: resumePath(state.transferId))
     }
 
     public func removeResumeState(transferId: UInt64) {
         unlink(resumePath(transferId))
     }
 
-    // MARK: Paths and plumbing
+    // MARK: Paths
 
     /// Exposed for tests that pre-seed staging bytes and audit strays.
     public func stagingPath(_ transferId: UInt64) -> String {
@@ -243,61 +213,6 @@ public final class BulkFileStore: BulkReceiveStore {
         directoryPath + """
             /\(Self.stagingPrefix)\(Hex.string(transferId, width: 16)).resume
             """
-    }
-
-    private func syncDirectory() {
-        let dirFd = open(directoryPath, O_RDONLY)
-        if dirFd >= 0 {
-            fsync(dirFd)
-            close(dirFd)
-        }
-    }
-
-    private static func errnoText() -> String {
-        String(cString: strerror(errno))
-    }
-
-    private static func makeDirectories(_ path: String) throws {
-        var built = path.hasPrefix("/") ? "/" : ""
-        for component in path.split(separator: "/") {
-            built += (built.isEmpty || built == "/")
-                ? String(component) : "/\(component)"
-            if mkdir(built, 0o755) != 0 && errno != EEXIST {
-                throw BulkStoreError.directoryUnavailable(
-                    "\(built): \(errnoText())"
-                )
-            }
-        }
-        var status = stat()
-        guard stat(path, &status) == 0,
-              (status.st_mode & S_IFMT) == S_IFDIR
-        else {
-            throw BulkStoreError.directoryUnavailable(
-                "\(path): not a directory"
-            )
-        }
-    }
-
-    private static func readWholeFile(_ path: String) throws -> [UInt8] {
-        let descriptor = open(path, O_RDONLY)
-        guard descriptor >= 0 else {
-            throw BulkStoreError.openFailed("\(path): \(errnoText())")
-        }
-        defer { close(descriptor) }
-        var out: [UInt8] = []
-        var buffer = [UInt8](repeating: 0, count: 4096)
-        while true {
-            let count = buffer.withUnsafeMutableBytes { raw -> Int in
-                read(descriptor, raw.baseAddress, raw.count)
-            }
-            if count < 0 {
-                if errno == EINTR { continue }
-                throw BulkStoreError.readFailed(errnoText())
-            }
-            if count == 0 { break }
-            out.append(contentsOf: buffer[0..<count])
-        }
-        return out
     }
 }
 
