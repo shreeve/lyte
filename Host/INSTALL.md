@@ -80,7 +80,7 @@ tail -f ~/.local/state/lyte/host.log
 | knobs (`LYTE_HOST_ARGS`) | `~/.config/lyte/host.conf` |
 | identity | `~/.config/lyte/noise_static.key`, `~/.config/lyte/paired_clients` (0600) |
 | binary the unit runs | `~/.local/bin/lyte-host` → `~/.local/share/lyte/versions/<sha256-12>/lyte-host` |
-| host log | `~/.local/state/lyte/host.log` (0600; over 64 MiB it becomes `host.log.1` at the next start) |
+| host log | `~/.local/state/lyte/host.log` (0600; over 64 MiB it becomes `host.log.1` — at the next start, and in the running host at every session boundary and once a minute) |
 | unit | `/etc/systemd/system/lyte-host.service` |
 
 `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_DATA_HOME` move the matching
