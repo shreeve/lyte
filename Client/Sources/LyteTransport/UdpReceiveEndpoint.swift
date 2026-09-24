@@ -20,6 +20,8 @@ public enum TransportEndpointError: Error, Sendable {
     case badAddress(String)
     /// A session-shell entry point was called before `start()`.
     case notStarted
+    /// The owner stopped the endpoint (or its session) while it dialed.
+    case cancelled
 }
 
 public final class UdpReceiveEndpoint: @unchecked Sendable {
@@ -38,6 +40,8 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
     internal var fd: Int32 { socketFd.load(ordering: .acquiring) }
     private var receiveThread: Thread?
     private let running = Atomic<Bool>(false)
+    /// Set by `stop()`; a dial in flight ends within one handshake poll.
+    private let cancelled = Atomic<Bool>(false)
     private let receiveExit = NSCondition()
     private var receiveExited = true
 
@@ -81,6 +85,9 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
     /// handshakes over the bound socket before opening. No datagram is
     /// read until `startReceiving()`. On failure the socket is closed.
     public func bindAndHandshake() throws {
+        guard !cancelled.load(ordering: .acquiring) else {
+            throw TransportEndpointError.cancelled
+        }
         let handshaking = crypto as? any HandshakingTransportCrypto
         if handshaking == nil {
             try crypto.open()
@@ -100,6 +107,13 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
             throw error
         }
         socketFd.store(fd, ordering: .releasing)
+        // A stop() that ran before the store found no fd to close; whichever
+        // side takes it from `socketFd` closes it, exactly once.
+        if cancelled.load(ordering: .acquiring) {
+            let orphan = socketFd.exchange(-1, ordering: .acquiringAndReleasing)
+            if orphan >= 0 { close(orphan) }
+            throw TransportEndpointError.cancelled
+        }
     }
 
     /// Starts the receive thread on the bound socket.
@@ -187,7 +201,10 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
             let io = try SocketHandshakeIO(
                 fd: fd,
                 host: handshaking.hostAddress,
-                port: handshaking.hostPort
+                port: handshaking.hostPort,
+                isCancelled: { [weak self] in
+                    self?.cancelled.load(ordering: .acquiring) ?? true
+                }
             )
             try handshaking.performHandshake(io: io)
             HandshakeWitness.record("noiseHandshakeCompleted")
@@ -204,6 +221,7 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
     }
 
     public func stop() {
+        cancelled.store(true, ordering: .releasing)
         running.store(false, ordering: .releasing)
         // Join before close: closing first frees the fd number while
         // recvmsg is in flight, and a re-dial could reuse it. The receive
@@ -409,13 +427,19 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
 }
 
 /// Blocking datagram IO over the bound socket for the Noise handshake,
-/// before the receive thread exists.
+/// before the receive thread exists. Every send and each ≤100 ms receive
+/// slice first checks `isCancelled`, so a stopped dial ends promptly.
 final class SocketHandshakeIO: NoiseHandshakeIO {
     private let fd: Int32
+    private let isCancelled: () -> Bool
     let hostSockaddr: sockaddr_in
 
-    init(fd: Int32, host: String, port: UInt16) throws {
+    init(
+        fd: Int32, host: String, port: UInt16,
+        isCancelled: @escaping () -> Bool = { false }
+    ) throws {
         self.fd = fd
+        self.isCancelled = isCancelled
         var addr = sockaddr_in()
         addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         addr.sin_family = sa_family_t(AF_INET)
@@ -443,6 +467,7 @@ final class SocketHandshakeIO: NoiseHandshakeIO {
     }
 
     func sendToHost(_ datagram: [UInt8]) throws {
+        guard !isCancelled() else { throw TransportEndpointError.cancelled }
         var peer = hostSockaddr
         let started = SystemMonotonicClock.nowNanoseconds
         let sent = datagram.withUnsafeBufferPointer { buf -> Int in
@@ -480,6 +505,7 @@ final class SocketHandshakeIO: NoiseHandshakeIO {
     }
 
     func receiveDatagram(timeoutMilliseconds: Int) throws -> [UInt8]? {
+        guard !isCancelled() else { throw TransportEndpointError.cancelled }
         var pollfds = [pollfd(fd: fd, events: Int16(POLLIN), revents: 0)]
         let ready = poll(&pollfds, 1, Int32(timeoutMilliseconds))
         guard ready > 0, pollfds[0].revents & Int16(POLLIN) != 0 else {
