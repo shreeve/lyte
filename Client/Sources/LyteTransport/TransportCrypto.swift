@@ -13,16 +13,16 @@ public enum TransportCryptoError: Error, Equatable, Sendable {
     /// The Noise IK handshake could not complete (no answer, message 2
     /// rejected, transport used before open).
     case handshakeFailed(String)
-    /// AEAD open failed (tag mismatch, replay, stale sequence).
+    /// A payload was refused by a crypto seam without a typed error of
+    /// its own. The Noise seam rethrows the Wire transport's typed error.
     case unsealFailed(String)
 }
 
 /// Both directions of one transport session's crypto. `open()` is the
-    /// transport-open step: it must complete before any payload is accepted.
-    /// `unseal` maps a wire payload (ciphertext + 16 B tag) to
-/// plaintext; `seal` is the mirror the CL-3 send path added — same AAD
-/// discipline, same envelope-derived nonce material, so W5's Noise slots
-/// into both directions without touching either path.
+/// transport-open step: it must complete before any payload is accepted.
+/// `unseal` maps a wire payload (ciphertext + 16 B tag) to plaintext;
+/// `seal` is its mirror — the same header-as-AAD discipline and the same
+/// envelope-derived nonce material in both directions.
 public protocol TransportCrypto: Sendable {
     /// Human-readable mode label for logs and the CLI banner.
     var modeDescription: String { get }

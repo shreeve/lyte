@@ -1,20 +1,17 @@
-// corpus-gen / corpus-gate (H4 V-3): the §7 corpus harness's two CLI
-// halves, composing what V-1/V-2 built rather than duplicating it:
+// corpus-gen / corpus-gate: the corpus harness's two CLI halves over
+// LyteCorpus:
 //
-//   corpus-gen   writes the deterministic in-repo corpus
-//                (LyteTransport.CorpusFrames) as raw BGRX frames +
-//                manifest.json (+ PNG previews) for the host encode
-//                leg (pup's lyte-encode-check, the production C leaf);
-//   corpus-gate  runs the pillar's acceptance math
-//                (LyteTransport.CorpusGates — thresholds pinned in
-//                code) over decode-probe's VideoToolbox BGRA readback:
-//                text-region RGB PSNR, SSIM, range round-trip,
-//                grating fidelity, ratchet convergence from the
-//                encoder's size books, and the visual-golden diff.
+//   corpus-gen   writes the deterministic in-repo corpus (CorpusFrames)
+//                as raw BGRX frames + manifest.json (+ PNG previews) for
+//                the host encode leg (lyte-encode-check on the host);
+//   corpus-gate  runs the acceptance math (CorpusGates — thresholds
+//                pinned in code) over decode-probe's VideoToolbox BGRA
+//                readback: text-region RGB PSNR, SSIM, range round-trip,
+//                grating fidelity, ratchet convergence from the encoder's
+//                size books, and the visual-golden diff.
 //
-// Orchestration (which encode leg, which chroma, pup transport) lives
-// in Host/Scripts/corpus-harness.sh — these commands are the
-// measurement seams it cannot get wrong.
+// Orchestration (which encode leg, which chroma, the host transport) is
+// the operator's; these commands are the measurement seams.
 
 import LyteCorpus
 import ArgumentParser

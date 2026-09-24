@@ -74,35 +74,15 @@ public enum BulkTransferId {
 // MARK: - The capability spine helpers (key 11)
 
 extension Capabilities {
-    /// The key-11 entry as it rides the wire: CBOR bool under
-    /// unsigned key 11 (`0B F5` inside the map) — one canonical byte
-    /// image is what makes the intersection's byte-equal rule an
-    /// exact AND.
-    private static var bulkTransferEntry: CborMapEntry {
-        CborMapEntry(
-            key: .unsigned(CapabilityKey.bulkTransfer),
-            value: .bool(true)
-        )
-    }
-
-    /// True when this set (a declaration or an agreed intersection)
-    /// carries `bulkTransfer: true`. On a v1 build the key lives in
-    /// `unknownEntries` — which is exactly what makes it survive
-    /// intersection only on mutual declaration. A `false` or
-    /// wrongly-typed value reads as absent: absence and refusal are
-    /// the same posture ("not supported"), per the spine's rule 3.
+    /// True when this set carries `bulkTransfer: true` (key 11) — see
+    /// `declaresFlag(_:)`.
     public var bulkTransfer: Bool {
-        unknownEntries.contains(Self.bulkTransferEntry)
+        declaresFlag(CapabilityKey.bulkTransfer)
     }
 
-    /// A copy of this set declaring bulk-transfer support.
-    /// Idempotent; the CBOR encoder owns canonical key order, so the
-    /// entry may append here regardless of surrounding keys.
+    /// A copy of this set declaring `bulkTransfer`.
     public func declaringBulkTransfer() -> Capabilities {
-        guard !bulkTransfer else { return self }
-        var declared = self
-        declared.unknownEntries.append(Self.bulkTransferEntry)
-        return declared
+        declaringFlag(CapabilityKey.bulkTransfer)
     }
 }
 
@@ -261,10 +241,14 @@ public struct BulkOffer: Hashable, Sendable {
         guard totalByteCount >= 1 else {
             throw BulkMessageError.emptyTransfer
         }
-        guard (BulkWire.minChunkByteCount...BulkWire.maxChunkByteCount)
-            .contains(Int(chunkByteCount))
+        // Compared as UInt32: a peer-supplied size ≥ 2^31 must throw,
+        // not trap, where Int is 32 bits (wasm32).
+        guard (UInt32(BulkWire.minChunkByteCount)...UInt32(BulkWire.maxChunkByteCount))
+            .contains(chunkByteCount)
         else {
-            throw BulkMessageError.chunkSizeOutOfBounds(Int(chunkByteCount))
+            throw BulkMessageError.chunkSizeOutOfBounds(
+                Int(clamping: chunkByteCount)
+            )
         }
         guard sha256.count == BulkWire.sha256ByteCount else {
             throw BulkMessageError.invalidSha256ByteCount(sha256.count)
@@ -739,8 +723,7 @@ public enum BulkMessageError: Error, Hashable, Sendable {
     case nameOverBudget(Int)
     /// A MIME hint over 255 UTF-8 bytes (construction-side).
     case mimeHintOverBudget(Int)
-    /// Name or MIME bytes that are not valid UTF-8 (detected by
-    /// byte-exact re-encode, the CBOR text rule).
+    /// Name or MIME bytes that are not valid UTF-8.
     case invalidUtf8
     /// A chunk with no data — some layer's fill bug, kept loud.
     case emptyChunkData
@@ -772,9 +755,7 @@ private func checkType(
 }
 
 private func decodeUtf8(_ bytes: ArraySlice<UInt8>) throws -> String {
-    let text = String(decoding: bytes, as: UTF8.self)
-    guard text.utf8.count == bytes.count,
-          text.utf8.elementsEqual(bytes) else {
+    guard let text = String(validating: bytes, as: UTF8.self) else {
         throw BulkMessageError.invalidUtf8
     }
     return text

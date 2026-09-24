@@ -67,58 +67,26 @@ public enum HostAudioRoutingMode: UInt8, Hashable, CaseIterable, Sendable {
 // MARK: - The capability spine helpers
 
 extension Capabilities {
-    /// The key-9 entry as it rides the wire: CBOR bool under unsigned
-    /// key 9. One canonical byte image (`09 F5` inside the map) is
-    /// what makes the intersection's byte-equal rule an exact AND.
-    private static var hostAudioRoutingEntry: CborMapEntry {
-        CborMapEntry(
-            key: .unsigned(CapabilityKey.hostAudioRouting),
-            value: .bool(true)
-        )
-    }
-
-    /// True when this set (a declaration or an agreed intersection)
-    /// carries `hostAudioRouting: true`. On a v1 build the key lives
-    /// in `unknownEntries` — which is exactly what makes it survive
-    /// intersection only on mutual declaration. A `false` or
-    /// wrongly-typed value reads as absent: absence and refusal are
-    /// the same posture ("not supported"), per the spine's rule 3.
+    /// True when this set carries `hostAudioRouting: true` (key 9) — see
+    /// `declaresFlag(_:)`.
     public var hostAudioRouting: Bool {
-        unknownEntries.contains(Self.hostAudioRoutingEntry)
+        declaresFlag(CapabilityKey.hostAudioRouting)
     }
 
-    /// A copy of this set declaring hostAudioRouting support.
-    /// Idempotent; the CBOR encoder owns canonical key order, so the
-    /// entry may append here regardless of surrounding keys.
+    /// A copy of this set declaring `hostAudioRouting`.
     public func declaringHostAudioRouting() -> Capabilities {
-        guard !hostAudioRouting else { return self }
-        var declared = self
-        declared.unknownEntries.append(Self.hostAudioRoutingEntry)
-        return declared
+        declaringFlag(CapabilityKey.hostAudioRouting)
     }
 
-    /// The key-14 entry (audioStreamOff): CBOR bool under unsigned
-    /// key 14, one canonical byte image (`0E F5`) — the rule-3 spine
-    /// exactly as keys 9–13 ride it.
-    private static var audioStreamOffEntry: CborMapEntry {
-        CborMapEntry(
-            key: .unsigned(CapabilityKey.audioStreamOff),
-            value: .bool(true)
-        )
-    }
-
-    /// True when this set carries `audioStreamOff: true` — the mode
-    /// 0x03 dialect gate. Absence and refusal are the same posture.
+    /// True when this set carries `audioStreamOff: true` (key 14) — see
+    /// `declaresFlag(_:)`.
     public var audioStreamOff: Bool {
-        unknownEntries.contains(Self.audioStreamOffEntry)
+        declaresFlag(CapabilityKey.audioStreamOff)
     }
 
-    /// A copy of this set declaring audioStreamOff support.
+    /// A copy of this set declaring `audioStreamOff`.
     public func declaringAudioStreamOff() -> Capabilities {
-        guard !audioStreamOff else { return self }
-        var declared = self
-        declared.unknownEntries.append(Self.audioStreamOffEntry)
-        return declared
+        declaringFlag(CapabilityKey.audioStreamOff)
     }
 }
 

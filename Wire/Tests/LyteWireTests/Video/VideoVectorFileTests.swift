@@ -13,22 +13,14 @@ final class VideoVectorFileTests: XCTestCase {
 
     private static let packageRoot = WireTestPaths.packageRoot
 
-    private static let vectorsPath = packageRoot + "/Vectors/video-v1.json"
     private static let corpusDirectory = packageRoot + "/Vectors/video-corpus-v1"
 
     private func loadFile() throws -> VideoVectorFile {
-        try VideoVectorFile.load(from: Self.vectorsPath)
+        try VideoVectorFile.loadCommitted()
     }
 
     func testFileIdentity() throws {
-        let file = try loadFile()
-        XCTAssertEqual(file.format, VideoVectorFile.expectedFormat)
-        XCTAssertEqual(file.formatVersion, 1)
-        XCTAssertEqual(file.wireVersion, Int(WireVersion.major))
-        XCTAssertFalse(file.frames.isEmpty)
-        XCTAssertFalse(file.scenarios.isEmpty)
-        let names = file.frames.map(\.name) + file.scenarios.map(\.name)
-        XCTAssertEqual(Set(names).count, names.count, "vector names must be unique")
+        XCTAssertEqual(try loadFile().identityProblems, [])
     }
 
     func testFrameVectorsPacketizeByteExact() throws {

@@ -1,7 +1,11 @@
 #!/bin/sh
 # Serve Browser/.serve/ with lyte-control-peer + lyte-wt-sidecar for the
-# B-3…B-6 Chrome proof. Requires a prior Browser/Scripts/build.sh.
-# Binds 127.0.0.1 only. Never touches standing host UDP 41151.
+# Chrome session proof. Requires a prior Browser/Scripts/build.sh. Binds
+# 127.0.0.1 only and never touches the standing host UDP 41151. The peer
+# serves one session; restart this script for another run.
+#
+# Environment: LYTE_BROWSER_PORT (8765), LYTE_CONTROL_PEER_PORT (41234),
+# LYTE_WT_RUNTIME (node|bun).
 set -eu
 
 BROWSER_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -18,12 +22,6 @@ PEER_PID=""
 
 if [ ! -f "${SERVE_DIR}/index.html" ] \
     || [ ! -f "${SERVE_DIR}/LyteClientBrowser.wasm" ] \
-    || [ ! -f "${SERVE_DIR}/webtransport-carrier.js" ] \
-    || [ ! -f "${SERVE_DIR}/control-session.js" ] \
-    || [ ! -f "${SERVE_DIR}/conductor-video.js" ] \
-    || [ ! -f "${SERVE_DIR}/interaction.js" ] \
-    || [ ! -f "${SERVE_DIR}/audio-ring-worklet.js" ] \
-    || [ ! -f "${SERVE_DIR}/frame-000-idr.annexb" ] \
     || [ ! -d "${SERVE_DIR}/corpus" ]; then
     echo "browser-serve: missing staged tree — run Browser/Scripts/build.sh first" >&2
     exit 1
@@ -128,10 +126,14 @@ done
     exit 1
 }
 
-PIN="$(python3 -c 'import json; print(json.load(open("'"${PEER_META}"'"))["pin"])')"
+PIN="$(python3 - "$PEER_META" <<'EOF'
+import json, sys
+print(json.load(open(sys.argv[1]))["pin"])
+EOF
+)"
 echo "browser-serve: http://127.0.0.1:${PORT}/"
 echo "browser-serve: open that URL in Google Chrome (primary gate)"
-echo "browser-serve: expect PASS for B-1 + control-session/* + conductor-video/* (B-5)"
+echo "browser-serve: expect PASS for the frozen contracts and every session-proof line"
 echo "browser-serve: control PIN ${PIN} (also in ${PEER_META})"
 echo "browser-serve: Ctrl-C to stop"
 cd "$SERVE_DIR"

@@ -29,6 +29,8 @@
 //   via frameByteCeiling; this pacer makes it measurable (per-frame
 //   metadata + telemetry) and true for conforming input.
 
+import LyteCore
+
 /// Send classes in strict priority order. Lower raw value = higher
 /// priority (drains first). The order is the protocol overview's unified
 /// ruling: CTRL/input > audio > fresh video > video tail + NACK
@@ -123,9 +125,9 @@ public struct PacerTelemetry: Sendable {
 }
 
 public final class Pacer {
-    /// Bits per second the wire is paced at (PacerPolicy rate: upstream
-    /// supplies 0.8 × btlRate capped at the negotiated session rate;
-    /// until HS-16 lands, the negotiated ceiling itself is the default).
+    /// Bits per second the wire is paced at. The owner supplies it at
+    /// construction and re-prices it through `setRate` (0.8 × the
+    /// estimated bottleneck rate, capped at the negotiated session rate).
     public private(set) var rateBitsPerSecond: Int
 
     /// Batch quantum in nanoseconds (1 ms per the overview ruling;
@@ -142,12 +144,12 @@ public final class Pacer {
     private var lastRefillAt: UInt64
 
     // One FIFO pair per class; urgent tokens drain before normal ones
-    // within the same class. Index-based heads avoid O(n) removal.
+    // within the same class. Deque storage reclaims consumed slots, so a
+    // queue that is topped up before it ever drains stays bounded by its
+    // live depth, and a drained queue keeps its capacity for the next burst.
     private struct ClassQueue {
-        var urgent: [PacerToken] = []
-        var urgentHead = 0
-        var normal: [PacerToken] = []
-        var normalHead = 0
+        var urgent = Deque<PacerToken>()
+        var normal = Deque<PacerToken>()
         /// Running total of un-popped bytes, kept by push/pop. The two
         /// hot gates that read it — the per-feedback-report backlog
         /// input (20–40 Hz) and the per-capture-frame backpressure
@@ -155,15 +157,9 @@ public final class Pacer {
         /// deepest (a rate fall), so the read must not walk the queue.
         var bytesQueued = 0
 
-        var isEmpty: Bool {
-            urgentHead >= urgent.count && normalHead >= normal.count
-        }
+        var isEmpty: Bool { urgent.isEmpty && normal.isEmpty }
 
-        var head: PacerToken? {
-            if urgentHead < urgent.count { return urgent[urgentHead] }
-            if normalHead < normal.count { return normal[normalHead] }
-            return nil
-        }
+        var head: PacerToken? { urgent.first ?? normal.first }
 
         mutating func push(_ t: PacerToken) {
             bytesQueued += t.bytes
@@ -171,51 +167,26 @@ public final class Pacer {
         }
 
         mutating func pop() -> PacerToken? {
-            if urgentHead < urgent.count {
-                let t = urgent[urgentHead]
-                urgentHead += 1
-                if urgentHead == urgent.count { urgent = []; urgentHead = 0 }
-                bytesQueued -= t.bytes
-                return t
+            guard let t = urgent.popFirst() ?? normal.popFirst() else {
+                return nil
             }
-            if normalHead < normal.count {
-                let t = normal[normalHead]
-                normalHead += 1
-                if normalHead == normal.count { normal = []; normalHead = 0 }
-                bytesQueued -= t.bytes
-                return t
-            }
-            return nil
+            bytesQueued -= t.bytes
+            return t
         }
 
         var queuedBytes: Int { bytesQueued }
 
-        var queuedCount: Int {
-            (urgent.count - urgentHead) + (normal.count - normalHead)
-        }
+        var queuedCount: Int { urgent.count + normal.count }
+
+        /// Every queued token, urgent first, FIFO within each.
+        var queued: [PacerToken] { Array(urgent) + Array(normal) }
 
         mutating func dropEnqueued(before cutoff: UInt64) -> [PacerToken] {
-            var dropped: [PacerToken] = []
-            func keepFresh(
-                _ source: [PacerToken], from head: Int
-            ) -> [PacerToken] {
-                guard head < source.count else { return [] }
-                var kept: [PacerToken] = []
-                kept.reserveCapacity(source.count - head)
-                for token in source[head...] {
-                    if token.enqueuedAt < cutoff {
-                        dropped.append(token)
-                        bytesQueued -= token.bytes
-                    } else {
-                        kept.append(token)
-                    }
-                }
-                return kept
-            }
-            urgent = keepFresh(urgent, from: urgentHead)
-            urgentHead = 0
-            normal = keepFresh(normal, from: normalHead)
-            normalHead = 0
+            let dropped = queued.filter { $0.enqueuedAt < cutoff }
+            guard !dropped.isEmpty else { return [] }
+            urgent.removeAll { $0.enqueuedAt < cutoff }
+            normal.removeAll { $0.enqueuedAt < cutoff }
+            for token in dropped { bytesQueued -= token.bytes }
             return dropped
         }
     }
@@ -334,7 +305,8 @@ public final class Pacer {
             var c = telemetry.perClass[t.priorityClass.rawValue]
             c.tokensSent += 1
             c.bytesSent += t.bytes
-            c.maxQueueDelayNS = max(c.maxQueueDelayNS, now - t.enqueuedAt)
+            let delay = now > t.enqueuedAt ? now - t.enqueuedAt : 0
+            c.maxQueueDelayNS = max(c.maxQueueDelayNS, delay)
             telemetry.perClass[t.priorityClass.rawValue] = c
         }
         telemetry.batches += 1
@@ -367,16 +339,7 @@ public final class Pacer {
     /// is untouched — dropped bytes were never emitted, so nothing is
     /// owed or refunded; other classes keep their place.
     public func dropClass(_ priorityClass: PacerClass) -> [PacerToken] {
-        let q = queues[priorityClass.rawValue]
-        guard !q.isEmpty else { return [] }
-        var dropped: [PacerToken] = []
-        dropped.reserveCapacity(q.queuedCount)
-        if q.urgentHead < q.urgent.count {
-            dropped.append(contentsOf: q.urgent[q.urgentHead...])
-        }
-        if q.normalHead < q.normal.count {
-            dropped.append(contentsOf: q.normal[q.normalHead...])
-        }
+        let dropped = queues[priorityClass.rawValue].queued
         queues[priorityClass.rawValue] = ClassQueue()
         return dropped
     }
@@ -390,8 +353,18 @@ public final class Pacer {
         queues[priorityClass.rawValue].dropEnqueued(before: cutoff)
     }
 
+    /// Token slots a class's queue retains, live or consumed (test seam).
+    func retainedTokenSlots(_ c: PacerClass) -> Int {
+        queues[c.rawValue].urgent.retainedCapacity
+            + queues[c.rawValue].normal.retainedCapacity
+    }
+
+    /// Runs once per token inside `nextBatch`: reads each class queue in
+    /// place rather than copying it out of the array.
     private func highestHead() -> PacerToken? {
-        for q in queues where !q.isEmpty { return q.head }
+        for index in queues.indices where !queues[index].isEmpty {
+            return queues[index].head
+        }
         return nil
     }
 

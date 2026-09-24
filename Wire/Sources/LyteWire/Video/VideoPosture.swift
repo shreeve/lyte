@@ -29,27 +29,15 @@
 // MARK: - The capability spine helpers
 
 extension Capabilities {
-    /// The key-16 entry as it rides the wire: CBOR bool under
-    /// unsigned key 16 (`10 F5` inside the map).
-    private static var videoQuietPostureEntry: CborMapEntry {
-        CborMapEntry(
-            key: .unsigned(CapabilityKey.videoQuietPosture),
-            value: .bool(true)
-        )
-    }
-
-    /// True when this set carries `videoQuietPosture: true`.
+    /// True when this set carries `videoQuietPosture: true` (key 16) — see
+    /// `declaresFlag(_:)`.
     public var videoQuietPosture: Bool {
-        unknownEntries.contains(Self.videoQuietPostureEntry)
+        declaresFlag(CapabilityKey.videoQuietPosture)
     }
 
-    /// A copy of this set declaring video-quiet-posture support.
-    /// Idempotent; the CBOR encoder owns canonical key order.
+    /// A copy of this set declaring `videoQuietPosture`.
     public func declaringVideoQuietPosture() -> Capabilities {
-        guard !videoQuietPosture else { return self }
-        var declared = self
-        declared.unknownEntries.append(Self.videoQuietPostureEntry)
-        return declared
+        declaringFlag(CapabilityKey.videoQuietPosture)
     }
 }
 

@@ -9,25 +9,12 @@ import LyteWireTestKit
 
 final class RepairRefusalVectorFileTests: XCTestCase {
 
-    private static let vectorsPath =
-        packageRoot + "/Vectors/repair-refusal-v1.json"
-
-    private static let packageRoot = WireTestPaths.packageRoot
-
     private func loadFile() throws -> RepairRefusalVectorFile {
-        try RepairRefusalVectorFile.load(from: Self.vectorsPath)
+        try RepairRefusalVectorFile.loadCommitted()
     }
 
     func testFileIdentity() throws {
-        let file = try loadFile()
-        XCTAssertEqual(file.format, RepairRefusalVectorFile.expectedFormat)
-        XCTAssertEqual(file.formatVersion, 1)
-        XCTAssertEqual(file.wireVersion, Int(WireVersion.major))
-        XCTAssertFalse(file.vectors.isEmpty)
-        let names = file.vectors.map(\.name)
-        XCTAssertEqual(
-            Set(names).count, names.count, "vector names must be unique"
-        )
+        XCTAssertEqual(try loadFile().identityProblems, [])
     }
 
     func testCoverageDiscipline() throws {

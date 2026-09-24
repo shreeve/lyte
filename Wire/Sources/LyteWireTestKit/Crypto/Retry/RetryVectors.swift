@@ -16,7 +16,7 @@
 import Foundation
 import LyteWire
 
-public struct RetryVectorFile: Codable, Sendable {
+public struct RetryVectorFile: FrozenVectorFile {
     public var format: String
     public var formatVersion: Int
     public var wireVersion: Int
@@ -24,6 +24,11 @@ public struct RetryVectorFile: Codable, Sendable {
     public var messageVectors: [RetryMessageVector]
 
     public static let expectedFormat = "lyte-wire-retry-vectors"
+    public static let fileName = "retry-v1.json"
+
+    public var vectorNameGroups: [[String]] {
+        [cookieVectors.map(\.name), messageVectors.map(\.name)]
+    }
 
     public init(
         format: String,
@@ -39,10 +44,6 @@ public struct RetryVectorFile: Codable, Sendable {
         self.messageVectors = messageVectors
     }
 
-    public static func load(from path: String) throws -> RetryVectorFile {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(RetryVectorFile.self, from: data)
-    }
 }
 
 /// One cookie vector. `mint` kind: minting with (tupleHex,

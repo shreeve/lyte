@@ -8,7 +8,7 @@ public let overlayGaugeWindowSeconds = 3.0
 /// cumulative count at each overlay tick; the answer is anchored at the oldest
 /// retained sample in the shared gauge window.
 public struct RateMeter: Sendable {
-    private var history: [(atMicroseconds: UInt64, count: UInt64)] = []
+    private var history = Deque<(atMicroseconds: UInt64, count: UInt64)>()
     private let windowMicroseconds: UInt64
 
     public init(windowSeconds: Double = overlayGaugeWindowSeconds) {
@@ -34,7 +34,7 @@ public struct RateMeter: Sendable {
     }
 
     public mutating func reset() {
-        history.removeAll(keepingCapacity: true)
+        history.removeAll()
     }
 }
 

@@ -205,6 +205,31 @@ final class ArqEndpointTests: XCTestCase {
         )
     }
 
+    /// The endpoint allocates one-shot ids itself: 1, 2, 3… after any
+    /// caller-chosen id, skipping 0 (the stream) across the u16 wrap, and
+    /// a refused send allocates nothing.
+    func testEndpointAllocatesOneShotGroupsSkippingZero() throws {
+        var a = Endpoint(channel: .videoIdle)
+        XCTAssertEqual(a.nextOneShotGroup, ArqGroupId(rawValue: 1))
+        XCTAssertEqual(
+            try a.sendOneShot(message: [1], now: at(0)), ArqGroupId(rawValue: 1)
+        )
+        XCTAssertEqual(
+            try a.sendOneShot(message: [2], now: at(0)), ArqGroupId(rawValue: 2)
+        )
+        for id: UInt16 in [0x7000, 0xE000, 0xFFFF] {
+            try a.sendOneShot(
+                message: [3], group: ArqGroupId(rawValue: id), now: at(0)
+            )
+        }
+        XCTAssertThrowsError(try a.sendOneShot(message: [], now: at(0)))
+        XCTAssertEqual(a.nextOneShotGroup, ArqGroupId(rawValue: 1))
+        XCTAssertEqual(
+            try a.sendOneShot(message: [4], now: at(0)), ArqGroupId(rawValue: 1)
+        )
+        XCTAssertEqual(a.nextOneShotGroup, ArqGroupId(rawValue: 2))
+    }
+
     func testSendRefusesEmptyAndOversized() {
         var a = Endpoint(channel: .ctrl)
         XCTAssertThrowsError(try a.send(message: [], now: at(0))) {

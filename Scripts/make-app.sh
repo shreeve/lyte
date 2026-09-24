@@ -7,6 +7,7 @@ set -e
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 . "$ROOT/Scripts/AppArtifact/app-artifact.sh"
+. "$ROOT/Scripts/lib/source-fingerprint.sh"
 
 CONFIG="${1:-release}"
 LIVE_APP="$ROOT/.build/Lyte.app"
@@ -128,18 +129,8 @@ Scripts/normalize-macos-rpaths.sh \
 
 # Exact source identity consumed by benchmark-app.sh. A signed bundle without
 # this matching fingerprint is not valid benchmark evidence.
-(
-  git ls-files --cached --others --exclude-standard -- \
-    Client/Package.swift Client/Package.resolved Client/Sources \
-    Common/Package.swift Common/Sources \
-    Wire/Package.swift Wire/Package.resolved Wire/Sources \
-    | LC_ALL=C sort \
-    | while IFS= read -r path; do
-        if [ -f "$path" ]; then
-          shasum -a 256 "$path"
-        fi
-      done
-) | shasum -a 256 | awk '{print $1}' \
+# shellcheck disable=SC2086  # the path list is space-separated by design
+lyte_source_fingerprint "$ROOT" $LYTE_CLIENT_SOURCE_PATHS \
   > "$STAGED_APP/Contents/Resources/client-source.sha256"
 date -u +%Y-%m-%dT%H:%M:%SZ \
   > "$STAGED_APP/Contents/Resources/build-utc.txt"
@@ -196,7 +187,7 @@ EOF
 # the stable identity is unavailable; the previously published app is left
 # byte-for-byte untouched on any failure before publication.
 plutil -lint "$STAGED_APP/Contents/Info.plist" >/dev/null
-"$(dirname "$0")/sign-dev.sh" \
+"$ROOT/Scripts/sign-dev.sh" \
   "$STAGED_APP/Contents/MacOS/lyte-helperd" "$STAGED_APP"
 
 # Validate the exact staged artifact before the rename-swap can replace the

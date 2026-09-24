@@ -10,7 +10,7 @@ import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-func makeControlVectorFile() throws -> ControlVectorFile {
+public func makeControlVectorFile() throws -> ControlVectorFile {
     var vectors: [ControlVector] = []
 
     // MARK: IdleFrame (0x15)
@@ -326,6 +326,25 @@ func makeControlVectorFile() throws -> ControlVectorFile {
             AudioRoutingStatus(mode: .hostMuted).encode()
         ),
         mode: .hostMuted
+    ))
+    vectors.append(ControlVector(
+        name: "routing-request-streamoff",
+        description: "type ‖ mode: [0x18, 0x04] — streamOff (key-14"
+            + " mute-at-source; 0x03 stays the pinned tombstone).",
+        kind: .roundtrip, codec: .audioRoutingRequest,
+        messageHex: Hex.string(
+            AudioRoutingRequest(mode: .streamOff).encode()
+        ),
+        mode: .streamOff
+    ))
+    vectors.append(ControlVector(
+        name: "routing-status-streamoff",
+        description: "type ‖ mode: [0x19, 0x04] — streamOff applied.",
+        kind: .roundtrip, codec: .audioRoutingStatus,
+        messageHex: Hex.string(
+            AudioRoutingStatus(mode: .streamOff).encode()
+        ),
+        mode: .streamOff
     ))
     vectors.append(ControlVector(
         name: "routing-request-truncated",

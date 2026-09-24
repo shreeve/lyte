@@ -210,6 +210,40 @@ final class AudioInteriorTests: XCTestCase {
         XCTAssertEqual(depacketizer.stats.malformedDatagrams, 3)
     }
 
+    /// A mid-group size change must not wedge the framer: abandoning
+    /// the open group lets the new size start a fresh group, and the
+    /// receiver still gets every packet, the new groups FEC-protected.
+    func testSizeChangeRecoversByAbandoningTheOpenGroup() throws {
+        let framer = AudioFramer(config: AudioFramerConfig())
+        let depacketizer = AudioDepacketizer()
+        var delivered: [UInt32] = []
+        func feed(_ n: Int, byteCount: Int, dropping dropped: Set<Int> = []) throws {
+            let datagrams = try framer.ingest(
+                packet: opusPacket(n, byteCount: byteCount),
+                captureTimestampMicroseconds: UInt64(n) * 5_000
+            )
+            for (index, datagram) in datagrams.enumerated()
+            where !dropped.contains(index) {
+                delivered += depacketizer.ingest(
+                    envelope: datagram.envelope, payload: datagram.payload
+                ).map(\.number)
+            }
+        }
+        for n in 0..<6 { try feed(n, byteCount: 80) }
+        XCTAssertThrowsError(try feed(6, byteCount: 96))
+        XCTAssertThrowsError(try feed(6, byteCount: 96), "still wedged")
+        XCTAssertTrue(framer.abandonOpenGroup())
+        XCTAssertFalse(framer.abandonOpenGroup())
+        XCTAssertEqual(framer.counters.groupsAbandoned, 1)
+        // Packet 7's own data shard is lost; parity of the new group
+        // rebuilds it.
+        for n in 6..<14 {
+            try feed(n, byteCount: 96, dropping: n == 7 ? [0] : [])
+        }
+        XCTAssertEqual(delivered.sorted(), (0..<14).map { UInt32($0) })
+        XCTAssertEqual(depacketizer.stats.packetsRebuilt, 1)
+    }
+
     // MARK: Leg 4 — the retention horizon is local policy (T2-10)
 
     /// A shard's DECLARED geometry must not move the horizon: before the

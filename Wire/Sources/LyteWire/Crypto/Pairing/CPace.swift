@@ -124,22 +124,10 @@ public enum CPace {
     public static func scalarMultVfy(
         scalar: [UInt8], element: [UInt8]
     ) -> [UInt8] {
-        guard
-            scalar.count == elementByteCount,
-            element.count == elementByteCount,
-            let privateKey = try? Curve25519.KeyAgreement.PrivateKey(
-                rawRepresentation: scalar
-            ),
-            let publicKey = try? Curve25519.KeyAgreement.PublicKey(
-                rawRepresentation: element
-            ),
-            let shared = try? privateKey.sharedSecretFromKeyAgreement(
-                with: publicKey
-            )
-        else {
-            return neutralElement
-        }
-        return shared.withUnsafeBytes { Array($0) }
+        // The Noise DH is the same X25519; every refusal it throws
+        // (wrong lengths, a point swift-crypto rejects) is G.I here.
+        (try? NoisePrimitives.dh(privateKey: scalar, publicKey: element))
+            ?? neutralElement
     }
 
     /// G.scalar_mult — same function for G_X25519 (§8.2); the alias

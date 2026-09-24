@@ -10,13 +10,18 @@ import Foundation
 import LyteWire
 
 /// One vector file: `Wire/Vectors/clipboard-images-v1.json`.
-public struct ClipboardImageVectorFile: Codable, Sendable {
+public struct ClipboardImageVectorFile: FrozenVectorFile {
     public var format: String
     public var formatVersion: Int
     public var wireVersion: Int
     public var vectors: [ClipboardImageVector]
 
     public static let expectedFormat = "lyte-wire-clipboard-image-vectors"
+    public static let fileName = "clipboard-images-v1.json"
+
+    public var vectorNameGroups: [[String]] {
+        [vectors.map(\.name)]
+    }
 
     public init(
         format: String,
@@ -30,14 +35,6 @@ public struct ClipboardImageVectorFile: Codable, Sendable {
         self.vectors = vectors
     }
 
-    public static func load(
-        from path: String
-    ) throws -> ClipboardImageVectorFile {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(
-            ClipboardImageVectorFile.self, from: data
-        )
-    }
 }
 
 /// One clipboard-image vector. `codec` names the codec under test;

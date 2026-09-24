@@ -7,7 +7,7 @@ import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-func makeLifecycleVectorFile() throws -> LifecycleVectorFile {
+public func makeLifecycleVectorFile() throws -> LifecycleVectorFile {
     var vectors: [LifecycleVector] = []
 
     // MARK: Round trips — every legal value of both codecs.

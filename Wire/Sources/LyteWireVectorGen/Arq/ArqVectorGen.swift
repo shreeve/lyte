@@ -7,7 +7,7 @@ import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-func makeArqVectorFile() throws -> ArqVectorFile {
+public func makeArqVectorFile() throws -> ArqVectorFile {
     var vectors: [ArqVector] = []
 
     func segmentFrame(

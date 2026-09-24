@@ -9,7 +9,7 @@ import Foundation
 import LyteWire
 
 /// One vector file: `Wire/Vectors/capabilities-v1.json`.
-public struct CapabilityVectorFile: Codable, Sendable {
+public struct CapabilityVectorFile: FrozenVectorFile {
     public var format: String
     public var formatVersion: Int
     public var wireVersion: Int
@@ -19,6 +19,11 @@ public struct CapabilityVectorFile: Codable, Sendable {
     public var messageVectors: [CapabilityMessageVector]
 
     public static let expectedFormat = "lyte-wire-capability-vectors"
+    public static let fileName = "capabilities-v1.json"
+
+    public var vectorNameGroups: [[String]] {
+        [cborVectors.map(\.name), setVectors.map(\.name), intersectVectors.map(\.name), messageVectors.map(\.name)]
+    }
 
     public init(
         format: String,
@@ -38,12 +43,6 @@ public struct CapabilityVectorFile: Codable, Sendable {
         self.messageVectors = messageVectors
     }
 
-    public static func load(from path: String) throws -> CapabilityVectorFile {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(
-            CapabilityVectorFile.self, from: data
-        )
-    }
 }
 
 /// One CBOR-profile vector. `canonical`: `cborHex` must decode and

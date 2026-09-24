@@ -1,6 +1,8 @@
 // Exact interleaved-PCM packet slicing against an injected graph clock.
 // Pure mechanism: no PipeWire, Opus, wire delivery, threads, or OS clock.
 
+import LyteCore
+
 /// Retains expiring capture buffers and synchronously yields exact-size PCM
 /// packets stamped by the graph-clock buffer containing each packet's first
 /// frame.
@@ -21,9 +23,13 @@ public final class InterleavedPcmSlicer {
     private let channels: Int
     private let packetFrames: Int
     private let packetSamples: Int
-    private var pending: [Float] = []
+    /// Retained PCM not yet sliced. Consuming a packet advances the
+    /// deque's head instead of moving the remaining samples.
+    private var pending: Deque<Float>
+    /// Absolute frame index of `pending`'s first sample. With the retained
+    /// frame count it is the whole frame total; nothing else counts frames.
     private var pendingStartFrame = 0
-    private var marks: [Mark] = []
+    private var marks = Deque<Mark>()
 
     public init(
         sampleRate: Int,
@@ -40,7 +46,7 @@ public final class InterleavedPcmSlicer {
         self.channels = channels
         self.packetFrames = packetFrames
         packetSamples = packetFrames * channels
-        pending.reserveCapacity(reserveSampleCapacity)
+        pending = Deque(minimumCapacity: reserveSampleCapacity)
     }
 
     public func ingest(

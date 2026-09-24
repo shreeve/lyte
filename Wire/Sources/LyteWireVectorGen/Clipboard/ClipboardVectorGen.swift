@@ -9,7 +9,7 @@ import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-func makeClipboardVectorFile() throws -> ClipboardVectorFile {
+public func makeClipboardVectorFile() throws -> ClipboardVectorFile {
     var vectors: [ClipboardVector] = []
 
     // MARK: Roundtrips — ASCII, multi-byte UTF-8, the exact ceiling

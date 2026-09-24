@@ -205,9 +205,9 @@ public struct Capabilities: Hashable, Sendable {
     public var audioExpress: Bool
     public var resume: Bool
     public var maxDatagramBytes: UInt32
-    /// Registry-unknown map entries, key-ascending (the map's
-    /// canonical order guarantees it). Every key here is outside the
-    /// v1 registry.
+    /// Registry-unknown map entries in canonical key order (decode,
+    /// `declaringFlag`, and `intersecting` all produce it). Every key
+    /// here is outside the v1 registry.
     public var unknownEntries: [CborMapEntry]
 
     public init(
@@ -414,10 +414,53 @@ public struct Capabilities: Hashable, Sendable {
             audioExpress: audioExpress && other.audioExpress,
             resume: resume && other.resume,
             maxDatagramBytes: min(maxDatagramBytes, other.maxDatagramBytes),
-            unknownEntries: unknownEntries.filter {
+            unknownEntries: Self.canonicallyOrdered(unknownEntries.filter {
                 other.unknownEntries.contains($0)
-            }
+            })
         )
+    }
+
+    // MARK: - Registry-unknown boolean flags
+
+    /// True when this set (a declaration or an agreed intersection)
+    /// carries `key: true` among its registry-unknown entries. Features
+    /// past the v1 registry declare themselves this way: the entry has
+    /// one canonical byte image (`key F5` inside the map), so it
+    /// survives intersection exactly when both ends declared it. A
+    /// `false` or wrongly-typed value reads as absent — absence and
+    /// refusal are the same posture ("not supported").
+    public func declaresFlag(_ key: UInt64) -> Bool {
+        unknownEntries.contains(Self.flagEntry(key))
+    }
+
+    /// A copy of this set declaring `key: true`, replacing any other
+    /// value under that key and keeping `unknownEntries` in canonical
+    /// key order. Idempotent.
+    public func declaringFlag(_ key: UInt64) -> Capabilities {
+        guard !declaresFlag(key) else { return self }
+        var declared = self
+        declared.unknownEntries.removeAll { $0.key == .unsigned(key) }
+        declared.unknownEntries.append(Self.flagEntry(key))
+        declared.unknownEntries = Self.canonicallyOrdered(
+            declared.unknownEntries
+        )
+        return declared
+    }
+
+    private static func flagEntry(_ key: UInt64) -> CborMapEntry {
+        CborMapEntry(key: .unsigned(key), value: .bool(true))
+    }
+
+    /// Entries in the CBOR map's canonical order (bytewise ascending
+    /// encoded keys) — the order decode produces, so equal sets compare
+    /// equal however they were built.
+    static func canonicallyOrdered(
+        _ entries: [CborMapEntry]
+    ) -> [CborMapEntry] {
+        entries
+            .map { (key: (try? Cbor.encode($0.key)) ?? [], entry: $0) }
+            .sorted { Cbor.bytewiseAscending($0.key, $1.key) }
+            .map(\.entry)
     }
 }
 

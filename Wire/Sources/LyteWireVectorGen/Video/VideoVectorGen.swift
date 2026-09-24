@@ -33,7 +33,7 @@ private struct FrameSpec {
     let includeHex: Bool
 }
 
-func makeVideoVectorFile(corpusDirectory: String) throws -> VideoVectorFile {
+public func makeVideoVectorFile(corpusDirectory: String) throws -> VideoVectorFile {
     var specs: [FrameSpec] = []
 
     // Inline synthetic frames — every geometry bucket edge the vectors

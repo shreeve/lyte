@@ -19,7 +19,7 @@ import LyteCore
 import Foundation
 import LyteWire
 
-public struct NoiseVectorFile: Codable, Sendable {
+public struct NoiseVectorFile: FrozenVectorFile {
     public var format: String
     public var formatVersion: Int
     public var wireVersion: Int
@@ -27,6 +27,11 @@ public struct NoiseVectorFile: Codable, Sendable {
     public var transportVectors: [NoiseTransportVector]
 
     public static let expectedFormat = "lyte-wire-noise-vectors"
+    public static let fileName = "noise-v1.json"
+
+    public var vectorNameGroups: [[String]] {
+        [handshakeVectors.map(\.name), transportVectors.map(\.name)]
+    }
 
     public init(
         format: String,
@@ -42,10 +47,6 @@ public struct NoiseVectorFile: Codable, Sendable {
         self.transportVectors = transportVectors
     }
 
-    public static func load(from path: String) throws -> NoiseVectorFile {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(NoiseVectorFile.self, from: data)
-    }
 }
 
 /// One external handshake vector, the standard noise-c/snow/cacophony

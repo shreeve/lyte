@@ -9,7 +9,7 @@ import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-func makeBeaconVectorFile() throws -> BeaconVectorFile {
+public func makeBeaconVectorFile() throws -> BeaconVectorFile {
     var beaconVectors: [BeaconVector] = []
     var feedbackVectors: [FeedbackVector] = []
 

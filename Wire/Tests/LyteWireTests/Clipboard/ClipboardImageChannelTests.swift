@@ -457,4 +457,62 @@ final class ClipboardImageChannelTests: XCTestCase {
         XCTAssertTrue(channel.claims(.offer(ours)))
         XCTAssertFalse(channel.claims(.offer(offer)))
     }
+
+    // MARK: Lane occupancy vs the sync book
+
+    /// A copy refused while a share is in flight must not take over the
+    /// in-flight share's book slot: when that share lands, the book
+    /// records ITS image, so re-copying the refused one still syncs.
+    func testBusyRefusedCopySyncsAfterTheInFlightShareLands() {
+        var loop = Loop()
+        var rng = CountingRng()
+        let first = patterned(2 * 65_536)
+        let second = patterned(1_500)
+        let started = loop.channels[0].shareLocalImage(
+            first, sha256: Sha256.digest(first),
+            book: &loop.books[0], rng: &rng
+        )
+        XCTAssertEqual(
+            loop.channels[0].shareLocalImage(
+                second, sha256: Sha256.digest(second),
+                book: &loop.books[0], rng: &rng
+            ),
+            [.suppressed(.sendBusy)]
+        )
+        loop.pump(started, from: 0)
+        XCTAssertEqual(loop.channels[0].counters.sharesCompleted, 1)
+
+        loop.share(second, from: 0, rng: &rng)
+        XCTAssertEqual(loop.channels[0].counters.sharesCompleted, 2)
+        XCTAssertEqual(
+            loop.events[1],
+            [
+                .applyImage(data: first, mime: "image/png"),
+                .applyImage(data: second, mime: "image/png"),
+            ]
+        )
+        // The second share moved the dedupe slot on, so the first image
+        // is shareable again.
+        let firstKey = ClipboardImageWire.bookKey(sha256: Sha256.digest(first))
+        XCTAssertEqual(loop.books[0].admitLocalChange(bytes: firstKey), .share)
+    }
+
+    /// Marker-then-violation refusals are capped like every other
+    /// refusal — a hostile peer cannot grow the refused-id set.
+    func testRefusedIdsStayBoundedOnTheViolationPath() throws {
+        var channel = ClipboardImageChannel()
+        var book = ClipboardSyncBook()
+        let ids: [UInt64] = (1...200).map { 1_000 + $0 }
+        for id in ids {
+            let cargo = try ClipboardImageCargo(transferId: id, mime: "image/png")
+            XCTAssertEqual(channel.ingestCargo(cargo), [])
+            let chunk = try BulkChunk(transferId: id, chunkIndex: 0, data: [1])
+            _ = channel.ingest(.chunk(chunk), book: &book, sha256: Sha256.digest)
+        }
+        let remembered = try ids.filter { id in
+            channel.claims(.chunk(try BulkChunk(transferId: id, chunkIndex: 0, data: [1])))
+        }
+        XCTAssertLessThanOrEqual(remembered.count, 32)
+        XCTAssertTrue(remembered.contains(ids.last!))
+    }
 }

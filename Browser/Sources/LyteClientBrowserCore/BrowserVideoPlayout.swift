@@ -1,0 +1,360 @@
+import LyteCore
+import LyteWire
+
+/// Sans-IO browser video organ: LyteWire `VideoAssembler` plus LyteCore
+/// `VideoBeatConductor` / `BoundedRendererHandoff`. Page JS owns WebCodecs
+/// decode and WebGPU present; this type never invents frames.
+///
+/// Decode and presentation are separate lifetimes. Every assembled frame's
+/// Annex-B waits in the decode backlog until the page takes it (decode order
+/// is the only order a P-frame chain allows); presentation metadata lives
+/// only while the handoff holds the frame. A frame the handoff rejects or
+/// that arrives late is still decoded for the chain but never presented.
+public struct BrowserVideoPlayout {
+    public struct ScheduledFrame: Sendable, Equatable {
+        public var frameNumber: UInt32
+        public var sourceCaptureMicroseconds: UInt64
+        public var arrivalMicroseconds: UInt64
+        public var presentationMicroseconds: UInt64
+        public var cueMicroseconds: UInt64
+        public var pathDelayMicroseconds: UInt64
+        public var reserveMicroseconds: UInt64
+        public var latenessMicroseconds: UInt64
+        public var isRandomAccess: Bool
+        public var shouldPresent: Bool
+        public var annexBByteCount: Int
+    }
+
+    public struct Counters: Sendable, Equatable {
+        public var framesAssembled: UInt64 = 0
+        public var framesPresented: UInt64 = 0
+        public var framesSkippedLate: UInt64 = 0
+        /// Frames the handoff refused or discarded (decoded, not presented).
+        public var framesNotPresentable: UInt64 = 0
+        /// Annex-B evicted because the page stopped taking decode input.
+        public var decodeBacklogEvicted: UInt64 = 0
+        public var fecImpossible: UInt64 = 0
+        /// Shards the assembler dropped (mostly late FEC surplus).
+        public var shardsDropped: UInt64 = 0
+
+        public init() {}
+    }
+
+    /// Undrained decode input is bounded: about two seconds at 60 fps.
+    public static let decodeBacklogCapacity = 120
+    /// Retry interval for an unanswered IDR request (native requester's).
+    public static let idrRetryIntervalMicroseconds: UInt64 = 500_000
+
+    private var assembler = VideoAssembler(
+        channel: .videoActive,
+        // WT + WASM ingest is slower than native UDP; groups get longer
+        // before stale eviction so paced shards can finish.
+        config: VideoAssemblerConfig(
+            holdbackFrameCount: 6,
+            staleAfterMicroseconds: 1_000_000
+        )
+    )
+    private var conductor = VideoBeatConductor()
+    private var handoff = BoundedRendererHandoff<UInt32>(
+        // The page decodes and presents asynchronously from ingest; a long
+        // deadline keeps expire() from discarding frames before WebCodecs
+        // has run.
+        config: .init(capacity: 12, deadlineMicroseconds: UInt64.max / 4)
+    )
+
+    /// Relative score map: the first assembled frame anchors host capture to
+    /// client arrival, so Conductor path delay is meaningful without a full
+    /// host clock model.
+    private var scoreZero: UInt64?
+    private var clientZero: UInt64?
+
+    private var annexBByFrame: [UInt32: [UInt8]] = [:]
+    private var decodeOrder: [UInt32] = []
+    private var decodeOrderHead = 0
+    private var scheduledByFrame: [UInt32: ScheduledFrame] = [:]
+    private var pendingEarly: ScheduledFrame?
+    public private(set) var counters = Counters()
+
+    private struct IdrEpisode {
+        var newestDamagedFrame: UInt32
+        var damageCount: UInt64
+        var lastSentMicros: UInt64?
+    }
+    private var idrEpisode: IdrEpisode?
+    private var nextIdrRequestSeq: UInt32 = 0
+
+    public init() {}
+
+    public var framesAssembled: UInt64 { counters.framesAssembled }
+    public var framesPresented: UInt64 { counters.framesPresented }
+    /// Frames whose Annex-B is still waiting for the page to take it.
+    public var decodeBacklogCount: Int { annexBByFrame.count }
+    /// Frames whose presentation metadata is still held.
+    public var presentationBacklogCount: Int {
+        scheduledByFrame.count
+    }
+    public var recoveryOutstanding: Bool { idrEpisode != nil }
+
+    /// Unsealed video shard → assembler → Conductor schedule → handoff.
+    public mutating func ingestShard(
+        envelope: Envelope,
+        payload: ArraySlice<UInt8>,
+        arrivalMicroseconds: UInt64
+    ) -> (events: [String], scheduled: [ScheduledFrame]) {
+        var notes: [String] = []
+        var newly: [ScheduledFrame] = []
+        let events = assembler.ingest(
+            envelope: envelope,
+            payload: payload,
+            now: ClientTimestamp(microseconds: arrivalMicroseconds)
+        )
+        for event in events {
+            switch event {
+            case .decoded(let unit):
+                counters.framesAssembled &+= 1
+                newly.append(schedule(unit, arrival: arrivalMicroseconds))
+            case .framesSkipped(let from, let through, let reason):
+                notes.append(
+                    "video: skipped frames \(from.rawValue)…\(through.rawValue) (\(reason))"
+                )
+                demandRecovery(frame: through.rawValue)
+            case .fecImpossible(let frame, let lost, let parity):
+                counters.fecImpossible &+= 1
+                notes.append(
+                    "video: fecImpossible frame=\(frame.rawValue) lostData=\(lost) parity=\(parity)"
+                )
+                demandRecovery(frame: frame.rawValue)
+            case .shardDropped:
+                // Routine: FEC surplus arriving after its frame completed.
+                counters.shardsDropped &+= 1
+            default:
+                break
+            }
+        }
+        return (notes, newly)
+    }
+
+    public mutating func evictStale(nowMicros: UInt64) -> [String] {
+        var notes: [String] = []
+        for event in assembler.evictStale(now: ClientTimestamp(microseconds: nowMicros)) {
+            if case .framesSkipped(let from, let through, let reason) = event {
+                notes.append(
+                    "video: stale-skip \(from.rawValue)…\(through.rawValue) (\(reason))"
+                )
+                demandRecovery(frame: through.rawValue)
+            }
+        }
+        let expired = handoff.expire(nowMicroseconds: nowMicros)
+        if expired.recoveryRequested {
+            notes.append("video: handoff expire → await IRAP")
+        }
+        absorb(expired)
+        return notes
+    }
+
+    /// Hands out an assembled frame's Annex-B exactly once, for decode.
+    public mutating func takeAnnexB(frameNumber: UInt32) -> [UInt8]? {
+        annexBByFrame.removeValue(forKey: frameNumber)
+    }
+
+    /// Pops the next handoff entry whose Conductor beat is due. Frames late
+    /// at schedule time are never shown (the page still decodes them for
+    /// the chain).
+    public mutating func popDue(nowMicros: UInt64) -> ScheduledFrame? {
+        if let early = pendingEarly {
+            guard nowMicros >= early.presentationMicroseconds else { return nil }
+            pendingEarly = nil
+            return handOff(early)
+        }
+        while let entry = handoff.popReady() {
+            guard let frame = scheduledByFrame.removeValue(forKey: entry.element) else {
+                continue
+            }
+            if !frame.shouldPresent {
+                counters.framesSkippedLate &+= 1
+                if frame.isRandomAccess {
+                    noteRandomAccessHandedOff()
+                }
+                continue
+            }
+            if nowMicros < frame.presentationMicroseconds {
+                // Not due yet: hold it outside the queue.
+                pendingEarly = frame
+                return nil
+            }
+            return handOff(frame)
+        }
+        return nil
+    }
+
+    /// Popping a frame hands it to the page's renderer; a random-access
+    /// frame handed off closes the handoff's await-IRAP episode.
+    private mutating func handOff(_ frame: ScheduledFrame) -> ScheduledFrame {
+        if frame.isRandomAccess {
+            noteRandomAccessHandedOff()
+        }
+        return frame
+    }
+
+    public mutating func notePresented(frameNumber: UInt32) {
+        counters.framesPresented &+= 1
+    }
+
+    /// The page gave up on a frame (decode failed or its bytes were gone).
+    public mutating func noteDropped(frameNumber: UInt32) {
+        annexBByFrame.removeValue(forKey: frameNumber)
+        scheduledByFrame.removeValue(forKey: frameNumber)
+        if pendingEarly?.frameNumber == frameNumber {
+            pendingEarly = nil
+        }
+    }
+
+    /// The IDR request due now, if a recovery episode is open and its last
+    /// request is older than the retry interval.
+    public mutating func idrRequestDue(nowMicros: UInt64) -> IdrRequest? {
+        guard var episode = idrEpisode else { return nil }
+        if let last = episode.lastSentMicros,
+           nowMicros &- last < Self.idrRetryIntervalMicroseconds
+        {
+            return nil
+        }
+        episode.lastSentMicros = nowMicros
+        idrEpisode = episode
+        let request = IdrRequest(
+            requestSeq: nextIdrRequestSeq,
+            frame: FrameNumber(rawValue: episode.newestDamagedFrame),
+            coalescedCount: UInt8(min(episode.damageCount, 255))
+        )
+        nextIdrRequestSeq &+= 1
+        return request
+    }
+
+    // MARK: Interior
+
+    private mutating func noteRandomAccessHandedOff() {
+        handoff.noteRandomAccessEnqueued()
+        conductor.noteRandomAccessEnqueued()
+    }
+
+    private mutating func demandRecovery(frame: UInt32) {
+        if var episode = idrEpisode {
+            episode.newestDamagedFrame = frame
+            episode.damageCount &+= 1
+            idrEpisode = episode
+        } else {
+            idrEpisode = IdrEpisode(
+                newestDamagedFrame: frame, damageCount: 1, lastSentMicros: nil
+            )
+        }
+    }
+
+    private mutating func absorb(_ outcome: BoundedRendererHandoff<UInt32>.Outcome) {
+        absorb(discarded: outcome.discarded.map(\.element),
+               recoveryRequested: outcome.recoveryRequested)
+    }
+
+    /// Discarded entries lose their presentation metadata only; their
+    /// Annex-B stays queued for decode so the reference chain holds.
+    private mutating func absorb(discarded: [UInt32], recoveryRequested: Bool) {
+        for frame in discarded {
+            if scheduledByFrame.removeValue(forKey: frame) != nil {
+                counters.framesNotPresentable &+= 1
+            }
+            if pendingEarly?.frameNumber == frame {
+                pendingEarly = nil
+            }
+        }
+        if recoveryRequested, let newest = discarded.max() {
+            demandRecovery(frame: newest)
+        }
+    }
+
+    private mutating func storeForDecode(_ frameNumber: UInt32, _ annexB: [UInt8]) {
+        annexBByFrame[frameNumber] = annexB
+        decodeOrder.append(frameNumber)
+        // Evict the oldest undrained entries past the bound; entries already
+        // taken are skipped as the head advances.
+        while annexBByFrame.count > Self.decodeBacklogCapacity,
+              decodeOrderHead < decodeOrder.count
+        {
+            let oldest = decodeOrder[decodeOrderHead]
+            decodeOrderHead += 1
+            if annexBByFrame.removeValue(forKey: oldest) != nil {
+                counters.decodeBacklogEvicted &+= 1
+                demandRecovery(frame: oldest)
+            }
+        }
+        // Compact the order log once its consumed prefix dominates.
+        if decodeOrderHead > 256, decodeOrderHead * 2 > decodeOrder.count {
+            decodeOrder.removeFirst(decodeOrderHead)
+            decodeOrderHead = 0
+        }
+        if decodeOrder.count > 4 * Self.decodeBacklogCapacity {
+            decodeOrder = decodeOrder.filter { annexBByFrame[$0] != nil }
+            decodeOrderHead = 0
+        }
+    }
+
+    private mutating func schedule(
+        _ unit: DecodeUnit, arrival: UInt64
+    ) -> ScheduledFrame {
+        let capture = unit.timestamp.microseconds
+        if scoreZero == nil {
+            scoreZero = capture
+            clientZero = arrival
+        }
+        let mapped = clientZero! &+ (capture &- scoreZero!)
+        let decision = conductor.schedule(
+            mappedCaptureMicroseconds: mapped,
+            arrivalMicroseconds: arrival,
+            sourceCaptureMicroseconds: capture,
+            isRandomAccess: unit.isIDR
+        )
+        let frame = ScheduledFrame(
+            frameNumber: unit.frameNumber.rawValue,
+            sourceCaptureMicroseconds: capture,
+            arrivalMicroseconds: arrival,
+            presentationMicroseconds: decision.presentationMicroseconds,
+            cueMicroseconds: decision.cueMicroseconds,
+            pathDelayMicroseconds: decision.pathDelayMicroseconds,
+            reserveMicroseconds: decision.reserveMicroseconds,
+            latenessMicroseconds: decision.latenessMicroseconds,
+            isRandomAccess: unit.isIDR,
+            shouldPresent: decision.latenessMicroseconds == 0,
+            annexBByteCount: unit.annexB.count
+        )
+        if unit.isIDR {
+            // A usable IRAP answers any open recovery episode.
+            idrEpisode = nil
+        }
+        storeForDecode(frame.frameNumber, unit.annexB)
+
+        if decision.shouldFlush {
+            pendingEarly = nil
+            absorb(handoff.failEpisode())
+        }
+        let outcome = handoff.offer(
+            frame.frameNumber,
+            frame: RendererFrameDescriptor(
+                isRandomAccess: unit.isIDR,
+                submittedMicroseconds: arrival
+            )
+        )
+        if outcome.accepted {
+            scheduledByFrame[frame.frameNumber] = frame
+        } else {
+            counters.framesNotPresentable &+= 1
+        }
+        absorb(
+            discarded: outcome.discarded.map(\.element)
+                .filter { $0 != frame.frameNumber },
+            recoveryRequested: outcome.recoveryRequested
+        )
+        if outcome.recoveryRequested, outcome.discarded.isEmpty == false,
+           !outcome.accepted
+        {
+            demandRecovery(frame: frame.frameNumber)
+        }
+        return frame
+    }
+}

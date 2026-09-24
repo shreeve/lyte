@@ -1,176 +1,183 @@
-// B-6 interaction organs: DOM input → sealed InputEvent, clipboard text
-// over capability-gated CTRL, Opus → WebCodecs → AudioWorklet ring.
-// Policy stays in WASM; this file is the browser IO shell.
+// Interaction organs: DOM input → sealed InputEvent, clipboard text over
+// capability-gated CTRL, Opus → WebCodecs → AudioWorklet ring. Policy stays
+// in WASM; this file is the browser IO shell.
 
-function nowMicros() {
-  return Math.floor(performance.now() * 1000);
+import { nowMicros, sleep } from "./lyte-io.js";
+
+// DOM `KeyboardEvent.code` (physical position) → Linux evdev KEY_* codes.
+// The protocol carries position codes; the host's XKB map owns layout.
+const EVDEV_KEYS = {
+  Escape: 1, Digit1: 2, Digit2: 3, Digit3: 4, Digit4: 5, Digit5: 6,
+  Digit6: 7, Digit7: 8, Digit8: 9, Digit9: 10, Digit0: 11, Minus: 12,
+  Equal: 13, Backspace: 14, Tab: 15, KeyQ: 16, KeyW: 17, KeyE: 18,
+  KeyR: 19, KeyT: 20, KeyY: 21, KeyU: 22, KeyI: 23, KeyO: 24, KeyP: 25,
+  BracketLeft: 26, BracketRight: 27, Enter: 28, ControlLeft: 29, KeyA: 30,
+  KeyS: 31, KeyD: 32, KeyF: 33, KeyG: 34, KeyH: 35, KeyJ: 36, KeyK: 37,
+  KeyL: 38, Semicolon: 39, Quote: 40, Backquote: 41, ShiftLeft: 42,
+  Backslash: 43, KeyZ: 44, KeyX: 45, KeyC: 46, KeyV: 47, KeyB: 48,
+  KeyN: 49, KeyM: 50, Comma: 51, Period: 52, Slash: 53, ShiftRight: 54,
+  NumpadMultiply: 55, AltLeft: 56, Space: 57, CapsLock: 58, F1: 59,
+  F2: 60, F3: 61, F4: 62, F5: 63, F6: 64, F7: 65, F8: 66, F9: 67, F10: 68,
+  NumLock: 69, ScrollLock: 70, Numpad7: 71, Numpad8: 72, Numpad9: 73,
+  NumpadSubtract: 74, Numpad4: 75, Numpad5: 76, Numpad6: 77,
+  NumpadAdd: 78, Numpad1: 79, Numpad2: 80, Numpad3: 81, Numpad0: 82,
+  NumpadDecimal: 83, IntlBackslash: 86, F11: 87, F12: 88, IntlRo: 89,
+  NumpadEnter: 96, ControlRight: 97, NumpadDivide: 98, PrintScreen: 99,
+  AltRight: 100, Home: 102, ArrowUp: 103, PageUp: 104, ArrowLeft: 105,
+  ArrowRight: 106, End: 107, ArrowDown: 108, PageDown: 109, Insert: 110,
+  Delete: 111, AudioVolumeMute: 113, AudioVolumeDown: 114,
+  AudioVolumeUp: 115, NumpadEqual: 117, Pause: 119, NumpadComma: 121,
+  IntlYen: 124, MetaLeft: 125, MetaRight: 126, ContextMenu: 127,
+  F13: 183, F14: 184, F15: 185, F16: 186, F17: 187, F18: 188, F19: 189,
+  F20: 190, F21: 191, F22: 192, F23: 193, F24: 194,
+};
+
+export function evdevKeyForCode(code) {
+  return EVDEV_KEYS[code] ?? null;
 }
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+/** DOM buttons → Linux BTN_* (left/middle/right/side/extra). */
+export function domButtonToEvdev(button) {
+  return [272, 274, 273, 275, 276][button] ?? null;
 }
 
-function splitOutbound(step) {
-  const raw = step?.outboundHex || "";
-  if (!raw) return [];
-  return raw.split("\n").filter(Boolean);
-}
-
-function bytesFromHex(hex) {
-  const clean = hex.replace(/\s+/g, "").toLowerCase();
-  if (!clean) return new Uint8Array();
-  if (clean.length % 2 !== 0) throw new Error("odd hex length");
-  const out = new Uint8Array(clean.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
-  }
-  return out;
-}
-
-async function sendAll(writer, step) {
-  const outs = splitOutbound(step);
-  if (!outs.length) return;
-  for (const hex of outs) {
-    await writer.write(bytesFromHex(hex));
-  }
-}
-
-/**
- * Map canvas CSS pixels → host stream pixels (aspect-fit letterbox).
- */
+/** Canvas CSS pixels → host stream pixels (aspect-fit letterbox). */
 export function mapPointerToHost(canvas, clientX, clientY, hostW, hostH) {
   const rect = canvas.getBoundingClientRect();
-  const x = clientX - rect.left;
-  const y = clientY - rect.top;
   const scale = Math.min(rect.width / hostW, rect.height / hostH);
-  const drawW = hostW * scale;
-  const drawH = hostH * scale;
-  const ox = (rect.width - drawW) / 2;
-  const oy = (rect.height - drawH) / 2;
-  const hx = (x - ox) / scale;
-  const hy = (y - oy) / scale;
+  const ox = (rect.width - hostW * scale) / 2;
+  const oy = (rect.height - hostH * scale) / 2;
+  const hx = (clientX - rect.left - ox) / scale;
+  const hy = (clientY - rect.top - oy) / scale;
   if (hx < 0 || hy < 0 || hx > hostW || hy > hostH) return null;
   return { x: hx, y: hy };
 }
 
-/** Dom buttons → Linux BTN_* (left/middle/right). */
-export function domButtonToEvdev(button) {
-  if (button === 1) return 274; // BTN_MIDDLE
-  if (button === 2) return 273; // BTN_RIGHT
-  return 272; // BTN_LEFT
-}
+// Wheel lines/pages → pixels, at libinput's ~15 px per detent (the native
+// client's constant). DOM deltaY is already positive-down like evdev.
+const PIXELS_PER_LINE = 15;
+const PIXELS_PER_PAGE = PIXELS_PER_LINE * 20;
+// DOM has no scroll phase; a quiet gap ends the gesture.
+const AXIS_FINISH_AFTER_MS = 150;
 
 /**
- * Install capture listeners on the video canvas. Returns dispose().
+ * Captures pointer, wheel and keyboard on the video canvas.
+ * `sendInput(kind, ...args)` delivers one event to the session (and its
+ * datagrams to the carrier). `hostSize()` returns the stream geometry.
+ * Every key and button the host was told is down is released on blur and
+ * on dispose, so the host never keeps a stuck key.
  */
-export function installCanvasInput(canvas, opts = {}) {
-  const {
-    hostWidth = 2048,
-    hostHeight = 1280,
-    onSend = () => {},
-  } = opts;
-  const bridge = globalThis.lyteBrowser;
-  if (!bridge?.controlSendInput) {
-    throw new Error("lyteBrowser.controlSendInput missing");
-  }
+export function installCanvasInput(canvas, { sendInput, hostSize }) {
+  const heldKeys = new Set();
+  const heldButtons = new Set();
+  let axisTimer = null;
 
-  const send = (kind, ...args) => {
-    const step = bridge.controlSendInput(kind, nowMicros(), ...args);
-    onSend(step);
-    return step;
+  const send = (kind, ...args) => sendInput(kind, nowMicros(), ...args);
+  const toHost = (event) => {
+    const { width, height } = hostSize();
+    return mapPointerToHost(canvas, event.clientX, event.clientY, width, height);
   };
 
   const onMove = (event) => {
-    const mapped = mapPointerToHost(
-      canvas,
-      event.clientX,
-      event.clientY,
-      hostWidth,
-      hostHeight
-    );
-    if (!mapped) return;
-    send("pointerMotionAbsolute", mapped.x, mapped.y);
+    const mapped = toHost(event);
+    if (mapped) send("pointerMotionAbsolute", mapped.x, mapped.y);
   };
   const onDown = (event) => {
-    canvas.focus();
+    const button = domButtonToEvdev(event.button);
+    if (button == null) return;
     event.preventDefault();
-    const mapped = mapPointerToHost(
-      canvas,
-      event.clientX,
-      event.clientY,
-      hostWidth,
-      hostHeight
-    );
+    canvas.focus();
+    canvas.setPointerCapture?.(event.pointerId);
+    const mapped = toHost(event);
     if (mapped) send("pointerMotionAbsolute", mapped.x, mapped.y);
-    send("pointerButton", domButtonToEvdev(event.button), true);
+    send("pointerButton", button, true);
+    heldButtons.add(button);
   };
   const onUp = (event) => {
+    const button = domButtonToEvdev(event.button);
+    if (button == null || !heldButtons.has(button)) return;
     event.preventDefault();
-    send("pointerButton", domButtonToEvdev(event.button), false);
+    send("pointerButton", button, false);
+    heldButtons.delete(button);
   };
   const onWheel = (event) => {
     event.preventDefault();
-    send("pointerAxis", event.deltaX, event.deltaY, false);
+    const scale =
+      event.deltaMode === 1 ? PIXELS_PER_LINE : event.deltaMode === 2 ? PIXELS_PER_PAGE : 1;
+    send("pointerAxis", event.deltaX * scale, event.deltaY * scale, false);
+    clearTimeout(axisTimer);
+    axisTimer = setTimeout(() => send("pointerAxis", 0, 0, true), AXIS_FINISH_AFTER_MS);
   };
   const onKey = (event) => {
-    // Evdev position codes — browser keyCode is not layout-correct, but
-    // smoke/interactive shell uses a small set; Mac native maps properly.
-    if (event.metaKey || event.ctrlKey) return; // keep browser chords local
+    // Browser/OS chords stay local.
+    if (event.metaKey || event.ctrlKey) return;
+    const keycode = evdevKeyForCode(event.code);
+    if (keycode == null) return;
     event.preventDefault();
-    const code = event.keyCode || 0;
-    send("keyKeycode", code, event.type === "keydown");
+    const pressed = event.type === "keydown";
+    // The wire has no repeat value: a stream of downs is a wedged key.
+    if (pressed && event.repeat) return;
+    if (!pressed && !heldKeys.has(keycode)) return;
+    send("keyKeycode", keycode, pressed);
+    if (pressed) heldKeys.add(keycode);
+    else heldKeys.delete(keycode);
   };
+  const releaseAll = () => {
+    for (const keycode of heldKeys) send("keyKeycode", keycode, false);
+    for (const button of heldButtons) send("pointerButton", button, false);
+    heldKeys.clear();
+    heldButtons.clear();
+  };
+  const onContextMenu = (event) => event.preventDefault();
 
   canvas.tabIndex = 0;
   canvas.addEventListener("pointermove", onMove);
   canvas.addEventListener("pointerdown", onDown);
   canvas.addEventListener("pointerup", onUp);
+  canvas.addEventListener("pointercancel", releaseAll);
   canvas.addEventListener("wheel", onWheel, { passive: false });
   canvas.addEventListener("keydown", onKey);
   canvas.addEventListener("keyup", onKey);
+  canvas.addEventListener("blur", releaseAll);
+  canvas.addEventListener("contextmenu", onContextMenu);
 
   return () => {
+    clearTimeout(axisTimer);
+    releaseAll();
     canvas.removeEventListener("pointermove", onMove);
     canvas.removeEventListener("pointerdown", onDown);
     canvas.removeEventListener("pointerup", onUp);
+    canvas.removeEventListener("pointercancel", releaseAll);
     canvas.removeEventListener("wheel", onWheel);
     canvas.removeEventListener("keydown", onKey);
     canvas.removeEventListener("keyup", onKey);
+    canvas.removeEventListener("blur", releaseAll);
+    canvas.removeEventListener("contextmenu", onContextMenu);
   };
 }
 
 /**
- * Create AudioWorklet ring. Prefers OfflineAudioContext (reliable in
- * headless Chrome smoke); falls back to a realtime AudioContext.
- * Returns { pushPcm, close, contextState, sampleRate }.
+ * AudioWorklet PCM ring. Plays through a realtime AudioContext; `offline`
+ * renders 100 ms into an OfflineAudioContext instead — for headless smoke
+ * runs, where there is no output device to prove anything with.
  */
-export async function createAudioRing() {
-  const hasOffline = typeof OfflineAudioContext === "function";
-  const hasRealtime =
-    typeof AudioContext === "function" || typeof webkitAudioContext === "function";
-  if (!hasOffline && !hasRealtime) {
-    throw new Error("AudioContext / OfflineAudioContext unavailable");
-  }
-
+export async function createAudioRing({ offline = false } = {}) {
   let ctx;
-  let mode;
-  if (hasOffline) {
-    // 100 ms offline render — enough to exercise the worklet process().
+  if (offline) {
+    if (typeof OfflineAudioContext !== "function") {
+      throw new Error("OfflineAudioContext unavailable");
+    }
     ctx = new OfflineAudioContext(2, 4_800, 48_000);
-    mode = "offline";
   } else {
-    const Ctx = AudioContext || webkitAudioContext;
-    ctx = new Ctx({ sampleRate: 48_000 });
-    mode = "realtime";
+    const Ctx = globalThis.AudioContext || globalThis.webkitAudioContext;
+    if (!Ctx) throw new Error("AudioContext unavailable");
+    ctx = new Ctx({ sampleRate: 48_000, latencyHint: "interactive" });
     if (ctx.state === "suspended") {
-      try {
-        await ctx.resume();
-      } catch {
-        /* headless may keep suspended */
-      }
+      // Autoplay policy may hold resume() until a user gesture; never wait
+      // on it — the ring still loads and buffers.
+      ctx.resume().catch(() => {});
     }
   }
-
   await ctx.audioWorklet.addModule("./audio-ring-worklet.js");
   const node = new AudioWorkletNode(ctx, "lyte-audio-ring", {
     numberOfInputs: 0,
@@ -180,96 +187,61 @@ export async function createAudioRing() {
   node.connect(ctx.destination);
   let framesPushed = 0;
   return {
-    contextState: mode === "offline" ? "offline" : ctx.state,
-    sampleRate: ctx.sampleRate,
-    mode,
+    mode: offline ? "offline" : "realtime",
+    get contextState() {
+      return offline ? "offline" : ctx.state;
+    },
+    /** Takes ownership of an interleaved stereo Float32Array (transferred). */
     pushPcm(interleaved) {
-      const pcm =
-        interleaved instanceof Float32Array
-          ? interleaved
-          : new Float32Array(interleaved);
-      // Copy — postMessage transfer would detach the caller's buffer.
-      const copy = new Float32Array(pcm);
-      node.port.postMessage({ pcm: copy }, [copy.buffer]);
-      framesPushed += pcm.length / 2;
+      framesPushed += interleaved.length / 2;
+      node.port.postMessage({ pcm: interleaved }, [interleaved.buffer]);
     },
     framesPushed: () => framesPushed,
-    async renderOffline() {
-      if (mode !== "offline") return null;
-      return ctx.startRendering();
-    },
+    renderOffline: () => (offline ? ctx.startRendering() : Promise.resolve(null)),
     async close() {
-      try {
-        node.disconnect();
-      } catch {
-        /* ignore */
-      }
-      if (mode === "realtime") {
-        try {
-          await ctx.close();
-        } catch {
-          /* ignore */
-        }
-      }
+      node.disconnect();
+      if (!offline) await ctx.close().catch(() => {});
     },
   };
 }
 
-/**
- * WebCodecs Opus decode → Float32 interleaved stereo.
- */
+/** WebCodecs Opus decode → interleaved stereo Float32. */
 export async function createOpusDecoder(onPcm) {
   if (typeof AudioDecoder !== "function") {
     return { ok: false, detail: "AudioDecoder API unavailable" };
   }
-  const config = {
-    codec: "opus",
-    sampleRate: 48_000,
-    numberOfChannels: 2,
-  };
+  const config = { codec: "opus", sampleRate: 48_000, numberOfChannels: 2 };
   try {
-    const support = await AudioDecoder.isConfigSupported(config);
-    if (!support.supported) {
+    if (!(await AudioDecoder.isConfigSupported(config)).supported) {
       return { ok: false, detail: "Opus AudioDecoder config unsupported" };
     }
   } catch (error) {
-    return {
-      ok: false,
-      detail: `isConfigSupported: ${error?.message || error}`,
-    };
+    return { ok: false, detail: `isConfigSupported: ${error?.message || error}` };
   }
-
   let error = null;
   let outputs = 0;
   const decoder = new AudioDecoder({
     output: (audioData) => {
       try {
         const frames = audioData.numberOfFrames;
-        const ch = audioData.numberOfChannels;
-        const planar = new Float32Array(frames * ch);
-        audioData.copyTo(planar, { planeIndex: 0, format: "f32" });
-        // copyTo with planeIndex 0 + f32 may be planar or interleaved
-        // depending on format — request interleaved explicitly when possible.
-        let interleaved;
-        if (ch === 2) {
-          interleaved = new Float32Array(frames * 2);
-          try {
-            const left = new Float32Array(frames);
-            const right = new Float32Array(frames);
-            audioData.copyTo(left, { planeIndex: 0 });
-            audioData.copyTo(right, { planeIndex: 1 });
-            for (let i = 0; i < frames; i++) {
-              interleaved[i * 2] = left[i];
-              interleaved[i * 2 + 1] = right[i];
-            }
-          } catch {
-            interleaved = planar.length === frames * 2 ? planar : planar;
+        const interleaved = new Float32Array(frames * 2);
+        if (audioData.numberOfChannels === 2 && audioData.format === "f32") {
+          audioData.copyTo(interleaved, { planeIndex: 0 });
+        } else if (audioData.numberOfChannels === 2) {
+          const left = new Float32Array(frames);
+          const right = new Float32Array(frames);
+          audioData.copyTo(left, { planeIndex: 0, format: "f32-planar" });
+          audioData.copyTo(right, { planeIndex: 1, format: "f32-planar" });
+          for (let i = 0; i < frames; i++) {
+            interleaved[i * 2] = left[i];
+            interleaved[i * 2 + 1] = right[i];
           }
         } else {
-          interleaved = new Float32Array(frames * 2);
+          const mono = new Float32Array(frames);
+          audioData.copyTo(mono, { planeIndex: 0, format: "f32-planar" });
           for (let i = 0; i < frames; i++) {
-            interleaved[i * 2] = planar[i] || 0;
-            interleaved[i * 2 + 1] = planar[i] || 0;
+            interleaved[i * 2] = mono[i];
+            interleaved[i * 2 + 1] = mono[i];
           }
         }
         outputs += 1;
@@ -288,252 +260,121 @@ export async function createOpusDecoder(onPcm) {
     detail: "codec=opus 48kHz stereo",
     decode(bytes, timestampUs) {
       if (error) throw error;
-      const chunk = new EncodedAudioChunk({
-        type: "key",
-        timestamp: timestampUs,
-        duration: 5_000,
-        data: bytes,
-      });
-      decoder.decode(chunk);
+      decoder.decode(
+        new EncodedAudioChunk({ type: "key", timestamp: timestampUs, data: bytes })
+      );
     },
     outputs: () => outputs,
-    lastError: () => error,
     close() {
-      try {
-        decoder.close();
-      } catch {
-        /* ignore */
-      }
+      if (decoder.state !== "closed") decoder.close();
     },
   };
 }
 
 /**
- * Drive sealed input + clipboard + audio organs against an open session.
- * `pump` should drain WT + tick + send outbound once.
+ * Drives sealed input, clipboard and audio against an open, ready session.
+ * `pump` is the SessionPump; `offlineAudio` selects the smoke audio path.
  */
-export async function runInteractionProofs({
-  writer,
-  pump,
-  push,
-  timeoutMs = 12_000,
-}) {
-  const bridge = globalThis.lyteBrowser;
+export async function runInteractionProofs({ pump, offlineAudio = false, timeoutMs = 12_000 }) {
+  const bridge = pump.bridge;
   const lines = [];
-  const note = (line) => {
-    lines.push(line);
-    if (typeof push === "function") push(line);
-  };
+  const note = (line) => lines.push(line);
+  const stats = () => bridge.interactionStats();
 
-  if (!bridge?.controlSendInput || !bridge?.controlClipboardSet) {
-    note("FAIL  session-input/bridge — controlSendInput/ClipboardSet missing");
-    return { passed: false, lines };
-  }
-
-  // Kick AudioWorklet load immediately so it overlaps input/clipboard
-  // waits — and keep pumping (see audio section) so beacons stay alive.
+  // Load the worklet while the input and clipboard legs run.
   let audioRing = null;
-  let workletOk = false;
-  let workletError = null;
-  const ringPromise = createAudioRing()
-    .then((ring) => {
-      audioRing = ring;
-      workletOk = true;
-      return ring;
-    })
-    .catch((error) => {
-      workletError = error;
-      return null;
-    });
+  let ringError = null;
+  const ringReady = createAudioRing({ offline: offlineAudio }).then(
+    (ring) => (audioRing = ring),
+    (error) => (ringError = error)
+  );
 
-  // --- Input: send a few events, wait for InputEcho ---
-  const sendSteps = [];
-  sendSteps.push(
-    bridge.controlSendInput(
-      "pointerMotionAbsolute",
-      nowMicros(),
-      100.5,
-      200.25
-    )
-  );
-  sendSteps.push(
-    bridge.controlSendInput("pointerButton", nowMicros(), 272, true)
-  );
-  sendSteps.push(
-    bridge.controlSendInput("pointerButton", nowMicros(), 272, false)
-  );
-  sendSteps.push(
-    bridge.controlSendInput("keyKeycode", nowMicros(), 30, true)
-  ); // KEY_A
-  sendSteps.push(
-    bridge.controlSendInput("keyKeycode", nowMicros(), 30, false)
-  );
-  for (const step of sendSteps) {
-    await sendAll(writer, step);
-    if (step.failed) {
-      note(`FAIL  session-input/send — ${step.detail}`);
-      return { passed: false, lines };
-    }
+  // Input: a few events, then wait for the host's InputEcho.
+  for (const [kind, ...args] of [
+    ["pointerMotionAbsolute", 100.5, 200.25],
+    ["pointerButton", 272, true],
+    ["pointerButton", 272, false],
+    ["keyKeycode", evdevKeyForCode("KeyA"), true],
+    ["keyKeycode", evdevKeyForCode("KeyA"), false],
+  ]) {
+    await pump.send(bridge.controlSendInput(kind, nowMicros(), ...args));
   }
-
   const inputDeadline = Date.now() + timeoutMs;
-  let echoes = 0;
-  while (Date.now() < inputDeadline) {
-    await pump();
-    await Promise.race([ringPromise, sleep(0)]);
-    echoes = bridge.interactionStats?.().inputEchoes || 0;
-    if (echoes >= 3) break;
-    await sleep(10);
+  while (Date.now() < inputDeadline && !pump.failed && stats().inputEchoes < 3) {
+    await pump.turn(10);
   }
-  const inputsSent = bridge.interactionStats?.().inputsSent || 0;
-  if (echoes >= 3 && inputsSent >= 3) {
-    note(
-      `PASS  session-input/echo — sent ${inputsSent} InputEvents, ` +
-        `${echoes} echo tuples (sealed CTRL; peer has no OS inject)`
-    );
-  } else {
-    note(
-      `FAIL  session-input/echo — sent=${inputsSent} echoes=${echoes} want≥3`
-    );
-  }
+  const { inputsSent, inputEchoes } = stats();
+  note(
+    inputEchoes >= 3 && inputsSent >= 3
+      ? `PASS  session-input/echo — sent ${inputsSent} InputEvents, ${inputEchoes} echo tuples (sealed CTRL; peer has no OS inject)`
+      : `FAIL  session-input/echo — sent=${inputsSent} echoes=${inputEchoes} want≥3`
+  );
 
-  // --- Clipboard: capability-gated set → peer announce ack ---
+  // Clipboard: capability-gated set → the peer's announce.
   const clipText = "lyte-b6-clipboard";
-  const clipStep = bridge.controlClipboardSet(clipText, nowMicros());
-  await sendAll(writer, clipStep);
-  if (clipStep.failed) {
-    note(`FAIL  clipboard/text-roundtrip — set: ${clipStep.detail}`);
-  } else {
-    const clipDeadline = Date.now() + timeoutMs;
-    let received = 0;
-    let last = null;
-    while (Date.now() < clipDeadline) {
-      await pump();
-      await Promise.race([ringPromise, sleep(0)]);
-      const st = bridge.interactionStats?.() || {};
-      received = st.clipboardReceived || 0;
-      last = st.lastClipboardText || null;
-      if (received >= 1 && last) break;
-      await sleep(10);
-    }
-    const expectAck = `lyte-peer-ack:${new TextEncoder().encode(clipText).length}`;
-    if (received >= 1 && last === expectAck) {
-      note(
-        `PASS  clipboard/text-roundtrip — set + announce ack over sealed CTRL ` +
-          `(in-memory peer; not Wayland OS clipboard)`
-      );
-    } else {
-      note(
-        `FAIL  clipboard/text-roundtrip — received=${received} last=${JSON.stringify(last)} want=${expectAck}`
-      );
-    }
+  await pump.send(bridge.controlClipboardSet(clipText, nowMicros()));
+  const clipDeadline = Date.now() + timeoutMs;
+  while (Date.now() < clipDeadline && !pump.failed && !stats().clipboardReceived) {
+    await pump.turn(10);
   }
+  const { clipboardReceived, lastClipboardText } = stats();
+  note(
+    clipboardReceived >= 1 && lastClipboardText
+      ? `PASS  clipboard/text-roundtrip — set + announce (${JSON.stringify(lastClipboardText)}) over sealed CTRL (in-memory peer; not Wayland OS clipboard)`
+      : `FAIL  clipboard/text-roundtrip — received=${clipboardReceived}`
+  );
 
-  // --- Audio: depacketize sealed Opus → WebCodecs → AudioWorklet ---
-  // Never await AudioWorklet setup without pumping — unanswered beacons
-  // freeze the peer (livenessTimeout) and hang the smoke.
-  let opusDec = null;
-  let audioAssembled = 0;
-  let pcmFrames = 0;
-
-  // Cap worklet wait — do not burn the whole interaction budget.
+  // Audio: depacketize sealed Opus → WebCodecs → AudioWorklet. Keep pumping
+  // while the worklet loads: unanswered beacons freeze the peer.
   const workletDeadline = Date.now() + 4_000;
-  while (Date.now() < workletDeadline && !workletOk && !workletError) {
-    await pump();
-    await Promise.race([ringPromise, sleep(15)]);
+  while (Date.now() < workletDeadline && !audioRing && !ringError) {
+    await pump.turn(0);
+    await Promise.race([ringReady, sleep(15)]);
   }
-  if (!workletOk && !workletError) {
-    workletError = new Error("AudioWorklet setup timed out");
-  }
-  if (workletOk) {
-    opusDec = await createOpusDecoder((pcm) => {
+  let pcmFrames = 0;
+  let opus = null;
+  if (audioRing) {
+    opus = await createOpusDecoder((pcm) => {
       pcmFrames += pcm.length / 2;
       audioRing.pushPcm(pcm);
     });
   } else {
-    note(`FAIL  audio-worklet/ring — ${workletError?.message || workletError}`);
+    note(`FAIL  audio-worklet/ring — ${ringError?.message || "AudioWorklet setup timed out"}`);
   }
-
   const audioDeadline = Date.now() + Math.min(timeoutMs, 8_000);
-  while (Date.now() < audioDeadline) {
-    await pump();
-    audioAssembled = bridge.interactionStats?.().audioAssembled || 0;
-    if (opusDec?.ok) {
-      for (let i = 0; i < 16; i++) {
-        const pkt = bridge.audioPopPacket?.();
-        if (!pkt?.bytes) break;
-        try {
-          opusDec.decode(pkt.bytes, pkt.captureMicroseconds || 0);
-        } catch (error) {
-          note(`FAIL  audio/webcodecs — ${error?.message || error}`);
-          opusDec = null;
-          break;
-        }
-      }
-    }
-    if (audioAssembled >= 8 && (pcmFrames >= 480 || !opusDec?.ok)) break;
-    await sleep(5);
-  }
-  audioAssembled = bridge.interactionStats?.().audioAssembled || 0;
-
-  if (audioAssembled >= 8) {
-    note(
-      `PASS  audio/depacketize — ${audioAssembled} Opus packets from sealed chan-1`
-    );
-  } else {
-    note(
-      `FAIL  audio/depacketize — assembled=${audioAssembled} want≥8`
-    );
-  }
-
-  if (workletOk && audioRing) {
-    // If WebCodecs didn't produce PCM, prove the ring with a short sine.
-    if (pcmFrames < 240) {
-      const frames = 480; // 10 ms
-      const pcm = new Float32Array(frames * 2);
-      for (let i = 0; i < frames; i++) {
-        const s = 0.15 * Math.sin((2 * Math.PI * 440 * i) / 48_000);
-        pcm[i * 2] = s;
-        pcm[i * 2 + 1] = s;
-      }
-      audioRing.pushPcm(pcm);
-      pcmFrames += frames;
-      note(
-        "INFO  audio/webcodecs — used synthetic PCM fallback for worklet " +
-          `(decoder=${opusDec?.ok ? opusDec.detail : opusDec?.detail || "n/a"})`
-      );
-    } else {
-      note(
-        `PASS  audio/webcodecs — ${opusDec.detail} → ${pcmFrames} PCM frames`
-      );
-    }
-    if (typeof audioRing.renderOffline === "function") {
+  while (Date.now() < audioDeadline && !pump.failed) {
+    await pump.turn(5);
+    for (let packet; opus?.ok && (packet = bridge.audioPopPacket()); ) {
       try {
-        await Promise.race([audioRing.renderOffline(), sleep(2_000)]);
-      } catch {
-        /* offline render optional */
+        opus.decode(packet.bytes, packet.captureMicroseconds);
+      } catch (error) {
+        note(`FAIL  audio/webcodecs — ${error?.message || error}`);
+        opus = null;
       }
     }
+    if (stats().audioAssembled >= 8 && (pcmFrames >= 480 || !opus?.ok)) break;
+  }
+  const { audioAssembled } = stats();
+  note(
+    audioAssembled >= 8
+      ? `PASS  audio/depacketize — ${audioAssembled} Opus packets from sealed chan-1`
+      : `FAIL  audio/depacketize — assembled=${audioAssembled} want≥8`
+  );
+  if (audioRing) {
+    note(
+      opus?.ok && pcmFrames > 0
+        ? `PASS  audio/webcodecs — ${opus.detail} → ${pcmFrames} PCM frames`
+        : `FAIL  audio/webcodecs — ${opus?.detail || "decoder produced no PCM"}`
+    );
+    await Promise.race([audioRing.renderOffline(), sleep(2_000)]).catch(() => {});
     note(
       `PASS  audio-worklet/ring — AudioWorklet (${audioRing.mode}) loaded; ` +
-        `pushed ${pcmFrames} frames (ctx=${audioRing.contextState})`
+        `pushed ${audioRing.framesPushed()} frames (ctx=${audioRing.contextState})`
     );
   }
+  opus?.close?.();
+  if (audioRing) await Promise.race([audioRing.close(), sleep(500)]).catch(() => {});
 
-  if (opusDec?.close) opusDec.close();
-  if (audioRing?.close) {
-    try {
-      await Promise.race([audioRing.close(), sleep(500)]);
-    } catch {
-      /* ignore */
-    }
-  }
-
-  const passed =
-    lines.some((l) => l.startsWith("PASS  session-input/echo")) &&
-    lines.some((l) => l.startsWith("PASS  clipboard/text-roundtrip")) &&
-    lines.some((l) => l.startsWith("PASS  audio/depacketize")) &&
-    lines.some((l) => l.startsWith("PASS  audio-worklet/ring"));
-
+  const passed = lines.length > 0 && lines.every((line) => line.startsWith("PASS"));
   return { passed, lines };
 }

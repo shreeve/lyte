@@ -7,13 +7,18 @@ import Foundation
 import LyteWire
 
 /// One vector file: `Wire/Vectors/repair-refusal-v1.json`.
-public struct RepairRefusalVectorFile: Codable, Sendable {
+public struct RepairRefusalVectorFile: FrozenVectorFile {
     public var format: String
     public var formatVersion: Int
     public var wireVersion: Int
     public var vectors: [RepairRefusalVector]
 
     public static let expectedFormat = "lyte-wire-repair-refusal-vectors"
+    public static let fileName = "repair-refusal-v1.json"
+
+    public var vectorNameGroups: [[String]] {
+        [vectors.map(\.name)]
+    }
 
     public init(
         format: String,
@@ -27,10 +32,6 @@ public struct RepairRefusalVectorFile: Codable, Sendable {
         self.vectors = vectors
     }
 
-    public static func load(from path: String) throws -> RepairRefusalVectorFile {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(RepairRefusalVectorFile.self, from: data)
-    }
 }
 
 /// One repair-refusal vector. Kinds match the session file (`roundtrip`

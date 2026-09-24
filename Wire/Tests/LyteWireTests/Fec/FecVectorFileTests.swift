@@ -10,24 +10,14 @@ import LyteWireTestKit
 
 final class FecVectorFileTests: XCTestCase {
 
-    private static let vectorsPath = packageRoot + "/Vectors/fec-v1.json"
-
-    private static let packageRoot = WireTestPaths.packageRoot
-
     private func loadFile() throws -> FecVectorFile {
-        try FecVectorFile.load(from: Self.vectorsPath)
+        try FecVectorFile.loadCommitted()
     }
 
     func testFileIdentity() throws {
         let file = try loadFile()
-        XCTAssertEqual(file.format, FecVectorFile.expectedFormat)
-        XCTAssertEqual(file.formatVersion, 1)
-        XCTAssertEqual(file.wireVersion, Int(WireVersion.major))
-        XCTAssertFalse(file.fieldVectors.isEmpty)
+        XCTAssertEqual(file.identityProblems, [])
         XCTAssertFalse(file.geometryRows.isEmpty)
-        XCTAssertFalse(file.recoveryMatrices.isEmpty)
-        let names = file.fieldVectors.map(\.name) + file.recoveryMatrices.map(\.name)
-        XCTAssertEqual(Set(names).count, names.count, "vector names must be unique")
     }
 
     func testFieldVectors() throws {

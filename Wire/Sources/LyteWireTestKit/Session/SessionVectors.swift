@@ -8,13 +8,18 @@ import Foundation
 import LyteWire
 
 /// One vector file: `Wire/Vectors/session-v1.json`.
-public struct SessionVectorFile: Codable, Sendable {
+public struct SessionVectorFile: FrozenVectorFile {
     public var format: String
     public var formatVersion: Int
     public var wireVersion: Int
     public var vectors: [SessionVector]
 
     public static let expectedFormat = "lyte-wire-session-vectors"
+    public static let fileName = "session-v1.json"
+
+    public var vectorNameGroups: [[String]] {
+        [vectors.map(\.name)]
+    }
 
     public init(
         format: String,
@@ -28,10 +33,6 @@ public struct SessionVectorFile: Codable, Sendable {
         self.vectors = vectors
     }
 
-    public static func load(from path: String) throws -> SessionVectorFile {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(SessionVectorFile.self, from: data)
-    }
 }
 
 /// One session-codec vector. `codec` names the codec under test; kinds

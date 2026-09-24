@@ -205,13 +205,9 @@ public final class AudioDepacketizer {
 
         out += recoverIfPossible(&group, groupId: groupId)
 
-        if group.missingDataIndices.isEmpty {
-            // Every data packet is out; the group only lingers to
-            // absorb late duplicates, which the horizon handles.
-            groups[groupId] = group
-        } else {
-            groups[groupId] = group
-        }
+        // A group whose data packets are all out still lingers, to absorb
+        // late duplicates until the horizon evicts it.
+        groups[groupId] = group
         return out
     }
 

@@ -111,7 +111,7 @@ for target in "$@"; do
         | awk -F= '/^Identifier=/{print $2; exit}')"
     requirement="$(codesign -d -r- "$target" 2>&1)"
     stable_requirement=false
-    if ! printf '%s\n' "$requirement" | rg -Fq "identifier \"$ident\""; then
+    if ! printf '%s\n' "$requirement" | grep -Fq "identifier \"$ident\""; then
         stable_requirement=false
     elif [ "$IDENTITY_KIND" = apple ]; then
         actual_team="$(printf '%s\n' "$signature_details" \
@@ -121,14 +121,14 @@ for target in "$@"; do
         fi
         if [ -n "$actual_team" ] \
             && { [ -z "$SELECTED_TEAM" ] || [ "$SELECTED_TEAM" = "$actual_team" ]; } \
-            && printf '%s\n' "$requirement" | rg -Fq 'anchor apple generic' \
-            && printf '%s\n' "$requirement" | rg -Fq \
+            && printf '%s\n' "$requirement" | grep -Fq 'anchor apple generic' \
+            && printf '%s\n' "$requirement" | grep -Fq \
                 "certificate leaf[subject.CN] = \"$IDENTITY\""
         then
             SELECTED_TEAM="$actual_team"
             stable_requirement=true
         fi
-    elif printf '%s\n' "$requirement" | rg -Fq \
+    elif printf '%s\n' "$requirement" | grep -Fq \
         "certificate root = H\"$(printf '%s' "$IDENT_HASH" | tr '[:upper:]' '[:lower:]')\""
     then
         stable_requirement=true

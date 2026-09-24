@@ -1,37 +1,27 @@
-// Browser-edge WebTransport datagram pump for B-2.
-// Carrier only: moves opaque bytes. LyteWire / Noise stay in WASM.
+// WebTransport carrier proof (sidecar echo mode): opaque Lyte-shaped
+// datagrams round-trip WebTransport↔UDP and WASM verifies the bytes.
+// Carrier only; LyteWire / Noise stay in WASM.
 
-const LYTE_BUDGET = 1152;
+import { bytesFromHex, DatagramReader, hexFromBytes, openWebTransport } from "./lyte-io.js";
 
-function hexFromBytes(bytes) {
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-function bytesFromHex(hex) {
-  const clean = hex.replace(/\s+/g, "").toLowerCase();
-  if (clean.length % 2 !== 0) throw new Error("odd hex length");
-  const out = new Uint8Array(clean.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
-  }
-  return out;
-}
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
+/**
+ * Sends `payload` until an echo of the same shape arrives. Stale echoes of
+ * earlier probes are drained first and never matched.
+ */
 async function echoOnce(writer, reader, payload, attempts = 40, waitMs = 40) {
-  const inbound = reader.read().then((r) => r.value);
-  let echoed;
-  for (let a = 0; a < attempts && !echoed; a++) {
+  reader.take();
+  for (let a = 0; a < attempts; a++) {
     await writer.write(payload);
-    echoed = await Promise.race([
-      inbound,
-      sleep(waitMs).then(() => undefined),
-    ]);
+    const deadline = performance.now() + waitMs;
+    while (performance.now() < deadline) {
+      await reader.wait(deadline - performance.now());
+      for (const datagram of reader.take()) {
+        if (datagram.length === payload.length && datagram[0] === payload[0]) return datagram;
+      }
+      if (reader.done) return undefined;
+    }
   }
-  return echoed;
+  return undefined;
 }
 
 async function measureCeiling(writer, reader, maxProbe = 1600) {
@@ -81,27 +71,16 @@ export async function runWebTransportCarrierProof(meta) {
   if (!meta?.url || !meta?.hashHex) {
     throw new Error("wt-sidecar metadata missing url/hashHex");
   }
-  if (typeof WebTransport !== "function") {
-    throw new Error("WebTransport API unavailable in this browser");
-  }
-
-  const hash = bytesFromHex(meta.hashHex);
-  const wt = new WebTransport(meta.url, {
-    serverCertificateHashes: [{ algorithm: "sha-256", value: hash }],
-  });
-  await wt.ready;
-
+  const wt = await openWebTransport(meta);
   const reportedMax = wt.datagrams.maxDatagramSize;
   const writer = wt.datagrams.writable.getWriter();
-  const reader = wt.datagrams.readable.getReader();
+  const reader = new DatagramReader(wt.datagrams.readable);
 
   const lines = [];
   const checks = [];
 
   // 1) Frozen envelope framing bytes (opaque to the sidecar).
-  const envelopeHex =
-    globalThis.lyteBrowser?.envelopeVectorHex ||
-    "020034120d0c0b0a080706050403020188776655443322116c797465";
+  const envelopeHex = globalThis.lyteBrowser.envelopeVectorHex;
   const envelopeSent = bytesFromHex(envelopeHex);
   const envelopeRecv = await echoOnce(writer, reader, envelopeSent);
   const envelopeHexRecv = envelopeRecv ? hexFromBytes(envelopeRecv) : "";
@@ -136,7 +115,7 @@ export async function runWebTransportCarrierProof(meta) {
   }
 
   // 3) Full Lyte wire budget (1152 B) of opaque patterned bytes.
-  const budget = Number(globalThis.lyteBrowser?.wireBudgetBytes) || LYTE_BUDGET;
+  const budget = Number(globalThis.lyteBrowser.wireBudgetBytes);
   const budgetPayload = new Uint8Array(budget);
   for (let i = 0; i < budget; i++) budgetPayload[i] = (i * 7 + 13) & 0xff;
   const budgetRecv = await echoOnce(writer, reader, budgetPayload, 50, 40);
@@ -161,10 +140,11 @@ export async function runWebTransportCarrierProof(meta) {
       : `FAIL  wt-carrier/ceiling — measured ${measuredCeiling} B < Lyte budget ${budget} B (reported maxDatagramSize=${reportedMax})`
   );
 
+  await reader.cancel();
   try {
-    wt.close({ closeCode: 0, reason: "b2-done" });
+    wt.close({ closeCode: 0, reason: "carrier-proof-done" });
   } catch {
-    /* ignore */
+    /* already closed */
   }
 
   const passed = checks.every(Boolean);
@@ -177,12 +157,4 @@ export async function runWebTransportCarrierProof(meta) {
     adapter: meta.adapter || "lyte-wt-sidecar",
     url: meta.url,
   };
-}
-
-export async function loadSidecarMeta(url = "./wt-sidecar.json") {
-  const res = await fetch(url, { cache: "no-store" });
-  if (!res.ok) {
-    throw new Error(`wt-sidecar.json HTTP ${res.status}`);
-  }
-  return res.json();
 }

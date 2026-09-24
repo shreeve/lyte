@@ -8,13 +8,18 @@ import Foundation
 import LyteWire
 
 /// One vector file: `Wire/Vectors/cursor-v1.json`.
-public struct CursorVectorFile: Codable, Sendable {
+public struct CursorVectorFile: FrozenVectorFile {
     public var format: String
     public var formatVersion: Int
     public var wireVersion: Int
     public var vectors: [CursorVector]
 
     public static let expectedFormat = "lyte-wire-cursor-vectors"
+    public static let fileName = "cursor-v1.json"
+
+    public var vectorNameGroups: [[String]] {
+        [vectors.map(\.name)]
+    }
 
     public init(
         format: String,
@@ -28,10 +33,6 @@ public struct CursorVectorFile: Codable, Sendable {
         self.vectors = vectors
     }
 
-    public static func load(from path: String) throws -> CursorVectorFile {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(CursorVectorFile.self, from: data)
-    }
 }
 
 /// One cursor vector. `codec` names the codec under test; kinds match

@@ -28,8 +28,8 @@
 //
 // Validation at encode AND decode: ≤ 65,536 UTF-8 bytes (the ARQ
 // receive window and the shared-with-input ordered stream size the
-// ceiling — design doc §3), valid UTF-8 (byte-exact re-encode, the
-// CBOR text rule), non-empty (v1 does not sync clearing; a bare type
+// ceiling — design doc §3), valid UTF-8 (the CBOR text rule),
+// non-empty (v1 does not sync clearing; a bare type
 // byte is a zero-fill-adjacent bug to surface). Truncation and foreign
 // type bytes reject with what they found. Never traps on hostile bytes.
 
@@ -44,34 +44,15 @@ public enum ClipboardWire {
 // MARK: - The capability spine helpers
 
 extension Capabilities {
-    /// The key-10 entry as it rides the wire: CBOR bool under unsigned
-    /// key 10 (`0A F5` inside the map) — one canonical byte image is
-    /// what makes the intersection's byte-equal rule an exact AND.
-    private static var clipboardTextEntry: CborMapEntry {
-        CborMapEntry(
-            key: .unsigned(CapabilityKey.clipboardText),
-            value: .bool(true)
-        )
-    }
-
-    /// True when this set (a declaration or an agreed intersection)
-    /// carries `clipboardText: true`. On a v1 build the key lives in
-    /// `unknownEntries` — which is exactly what makes it survive
-    /// intersection only on mutual declaration. A `false` or
-    /// wrongly-typed value reads as absent: absence and refusal are
-    /// the same posture ("not supported"), per the spine's rule 3.
+    /// True when this set carries `clipboardText: true` (key 10) — see
+    /// `declaresFlag(_:)`.
     public var clipboardText: Bool {
-        unknownEntries.contains(Self.clipboardTextEntry)
+        declaresFlag(CapabilityKey.clipboardText)
     }
 
-    /// A copy of this set declaring clipboard-text support.
-    /// Idempotent; the CBOR encoder owns canonical key order, so the
-    /// entry may append here regardless of surrounding keys.
+    /// A copy of this set declaring `clipboardText`.
     public func declaringClipboardText() -> Capabilities {
-        guard !clipboardText else { return self }
-        var declared = self
-        declared.unknownEntries.append(Self.clipboardTextEntry)
-        return declared
+        declaringFlag(CapabilityKey.clipboardText)
     }
 }
 
@@ -143,8 +124,7 @@ public enum ClipboardMessageError: Error, Equatable, Sendable {
     case emptyText
     /// UTF-8 byte count past the 65,536 B ceiling.
     case textOverBudget(Int)
-    /// Bytes that are not valid UTF-8 (detected by byte-exact
-    /// re-encode of the decoded string — the CBOR text rule).
+    /// Bytes that are not valid UTF-8 (the CBOR text rule).
     case invalidUtf8
 }
 
@@ -178,9 +158,7 @@ private func decodeClipboardBody(
     guard body.count <= ClipboardWire.maxTextByteCount else {
         throw ClipboardMessageError.textOverBudget(body.count)
     }
-    let text = String(decoding: body, as: UTF8.self)
-    guard text.utf8.count == body.count,
-          text.utf8.elementsEqual(body) else {
+    guard let text = String(validating: body, as: UTF8.self) else {
         throw ClipboardMessageError.invalidUtf8
     }
     return text

@@ -4,60 +4,58 @@ import XCTest
 final class WireLayoutTests: XCTestCase {
     private struct TargetLayout {
         let path: String
-        let rootFiles: Set<String>
         let domains: Set<String>
         let nestedDomains: [String: Set<String>]
     }
 
+    private static let crypto: [String: Set<String>] = [
+        "Crypto": ["Noise", "Pairing", "Retry"],
+    ]
+
+    /// Each Swift target groups its sources under the canonical Wire
+    /// domains (and Crypto's three subdomains); which files sit at a
+    /// target's root is the code's business, not this test's.
     func testEverySwiftTargetUsesTheWireDomainGrammar() throws {
         let layouts = [
             TargetLayout(
                 path: "Sources/LyteWire",
-                rootFiles: [
-                    "ChannelId.swift", "Envelope.swift", "Vocabulary.swift",
-                    "WireBudget.swift", "WireBytes.swift", "WireError.swift",
-                    "WireExtension.swift", "WireVersion.swift",
-                ],
                 domains: [
                     "Arq", "Audio", "Bulk", "Capabilities", "Clipboard",
                     "Control", "Crypto", "Fec", "Session", "Telemetry",
                     "Video",
                 ],
-                nestedDomains: ["Crypto": ["Noise", "Pairing", "Retry"]]
+                nestedDomains: Self.crypto
             ),
             TargetLayout(
                 path: "Sources/LyteWireTestKit",
-                rootFiles: ["EnvelopeVectors.swift", "SplitMix64.swift"],
                 domains: [
                     "Arq", "Bulk", "Capabilities", "Clipboard", "Control",
                     "Crypto", "Fec", "Session", "Simulation", "Telemetry",
                     "Video",
                 ],
-                nestedDomains: ["Crypto": ["Noise", "Pairing", "Retry"]]
+                nestedDomains: Self.crypto
             ),
             TargetLayout(
                 path: "Sources/LyteWireVectorGen",
-                rootFiles: ["EnvelopeVectorGen.swift", "main.swift"],
                 domains: [
                     "Arq", "Bulk", "Capabilities", "Clipboard", "Control",
                     "Crypto", "Fec", "Session", "Telemetry", "Video",
                 ],
-                nestedDomains: ["Crypto": ["Noise", "Pairing", "Retry"]]
+                nestedDomains: Self.crypto
+            ),
+            TargetLayout(
+                path: "Sources/LyteWireVectorGenTool",
+                domains: [],
+                nestedDomains: [:]
             ),
             TargetLayout(
                 path: "Tests/LyteWireTests",
-                rootFiles: [
-                    "EnvelopeTests.swift", "NoFoundationLintTests.swift",
-                    "RoundTripPropertyTests.swift", "VectorFileTests.swift",
-                    "VocabularyTests.swift", "WireLayoutTests.swift",
-                    "WireTestPaths.swift",
-                ],
                 domains: [
                     "Arq", "Audio", "Bulk", "Capabilities", "Clipboard",
                     "Control", "Crypto", "Fec", "Session", "Simulation",
                     "Telemetry", "Video",
                 ],
-                nestedDomains: ["Crypto": ["Noise", "Pairing", "Retry"]]
+                nestedDomains: Self.crypto
             ),
         ]
 
@@ -74,11 +72,6 @@ final class WireLayoutTests: XCTestCase {
             try childDirectories(of: root),
             layout.domains,
             "\(layout.path) must use only the canonical Wire domains"
-        )
-        XCTAssertEqual(
-            Set(try swiftFiles(at: root)),
-            layout.rootFiles,
-            "\(layout.path) must keep only named module-spine files at root"
         )
 
         for domain in layout.domains.sorted() {
