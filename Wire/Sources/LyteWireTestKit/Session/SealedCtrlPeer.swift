@@ -120,8 +120,8 @@ public struct SealedCtrlPeer<ClockDomain>: Sendable {
     }
 
     /// Responder: consumes a datagram and, when it is bare CTRL message
-    /// 1, completes the handshake and returns bare message 2 (conn-id
-    /// tagged when set, timestamp 0). Anything else returns nil.
+    /// 1, completes the handshake and returns bare message 2 (see
+    /// `answer(message1:)`). Anything else returns nil.
     public mutating func answerMessage1(
         _ datagram: [UInt8]
     ) throws -> [UInt8]? {
@@ -130,12 +130,22 @@ public struct SealedCtrlPeer<ClockDomain>: Sendable {
               envelope.channel == .ctrl,
               payload.first == CtrlMessageType.noiseHandshake1
         else { return nil }
+        return try answer(message1: payload.dropFirst())
+    }
+
+    /// Responder: reads Noise message 1 (the bytes after the type
+    /// byte), completes the handshake, and returns the bare message-2
+    /// CTRL datagram (conn-id tagged when set, timestamp 0).
+    public mutating func answer(
+        message1: ArraySlice<UInt8>
+    ) throws -> [UInt8] {
+        guard role == .responder else { throw PeerError.wrongRole }
         var responder = try NoiseSession(role: .responder, staticKeys: staticKeys)
-        _ = try responder.readMessage1(payload.dropFirst())
+        _ = try responder.readMessage1(message1)
         let message2 = try responder.writeMessage2()
         transport = try responder.makeTransport()
         handshake = responder
-        return try self.datagram(
+        return try datagram(
             body: [CtrlMessageType.noiseHandshake2] + message2,
             sealed: false, timestamp: 0
         )
