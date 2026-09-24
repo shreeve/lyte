@@ -5,9 +5,11 @@
 //
 // Format:
 //   • UTF-8 text, one record per line.
-//   • A record is 64 lowercase hex characters (the client's X25519
+//   • A record is 64 lowercase ASCII hex bytes (the client's X25519
 //     static public key), optionally followed by whitespace and a
-//     free-form note (lyte-host writes the pairing instant).
+//     free-form note (lyte-host writes the pairing instant). The key is
+//     judged byte by byte: a digit carrying a combining mark is one
+//     Character that compares inside "0"..."9", yet it is no hex digit.
 //   • Blank lines and lines starting with `#` are ignored.
 //   • Anything else is a loud parse error, never skipped: a malformed
 //     store is someone else's write, and pretending a paired client
@@ -64,15 +66,17 @@ public struct ClientKeystore: Equatable, Sendable {
         ).enumerated() {
             let line = rawLine.trimmed
             if line.isEmpty || line.hasPrefix("#") { continue }
-            let hex = line.prefix(64)
-            let rest = line.dropFirst(64)
+            let utf8 = line.utf8
+            let hex = utf8.prefix(64)
+            let rest = utf8.dropFirst(64)
             guard hex.count == 64,
                   let key = bytes(fromLowercaseHex: hex),
-                  rest.isEmpty || rest.first == " " || rest.first == "\t"
+                  rest.isEmpty || rest.first == 0x20 || rest.first == 0x09
             else {
                 throw ParseError.malformedLine(index + 1, String(rawLine))
             }
-            store.pin(key, note: String(rest.trimmed))
+            store.pin(key, note: String(
+                String(decoding: rest, as: UTF8.self).trimmed))
         }
         return store
     }
@@ -95,28 +99,26 @@ public struct ClientKeystore: Equatable, Sendable {
     }
 
     private static func bytes(
-        fromLowercaseHex hex: Substring
+        fromLowercaseHex hex: Substring.UTF8View.SubSequence
     ) -> [UInt8]? {
         var out: [UInt8] = []
         out.reserveCapacity(hex.count / 2)
         var iterator = hex.makeIterator()
         while let high = iterator.next() {
             guard let low = iterator.next(),
-                  let h = high.lowercaseHexValue,
-                  let l = low.lowercaseHexValue
+                  let h = lowercaseHexValue(high),
+                  let l = lowercaseHexValue(low)
             else { return nil }
-            out.append(UInt8(h << 4 | l))
+            out.append(h << 4 | l)
         }
         return out
     }
-}
 
-private extension Character {
-    /// Strict lowercase hex: an uppercase key is a parse error.
-    var lowercaseHexValue: Int? {
-        switch self {
-        case "0"..."9": return Int(unicodeScalars.first!.value - 48)
-        case "a"..."f": return Int(unicodeScalars.first!.value - 87)
+    /// Strict lowercase ASCII hex: an uppercase key is a parse error.
+    private static func lowercaseHexValue(_ byte: UInt8) -> UInt8? {
+        switch byte {
+        case 0x30...0x39: return byte - 0x30
+        case 0x61...0x66: return byte - 0x57
         default: return nil
         }
     }

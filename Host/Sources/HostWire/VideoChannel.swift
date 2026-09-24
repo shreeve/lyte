@@ -4,6 +4,19 @@
 // `now` is injected monotonic nanoseconds; the caller owns scheduling and
 // syscalls.
 //
+// Chan-2 seqs are assigned, and chan-2 datagrams sealed, when the pacer
+// RELEASES them, never when they are queued. Release order is therefore
+// chan-2 seq order: no repair is overtaken by fresher seqs (the client's
+// 64-deep replay window would refuse it as stale), and a datagram dropped
+// before release (a fall purge, an expired repair) consumes no seq, so it
+// never reads as a gap in the client's seq ledger. A fresh frame's k+m
+// shards still take contiguous seqs in shard-index order (wire contract:
+// the assembler infers a frame's seq range from any one shard) because a
+// started frame is released whole: strict priority holds repairs behind
+// it, and an urgent keyframe jumps only frames that have not started.
+// Committing a frame is FEC plus enqueue; its seal work is paid one pacer
+// quantum at a time as it leaves.
+//
 // `seal` turns each plaintext shard into the wire payload with the exact
 // header bytes (fixed envelope + TLV block) as AAD. Nil (test-only) keeps
 // bare-plaintext framing.
@@ -21,9 +34,9 @@
 //
 // Repair store: every shard (plaintext + fec field) is retained per frame
 // for `repairRetentionNS`, byte-capped, oldest frames evicted first. A
-// retransmit is a fresh datagram (fresh seq, nonce and seal — the replay
-// window admits no stale seq) carrying the original frame number, fec
-// field, capture timestamp and TLV stamps.
+// retransmit is a fresh datagram (its own seq, nonce and seal at release)
+// carrying the original frame number, fec field, capture timestamp and
+// TLV stamps.
 
 import HostCore
 import HostSession
@@ -165,14 +178,9 @@ public struct VideoChannelCounters: Sendable {
     /// Repair datagrams dropped from videoTail after their usefulness
     /// deadline elapsed while fresher/higher-priority work was ahead.
     public var repairShardsExpiredQueued = 0
-    /// Sealed datagrams assembled by growing the pre-sized AAD header
-    /// buffer in place (one final wire buffer, rather than encoding a
-    /// third header+payload array after sealing).
-    public var sealedDatagramsAssembledInPlace = 0
-    /// Frames admitted directly from a caller-owned synchronous buffer,
-    /// without first materializing a full-frame Array.
-    public var borrowedFramesIngested = 0
-    public var borrowedFrameBytesIngested = 0
+    /// Released chan-2 datagrams the seal refused (dropped unsent; no seq
+    /// consumed). Unreachable while the transport is established.
+    public var releaseSealFailures = 0
 
     public init() {}
 }
@@ -207,12 +215,12 @@ public final class VideoChannel {
     private let pacer: Pacer
     private let send: (VideoChannelDatagram) -> Void
     private let seal: VideoChannelSealer?
+    /// Bytes the seal adds to a plaintext shard (the AEAD tag; 0 for bare
+    /// framing), so a queued shard's pacer token prices its wire image.
+    private let sealOverheadByteCount: Int
 
-    /// The next seq the packetization below will allocate — contiguous
-    /// ascending in shard-index order across each frame's k+m shards
-    /// (wire contract: the assembler infers a frame's seq range from any
-    /// one shard). Repair retransmits draw from the same counter: a
-    /// retransmitted shard is a fresh datagram in every seq-visible way.
+    /// The seq the next released chan-2 datagram takes. Fresh shards and
+    /// repairs draw from it in release order (see the header).
     public private(set) var nextSeq: ChannelSeq
 
     /// The FEC regime in force; applies from the next `ingest`.
@@ -222,8 +230,29 @@ public final class VideoChannel {
     /// the last IDR" anchor.
     public private(set) var lastKeyframeNumber: FrameNumber?
 
-    /// Datagrams waiting in the pacer, keyed by their token tag.
-    private var pending: [UInt64: VideoChannelDatagram] = [:]
+    /// What one pacer tag stands for. Control, audio and bulk arrive
+    /// sealed (their seq spaces are the session's); chan-2 video waits
+    /// unsealed for its seq.
+    private enum Pending {
+        case sealed(VideoChannelDatagram)
+        case video(PendingVideo)
+    }
+
+    /// Everything a chan-2 datagram needs at release except its seq.
+    private struct PendingVideo {
+        var pacerClass: PacerClass
+        var frameNumber: FrameNumber
+        var captureMicros: UInt64
+        var fec: UInt64
+        var payload: [UInt8]
+        /// The frame's TLV block (conn-id, lastInputSeq), shared by every
+        /// shard of the frame.
+        var extensions: [WireExtension]
+        var isKeyframe: Bool
+    }
+
+    /// Everything waiting in the pacer, keyed by its token tag.
+    private var pending: [UInt64: Pending] = [:]
     private var nextTag: UInt64 = 0
     /// Video-class shards still queued, per frame number: NACKs against
     /// frames still draining measure our pacer, not the path.
@@ -252,7 +281,7 @@ public final class VideoChannel {
         /// so pacer queue time is not charged against the repair budget.
         var lastSentAtNS: UInt64
         var captureMicros: UInt64
-        var lastInputSeq: UInt32?
+        var extensions: [WireExtension]
         var isKeyframe: Bool
         var shards: [StoredShard]
         var payloadBytes: Int
@@ -269,10 +298,13 @@ public final class VideoChannel {
     )
     private static let purgedFrameCapacity = 1_024
 
+    /// `sealTagByteCount` is what `seal` appends to a plaintext shard; the
+    /// default is the AEAD tag. It is ignored for bare framing.
     public init(
         config: VideoChannelConfig,
         now: UInt64,
         seal: VideoChannelSealer? = nil,
+        sealTagByteCount: Int = WireBudget.aeadTagByteCount,
         send: @escaping (VideoChannelDatagram) -> Void
     ) {
         self.config = config
@@ -284,6 +316,7 @@ public final class VideoChannel {
         self.nextSeq = config.firstSeq
         self.regime = config.regime
         self.seal = seal
+        self.sealOverheadByteCount = seal == nil ? 0 : sealTagByteCount
         self.send = send
     }
 
@@ -362,7 +395,7 @@ public final class VideoChannel {
 
     /// Packetizes one encoded frame and enqueues every shard; returns the
     /// shard count. Throws on non-frame-shaped bytes, a lying keyframe
-    /// flag, an unprotectable size, a budget breach or a seal refusal.
+    /// flag or an unprotectable size.
     /// `captureTimestampMicroseconds` rides the envelope timestamp
     /// verbatim. `lastInputSeq`, when set, rides every shard of this frame
     /// as TLV 0x03 and shrinks the frame's shard budget accordingly.
@@ -373,19 +406,18 @@ public final class VideoChannel {
         captureTimestampMicroseconds: UInt64,
         isKeyframe: Bool,
         lastInputSeq: UInt32? = nil,
-        interleave: (() -> Void)? = nil,
         now: UInt64
     ) throws -> Int {
         try ingestBytes(
             frame: annexB, frameNumber: frameNumber,
             captureTimestampMicroseconds: captureTimestampMicroseconds,
             isKeyframe: isKeyframe, lastInputSeq: lastInputSeq,
-            interleave: interleave, now: now, isBorrowed: false
+            now: now
         )
     }
 
-    /// Synchronous borrowed ingress. Packetization, FEC, sealing, queueing,
-    /// and repair retention finish before return; no input view escapes.
+    /// Synchronous borrowed ingress. Packetization, FEC, queueing and
+    /// repair retention finish before return; no input view escapes.
     @discardableResult
     public func ingest(
         frame annexB: UnsafeBufferPointer<UInt8>,
@@ -393,14 +425,13 @@ public final class VideoChannel {
         captureTimestampMicroseconds: UInt64,
         isKeyframe: Bool,
         lastInputSeq: UInt32? = nil,
-        interleave: (() -> Void)? = nil,
         now: UInt64
     ) throws -> Int {
         try ingestBytes(
             frame: annexB, frameNumber: frameNumber,
             captureTimestampMicroseconds: captureTimestampMicroseconds,
             isKeyframe: isKeyframe, lastInputSeq: lastInputSeq,
-            interleave: interleave, now: now, isBorrowed: true
+            now: now
         )
     }
 
@@ -410,9 +441,7 @@ public final class VideoChannel {
         captureTimestampMicroseconds: UInt64,
         isKeyframe: Bool,
         lastInputSeq: UInt32?,
-        interleave: (() -> Void)?,
-        now: UInt64,
-        isBorrowed: Bool
+        now: UInt64
     ) throws -> Int
     where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
         let prepared = try Self.prepareFrame(
@@ -420,80 +449,33 @@ public final class VideoChannel {
             isKeyframe: isKeyframe,
             config: preparationConfig(hasLastInputSeq: lastInputSeq != nil)
         )
-        return try ingestPrepared(
+        return ingestPrepared(
             prepared,
             frameNumber: frameNumber,
             captureTimestampMicroseconds: captureTimestampMicroseconds,
             lastInputSeq: lastInputSeq,
-            interleave: interleave,
-            now: now,
-            isBorrowed: isBorrowed
+            now: now
         )
     }
 
-    /// Ordered half: allocate channel seqs, seal, enqueue, and retain.
-    /// Callers serialize this with every other Session mutation.
+    /// Ordered half: enqueue every shard unsealed and retain the frame.
+    /// Seqs and seals are assigned at release (see the header). Callers
+    /// serialize this with every other Session mutation.
     @discardableResult
     public func ingestPrepared(
         _ prepared: PreparedVideoFrame,
         frameNumber: FrameNumber,
         captureTimestampMicroseconds: UInt64,
         lastInputSeq: UInt32?,
-        interleave: (() -> Void)? = nil,
-        now: UInt64,
-        isBorrowed: Bool = false
-    ) throws -> Int {
+        now: UInt64
+    ) -> Int {
         let queuedBytesBeforeAdmission =
             pacer.queuedBytes(.freshVideo) + pacer.queuedBytes(.videoTail)
         let queuedWireTimeBeforeAdmissionNS = UInt64(
             Double(queuedBytesBeforeAdmission) * 8e9
                 / Double(max(pacer.rateBitsPerSecond, 1))
         )
-        var shards: [(envelope: Envelope, payload: [UInt8])] = []
-        shards.reserveCapacity(prepared.shards.count)
-        for shard in prepared.shards {
-            var envelope = Envelope(
-                channel: config.channel,
-                seq: nextSeq,
-                frame: frameNumber,
-                timestamp: captureTimestampMicroseconds,
-                fec: shard.fec
-            )
-            if let connectionId = config.connectionId {
-                envelope.extensions.append(connectionId.wireExtension)
-            }
-            if let lastInputSeq {
-                envelope.extensions.append(
-                    LastInputSeqTlv.wireExtension(seq: lastInputSeq)
-                )
-            }
-            shards.append((envelope, shard.payload))
-            nextSeq = nextSeq.next
-        }
-        interleave?()
-        for (index, shard) in shards.enumerated() {
-            // A large IDR can require hundreds of seals. Give the
-            // executable's audio mailbox a deterministic service point
-            // between small groups without weakening frame/seq ordering.
-            if index > 0, index.isMultiple(of: 4) { interleave?() }
-            let (envelope, payload) = shard
-            let datagram = VideoChannelDatagram(
-                bytes: try encodeSealed(envelope: envelope, plaintext: payload),
-                pacerClass: .freshVideo,
-                frameNumber: frameNumber,
-                seq: envelope.seq,
-                isKeyframe: prepared.isKeyframe,
-                destination: nil
-            )
-            enqueue(datagram, urgent: prepared.isKeyframe,
-                    frameID: frameNumber.rawValue, now: now)
-        }
-        retain(
-            shards, frameNumber: frameNumber,
-            captureMicros: captureTimestampMicroseconds,
-            isKeyframe: prepared.isKeyframe,
-            lastInputSeq: lastInputSeq, now: now
-        )
+        // The row exists before any shard can release.
         activeFrameTelemetry[frameNumber.rawValue] = VideoFrameTransmitTelemetry(
             frameNumber: frameNumber.rawValue,
             captureTimestampMicroseconds: captureTimestampMicroseconds,
@@ -501,7 +483,7 @@ public final class VideoChannel {
             firstTransmitAtNS: nil,
             lastTransmitAtNS: nil,
             encodedBytes: prepared.encodedByteCount,
-            shardCount: shards.count,
+            shardCount: prepared.shards.count,
             isKeyframe: prepared.isKeyframe,
             averageQP: nil,
             idrCauses: [],
@@ -510,15 +492,38 @@ public final class VideoChannel {
             queuedWireTimeBeforeAdmissionNS: queuedWireTimeBeforeAdmissionNS,
             purged: false
         )
+        var extensions: [WireExtension] = []
+        if let connectionId = config.connectionId {
+            extensions.append(connectionId.wireExtension)
+        }
+        if let lastInputSeq {
+            extensions.append(LastInputSeqTlv.wireExtension(seq: lastInputSeq))
+        }
+        for shard in prepared.shards {
+            enqueueVideo(
+                PendingVideo(
+                    pacerClass: .freshVideo,
+                    frameNumber: frameNumber,
+                    captureMicros: captureTimestampMicroseconds,
+                    fec: shard.fec,
+                    payload: shard.payload,
+                    extensions: extensions,
+                    isKeyframe: prepared.isKeyframe
+                ),
+                urgent: prepared.isKeyframe, now: now
+            )
+        }
+        retain(
+            prepared.shards, frameNumber: frameNumber,
+            captureMicros: captureTimestampMicroseconds,
+            isKeyframe: prepared.isKeyframe,
+            extensions: extensions, now: now
+        )
         if prepared.isKeyframe { lastKeyframeNumber = frameNumber }
         counters.framesIngested += 1
         if prepared.isKeyframe { counters.keyframesIngested += 1 }
-        if isBorrowed {
-            counters.borrowedFramesIngested += 1
-            counters.borrowedFrameBytesIngested += prepared.encodedByteCount
-        }
-        counters.shardsEnqueued += shards.count
-        return shards.count
+        counters.shardsEnqueued += prepared.shards.count
+        return prepared.shards.count
     }
 
     // MARK: Repair
@@ -549,48 +554,35 @@ public final class VideoChannel {
     @discardableResult
     public func enqueueRepair(
         frame: FrameNumber, shardIndices: [UInt8], now: UInt64
-    ) throws -> Int {
-        guard var stored = store[frame.rawValue] else { return 0 }
+    ) -> Int {
+        // Moved out and back so marking shards repaired never copies the
+        // frame's shard array.
+        guard var stored = store.removeValue(forKey: frame.rawValue) else {
+            return 0
+        }
+        defer { store[frame.rawValue] = stored }
         var enqueued = 0
-        for index in shardIndices {
-            guard Int(index) < stored.shards.count else { continue }
-            guard !stored.shards[Int(index)].repaired else {
+        for index in shardIndices.map(Int.init) {
+            guard index < stored.shards.count else { continue }
+            guard !stored.shards[index].repaired else {
                 counters.repairShardsAlreadySent += 1
                 continue
             }
-            let shard = stored.shards[Int(index)]
-            var envelope = Envelope(
-                channel: config.channel,
-                seq: nextSeq,
-                frame: frame,
-                timestamp: stored.captureMicros,
-                fec: shard.fec
-            )
-            if let connectionId = config.connectionId {
-                envelope.extensions.append(connectionId.wireExtension)
-            }
-            if let lastInputSeq = stored.lastInputSeq {
-                envelope.extensions.append(
-                    LastInputSeqTlv.wireExtension(seq: lastInputSeq)
-                )
-            }
-            let datagram = VideoChannelDatagram(
-                bytes: try encodeSealed(
-                    envelope: envelope, plaintext: shard.payload
+            stored.shards[index].repaired = true
+            enqueueVideo(
+                PendingVideo(
+                    pacerClass: .videoTail,
+                    frameNumber: frame,
+                    captureMicros: stored.captureMicros,
+                    fec: stored.shards[index].fec,
+                    payload: stored.shards[index].payload,
+                    extensions: stored.extensions,
+                    isKeyframe: stored.isKeyframe
                 ),
-                pacerClass: .videoTail,
-                frameNumber: frame,
-                seq: envelope.seq,
-                isKeyframe: stored.isKeyframe,
-                destination: nil
+                urgent: false, now: now
             )
-            nextSeq = nextSeq.next
-            stored.shards[Int(index)].repaired = true
-            enqueue(datagram, urgent: false,
-                    frameID: frame.rawValue, now: now)
             enqueued += 1
         }
-        store[frame.rawValue] = stored
         return enqueued
     }
 
@@ -629,11 +621,11 @@ public final class VideoChannel {
     }
 
     private func retain(
-        _ shards: [(envelope: Envelope, payload: [UInt8])],
+        _ shards: [VideoShardPayload],
         frameNumber: FrameNumber,
         captureMicros: UInt64,
         isKeyframe: Bool,
-        lastInputSeq: UInt32?,
+        extensions: [WireExtension],
         now: UInt64
     ) {
         guard config.repairStoreByteCap > 0 else { return }
@@ -642,10 +634,10 @@ public final class VideoChannel {
             ingestedAtNS: now,
             lastSentAtNS: now,
             captureMicros: captureMicros,
-            lastInputSeq: lastInputSeq,
+            extensions: extensions,
             isKeyframe: isKeyframe,
             shards: shards.map {
-                StoredShard(fec: $0.envelope.fec, payload: $0.payload)
+                StoredShard(fec: $0.fec, payload: $0.payload)
             },
             payloadBytes: payloadBytes
         )
@@ -747,20 +739,38 @@ public final class VideoChannel {
     ) {
         let tag = nextTag
         nextTag &+= 1
-        pending[tag] = datagram
-        if datagram.pacerClass == .freshVideo
-            || datagram.pacerClass == .videoTail {
-            queuedShardsByFrame[datagram.frameNumber.rawValue, default: 0] += 1
-        }
-        if datagram.pacerClass == .freshVideo {
-            queuedFreshShardsByFrame[
-                datagram.frameNumber.rawValue, default: 0
-            ] += 1
-        }
+        pending[tag] = .sealed(datagram)
         pacer.enqueue(
             datagram.pacerClass,
             bytes: datagram.bytes.count,
             frameID: frameID,
+            urgent: urgent,
+            tag: tag,
+            now: now
+        )
+    }
+
+    /// Queues one chan-2 shard unsealed. Its token prices the wire image
+    /// the release will build: header, payload and seal overhead.
+    private func enqueueVideo(
+        _ video: PendingVideo, urgent: Bool, now: UInt64
+    ) {
+        let tag = nextTag
+        nextTag &+= 1
+        pending[tag] = .video(video)
+        let frame = video.frameNumber.rawValue
+        queuedShardsByFrame[frame, default: 0] += 1
+        if video.pacerClass == .freshVideo {
+            queuedFreshShardsByFrame[frame, default: 0] += 1
+        }
+        let headerBytes = Envelope(
+            channel: config.channel, seq: nextSeq, frame: video.frameNumber,
+            timestamp: 0, fec: 0, extensions: video.extensions
+        ).headerByteCount
+        pacer.enqueue(
+            video.pacerClass,
+            bytes: headerBytes + video.payload.count + sealOverheadByteCount,
+            frameID: frame,
             urgent: urgent,
             tag: tag,
             now: now
@@ -789,8 +799,23 @@ public final class VideoChannel {
             now: now, upThrough: highestClass
         ) {
             for token in batch.tokens {
-                guard let datagram = pending.removeValue(forKey: token.tag)
+                guard let entry = pending.removeValue(forKey: token.tag)
                 else { continue } // unreachable while the pacer is owned
+                let datagram: VideoChannelDatagram
+                switch entry {
+                case .sealed(let sealed):
+                    datagram = sealed
+                case .video(let video):
+                    guard let released = release(video) else {
+                        let frame = video.frameNumber.rawValue
+                        Self.countDown(&queuedShardsByFrame, frame)
+                        if video.pacerClass == .freshVideo {
+                            Self.countDown(&queuedFreshShardsByFrame, frame)
+                        }
+                        continue
+                    }
+                    datagram = released
+                }
                 send(datagram)
                 if datagram.pacerClass == .freshVideo {
                     store[datagram.frameNumber.rawValue]?.lastSentAtNS = now
@@ -864,11 +889,12 @@ public final class VideoChannel {
         var frames: Set<UInt32> = []
         for pacerClass in [PacerClass.freshVideo, .videoTail] {
             for token in pacer.dropClass(pacerClass) {
-                guard let datagram = pending.removeValue(forKey: token.tag)
+                guard case .video(let video) =
+                    pending.removeValue(forKey: token.tag)
                 else { continue }
                 datagrams += 1
-                bytes += datagram.bytes.count
-                frames.insert(datagram.frameNumber.rawValue)
+                bytes += token.bytes
+                frames.insert(video.frameNumber.rawValue)
             }
         }
         queuedShardsByFrame.removeAll(keepingCapacity: true)
@@ -893,11 +919,11 @@ public final class VideoChannel {
         guard !expired.isEmpty else { return }
         var frames: Set<UInt32> = []
         for token in expired {
-            guard let datagram = pending.removeValue(forKey: token.tag) else {
-                continue
-            }
-            frames.insert(datagram.frameNumber.rawValue)
-            Self.countDown(&queuedShardsByFrame, datagram.frameNumber.rawValue)
+            guard case .video(let video) =
+                pending.removeValue(forKey: token.tag)
+            else { continue }
+            frames.insert(video.frameNumber.rawValue)
+            Self.countDown(&queuedShardsByFrame, video.frameNumber.rawValue)
             counters.repairShardsExpiredQueued += 1
         }
         for frame in frames { invalidateStoredFrame(frame) }
@@ -938,6 +964,34 @@ public final class VideoChannel {
         completedFrameTelemetry.append(telemetry)
     }
 
+    /// Assigns the next chan-2 seq and seals. A refused seal consumes no
+    /// seq, so the seqs that do reach the wire stay gap-free.
+    private func release(_ video: PendingVideo) -> VideoChannelDatagram? {
+        let envelope = Envelope(
+            channel: config.channel,
+            seq: nextSeq,
+            frame: video.frameNumber,
+            timestamp: video.captureMicros,
+            fec: video.fec,
+            extensions: video.extensions
+        )
+        guard let bytes = try? encodeSealed(
+            envelope: envelope, plaintext: video.payload
+        ) else {
+            counters.releaseSealFailures += 1
+            return nil
+        }
+        nextSeq = nextSeq.next
+        return VideoChannelDatagram(
+            bytes: bytes,
+            pacerClass: video.pacerClass,
+            frameNumber: video.frameNumber,
+            seq: envelope.seq,
+            isKeyframe: video.isKeyframe,
+            destination: nil
+        )
+    }
+
     /// Header bytes double as AAD — exactly what the receiver slices off
     /// ahead of the payload.
     private func encodeSealed(
@@ -946,10 +1000,8 @@ public final class VideoChannel {
         guard let seal else {
             return try envelope.encode(plaintextShard: plaintext)
         }
-        let datagram = try envelope.sealedDatagram(plaintext[...]) {
+        return try envelope.sealedDatagram(plaintext[...]) {
             plaintext, aad in try seal(plaintext, aad, envelope)
         }
-        counters.sealedDatagramsAssembledInPlace += 1
-        return datagram
     }
 }

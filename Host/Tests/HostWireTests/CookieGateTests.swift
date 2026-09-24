@@ -100,6 +100,10 @@ final class CookieGateTests: XCTestCase {
                        "no garbage msg1 establishes anything")
         XCTAssertGreaterThan(session.counters.handshakeChallengesMinted, 0,
                        "un-cookied floods draw stateless 0x13 challenges")
+        XCTAssertEqual(
+            session.counters.dropped + session.counters.handshakeChallengesMinted,
+            30,
+            "each flood datagram is answered or refused, never both")
 
         // Drain the flood's challenges off the pacer and discard them:
         // the legit client's challenge must be the ONLY one we pick up.

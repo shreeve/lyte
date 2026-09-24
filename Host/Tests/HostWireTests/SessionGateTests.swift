@@ -787,7 +787,6 @@ final class SessionGateTests: XCTestCase {
         )
         XCTAssertEqual(shards, prepared.shardCount)
         XCTAssertEqual(session.videoCounters.framesIngested, 1)
-        XCTAssertEqual(session.videoCounters.borrowedFramesIngested, 1)
         XCTAssertEqual(
             session.lastAdmittedVideoFrameNumber,
             FrameNumber(rawValue: 0))

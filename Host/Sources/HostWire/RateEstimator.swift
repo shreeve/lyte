@@ -59,8 +59,11 @@
 //       dwell cannot sustain it and a real squeeze does within ~1 s.
 //     - NACKs for frames still queued in our own pacer are the client's
 //       completion presumption expiring mid-drain, not path evidence:
-//       the session passes them as `recusedNackFrames`. Host-side skips
-//       never consume a seq or frame number, so they never read as gaps.
+//       the session passes them as `recusedNackFrames`. Host-side drops
+//       never read as path loss: the pacer drops before a chan-2 seq is
+//       assigned, and a released datagram the socket seam drops (shed,
+//       purged, unsendable) is credited through `noteHostDroppedVideo`
+//       against the client's next `missing` counts.
 //   • RECOVERY VERDICTS — while the machine is in RECOVERY each report
 //     closes windows of ≥25 ms; a window is clean iff it saw no fresh
 //     loss and no overuse. Silence is the silence detector's job.
@@ -501,6 +504,11 @@ public final class RateEstimator {
     private var lossWindow: [LossSample] = []
     /// Previous report's cumulative ledgers, per channel raw value.
     private var previousChannelTotals: [UInt8: (received: UInt32, missing: UInt32)] = [:]
+    /// Released chan-2 datagrams the host itself never sent, oldest
+    /// first: each cancels one video `missing` in a later report. A credit
+    /// the client has not matched within `lossWindowNS` expires, so it can
+    /// never mask later path loss.
+    private var hostDroppedVideoCredits = Deque<(at: UInt64, count: Int)>()
 
     // MARK: Post-FEC (NACK) state
 
@@ -576,14 +584,26 @@ public final class RateEstimator {
     }
 
     /// One beacon-echo RTT sample: min-gated for telemetry, EWMA'd
-    /// (RFC 6298's 1/8 gain) into the retransmit gate's SRTT.
+    /// (RFC 6298's 1/8 gain) into the retransmit gate's SRTT. Samples
+    /// outside `SessionBeaconClock.plausibleRttMicroseconds` are ignored,
+    /// so SRTT and min-RTT always stay inside that range.
     public func noteRtt(microseconds: Int64) {
+        guard SessionBeaconClock.plausibleRttMicroseconds
+            .contains(microseconds) else { return }
         if minRttMicroseconds.map({ microseconds < $0 }) ?? true {
             minRttMicroseconds = microseconds
         }
         srttMicroseconds = srttMicroseconds.map {
             $0 + (microseconds - $0) / 8
         } ?? microseconds
+    }
+
+    /// Chan-2 datagrams that took a seq but never left the host (the
+    /// socket seam shed, purged or could not send them). The client counts
+    /// their seqs as missing; that is our loss, not the path's.
+    public func noteHostDroppedVideo(count: Int, now: UInt64) {
+        guard count > 0 else { return }
+        hostDroppedVideoCredits.append((at: now, count: count))
     }
 
     // MARK: - Feedback side
@@ -608,6 +628,7 @@ public final class RateEstimator {
         let matched = matchDispersion(report)
         absorbDeliveryTrains(matched, now: now)
         let inflated = absorbDelay(matched, now: now)
+        enforceEvidenceCaps()
 
         let lossFraction = currentLossFraction()
         let postFecLossFraction = currentPostFecLossFraction()
@@ -654,6 +675,54 @@ public final class RateEstimator {
         return verdict
     }
 
+    // MARK: - Evidence bounds
+
+    /// Every window is keyed by report arrival and a client may send
+    /// reports at any rate, so each is capped far above what the wire's
+    /// 25–50 ms cadence fills (40 reports per 1 s loss window, 400 per 10 s
+    /// delay window, a few trains per report). Past a cap the oldest
+    /// evidence goes first; memory and per-report work stay bounded under
+    /// a report storm.
+    static let lossSampleCap = 256
+    static let delaySampleCapPerChannel = 1_024
+    static let deliverySampleCap = 2_048
+    static let nackShardMemoryCap = 4_096
+
+    /// Evidence entries retained across every window (test seam).
+    @_spi(Testing) public var retainedEvidenceCount: Int {
+        lossWindow.count + postFecWindow.count + deliveryWindow.count
+            + recentNackShards.count
+            + delayBaselineWindows.values.reduce(0) { $0 + $1.count }
+    }
+
+    private func enforceEvidenceCaps() {
+        if lossWindow.count > Self.lossSampleCap {
+            lossWindow.removeFirst(lossWindow.count - Self.lossSampleCap)
+        }
+        if postFecWindow.count > Self.lossSampleCap {
+            postFecWindow.removeFirst(postFecWindow.count - Self.lossSampleCap)
+        }
+        if deliveryWindow.count > Self.deliverySampleCap {
+            deliveryWindow.removeFirst(
+                deliveryWindow.count - Self.deliverySampleCap)
+            deliveryWindowMax = deliveryWindow.map(\.rate).max()
+        }
+        var index = delayBaselineWindows.values.startIndex
+        while index != delayBaselineWindows.values.endIndex {
+            let excess = delayBaselineWindows.values[index].count
+                - Self.delaySampleCapPerChannel
+            if excess > 0 {
+                delayBaselineWindows.values[index].removeFirst(excess)
+            }
+            index = delayBaselineWindows.values.index(after: index)
+        }
+        // Dedupe memory only: forgetting it can double-count a re-NACK,
+        // never miss a fresh one.
+        if recentNackShards.count > Self.nackShardMemoryCap {
+            recentNackShards.removeAll(keepingCapacity: true)
+        }
+    }
+
     // MARK: - The machine's numbers
 
     /// The rate a machine-demanded IDR must be paced at. Applying it
@@ -675,21 +744,44 @@ public final class RateEstimator {
             // RECOVERY is a path discontinuity: belief = the applied
             // half-stale rate, and no old-path delivery sample, honest
             // vote or probe cadence survives. WAKE resets none of this.
-            beliefBits = Double(rate)
-            deliveryWindow.removeAll(keepingCapacity: true)
-            deliveryWindowMax = nil
-            recentRawDeliveries.removeAll(keepingCapacity: true)
-            recentHonestDeliveries.removeAll(keepingCapacity: true)
-            lastDeliveryRate = nil
-            lastDeliveryAt = nil
-            lastFullTrainRate = nil
-            lastFullTrainAt = nil
-            cadenceHoldUntilNS = 0
-            cadenceBandFloorBits = .infinity
+            forgetPathEvidence(belief: rate)
         }
         rateBitsPerSecond = rate
         lastAdjustAt = now
         return rate
+    }
+
+    /// The session moved to a new path (a validated migration): its base
+    /// delay and capacity are unknown, so the old path's delay baselines,
+    /// delivery samples, honest votes and probe cadence are forgotten and
+    /// the belief restarts at the standing rate, which is kept. Otherwise
+    /// a path with more base delay reads as standing inflation, and the
+    /// rate falls every 500 ms until the old baseline ages out.
+    public func notePathChanged(now: UInt64) {
+        forgetPathEvidence(belief: rateBitsPerSecond)
+        delayBaselineWindows.removeAll(keepingCapacity: true)
+        consecutiveInflatedReports = 0
+        inflatedStreakStartMicros = nil
+        inflatedStreakPeakMicros = nil
+        inflatedStreakSinceNS = nil
+        queuingDelayMicroseconds = nil
+        lastAdjustAt = now
+    }
+
+    /// No old-path delivery sample, honest vote or probe cadence survives;
+    /// the belief restarts at `belief`.
+    private func forgetPathEvidence(belief: Int) {
+        beliefBits = Double(belief)
+        deliveryWindow.removeAll(keepingCapacity: true)
+        deliveryWindowMax = nil
+        recentRawDeliveries.removeAll(keepingCapacity: true)
+        recentHonestDeliveries.removeAll(keepingCapacity: true)
+        lastDeliveryRate = nil
+        lastDeliveryAt = nil
+        lastFullTrainRate = nil
+        lastFullTrainAt = nil
+        cadenceHoldUntilNS = 0
+        cadenceBandFloorBits = .infinity
     }
 
     /// The burst-budget window B = min(2/fps, 25 ms) in ns, shared with
@@ -777,10 +869,14 @@ public final class RateEstimator {
             }
             deliveryWindowMax = maximum
         }
-        for channel in delayBaselineWindows.keys {
-            delayBaselineWindows[channel]!.removeAll {
+        // Mutated through `values` in place: iterating `keys` while
+        // writing would copy the dictionary and every array.
+        var index = delayBaselineWindows.values.startIndex
+        while index != delayBaselineWindows.values.endIndex {
+            delayBaselineWindows.values[index].removeAll {
                 now &- $0.at > config.sampleWindowNS
             }
+            index = delayBaselineWindows.values.index(after: index)
         }
         lossWindow.removeAll {
             now &- $0.at > config.lossWindowNS
@@ -793,6 +889,10 @@ public final class RateEstimator {
         }
         recentHonestDeliveries.removeAll {
             now &- $0.at > config.honestVoteWindowNS
+        }
+        while let credit = hostDroppedVideoCredits.first,
+              now > credit.at, now - credit.at > config.lossWindowNS {
+            hostDroppedVideoCredits.removeFirst()
         }
     }
 
@@ -811,11 +911,13 @@ public final class RateEstimator {
             // A first report (or counter regression from a client
             // restart) contributes nothing this window.
             if previous != nil, dMissing < 1 << 31, dReceived < 1 << 31 {
-                newMissing += Int(dMissing)
-                newReceived += Int(dReceived)
+                var missing = Int(dMissing)
                 if stats.channel == .videoActive {
-                    videoAttempted += Int(dMissing) + Int(dReceived)
+                    missing -= redeemHostDropCredits(upTo: missing)
+                    videoAttempted += missing + Int(dReceived)
                 }
+                newMissing += missing
+                newReceived += Int(dReceived)
             }
             previousChannelTotals[stats.channel.rawValue] =
                 (stats.received, stats.missing)
@@ -827,6 +929,22 @@ public final class RateEstimator {
             ))
         }
         return (newMissing, newReceived)
+    }
+
+    /// Cancels up to `missing` video gaps against host-drop credits,
+    /// oldest first; returns how many it cancelled.
+    private func redeemHostDropCredits(upTo missing: Int) -> Int {
+        var redeemed = 0
+        while redeemed < missing, let credit = hostDroppedVideoCredits.first {
+            let take = min(credit.count, missing - redeemed)
+            redeemed += take
+            if take == credit.count {
+                hostDroppedVideoCredits.removeFirst()
+            } else {
+                hostDroppedVideoCredits[0].count -= take
+            }
+        }
+        return redeemed
     }
 
     /// Counts the report's NACK section into the post-FEC window:
@@ -869,14 +987,14 @@ public final class RateEstimator {
     }
 
     /// NACKed shards over video datagrams attempted, both windowed.
-    /// NACKs with no attempt evidence yet still read as full loss —
-    /// the fraction saturates at 1 rather than dividing by zero.
+    /// With no attempt evidence the fraction is unknown and reads 0: a
+    /// NACK alone is no denominator. It saturates at 1.
     private func currentPostFecLossFraction() -> Double {
         let nacked = postFecWindow.reduce(0) { $0 + $1.shardCount }
         guard nacked > 0 else { return 0 }
         let attempted = lossWindow.reduce(0) { $0 + $1.videoAttempted }
-        guard attempted > nacked else { return 1 }
-        return Double(nacked) / Double(attempted)
+        guard attempted > 0 else { return 0 }
+        return min(Double(nacked) / Double(attempted), 1)
     }
 
     private struct MatchedSample {
@@ -1109,7 +1227,8 @@ public final class RateEstimator {
             )
             guard let baseline else { continue }
             haveBaseline = true
-            let inflation = reportMin - min(baseline, reportMin)
+            let inflation = saturatingDifference(
+                reportMin, min(baseline, reportMin))
             worstInflation = max(worstInflation, inflation)
         }
         guard haveBaseline else {
@@ -1179,8 +1298,8 @@ public final class RateEstimator {
             // censored samples is us measuring ourselves.
             let anchor = overuseAnchorRate.map(Int.init) ?? rateBitsPerSecond
             let queueGrew = inflatedStreakStartMicros.map {
-                (queuingDelayMicroseconds ?? 0)
-                    >= $0 + config.overuseThresholdMicroseconds
+                saturatingDifference(queuingDelayMicroseconds ?? 0, $0)
+                    >= config.overuseThresholdMicroseconds
             } ?? false
             let honestMedian = honestAnchorRate
             let belief = beliefBits ?? Double(rateBitsPerSecond)
@@ -1405,4 +1524,13 @@ public final class RateEstimator {
         recoveryWindowSawOveruse = false
         return [clean]
     }
+}
+
+/// a − b pinned to Int64's range instead of trapping. One-way delays mix
+/// the host's clock with client-supplied arrival stamps, so their
+/// differences can span more than Int64 holds.
+private func saturatingDifference(_ a: Int64, _ b: Int64) -> Int64 {
+    let (difference, overflow) = a.subtractingReportingOverflow(b)
+    guard overflow else { return difference }
+    return b < 0 ? .max : .min
 }

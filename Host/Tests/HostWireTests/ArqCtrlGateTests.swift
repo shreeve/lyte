@@ -721,4 +721,37 @@ final class ArqCtrlGateTests: XCTestCase {
             [0x10], now: 0, hostMicroseconds: 0
         ), "a message that fits the remaining bound still queues")
     }
+
+    /// A peer message past the host's ARQ budget poisons the CTRL ordered
+    /// stream for good. The session ends with one typed teardown instead
+    /// of reporting every later segment of a stream that can never
+    /// deliver again.
+    func testAPoisonedCtrlStreamEndsTheSessionWithATypedTeardown() throws {
+        let host = HostSessionHarness(
+            config: SessionConfig(
+                crypto: .noise(hostStatic: NoiseKeyPair.generate()),
+                rateBitsPerSecond: Self.rateBPS,
+                beaconIntervalNS: 1 << 62,
+                arq: ArqConfig(maxMessageByteCount: 2_048)
+            ),
+            tuple: Self.tupleA,
+            rng: SplitMix64(seed: 0x9015)
+        )
+        var client = try host.connectClient(
+            declaring: nil, arqConfig: ArqConfig(maxMessageByteCount: 16_384))
+        try client.send(
+            [0x7F] + [UInt8](repeating: 0x55, count: 6_000), nowMicros: 1_000)
+        var events: [SessionEvent] = []
+        for pass in 1...200 {
+            events += try host.exchange(&client, at: UInt64(pass) * 10_000)
+        }
+        XCTAssertEqual(
+            events.filter { $0 == .arqIgnored(.orderedStreamPoisoned) }.count,
+            1)
+        XCTAssertEqual(events.filter { $0 == .teardownSent(.shuttingDown) }.count,
+                       1)
+        XCTAssertTrue(events.contains(
+            .sessionClosed(.localTeardown(.shuttingDown))))
+        XCTAssertEqual(host.session.lifecycleState, .closed)
+    }
 }

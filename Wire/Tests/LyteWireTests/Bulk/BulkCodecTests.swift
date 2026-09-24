@@ -506,11 +506,11 @@ final class BulkCodecTests: XCTestCase {
     /// A decoded map whose bitmap reaches past UInt64.max names no
     /// chunk there; reading it must not trap.
     func testHostileMapPastTheIndexSpaceNeverTraps() throws {
-        let ack = try BulkAck.decode(
-            [CtrlMessageType.bulkAck] + [1, 0, 0, 0, 0, 0, 0, 0]
-                + [0, 0, 0, 0, 0, 0, 0, 0]
-                + [UInt8](repeating: 0xFF, count: 8) + [1, 0] + [0x01]
-        )
+        var message: [UInt8] = [CtrlMessageType.bulkAck, 1, 0, 0, 0, 0, 0, 0, 0]
+        message += [UInt8](repeating: 0, count: 8)
+        message += [UInt8](repeating: 0xFF, count: 8)
+        message += [1, 0, 0x01]
+        let ack = try BulkAck.decode(message)
         XCTAssertEqual(ack.possession.contiguousCount, UInt64.max)
         XCTAssertEqual(ack.possession.bitmapChunkIndices, [])
         XCTAssertTrue(ack.possession.holds(UInt64.max - 1))

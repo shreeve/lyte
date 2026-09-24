@@ -181,6 +181,31 @@ final class SocketOutboxTests: XCTestCase {
         XCTAssertEqual(outbox.counters.challengesSentOffPrimary, 1)
     }
 
+    func testARefusedChallengeTupleIsNotAGonePeer() {
+        var outbox = SocketOutbox()
+        let ledger = Ledger()
+        let probe = FourTuple(
+            localAddress: "0.0.0.0", localPort: 41151,
+            remoteAddress: "10.0.0.9", remotePort: 50001)
+        outbox.enqueue(datagram(.control, destination: probe), now: 0)
+        outbox.enqueue(datagram(.freshVideo, frame: 1), now: 0)
+        var batched = 0
+        var lines: [String] = []
+        let outcome = outbox.flush(
+            ledger: ledger, now: { 0 }, maxBatch: 64,
+            sendOffPrimary: { _, _ in .peerGone },
+            write: { _, batch in
+                batched += batch.count
+                return .accepted(batch.count)
+            },
+            log: { lines.append($0) })
+        XCTAssertEqual(outcome, .drained,
+                       "a dead probe tuple is not a dead peer")
+        XCTAssertEqual(batched, 1, "the primary datagram still leaves")
+        XCTAssertEqual(ledger.confirmed.count, 1)
+        XCTAssertEqual(lines.count, 1)
+    }
+
     func testFallPurgeDropsOnlyVideoAndReleasesTheLedger() {
         var outbox = SocketOutbox()
         let ledger = Ledger()
