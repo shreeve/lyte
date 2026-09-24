@@ -1,17 +1,11 @@
 // The browser's VideoSink: WebCodecs HEVC decode and WebGPU present of what
-// the WASM Conductor schedules. Platform mechanism only — decode order,
-// presentation times and recovery policy come from WASM.
-//
-// Decode takes every assembled frame in order (late and handoff-refused
-// frames included: later P-frames reference them). Presentation pops only
-// what the Conductor says is due, and a decoded frame waits for its beat.
-//
-// The stream has no reordering, so decode order, output order and PTS
-// order agree. That makes liveness local: once the Conductor names a due
-// PTS, every held frame before it is dead, and if that PTS is neither held,
-// in the decoder, nor queued for decode, it never will be. Decoded
-// VideoFrames are GPU-pool objects, so decode is throttled by what the page
-// holds rather than evicting frames the Conductor has yet to ask for.
+// the WASM Conductor schedules; decode order, presentation times and
+// recovery policy come from WASM. Decode takes every assembled frame in
+// order (late and refused frames included: later P-frames reference them);
+// presentation pops only what the Conductor says is due. With no
+// reordering, decode, output and PTS order agree, so once a due PTS is
+// named every held frame before it is dead. Decoded VideoFrames are
+// GPU-pool objects, so decode is throttled by what the page holds.
 import { nowMicros, pickHevcConfig } from "./lyte-io.js";
 
 const MAX_QUEUED_DECODES = 2;

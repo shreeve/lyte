@@ -1,14 +1,10 @@
-// The stateless retry cookie (core plan §5: "Core provides a stateless
-// HMAC retry-cookie codec for the first handshake datagram; the host
-// shell decides when to demand it") — QUIC Retry's shape without QUIC.
-// A Noise message 1 costs the responder an X25519 before anything is
-// authenticated; under a msg1 flood the host escalates from its token
-// bucket (HS-9's HandshakeGate) to cookie mode: answer each msg1 with a
+// The stateless retry cookie — QUIC Retry's shape without QUIC. A Noise
+// message 1 costs the responder an X25519 before anything is
+// authenticated; under a msg1 flood the host answers each msg1 with a
 // RetryChallenge carrying a cookie minted from (client tuple, now,
-// secret) — NO per-client state allocated — and process only msg1s that
-// come back inside a RetryHandshake1 whose cookie verifies. Proving the
-// cookie proves the sender receives at the claimed address; blind
-// spoofers never graduate to costing crypto.
+// secret) — no per-client state — and processes only msg1s that come back
+// inside a RetryHandshake1 whose cookie verifies. The host shell decides
+// when to demand it; blind spoofers never graduate to costing crypto.
 //
 // Cookie interior (opaque to the client, echoed verbatim; both mint and
 // verify are host-side, but the layout is wire contract because the
@@ -17,9 +13,8 @@
 //   offset size field
 //   0      8    timestamp  u64 LE, the host's injected monotonic ns at
 //                          mint — never interpreted by the client
-//   8      16   mac        HMAC-SHA256 truncated to 16 bytes (the W5
-//                          16-byte-proof precedent), keyed by the host's
-//                          cookie secret, over the transcript
+//   8      16   mac        HMAC-SHA256 truncated to 16 bytes, keyed by
+//                          the host's cookie secret, over the transcript
 //                            "lyte-retry-cookie-v1"
 //                            ‖ timestamp u64 LE
 //                            ‖ tupleLen u8 ‖ tuple
@@ -32,13 +27,10 @@
 // - the TIMESTAMP — verify enforces `mintTime ≤ now ≤ mintTime +
 //   lifetime`, so a harvested cookie dies quickly and a forged future
 //   stamp is rejected outright (one monotonic host clock mints and
-//   verifies — skew is not a thing here);
-// - MESSAGE 1, whole and verbatim — the resubmission must carry the
-//   exact msg1 the challenge answered, which the client already
-//   guarantees (0443beb's hard-won rule: ONE msg1 retransmitted
-//   verbatim across the retry window, never a fresh session per
-//   attempt), so one cookie cannot be replayed under a different
-//   handshake from the same address.
+//   verifies);
+// - MESSAGE 1, whole and verbatim — the client retransmits one msg1
+//   verbatim across the retry window, so one cookie cannot be replayed
+//   under a different handshake from the same address.
 //
 // Rotation: the host rotates its cookie secret on its own schedule and
 // hands `verify` the ordered list [current, previous]; a cookie minted
@@ -46,16 +38,10 @@
 // the lifetime window closes it. Verification is one HMAC per candidate
 // secret — still far cheaper than the X25519 it gates.
 //
-// Sans-IO: `now` is injected monotonic ns (the HandshakeGate
-// convention); the secret is injected bytes; randomness is not needed.
-// Constant-time caveat (reviewed and CONFIRMED SOUND by the pre-H1
-// Crypto/ review): the MAC comparison is constant-time via
-// CPace.constantTimeEquals and the secrets loop never early-exits, but
-// the length/window pre-checks return early — they gate exclusively on
-// values the sender chose or already knows (cookie length, its own
-// tuple length, the timestamp it echoed back), never on key material or
-// any MAC computation, so their timing tells an attacker nothing it
-// didn't tell itself.
+// Sans-IO: `now` is injected monotonic ns; the secret is injected bytes.
+// The MAC comparison is constant-time and the secrets loop never
+// early-exits; the length/window pre-checks return early, but only on
+// values the sender chose or already knows, never on key material.
 
 import Crypto
 
@@ -68,16 +54,15 @@ public enum RetryCookieError: Error, Hashable, Sendable {
 }
 
 public enum RetryCookie {
-    /// The truncated-HMAC proof — the W5 16-byte precedent.
+    /// The truncated-HMAC proof length.
     public static let macByteCount = 16
     /// timestamp(8) ‖ mac(16).
     public static let byteCount = 8 + macByteCount
     /// Cookie secrets are one HMAC-SHA256 key's worth of entropy.
     public static let secretByteCount = 32
-    /// How long a minted cookie verifies. Generous against the
-    /// Wi-Fi-power-save latencies 0443beb documented (msg1 delivered
-    /// seconds late), still short enough that a harvested cookie is
-    /// near-worthless.
+    /// How long a minted cookie verifies. Generous against Wi-Fi
+    /// power-save latencies (msg1 delivered seconds late), still short
+    /// enough that a harvested cookie is near-worthless.
     public static let defaultLifetimeNanoseconds: UInt64 = 30_000_000_000
 
     static let domainSeparator: [UInt8] = Array("lyte-retry-cookie-v1".utf8)

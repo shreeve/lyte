@@ -1,10 +1,7 @@
-// FEC vector authoring (W1): fec-field round trips, the parity ladder as
-// data, and RS recovery matrices. Same freeze discipline as the envelope
-// file. Circularity note: the field vectors are anchored by hand-computed
-// bytes in FecFieldTests; the RS parity bytes are anchored by the k=1,m=1
-// identity case (nanors' codebook makes that parity shard a byte-copy of
-// the data shard — verifiable by eye) plus decode-recovers-encode across
-// every matrix, and byte-equality across both platforms.
+// Authors Vectors/fec-v1.json: field round trips, the parity ladder, and
+// RS recovery matrices. Field vectors are anchored by FecFieldTests; RS
+// parity by the k=1,m=1 identity case (parity is a byte-copy of the data
+// shard) plus decode-recovers-encode across every matrix.
 
 import LyteCore
 import LyteWire
@@ -188,7 +185,7 @@ public func makeFecVectorFile() throws -> FecVectorFile {
         error: "shardIndexOutOfRange"
     )
 
-    // MARK: The parity ladder as data (resiliency §5.2)
+    // MARK: The parity ladder as data
 
     var geometryRows: [FecGeometryRow] = []
     let ladderProbes = [1, 2, 3, 4, 5, 8, 9, 20, 32, 33, 100, 204, 205, 231, 232, 255]

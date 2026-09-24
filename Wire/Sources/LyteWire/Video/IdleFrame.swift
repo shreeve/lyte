@@ -1,22 +1,10 @@
-// IdleFrame (HS-11 → CL-8, promoted home by the second codec-promotion
-// slice — the bytes never changed): the ratchet's final converged frame,
-// re-sent on a reliable ARQ ONE-SHOT group so a lost last refinement can
-// never leave a stale screen (overview §2, the ratchet-boundary ruling).
-// The sender's SessionStateMachine flips ACTIVE→IDLE only when this
-// message's group is fully acknowledged — one-shot groups are unordered
-// against the CTRL stream, so the ack is what guarantees the receiver
-// holds the converged frame before it learns the session went idle.
+// IdleFrame: the ratchet's final converged frame, re-sent on a reliable
+// ARQ one-shot group so a lost last refinement can never leave a stale
+// screen. The sender flips ACTIVE→IDLE only when this group is fully
+// acknowledged (see SessionStateMachine).
 //
-// Type byte 0x15 was pinned host-side first (the HS-7/HS-12 precedent),
-// byte-mirrored client-side at CL-8, and lands in the registry here —
-// the number carried verbatim; both ends already speak it.
-//
-// Carriage note: the ChannelId registry reserves chan 4 (videoIdle,
-// reliableOneShotGroups) as the idle frames' eventual home. This
-// message rides the CTRL endpoint's one-shot groups instead, because
-// that is the reliable sublayer BOTH ends possess today — moving
-// carriage to a chan-4 endpoint changes routing, not message bytes or
-// semantics.
+// It rides the CTRL endpoint's one-shot groups; moving it to a chan-4
+// (videoIdle) endpoint would change routing, not message bytes.
 //
 // Layout, 13-byte header + the frame, multi-byte fields little-endian:
 //
@@ -30,12 +18,11 @@
 //   13     …    annexB     the converged frame's Annex-B bytes, to the
 //                          end of the ARQ-delivered message
 //
-// Truncation below the header rejects; an empty frame body rejects (a
-// frameless idle frame is a construction bug); a foreign type byte
-// rejects with what it found. Never traps on hostile bytes.
+// Truncation below the header and an empty frame body reject; a foreign
+// type byte rejects with what it found. Never traps on hostile bytes.
 
 /// The reliable idle-frame message (type 0x15).
-public struct IdleFrame: Hashable, Sendable {
+public struct IdleFrame: Hashable, Sendable, SliceDecodable {
     /// The frame number this frame last rode the datagram path with.
     public var frame: FrameNumber
     /// The retained frame's capture stamp (host graph-clock µs).
@@ -82,10 +69,6 @@ public struct IdleFrame: Hashable, Sendable {
             captureTimestampMicroseconds: wireReadLE(payload, at: base + 5),
             annexB: Array(payload[(base + headerByteCount)...])
         )
-    }
-
-    public static func decode(_ payload: [UInt8]) throws -> IdleFrame {
-        try decode(payload[...])
     }
 }
 

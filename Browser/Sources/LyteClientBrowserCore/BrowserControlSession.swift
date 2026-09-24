@@ -2,18 +2,15 @@ import LyteClientSession
 import LyteCore
 import LyteWire
 
-/// The browser's sans-IO session: LyteClientSession's initiator pieces —
-/// `ClientHandshakeInitiator`, `ClientPairing`, `ClientControlSession`,
-/// `ClientBeaconEchoBook`, the envelope sequencer and conn-id book, the
-/// lifecycle effects — composed over one reliable CTRL stream, plus the
-/// demux of sealed video/audio to the playout organs. The native client
-/// drives the same pieces behind its locks.
+/// The browser's sans-IO session: LyteClientSession's initiator pieces
+/// (handshake, pairing, control session, beacon echo, envelope sequencer,
+/// conn-id book, lifecycle) composed over one reliable CTRL stream, plus the
+/// demux of sealed video/audio to the playout organs.
 ///
 /// The page owns WebTransport and clocks; every call takes injected time and
 /// returns a `Step` of datagrams to send and notes to log. Per-datagram
-/// faults — undecodable bytes, a replayed/stale/unauthenticated datagram, a
-/// rejected message 2 — are counted and dropped, as the native receive demux
-/// does; only protocol and policy failures end the session.
+/// faults are counted and dropped; only protocol and policy failures end
+/// the session.
 public final class BrowserControlSession {
     public enum Status: String, Sendable {
         case idle

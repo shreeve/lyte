@@ -3,12 +3,10 @@
 //
 //   header (24 B fixed + TLV block) ‖ AEAD(plaintext, aad: header)
 //
-// so the sender authenticates exactly the bytes it puts on the wire and
-// the receiver authenticates exactly the bytes it received ahead of the
-// payload. The seal/open steps are closures so any AEAD — the Noise
-// transport, a test passthrough, a platform wrapper — plugs into the same
-// assembly; `NoiseTransport.sealDatagram` / `openDatagram` are the
-// transport's direct forms. Bytes are identical to
+// so both ends authenticate exactly the header bytes on the wire. The
+// seal/open steps are closures so any AEAD plugs into the same assembly;
+// `NoiseTransport.sealDatagram` / `openDatagram` are the transport's
+// direct forms. Bytes are identical to
 // `envelope.encode(payload: seal(plaintext, aad: envelope.encode()))`.
 
 extension Envelope {

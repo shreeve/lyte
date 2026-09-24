@@ -1,9 +1,6 @@
-// Session-codec vector authoring (the codec-unification slice): the
-// promoted end-side codecs — path challenge/response (HS-12), the IDR
-// request (CL-3/HS-7, reconciled), and the conn-id TLV value codec
-// (HS-12) riding a whole envelope datagram. Run once, commit, freeze.
-// The circularity is broken by the hand-computed anchor bytes in
-// SessionCodecTests, which pin the same nominal messages.
+// Authors Vectors/session-v1.json: path challenge/response, the IDR
+// request, and the conn-id TLV value codec riding a whole envelope
+// datagram. Anchored by SessionCodecTests.
 
 import LyteCore
 import LyteWire

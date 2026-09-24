@@ -1,15 +1,8 @@
 // Path-validation challenge/response, the anti-spoof half of connection
-// migration (resiliency §6: "handshake-free address rebind + anti-spoof
-// path validation (echo challenge), per QUIC §9 semantics"). Both ride
-// CTRL (chan 0) as ARQ-exempt fire-and-forget datagrams — deliberately,
-// like the beacon pair: the challenge MUST travel on the exact unvalidated
-// 4-tuple being probed (that is what it proves), and the reliable ARQ
-// stream lives on the old path. A lost challenge is superseded by the next
-// probe trigger, not retransmitted.
-//
-// Pinned host-side in HS-12 as 0x03/0x04 (W4a's registry stopped at 0x02);
-// promoted here with the codec-unification slice — the client must echo
-// these exact bytes.
+// migration (QUIC §9 semantics). Both ride CTRL (chan 0) as ARQ-exempt
+// fire-and-forget datagrams: the challenge MUST travel on the exact
+// unvalidated 4-tuple being probed, and the reliable ARQ stream lives on
+// the old path. A lost challenge is superseded by the next probe trigger.
 //
 // Both messages are fixed 10 bytes, all multi-byte fields little-endian:
 //
@@ -21,9 +14,7 @@
 //                       echoes it verbatim — receipt proves the peer saw
 //                       the challenge at the probed address
 //
-// The envelope wrap (chan 0, the connection-ID TLV so the client can
-// attribute the challenge) is the send loop's job, mirroring how ClockBeacon
-// leaves body encoding here and datagram framing to the caller.
+// The envelope wrap (chan 0 plus the connection-ID TLV) is the caller's job.
 
 public enum PathMessageError: Error, Equatable {
     case truncated(Int)
@@ -97,6 +88,6 @@ private func decodePathMessage(
     guard payload[0] == type else {
         throw PathMessageError.unexpectedType(payload[0])
     }
-    // payload[1] is flags: reserved bits ignored on receive, house rule.
+    // payload[1] is flags: reserved bits ignored on receive.
     return wireReadLE(payload[...], at: 2)
 }

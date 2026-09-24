@@ -10,9 +10,8 @@ import LyteWire
 /// and any session it made is closed.
 extension ConnectionModel {
     /// The Actions menu's Reconnect verb: tear the wire session down
-    /// (typed goodbye — a host that can still hear one frees its side
-    /// immediately) and act NOW — an immediate probe dial at the
-    /// last-known address plus a discovery scan, ladders reset.
+    /// (typed goodbye) and act now — a probe dial at the last-known
+    /// address plus a discovery scan, ladders reset.
     func reconnectNow() {
         guard roaming != nil else { return }
         detachWireSession(.goodbye)
@@ -27,10 +26,8 @@ extension ConnectionModel {
             targetPublicKeyHash: publicKeyHash,
             address: address, port: port)
         roamingStatus = .attached
-        // The Mac hopped networks: path migration gets the policy's grace
-        // to carry the session (the feedback cadence keeps sending from
-        // the new source unprompted); the ladder runs only if the path
-        // stays dark.
+        // The Mac hopped networks: migration gets the policy's grace to
+        // carry the session; the ladder runs only if the path stays dark.
         stopPathWatch = services.watchPath { [weak self] in
             Task { @MainActor [weak self] in
                 self?.roamingInput { policy, now in policy.pathChanged(now: now) }
@@ -122,12 +119,10 @@ extension ConnectionModel {
         }
     }
 
-    /// One re-acquisition dial: fresh 1-RTT Noise IK against the SAME
-    /// pinned static — same pairing, no re-PIN (the store keys by
-    /// identity; the address is just where the identity lives now). A
-    /// shorter retry window than the first connect: a host that hasn't
-    /// freed the dead session answers with silence, and the ladder
-    /// retries rather than camping.
+    /// One re-acquisition dial: fresh 1-RTT Noise IK against the same
+    /// pinned static (no re-PIN). A shorter retry window than the first
+    /// connect: a host that hasn't freed the dead session answers with
+    /// silence, and the ladder retries rather than camping.
     private func runRoamingDial(address: String, port: UInt16, discovered: Bool) {
         detachWireSession(.goodbye)
         guard let pkh = hostPublicKeyHash,

@@ -1,9 +1,6 @@
-// The bulk-transfer vector-file model and loader:
-// `Wire/Vectors/bulk-v1.json` — the W10/F-2 bulk-channel sextet
-// (0x1C–0x21), the key-11 capability spine, and the worked
-// multi-session transfer traces. Same doctrine as the other loaders:
-// TestKit may import Foundation, LyteWire may not. u64 fields ride as
-// hex, the house JSON-precision rule.
+// The bulk-transfer vector-file model and loader: `Wire/Vectors/bulk-v1.json`
+// (the bulk-channel messages 0x1C–0x21, the key-11 capability, and worked
+// multi-session transfer traces). u64 fields ride as hex.
 
 import Foundation
 import LyteWire
@@ -128,10 +125,9 @@ public struct BulkMessageVector: Codable, Sendable {
     }
 }
 
-/// One key-11 capability-spine vector (the clipboard key-10 file's
-/// shape): `messageHex` is a declaration's CBOR map; decode must
-/// answer exactly `bulkTransfer` through the key-11 accessor and
-/// re-encode byte-exactly.
+/// One key-11 capability-spine vector: `messageHex` is a declaration's
+/// CBOR map; decode must answer exactly `bulkTransfer` through the key-11
+/// accessor and re-encode byte-exactly.
 public struct BulkCapabilityVector: Codable, Sendable {
     public var name: String
     public var description: String
@@ -170,18 +166,14 @@ public struct BulkPossessionSpec: Codable, Sendable {
     }
 }
 
-/// One worked transfer, pinned self-consistent (the noise-transport
-/// provenance discipline: no external oracle covers our composition;
-/// the codecs beneath are anchored by hand in BulkCodecTests). The
-/// payload is the counting-byte pattern `byte[i] = (payloadStart + i)
-/// & 0xFF`, auditable by eye. Sessions replay through
-/// `BulkTransferHarness` (TestKit) with auto-consent and synchronous
-/// storage; each session's COMPLETE per-direction emission lists are
-/// frozen byte-exact. `receiverIngestLimit` models the teardown: the
-/// receiver ingests only the first N sender messages, then the
-/// session dies and the next one resumes from the persisted state.
-/// `initialPossession` seeds a pre-existing resume state (the holed-
-/// map case a prefix-shaped live teardown cannot produce).
+/// One worked transfer, pinned self-consistent (the codecs beneath are
+/// anchored by hand in BulkCodecTests). The payload is the counting-byte
+/// pattern `byte[i] = (payloadStart + i) & 0xFF`. Sessions replay through
+/// `BulkTransferHarness` with auto-consent and synchronous storage; each
+/// session's complete per-direction emissions are frozen byte-exact.
+/// `receiverIngestLimit` models a teardown after N sender messages, the
+/// next session resuming from persisted state; `initialPossession` seeds
+/// a pre-existing (possibly holed) resume state.
 public struct BulkTransferVector: Codable, Sendable {
     public var name: String
     public var description: String
@@ -244,29 +236,6 @@ public struct BulkTransferSessionVector: Codable, Sendable {
         self.receiverIngestLimit = receiverIngestLimit
         self.senderMessagesHex = senderMessagesHex
         self.receiverMessagesHex = receiverMessagesHex
-    }
-}
-
-/// Stable names for `BulkMessageError` cases, as they appear in
-/// vectors.
-public func bulkMessageErrorName(_ error: BulkMessageError) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .unexpectedType: return "unexpectedType"
-    case .trailingBytes: return "trailingBytes"
-    case .zeroTransferId: return "zeroTransferId"
-    case .emptyTransfer: return "emptyTransfer"
-    case .chunkSizeOutOfBounds: return "chunkSizeOutOfBounds"
-    case .invalidSha256ByteCount: return "invalidSha256ByteCount"
-    case .emptyName: return "emptyName"
-    case .nameOverBudget: return "nameOverBudget"
-    case .mimeHintOverBudget: return "mimeHintOverBudget"
-    case .invalidUtf8: return "invalidUtf8"
-    case .emptyChunkData: return "emptyChunkData"
-    case .chunkDataOverBudget: return "chunkDataOverBudget"
-    case .bitmapOverBudget: return "bitmapOverBudget"
-    case .nonCanonicalBitmap: return "nonCanonicalBitmap"
-    case .unknownAbortReason: return "unknownAbortReason"
     }
 }
 

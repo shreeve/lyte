@@ -1,11 +1,9 @@
 #!/bin/sh
 # Print a monotonically increasing numeric CFBundleVersion.
 #
-# A rebuilt Mach-O receives a new UUID even when source did not change. macOS
-# Local Network privacy includes that UUID in program identity, while
-# LaunchServices may retain the prior executable when path and bundle version
-# are unchanged. Give every assembled app a fresh version so those identities
-# cannot be mistaken for the same artifact.
+# A rebuilt Mach-O gets a new UUID, which Local Network privacy includes in
+# program identity, while LaunchServices may keep the prior executable when
+# path and version are unchanged; a fresh version keeps them distinct.
 set -eu
 
 if [ "$#" -ne 2 ]; then

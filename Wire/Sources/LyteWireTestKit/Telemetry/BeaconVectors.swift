@@ -1,15 +1,12 @@
-// The beacon/feedback vector-file model and loader (W4a):
-// `Wire/Vectors/beacon-v1.json`, the contract CL-3 codes its beacon echo
-// and feedback sender against before the host exists. Same doctrine as
-// the envelope loader: TestKit may import Foundation, LyteWire may not.
+// The beacon/feedback vector-file model and loader:
+// `Wire/Vectors/beacon-v1.json`.
 
 import LyteCore
 import Foundation
 import LyteWire
 
-/// One vector file: `Wire/Vectors/beacon-v1.json`. Both W4a codecs live
-/// in one file — they land together, and the clock worked example needs
-/// the echo vectors next to it.
+/// One vector file: `Wire/Vectors/beacon-v1.json`, the beacon pair, the
+/// feedback report, and the clock worked example.
 public struct BeaconVectorFile: FrozenVectorFile {
     public var format: String
     public var formatVersion: Int
@@ -44,12 +41,9 @@ public struct BeaconVectorFile: FrozenVectorFile {
 
 }
 
-/// One CTRL beacon-pair vector. `decoder` names the codec under test
-/// (both decoders see every reject's bytes come from somewhere specific).
-/// Kinds match the envelope file: `roundtrip` encodes the struct to
-/// exactly `messageHex` and back; `decodeLenient` decodes `messageHex` to
-/// the struct but a canonical re-encode differs (reserved flag bits);
-/// `decodeReject` throws `error` (a BeaconError case name).
+/// One CTRL beacon-pair vector. `decoder` names the codec under test.
+/// Kinds match the envelope file: `roundtrip`, `decodeLenient` (reserved
+/// flag bits), and `decodeReject` (`error` is a BeaconError case name).
 public struct BeaconVector: Codable, Sendable {
     public var name: String
     public var description: String
@@ -362,34 +356,5 @@ public struct ClockWorkedExample: Codable, Sendable {
         self.hostReceiveHex = hostReceiveHex
         self.offsetMicroseconds = offsetMicroseconds
         self.rttMicroseconds = rttMicroseconds
-    }
-}
-
-/// Stable names for `BeaconError` cases, as they appear in vector files.
-public func beaconErrorName(_ error: BeaconError) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .trailingBytes: return "trailingBytes"
-    case .unexpectedType: return "unexpectedType"
-    case .nonZeroAbsentEchoFields: return "nonZeroAbsentEchoFields"
-    }
-}
-
-/// Stable names for `FeedbackError` cases, as they appear in vector files.
-public func feedbackErrorName(_ error: FeedbackError) -> String {
-    switch error {
-    case .truncatedReport: return "truncatedReport"
-    case .trailingBytes: return "trailingBytes"
-    case .tooManyChannelBlocks: return "tooManyChannelBlocks"
-    case .tooManyDispersionSamples: return "tooManyDispersionSamples"
-    case .tooManyNackEntries: return "tooManyNackEntries"
-    case .emptyDispersionSection: return "emptyDispersionSection"
-    case .arrivalDeltaOutOfRange: return "arrivalDeltaOutOfRange"
-    case .nonZeroBaseWithoutSamples: return "nonZeroBaseWithoutSamples"
-    case .emptyNackShardList: return "emptyNackShardList"
-    case .nackBitmapByteCountOutOfRange: return "nackBitmapByteCountOutOfRange"
-    case .nonCanonicalNackBitmap: return "nonCanonicalNackBitmap"
-    case .tooManyExtensions: return "tooManyExtensions"
-    case .reportOverBudget: return "reportOverBudget"
     }
 }

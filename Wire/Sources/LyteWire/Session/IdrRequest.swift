@@ -1,15 +1,7 @@
-// The IDR-request CTRL message — the on-wire closing of CL-2's
-// fecImpossible seam. Build-plan ruling §4.7: at H0b the heal path for an
-// unrecoverable frame is IDR-request, NOT NACK — the host's NACK responder
-// is HS-17 (H2), and until then the feedback report's NACK section stays
-// empty while this message asks for the one thing the host can already do
-// (HS-6's pacer has IDR-on-demand from day one).
-//
-// History: CL-3 pinned the codec in the client package, HS-7 mirrored it
-// byte-for-byte host-side (the packages cannot import each other); the
-// codec-unification slice reconciles both copies into this one canonical
-// codec. Type byte 0x10, client→host, sealed, ARQ-exempt fire-and-forget:
-// a lost request is superseded by the requester's next coalesced emission.
+// The IDR-request CTRL message: the client's request for a fresh keyframe
+// after an unrecoverable frame. Type byte 0x10, client→host, sealed,
+// ARQ-exempt fire-and-forget: a lost request is superseded by the
+// requester's next coalesced emission.
 //
 // Layout, fixed 10 bytes, multi-byte fields little-endian:
 //
@@ -24,9 +16,9 @@
 //                               burst-severity evidence for the host
 //
 // Exactly its fixed size: truncation and trailing bytes reject, a foreign
-// type byte rejects with what it found (the beacon codecs' doctrine).
+// type byte rejects with what it found.
 
-public struct IdrRequest: Hashable, Sendable {
+public struct IdrRequest: Hashable, Sendable, SliceDecodable {
     public var requestSeq: UInt32
     /// The newest FEC-impossible frame at emit time.
     public var frame: FrameNumber
@@ -70,10 +62,6 @@ public struct IdrRequest: Hashable, Sendable {
             frame: FrameNumber(rawValue: wireReadLE(payload, at: base + 5)),
             coalescedCount: payload[base + 9]
         )
-    }
-
-    public static func decode(_ payload: [UInt8]) throws -> IdrRequest {
-        try decode(payload[...])
     }
 }
 

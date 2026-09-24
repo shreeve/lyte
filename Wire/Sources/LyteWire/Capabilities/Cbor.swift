@@ -1,10 +1,9 @@
-// The minimal deterministic CBOR codec (W7) beneath the capability
-// layer. This is NOT a general CBOR library: it implements exactly the
-// Lyte capability profile — a subset of RFC 8949 under the §4.2.1 core
-// deterministic encoding requirements — and rejects everything outside
-// it. Determinism is load-bearing: the capability declaration is a
-// frozen wire artifact both ends must produce byte-identically, and a
-// canonical form is what lets the vectors pin it.
+// The minimal deterministic CBOR codec beneath the capability layer. NOT
+// a general CBOR library: it implements exactly the Lyte capability
+// profile — a subset of RFC 8949 under the §4.2.1 core deterministic
+// encoding — and rejects everything outside it. The capability
+// declaration is a frozen wire artifact both ends must produce
+// byte-identically.
 //
 // Profile (accepted major types):
 //   0  unsigned integer
@@ -17,18 +16,13 @@
 //      out-of-order one as misorderedMapKeys)
 //   7  only false / true / null (0xF4 / 0xF5 / 0xF6)
 //
-// Excluded and rejected: indefinite lengths, tags (major 6), floats
-// and every other simple value. Future wire minors extend the
-// capability MAP with new keys, not the profile — an unknown key's
-// value must still be a profile item, which is what keeps "skip
-// unknown keys" implementable forever (transport pillar §3's
-// forward-compatibility contract).
+// Rejected: indefinite lengths, tags (major 6), floats and every other
+// simple value. Future minors extend the capability MAP, never the
+// profile, which keeps "skip unknown keys" implementable forever.
 //
-// Deterministic-encoding rules enforced on decode (and produced on
-// encode): shortest-form arguments, definite lengths only, map keys
-// strictly ascending bytewise. A non-canonical encoding REJECTS even
-// when it is well-formed CBOR — two ends that disagree about bytes are
-// a wire bug this layer refuses to paper over.
+// Decode enforces what encode produces: shortest-form arguments,
+// definite lengths, bytewise-ascending map keys. A non-canonical encoding
+// rejects even when it is well-formed CBOR.
 
 /// One CBOR data item within the Lyte capability profile.
 public indirect enum CborValue: Hashable, Sendable {

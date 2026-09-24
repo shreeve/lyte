@@ -1,21 +1,13 @@
 // VideoPacketizer: one encoded Annex-B frame in, ready-to-send
-// (envelope, payload) pairs out — the send half of the W2 video interior,
-// sans-IO. Composes W1's pieces: the geometry table picks k/m for the
-// frame's byte count and regime, FecEncoder produces the balanced shards
-// (trailing data shard unpadded), and every envelope carries the full
-// group geometry in its fec field so a single arrival sizes the
-// assembler's buffers.
+// (envelope, payload) pairs out, sans-IO. The geometry table picks k/m,
+// FecEncoder produces the balanced shards, and every envelope carries the
+// full group geometry in its fec field.
 //
-// Sequence allocation, pinned here: the packetizer owns a per-channel
-// serial counter seeded by the caller at init (`firstSeq`) — the cleanest
-// sans-IO shape, since a seq is channel state exactly like the counter a
-// send loop would keep, and a value-type packetizer per channel is the
-// natural owner. Allocation is **contiguous ascending in shard-index
-// order** across each frame's k+m shards. That contiguity is wire
-// contract, not convenience: the assembler infers a frame's full seq
-// range from any one shard (seq − shardIndex … + totalShards), which is
-// what makes its NACK-candidate lists (§4.7) and fec-impossible
-// presumption immediate.
+// The packetizer owns a per-channel serial counter seeded at init
+// (`firstSeq`). Seqs are allocated contiguous ascending in shard-index
+// order across each frame's k+m shards — wire contract: the assembler
+// infers a frame's full seq range from any one shard
+// (seq − shardIndex … + totalShards).
 
 import LyteCore
 
@@ -130,8 +122,7 @@ public struct VideoPacketizer: Sendable {
     /// when the bytes are not frame-shaped Annex-B, when the caller's
     /// isIDR claim disagrees with the bitstream, or when the geometry
     /// table cannot protect a frame this large (`frameByteCeiling` is the
-    /// sender's upstream guard; this keeps the failure loud, never a
-    /// silently under-protected frame). On success the serial counter has
+    /// sender's upstream guard). On success the serial counter has
     /// advanced by exactly `shards.count`.
     public mutating func packetize(
         frame annexB: ArraySlice<UInt8>,

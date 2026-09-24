@@ -1,10 +1,8 @@
-// The W6 pairing wire messages: CPace's one round plus explicit key
-// confirmation, as CTRL types 0x0B–0x0E. They ride the sealed ARQ
-// ordered stream of an ESTABLISHED Noise session (the lifecycle
-// messages' carriage): pairing happens inside the trust-on-first-use
-// session it is about to authenticate — the CPace run is bound to that
-// session's handshake hash and statics (PairingPake owns the binding),
-// so a MITM'd session fails confirmation instead of getting pinned.
+// The pairing wire messages: CPace's one round plus explicit key
+// confirmation, as CTRL types 0x0B–0x0E, on the sealed ARQ ordered stream
+// of an established Noise session. The CPace run is bound to that
+// session's handshake hash and statics (PairingPake owns the binding), so
+// a MITM'd session fails confirmation instead of getting pinned.
 //
 // Pake share A (type 0x0B), client→host, fixed 33 bytes:
 //
@@ -33,8 +31,7 @@
 //   0      1    type   0x0E
 //   1      1    reason 0x01 confirmation-failed (wrong PIN or tampered
 //                      binding — deliberately indistinguishable),
-//                      0x02 invalid-share (G.I abort); 0x00 stays the
-//                      loud zero-fill bug
+//                      0x02 invalid-share (G.I abort); others reject
 //
 // All four are exactly their fixed layout: truncation and trailing
 // bytes reject, a foreign type byte rejects with what it found. The
@@ -50,7 +47,7 @@ public enum PairingRejectReason: UInt8, Hashable, CaseIterable, Sendable {
 }
 
 /// The client's CPace share (type 0x0B).
-public struct PairingShareA: Hashable, Sendable {
+public struct PairingShareA: Hashable, Sendable, SliceDecodable {
     public var share: [UInt8]
 
     public static let encodedByteCount = 1 + CPace.elementByteCount
@@ -79,14 +76,10 @@ public struct PairingShareA: Hashable, Sendable {
             share: Array(payload[(base + 1)..<(base + encodedByteCount)])
         )
     }
-
-    public static func decode(_ payload: [UInt8]) throws -> PairingShareA {
-        try decode(payload[...])
-    }
 }
 
 /// The host's CPace share plus its confirmation tag (type 0x0C).
-public struct PairingShareB: Hashable, Sendable {
+public struct PairingShareB: Hashable, Sendable, SliceDecodable {
     public var share: [UInt8]
     public var confirmationTag: [UInt8]
 
@@ -125,15 +118,11 @@ public struct PairingShareB: Hashable, Sendable {
             )
         )
     }
-
-    public static func decode(_ payload: [UInt8]) throws -> PairingShareB {
-        try decode(payload[...])
-    }
 }
 
 /// The client's confirmation tag (type 0x0D) — the message whose
 /// verification completes pairing on the host.
-public struct PairingConfirm: Hashable, Sendable {
+public struct PairingConfirm: Hashable, Sendable, SliceDecodable {
     public var confirmationTag: [UInt8]
 
     public static let encodedByteCount = 1 + CPace.tagByteCount
@@ -164,15 +153,11 @@ public struct PairingConfirm: Hashable, Sendable {
             )
         )
     }
-
-    public static func decode(_ payload: [UInt8]) throws -> PairingConfirm {
-        try decode(payload[...])
-    }
 }
 
 /// The typed pairing refusal (type 0x0E) — how "wrong PIN" gets loud
-/// (the HS-9/CL-6 gate) without becoming an oracle.
-public struct PairingReject: Hashable, Sendable {
+/// without becoming an oracle.
+public struct PairingReject: Hashable, Sendable, SliceDecodable {
     public var reason: PairingRejectReason
 
     public static let encodedByteCount = 2
@@ -200,10 +185,6 @@ public struct PairingReject: Hashable, Sendable {
             throw PairingMessageError.unknownReason(payload[base + 1])
         }
         return PairingReject(reason: reason)
-    }
-
-    public static func decode(_ payload: [UInt8]) throws -> PairingReject {
-        try decode(payload[...])
     }
 }
 

@@ -18,8 +18,6 @@ package struct NoiseCipherState: Sendable {
         self.key = key.map(NoisePrimitives.AeadKey.init)
     }
 
-    package var hasKey: Bool { key != nil }
-
     /// Spec nonce encoding: 32 zero bits ‖ LE64(n).
     package static func encodeNonce(_ n: UInt64) -> [UInt8] {
         var bytes = [UInt8](repeating: 0, count: NoisePrimitives.nonceByteCount)

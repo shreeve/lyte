@@ -22,9 +22,8 @@ public enum RepositorySourceTreeError: Error, CustomStringConvertible {
 }
 
 /// Enumerations, file contents and token streams of the checked-out tree,
-/// read once per test process. The repository does not change while its
-/// tests run, so every ratchet shares one scan instead of re-reading the
-/// whole tree. Scratch trees built by tests are never cached.
+/// read once per test process and shared by every ratchet. Scratch trees
+/// built by tests are never cached.
 private final class SourceCache: @unchecked Sendable {
     private let lock = NSLock()
     private var files: [String: [URL]] = [:]
@@ -117,9 +116,7 @@ public struct RepositorySourceTree {
         return try cache.bytes(at: file.standardizedFileURL.path, load)
     }
 
-    /// Plain substring search over UTF-8 bytes (comments included, exactly
-    /// like the text a reviewer greps). memchr/memcmp are standard C on
-    /// every platform the tests run on.
+    /// Plain substring search over UTF-8 bytes, comments included.
     private static func contains(_ needle: [UInt8], in haystack: [UInt8]) -> Bool {
         guard let firstByte = needle.first else { return true }
         guard haystack.count >= needle.count else { return false }
@@ -158,10 +155,9 @@ public struct RepositorySourceTree {
         for root in productionSourceRoots {
             var rootFiles: [URL] = []
             for file in try swiftFiles(below: relativePath(for: root)) {
-                // Umbrella source roots contain multiple SwiftPM targets.
-                // TestKit targets are reusable test equipment, not
-                // production; a nested production directory merely named
-                // *TestKit must remain visible and is pinned in tests.
+                // Umbrella roots hold several targets; TestKit targets are
+                // test equipment, but a nested production directory merely
+                // named *TestKit stays visible (pinned in tests).
                 let relative = file.path.dropFirst(root.path.count + 1)
                 if root.lastPathComponent == "Sources",
                    relative.split(separator: "/").first?.hasSuffix("TestKit")

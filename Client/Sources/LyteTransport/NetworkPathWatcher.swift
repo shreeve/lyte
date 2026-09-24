@@ -1,23 +1,14 @@
-// NetworkPathWatcher (F-5): the thin NWPathMonitor shim behind the
-// roaming policy's `pathChanged` input — the Mac hopping Wi-Fi
-// networks mid-session changes the socket's source address, and
-// waiting for the silence ladder wastes seconds the path monitor
-// already knows about. The shim is deliberately dumb: it reduces each
-// NWPath to a small signature and fires ONLY on a signature change
-// after the baseline (the initial callback is the current state, not
-// a change — never a trigger). Everything decidable is a pure
-// function (`shouldNotify`) so the trigger rule pins in tests without
-// a live network.
+// NetworkPathWatcher: the NWPathMonitor shim behind roaming's
+// `pathChanged` input. It reduces each NWPath to a signature and fires only
+// on a change after the baseline.
 
 import Foundation
 import Network
 
 public final class NetworkPathWatcher: @unchecked Sendable {
-    /// What "the path changed" means: the interface set or
-    /// satisfiability moved. Interface NAMES (en0, en1, utun3…)
-    /// rather than addresses — NWPath doesn't expose addresses, and a
-    /// same-interface DHCP re-lease shows up as the session going
-    /// silent anyway (the ladder covers it).
+    /// The interface names and satisfiability (NWPath exposes no
+    /// addresses; a same-interface re-lease is caught by the silence
+    /// ladder).
     public struct Signature: Equatable, Sendable {
         public var isSatisfied: Bool
         public var interfaceNames: [String]
@@ -28,9 +19,8 @@ public final class NetworkPathWatcher: @unchecked Sendable {
         }
     }
 
-    /// The trigger rule, pure: the FIRST observation is the baseline
-    /// (no notification — the session was dialed on that path);
-    /// afterwards any signature difference notifies.
+    /// The first observation is the baseline; afterwards any difference
+    /// notifies.
     public static func shouldNotify(
         previous: Signature?, current: Signature
     ) -> Bool {

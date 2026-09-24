@@ -1,18 +1,10 @@
 #!/usr/bin/env node
-// lyte-wt-sidecar — same-box WebTransport ↔ UDP opaque datagram relay.
-//
-// Browser Chrome speaks WebTransport datagrams; this process relays opaque
-// bytes onto a UDP peer and back. It never parses Lyte envelopes or Noise —
-// ciphertext-only by construction. Does not bind standing host UDP 41151.
-//
-// Modes:
-//   • echo (default): loopback UDP echo for the carrier proofs
-//   • --udp-peer host:port: forward to a real Lyte host / control peer
-//
-// Each WebTransport session gets its own UDP socket (its own 4-tuple).
-//
-// Writes JSON metadata (url, cert hash, measured ports) to --meta-out so the
-// proof page can dial with serverCertificateHashes.
+// lyte-wt-sidecar — same-box WebTransport ↔ UDP opaque datagram relay. It
+// never parses Lyte envelopes or Noise, and never binds the standing host
+// UDP 41151. Modes: echo (default, loopback UDP echo for carrier proofs) or
+// --udp-peer host:port (forward to a Lyte host / control peer). Each
+// WebTransport session gets its own UDP socket. Writes JSON metadata (url,
+// cert hash, ports) to --meta-out for serverCertificateHashes dialing.
 
 import { createHash } from "node:crypto";
 import { createSocket } from "node:dgram";

@@ -1,11 +1,7 @@
-// VideoRenderFactory: LyteWire DecodeUnit → CMSampleBuffer for
-// AVSampleBufferDisplayLayer. It rebuilds the HEVC format description from
-// an IDR's in-band VPS/SPS/PPS and converts Annex-B (3- or 4-byte start
-// codes) to 4-byte length-prefixed NALs, stripping each NAL's trailing
-// zeros (the RBSP stop-bit guarantee: a NAL's last real byte is never
-// zero, so trailing zeros are inter-NAL padding). HEVC only. The pts is
-// the host capture timestamp (µs); the Conductor re-stamps it onto the
-// local CM host-clock beat grid.
+// VideoRenderFactory: HEVC DecodeUnit → CMSampleBuffer. Rebuilds the format
+// description from an IDR's in-band VPS/SPS/PPS and converts Annex-B to
+// 4-byte length-prefixed NALs, stripping trailing zeros (a NAL's last real
+// byte is never zero). The pts is the host capture timestamp (µs).
 
 import CoreMedia
 import Foundation
@@ -33,11 +29,8 @@ public final class VideoRenderFactory {
     /// first IDR every P-frame's sample is withheld (returns nil).
     public var hasFormatDescription: Bool { formatDescription != nil }
 
-    /// Builds a ready-to-enqueue sample buffer. IDR units refresh the
-    /// format description from their in-band VPS/SPS/PPS (host
-    /// resolution changes arrive as new parameter sets mid-stream).
-    /// Returns nil for units that cannot render yet (P-frame before the
-    /// first IDR).
+    /// Builds a ready-to-enqueue sample buffer; IDRs refresh the format
+    /// description. Returns nil for a P-frame before the first IDR.
     public func makeSampleBuffer(from unit: DecodeUnit) throws -> CMSampleBuffer? {
         let nals = Self.renderableNALs(annexB: unit.annexB)
         if unit.isIDR {
@@ -59,12 +52,8 @@ public final class VideoRenderFactory {
             throw VideoRenderError.blockBufferCreateFailed(status)
         }
 
-        // Convert directly into CoreMedia-owned storage. The former path
-        // first built a full HVCC [UInt8], then copied it wholesale into
-        // this block. Writing prefixes and NAL slices here removes that
-        // payload-sized allocation and one complete copy while retaining
-        // simple ownership: the sample owns immutable CoreMedia memory,
-        // independent of DecodeUnit as soon as this method returns.
+        // Convert directly into CoreMedia-owned storage (no intermediate
+        // copy); the sample is independent of DecodeUnit on return.
         var destinationOffset = 0
         for nal in nals {
             var length = UInt32(nal.range.count).bigEndian

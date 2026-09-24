@@ -1,11 +1,10 @@
-// The shared vocabulary (overview §3, conflict 16): "frame number" is the
-// envelope `frame` field, "sequence" is the per-channel `seq` field, and
-// timestamps are tagged by clock domain so host-PipeWire µs and client µs
-// can never meet in one expression.
+// "Frame number" is the envelope `frame` field, "sequence" is the
+// per-channel `seq` field, and timestamps are tagged by clock domain so
+// host-PipeWire µs and client µs can never meet in one expression.
 
 /// The envelope `frame` field: per-channel u32 frame counter for video, the
-/// audio-doc packet number for audio, and the FEC group id for both. At 60
-/// fps a u32 wraps in ~2.2 years — plain ordering is honest, wrapping
+/// audio packet number for audio, and the FEC group id for both. At 60 fps
+/// a u32 wraps in ~2.2 years, so plain ordering is honest; the wrapping
 /// increment keeps the arithmetic total anyway.
 public struct FrameNumber: RawRepresentable, Hashable, Comparable, Sendable {
     public var rawValue: UInt32
@@ -58,14 +57,13 @@ public struct ChannelSeq: RawRepresentable, Hashable, Comparable, Sendable {
 
 /// Clock domains for `WireTimestamp`. The envelope timestamp is host
 /// PipeWire monotonic µs on host-sent datagrams and client monotonic µs on
-/// client-sent ones (overview §2); the beacon codec (W4a) is the only
-/// sanctioned conversion point between the two.
+/// client-sent ones; the beacon codec is the only sanctioned conversion
+/// point between the two.
 public enum HostClock {}
 public enum ClientClock {}
 
-/// A u64 microsecond instant tagged by its clock domain. Mixing domains in
-/// arithmetic is a compile error, which is the entire point of the phantom
-/// parameter.
+/// A u64 microsecond instant tagged by its clock domain; mixing domains in
+/// arithmetic is a compile error.
 public struct WireTimestamp<Domain>: Hashable, Comparable, Sendable {
     /// Microseconds since the domain clock's (unspecified) epoch.
     public var microseconds: UInt64

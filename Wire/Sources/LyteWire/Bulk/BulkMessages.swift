@@ -1,34 +1,24 @@
-// The bulk-transfer vocabulary (W10 / F-2 — design record
-// docs/decisions/20260728-053300-lyte-bulk-channel.md): the wire shapes of a
-// chunked, resumable, backpressured blob transfer. Six messages, all
-// riding CHANNEL 8's ARQ ordered stream (group 0) — never CTRL, so a
-// file can never head-of-line-block a keystroke; never FEC'd, because
-// bulk is the one traffic class where retransmit RTTs cost nothing
-// (design §2's ARQ-vs-fountain ruling).
+// The bulk-transfer vocabulary
+// (docs/decisions/20260728-053300-lyte-bulk-channel.md): a chunked,
+// resumable, backpressured blob transfer. All six messages ride CHANNEL
+// 8's ARQ ordered stream — never CTRL, so a file never head-of-line-blocks
+// a keystroke; never FEC'd, since bulk tolerates retransmit RTTs.
 //
-// The vocabulary is DIRECTION-NEUTRAL by design: every message speaks
-// sender/receiver, never client/host. v1 gates the direction at the
-// ends (client→host only, per H3 §0 owner decision 1), so a v2 flip
-// costs zero wire bytes. Offer/chunk flow sender→receiver;
-// accept/ack/complete flow receiver→sender; abort flows either way.
-// Ordering within each direction is the ARQ stream's guarantee — a
-// chunk can never overtake its offer, a complete can never overtake
-// the final ack.
+// The vocabulary is direction-neutral (sender/receiver, never
+// client/host); the ends gate direction. Offer/chunk flow
+// sender→receiver; accept/ack/complete flow receiver→sender; abort flows
+// either way. ARQ ordering means a chunk never overtakes its offer and a
+// complete never overtakes the final ack.
 //
-// CAPABILITY CARRIAGE — the W7 forward-compat spine, third verse:
-// key 11 (CapabilityKey.bulkTransfer, bool) rides the declaration
-// through `Capabilities.unknownEntries` as one canonical `0B F5` map
-// entry and survives intersection only on mutual byte-equal
-// declaration. ZERO frozen bytes move. Declaration is dialect, not
-// consent: the standing per-host toggle lives in the end shells.
+// Gated by capability key 11 (bulkTransfer) through `unknownEntries`.
+// Declaration is dialect, not consent: the per-host toggle lives in the
+// end shells.
 //
-// Validation doctrine, the house rule: every message is exactly its
-// layout — truncation, trailing bytes, and foreign type bytes reject
-// with what they found; a zero transferId is the loud zero-fill bug;
-// hostile bytes throw, never trap.
+// Every message is exactly its layout: truncation, trailing bytes and
+// foreign type bytes throw with what they found; a zero transferId is a
+// zero-fill bug; hostile bytes throw, never trap.
 
-/// The bulk layer's fixed numbers (wire v1). Design record §4 owns
-/// the justifications.
+/// The bulk layer's fixed numbers (wire v1).
 public enum BulkWire {
     /// Chunk-size floor: below 4 KiB the bookkeeping (chunk counts,
     /// maps) buys per-chunk overhead with no measurable win.
@@ -48,17 +38,15 @@ public enum BulkWire {
     public static let maxMimeHintByteCount = 255
     /// Chunk-map bitmap ceiling: 8,192 chunks describable past the
     /// first hole. A describability bound, not a size bound —
-    /// under-claiming is always legal (design §5).
+    /// under-claiming is always legal.
     public static let maxBitmapByteCount = 1_024
     /// A SHA-256 digest, the completion contract.
     public static let sha256ByteCount = 32
 }
 
-/// Transfer-id minting: u64, non-zero (zero is the loud zero-fill
-/// bug), from INJECTED randomness per Wire doctrine — the one place
-/// randomness enters the bulk layer. Minted once per blob and reused
-/// verbatim on every re-offer, which is what makes resume matching
-/// possible (design §5).
+/// Transfer-id minting: u64, non-zero, from injected randomness. Minted
+/// once per blob and reused verbatim on every re-offer, which is what
+/// makes resume matching possible.
 public enum BulkTransferId {
     public static func mint(
         using generator: inout some RandomNumberGenerator
@@ -91,11 +79,10 @@ extension Capabilities {
 /// Chunk possession, compressed: chunks `0…contiguousCount−1` are
 /// held, and bitmap bit n (byte n/8, bit n%8) set means chunk
 /// `contiguousCount + 1 + n` is held — chunk `contiguousCount` itself
-/// is NOT held by definition (else the count would advance; the ARQ
-/// ACK-block convention). Canonical: the final bitmap byte is
-/// non-zero. Shared by accept and ack; with in-order ARQ carriage the
-/// bitmap rides empty in practice and exists for holed resume states
-/// and future non-ordered carriages (design §5).
+/// is NOT held by definition (else the count would advance).
+/// Canonical: the final bitmap byte is non-zero. Shared by accept and
+/// ack; with in-order ARQ carriage the bitmap is empty in practice and
+/// exists for holed resume states.
 public struct BulkChunkMap: Hashable, Sendable {
     public var contiguousCount: UInt64
     public private(set) var bitmap: [UInt8]
@@ -126,8 +113,7 @@ public struct BulkChunkMap: Hashable, Sendable {
     /// contiguous prefix + extras, normalizing extras that extend the
     /// prefix and UNDER-CLAIMING whatever the bitmap window cannot
     /// describe (always legal — the sender re-sends some held chunks,
-    /// the receiver tolerates them, the digest arbitrates; design
-    /// §5). Cannot fail.
+    /// the receiver tolerates them, the digest arbitrates). Cannot fail.
     public static func describing(
         contiguousCount: UInt64,
         extras: some Sequence<UInt64>
@@ -216,7 +202,7 @@ public struct BulkChunkMap: Hashable, Sendable {
 ///   …      1    mimeLen         0…255
 ///   …      …    mimeHint        UTF-8; exactly its layout, trailing
 ///                               bytes reject
-public struct BulkOffer: Hashable, Sendable {
+public struct BulkOffer: Hashable, Sendable, SliceDecodable {
     public var transferId: UInt64
     public var totalByteCount: UInt64
     public var chunkByteCount: UInt32
@@ -324,10 +310,6 @@ public struct BulkOffer: Hashable, Sendable {
             mimeHint: mimeHint
         )
     }
-
-    public static func decode(_ payload: [UInt8]) throws -> BulkOffer {
-        try decode(payload[...])
-    }
 }
 
 /// The receiver's consent answer (type 0x1D): existing possession
@@ -342,7 +324,7 @@ public struct BulkOffer: Hashable, Sendable {
 ///   17     8    contiguousCount  the chunk map
 ///   25     2    bitmapLen        0…1,024
 ///   27     …    bitmap
-public struct BulkAccept: Hashable, Sendable {
+public struct BulkAccept: Hashable, Sendable, SliceDecodable {
     public var transferId: UInt64
     public var creditTotal: UInt64
     public var possession: BulkChunkMap
@@ -379,23 +361,18 @@ public struct BulkAccept: Hashable, Sendable {
             transferId: id, creditTotal: credit, possession: map
         )
     }
-
-    public static func decode(_ payload: [UInt8]) throws -> BulkAccept {
-        try decode(payload[...])
-    }
 }
 
-/// One chunk (type 0x1E), data the sole trailing field (the
-/// RetryHandshake1 self-delimiting precedent — the ARQ message
-/// boundary is the length). EXACT size against the offer's geometry
-/// is the engine's check; the codec pins the structural bounds.
+/// One chunk (type 0x1E), data the sole trailing field (the ARQ
+/// message boundary is its length). Exact size against the offer's
+/// geometry is the engine's check; the codec enforces structural bounds.
 ///
 ///   offset size field
 ///   0      1    type        0x1E
 ///   1      8    transferId
 ///   9      8    chunkIndex  u64
 ///   17     …    data        1…131,072 bytes
-public struct BulkChunk: Hashable, Sendable {
+public struct BulkChunk: Hashable, Sendable, SliceDecodable {
     public var transferId: UInt64
     public var chunkIndex: UInt64
     public var data: [UInt8]
@@ -438,17 +415,13 @@ public struct BulkChunk: Hashable, Sendable {
             transferId: transferId, chunkIndex: chunkIndex, data: data
         )
     }
-
-    public static func decode(_ payload: [UInt8]) throws -> BulkChunk {
-        try decode(payload[...])
-    }
 }
 
 /// The receiver's possession + credit heartbeat (type 0x1F). Layout
 /// identical to accept. `creditTotal` is monotonic within a session;
 /// a stale (lower) value is ignored by the sender, never a violation
 /// — acks are cumulative state, not deltas.
-public struct BulkAck: Hashable, Sendable {
+public struct BulkAck: Hashable, Sendable, SliceDecodable {
     public var transferId: UInt64
     public var creditTotal: UInt64
     public var possession: BulkChunkMap
@@ -485,18 +458,13 @@ public struct BulkAck: Hashable, Sendable {
             transferId: id, creditTotal: credit, possession: map
         )
     }
-
-    public static func decode(_ payload: [UInt8]) throws -> BulkAck {
-        try decode(payload[...])
-    }
 }
 
 /// The success verdict (type 0x20), sent only after the receiver's
 /// own digest of the assembled blob equals the offer's sha256.
-/// Exactly `type ‖ transferId` — failure is never a
-/// complete-with-status; it is an abort with a reason (one message,
-/// one meaning; the lifecycle discipline).
-public struct BulkComplete: Hashable, Sendable {
+/// Exactly `type ‖ transferId`; failure is always an abort with a
+/// reason, never a complete-with-status.
+public struct BulkComplete: Hashable, Sendable, SliceDecodable {
     public var transferId: UInt64
 
     public init(transferId: UInt64) throws {
@@ -524,16 +492,10 @@ public struct BulkComplete: Hashable, Sendable {
         try requireEnd(reader)
         return try BulkComplete(transferId: transferId)
     }
-
-    public static func decode(_ payload: [UInt8]) throws -> BulkComplete {
-        try decode(payload[...])
-    }
 }
 
 /// Why a transfer died. The whole value space is pinned by
-/// bulk-v1.json (the lifecycle discipline — a value added without a
-/// vector-file discussion fails loudly). 0x00 rejects (the zero-fill
-/// rule); unknown values reject.
+/// bulk-v1.json; 0x00 and unknown values reject.
 public enum BulkAbortReason: UInt8, CaseIterable, Hashable, Sendable {
     /// Receiver consent says no (standing toggle off, user refused).
     case declined = 0x01
@@ -558,7 +520,7 @@ public enum BulkAbortReason: UInt8, CaseIterable, Hashable, Sendable {
 
 /// Typed transfer abort (type 0x21), either direction. Exactly
 /// `type ‖ transferId ‖ reason`.
-public struct BulkAbort: Hashable, Sendable {
+public struct BulkAbort: Hashable, Sendable, SliceDecodable {
     public var transferId: UInt64
     public var reason: BulkAbortReason
 
@@ -591,16 +553,12 @@ public struct BulkAbort: Hashable, Sendable {
         }
         return try BulkAbort(transferId: transferId, reason: reason)
     }
-
-    public static func decode(_ payload: [UInt8]) throws -> BulkAbort {
-        try decode(payload[...])
-    }
 }
 
 /// One parsed bulk message — the dispatch the engines and the chan-8
 /// shell share. `decode` routes on the type byte and rejects
 /// everything outside the sextet.
-public enum BulkMessage: Hashable, Sendable {
+public enum BulkMessage: Hashable, Sendable, SliceDecodable {
     case offer(BulkOffer)
     case accept(BulkAccept)
     case chunk(BulkChunk)
@@ -653,10 +611,6 @@ public enum BulkMessage: Hashable, Sendable {
             throw BulkMessageError.unexpectedType(type)
         }
     }
-
-    public static func decode(_ payload: [UInt8]) throws -> BulkMessage {
-        try decode(payload[...])
-    }
 }
 
 /// Everything the bulk codecs can refuse. Hostile bytes throw, never
@@ -698,8 +652,7 @@ public enum BulkMessageError: Error, Hashable, Sendable {
     /// A bitmap whose final byte is zero: the bitmap is sized by its
     /// highest set bit, so a zero tail means the sender miscounted.
     case nonCanonicalBitmap
-    /// An abort reason outside the pinned space (0x00 included — the
-    /// zero-fill rule).
+    /// An abort reason outside the pinned space (0x00 included).
     case unknownAbortReason(UInt8)
 }
 

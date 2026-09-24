@@ -75,7 +75,7 @@ final class PostureVectorFileTests: XCTestCase {
                     guard let error = $0 as? AudioTrackStateError else {
                         return XCTFail("\(vector.name): \($0)")
                     }
-                    XCTAssertEqual(audioTrackStateErrorName(error), vector.error, vector.name)
+                    XCTAssertEqual(vectorErrorName(error), vector.error, vector.name)
                 }
             case (.videoPostureState, .roundtrip):
                 let decoded = try VideoPostureState.decode(message)
@@ -89,7 +89,7 @@ final class PostureVectorFileTests: XCTestCase {
                     guard let error = $0 as? VideoPostureStateError else {
                         return XCTFail("\(vector.name): \($0)")
                     }
-                    XCTAssertEqual(videoPostureStateErrorName(error), vector.error, vector.name)
+                    XCTAssertEqual(vectorErrorName(error), vector.error, vector.name)
                 }
             case (.capabilitySet, _):
                 let decoded = try Capabilities.decodeCbor(message)

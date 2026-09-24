@@ -1,94 +1,60 @@
-// SessionStateMachine (W4b): the shared session-lifecycle core — the
-// ACTIVE/IDLE/FROZEN/RECOVERY pure logic the core plan pinned (§2) and
-// the overview ruled into one four-state machine (§2 "Mode machine",
-// conflict 14). Both ends instantiate it: the host as `mediaSender`
-// (it drives the wire modes and the IDR decisions), the client as
-// `mediaReceiver` (it mirrors mode messages and derives the FROZEN
-// pill). Handshake sequencing is NOT here — NoiseSession (W5) owns it,
-// and this machine begins at establishment, in ACTIVE. Connection
-// migration is not an input either: HS-12's PathValidator owns the
-// tuple change, and to this machine a migrated peer is simply
-// media/CTRL evidence returning (resiliency §6 — migration only
-// requires that feedback from a new 4-tuple be attributable).
+// SessionStateMachine: the shared ACTIVE/IDLE/FROZEN/RECOVERY session
+// core. The host runs it as `mediaSender` (drives wire modes and IDR
+// decisions), the client as `mediaReceiver` (mirrors mode messages and
+// derives FROZEN). It begins at establishment, in ACTIVE; handshake and
+// path migration live elsewhere — a migrated peer is simply evidence
+// returning.
 //
-// The state model, exactly the overview's ruling:
-//   - ACTIVE / IDLE are the wire modes, signaled on CTRL's ARQ ordered
-//     stream via ModeTransition (0x09). The session stays ACTIVE while
-//     the ratchet runs.
+// States:
+//   - ACTIVE / IDLE are the wire modes, signaled via ModeTransition (0x09)
+//     on CTRL's ARQ ordered stream. The session stays ACTIVE while the
+//     ratchet runs.
 //   - FROZEN / RECOVERY are the path-loss overlay, entered from either
-//     wire mode, NEVER signaled on the wire — each end derives them
-//     from its own silence detector.
+//     wire mode and never signaled — each end derives them locally.
 //   - WAKE is the IDLE→ACTIVE transition, not a state.
 //
-// Sender transitions (resiliency §4, overview conflicts 5 and 14):
-//   - ACTIVE, ratchet converges (all-skip stop) → send the final
-//     converged frame on a video-idle reliable ONE-SHOT group and wait;
-//     only its acknowledgement (ArqEvent.oneShotAcknowledged) flips to
-//     IDLE and emits mode=idle — one-shot groups are unordered against
-//     the CTRL stream, so waiting for the ack is what guarantees the
-//     receiver holds the converged frame before it learns the session
-//     went idle. New damage before the ack aborts the pending flip;
-//     the session never left ACTIVE.
-//   - IDLE, injected input or fresh damage → WAKE: mode=active on
-//     CTRL, next damage frame is an IDR paced at min(btlRate,
-//     lastGoodRate) — the healthy-path rate (conflict 14).
-//   - any streaming state, 350 ms with no feedback and no audio acks →
-//     FROZEN: datagram video stops, audio continues as the path probe,
-//     CTRL stays alive. The 350 ms detector runs on the media-path
-//     evidence stream (25–50 ms feedback cadence + audio acks), NOT on
-//     the 1 Hz beacon — a beacon could never drive a 350 ms detector
-//     (conflict 10), which is why the two evidence kinds are separate
-//     inputs.
-//   - FROZEN, any evidence returns (feedback OR a beacon ack, possibly
-//     from a new address) → RECOVERY: the path is unknown — force a
-//     fresh IDR paced at max(floor, 0.5 × stale estimate), re-enter
-//     mode=active if the freeze happened in IDLE. A pre-arm input that
-//     arrived during the blackout persists through FROZEN and is
-//     consumed exactly once by this IDR (conflict 14) — a keypress
-//     during a blackout is never lost semantics.
-//   - RECOVERY, two consecutive clean feedback windows → ACTIVE (the
-//     overlay clears; the wire mode never changed). A dirty window
-//     resets the count. Renewed silence re-freezes, but RECOVERY uses a
-//     longer silence bar than ACTIVE: the forced IDR must serialize,
-//     cross the path, and earn feedback before the detector may kill
-//     mid-flight sends. The ACTIVE 350 ms bar here thrashes
-//     FROZEN⇄RECOVERY on every CTRL wake (beacon / 0x10) whenever the
-//     media path is slower than that window.
-//   - A converged ratchet during RECOVERY is accepted like ACTIVE's:
-//     the final frame rides its one-shot, and an acknowledged delivery
-//     through the recovering path is path evidence at least as strong
-//     as a clean window, so the flip to IDLE clears the overlay too.
-//     (This machine's ruling — the pillars leave the overlap open.)
+// Sender transitions:
+//   - ACTIVE, ratchet converges → send the final frame on a video-idle
+//     one-shot group; only its acknowledgement flips to IDLE and emits
+//     mode=idle, so the receiver holds the converged frame first. New
+//     damage before the ack aborts the pending flip.
+//   - IDLE, input or damage → WAKE: mode=active, next damage frame is an
+//     IDR paced at `.lastGoodRate`.
+//   - ACTIVE/IDLE, `blackoutSilence` with no media-path evidence (feedback
+//     or audio acks — never the 1 Hz beacon) → FROZEN: datagram video
+//     stops, audio continues as the path probe, CTRL stays alive.
+//   - FROZEN, any evidence returns → RECOVERY: force an IDR paced at
+//     `.halfStaleEstimate`, re-send mode=active if frozen from IDLE. A
+//     pre-arm input received while FROZEN is consumed exactly once by
+//     this IDR.
+//   - RECOVERY, `cleanWindowsToRecover` consecutive clean feedback windows
+//     → ACTIVE; a dirty window resets the count. RECOVERY uses a longer
+//     silence bar so the forced IDR can earn feedback before re-freezing.
+//   - A converged ratchet during RECOVERY is accepted as in ACTIVE; the
+//     acknowledged final frame is path evidence, so the IDLE flip clears
+//     the overlay too.
 //
-// Liveness and teardown (transport §4, overview conflict 10): the slow
-// session-liveness clock runs on ANY authenticated peer evidence; ≥30 s
-// of nothing closes the session locally — no wire message, because the
-// peer that would read it is the one that died. Orderly ends send the
-// typed SessionTeardown (0x0A) on the ARQ stream — `takenOver` is the
-// multi-client ruling's `taken-over-by`, and reliable ordered carriage
-// means a teardown can never overtake the messages that explain it.
+// Liveness: `livenessTimeout` with no authenticated peer evidence closes
+// the session locally with no wire message. Orderly ends send
+// SessionTeardown (0x0A) on the ARQ stream.
 //
-// Sans-IO, the ArqEndpoint discipline exactly: inputs are applied with
-// an injected `now`, timers fire in `poll(now:)` which returns actions
-// plus the next deadline, and the clock-domain phantom makes a
-// host-clock machine and a client-clock machine different types.
+// Sans-IO: inputs take an injected `now`, timers fire in `poll(now:)`,
+// and the clock-domain phantom keeps host and client machines distinct.
 
 public struct SessionMachineConfig: Hashable, Sendable {
     /// The blackout detector: this long with no media-path evidence
     /// (feedback datagrams, audio acks) freezes the session while
-    /// ACTIVE or IDLE. Resiliency §4 pins 350 ms — covers
-    /// office→kitchen roams, well past any aggregation stall.
+    /// ACTIVE or IDLE.
     public var blackoutSilenceMicroseconds: Int64
-    /// Silence bar while RECOVERY. Must be ≥ the ACTIVE bar. Default
-    /// 2 s (or the ACTIVE bar when that is longer) so a half-stale
-    /// recovery IDR can finish and produce chan-3 evidence before
-    /// `freezeDatagramSends` aborts it — see recovery thrash note above.
+    /// Silence bar while RECOVERY, clamped to ≥ the ACTIVE bar. Default
+    /// 2 s so a recovery IDR can finish and produce feedback before
+    /// `freezeDatagramSends` aborts it.
     public var recoveryBlackoutSilenceMicroseconds: Int64
     /// The slow liveness clock: this long with no authenticated peer
-    /// evidence of any kind closes the session (transport's ≥30 s).
+    /// evidence of any kind closes the session.
     public var livenessTimeoutMicroseconds: Int64
     /// Consecutive clean feedback windows that graduate RECOVERY back
-    /// to ACTIVE (resiliency §4 pins 2).
+    /// to ACTIVE.
     public var cleanWindowsToRecover: Int
 
     public init(
@@ -110,9 +76,8 @@ public struct SessionMachineConfig: Hashable, Sendable {
 
 /// Which end of the session this machine runs. The sender (host)
 /// drives wire modes and IDR decisions; the receiver (client) mirrors
-/// mode messages and derives FROZEN for surfacing (CL-8's pill).
-/// Sender-only inputs are ignored by a receiver and vice versa — the
-/// coverage table asserts every such pairing.
+/// mode messages and derives FROZEN for surfacing. Sender-only inputs
+/// are ignored by a receiver and vice versa.
 public enum SessionRole: Hashable, CaseIterable, Sendable {
     case mediaSender
     case mediaReceiver
@@ -133,12 +98,10 @@ public enum SessionState: Hashable, CaseIterable, Sendable {
 /// How an emitted IDR must be paced. The machine names the policy;
 /// the shell's estimator owns the numbers.
 public enum IdrPacing: Hashable, Sendable {
-    /// WAKE from healthy IDLE: min(btlRate, lastGoodRate) —
-    /// overview conflict 14's healthy-path rate.
+    /// WAKE from healthy IDLE: min(btlRate, lastGoodRate).
     case lastGoodRate
-    /// RECOVERY from blackout: max(floor, 0.5 × stale estimate) —
-    /// the path is unknown, the old estimate may be 10× the new
-    /// path's capacity (resiliency §4).
+    /// RECOVERY from blackout: max(floor, 0.5 × stale estimate) — the
+    /// path is unknown and the old estimate may far exceed it.
     case halfStaleEstimate
 }
 
@@ -167,8 +130,7 @@ public enum SessionAction: Hashable, Sendable {
     /// `.finalFrameAcknowledged`.
     case sendFinalFrameReliably
     /// WAKE: mark the next encoded damage frame as an IDR, paced per
-    /// the policy. The decision precedes the damage (timing §7's
-    /// pre-arm rule).
+    /// the policy. The decision precedes the damage.
     case armNextDamageAsIdr(IdrPacing)
     /// RECOVERY: force a fresh IDR now, paced per the policy. This is
     /// the action that consumes a persisted pre-arm.
@@ -182,18 +144,16 @@ public enum SessionAction: Hashable, Sendable {
     case sessionClosed(SessionCloseReason)
 }
 
-/// Everything the shell can tell the machine. One enum so the W-G5
-/// transition-coverage table can enumerate state × input × role
-/// exhaustively.
+/// Everything the shell can tell the machine; one enum so tests can
+/// enumerate state × input × role exhaustively.
 public enum SessionInput: Hashable, Sendable {
     /// A media-path proof arrived: a feedback datagram or an audio
     /// ack. Feeds the 350 ms blackout detector and the liveness clock;
     /// exits FROZEN.
     case mediaPathEvidence
     /// Any other authenticated peer arrival (beacon echo, ARQ ack,
-    /// sealed CTRL). Feeds the liveness clock and exits FROZEN
-    /// ("beacon acked" — resiliency §4), but deliberately NOT the
-    /// 350 ms detector: 1 Hz beacons cannot drive it.
+    /// sealed CTRL). Feeds the liveness clock and exits FROZEN, but
+    /// deliberately NOT the blackout detector: 1 Hz beacons cannot drive it.
     case ctrlEvidence
     /// The estimator's verdict on one elapsed feedback window
     /// (sender). Clean windows graduate RECOVERY; a dirty one resets.
@@ -205,8 +165,7 @@ public enum SessionInput: Hashable, Sendable {
     /// Fresh damage exists (sender). Wakes IDLE; aborts a pending
     /// ACTIVE→IDLE flip (new damage during the ratchet handoff).
     case damage
-    /// The ratchet converged — the all-skip stop (sender, HS-3's
-    /// detector via HS-11).
+    /// The ratchet converged — the all-skip stop (sender).
     case ratchetConverged
     /// The final converged frame's one-shot group was fully
     /// acknowledged (sender; ArqEvent.oneShotAcknowledged).
@@ -230,8 +189,8 @@ public struct SessionStateMachine<ClockDomain>: Sendable {
     /// (sender) or last said (receiver). Unchanged by FROZEN/RECOVERY
     /// except that RECOVERY entry forces it to `.active`.
     public private(set) var wireMode: SessionWireMode
-    /// A pre-arm input arrived during FROZEN and awaits RECOVERY's IDR
-    /// (overview conflict 14). Cleared exactly once, by that IDR.
+    /// A pre-arm input arrived during FROZEN and awaits RECOVERY's IDR.
+    /// Cleared exactly once, by that IDR.
     public private(set) var isPreArmed: Bool
     /// The converged frame's one-shot is in flight; its ack flips to
     /// IDLE. Cleared by new damage (abort) and by FROZEN entry.
@@ -448,9 +407,8 @@ public struct SessionStateMachine<ClockDomain>: Sendable {
             actions.append(.sendModeMessage(.active))
         }
         actions.append(.forceIdr(.halfStaleEstimate))
-        // The persisted pre-arm is consumed, exactly once, by this
-        // IDR (overview conflict 14) — the keypress's damage rides in
-        // the frame the IDR carries.
+        // The persisted pre-arm is consumed, exactly once, by this IDR —
+        // the keypress's damage rides in the frame it carries.
         isPreArmed = false
         return actions
     }

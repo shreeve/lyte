@@ -49,7 +49,7 @@ final class ArqVectorFileTests: XCTestCase {
                         return XCTFail("\(vector.name): foreign error type")
                     }
                     XCTAssertEqual(
-                        arqFrameErrorName(frameError), vector.error,
+                        vectorErrorName(frameError), vector.error,
                         vector.name
                     )
                 }

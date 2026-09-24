@@ -1,10 +1,8 @@
 import LyteIO
 import Foundation
 
-/// One environment-gated JSONL evidence file for bounded diagnostic runs.
-/// The path is read once per process; when the variable is unset,
-/// `record` returns before building its fields, so production sessions
-/// pay one branch per call and emit nothing.
+/// One environment-gated JSONL evidence file for diagnostic runs. When the
+/// variable is unset, `record` returns before building its fields.
 public struct JsonlWitness: Sendable {
     private let path: String?
     private let lock = NSLock()

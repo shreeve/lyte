@@ -45,8 +45,8 @@ export function domButtonToEvdev(button) {
 const BUTTON_BITS = [[1, 272], [2, 273], [4, 274], [8, 275], [16, 276]];
 
 // KEY_LEFTMETA / KEY_RIGHTMETA. Meta never reaches the host: its chords
-// are the browser's and the OS's, and a lone Super tap would toggle
-// GNOME's Activities (the native client's rule for a local ⌘).
+// belong to the browser and OS, and a lone Super tap would toggle GNOME's
+// Activities.
 const META_KEYCODES = new Set([125, 126]);
 
 /** Canvas CSS pixels → host stream pixels (aspect-fit letterbox). */
@@ -86,11 +86,9 @@ export function installCanvasInput(canvas, { sendInput, hostSize }) {
     return mapPointerToHost(canvas, event.clientX, event.clientY, width, height);
   };
 
-  // Pointer Events fire pointerdown for the first button pressed and
-  // pointerup for the last released; every chorded edge in between arrives
-  // as a pointermove. Each event's `buttons` mask is the truth, so the
-  // host's held buttons follow it — presses only while a press that began
-  // on the canvas is still down.
+  // Pointer Events report only the first press and last release; chorded
+  // edges arrive as pointermove. Each event's `buttons` mask is the truth,
+  // and presses count only while a press that began on the canvas is down.
   const syncButtons = (event, allowPress) => {
     for (const [bit, button] of BUTTON_BITS) {
       const down = (event.buttons & bit) !== 0;

@@ -1,13 +1,8 @@
-// HevcSpsChroma: the minimal HEVC SPS read the chroma audit
-// needs — `chroma_format_idc`, parsed from the in-band SPS an IDR
-// carries. Deliberately NOT a general SPS parser: the walk stops at
-// the first field past profile_tier_level, everything before it is
-// fixed-width or exp-Golomb by the spec (ITU-T H.265 §7.3.2.2.1), and
-// hostile bytes return nil rather than throwing — a malformed SPS is
-// the decoder's problem to reject; the audit just has nothing to say.
-//
-// Client policy rather than a Wire/ codec: it serves the client's
-// posture audit only, and SPS bytes are not a Lyte wire contract.
+// HevcSpsChroma: the minimal HEVC SPS read the chroma audit needs —
+// `chroma_format_idc` from the in-band SPS an IDR carries. Not a general
+// SPS parser: the walk stops at the first field past
+// profile_tier_level (ITU-T H.265 §7.3.2.2.1), and hostile bytes return
+// nil — a malformed SPS is the decoder's problem to reject.
 
 import LyteCore
 

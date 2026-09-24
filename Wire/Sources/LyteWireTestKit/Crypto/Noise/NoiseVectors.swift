@@ -1,19 +1,9 @@
-// The Noise vector-file model and loader (W5): `Wire/Vectors/noise-v1.json`,
-// gate W-G6's frozen artifact. Two sections with two provenances, kept
-// honestly distinct:
-//
-// - `handshakeVectors` are EXTERNAL canonical vectors in the standard
-//   snow/cacophony JSON shape (fixed statics, ephemerals, prologue →
-//   exact handshake + transport-message bytes). Our implementation must
-//   reproduce them byte-for-byte — the strongest correctness claim
-//   available for `Noise_IK_25519_ChaChaPoly_SHA256`.
-// - `transportVectors` cover the Lyte transport EXTENSION (extended-
-//   counter nonces from (chan, seq), epoch rekey) that no published
-//   vector set covers, because the nonce discipline is ours. They are
-//   PINNED SELF-CONSISTENT: generated once by lyte-wire-vectorgen from
-//   this implementation, frozen, and honest about being a regression pin
-//   rather than an external oracle. The AEAD/handshake beneath them is
-//   externally verified by the section above.
+// The Noise vector-file model and loader: `Wire/Vectors/noise-v1.json`.
+// - `handshakeVectors` are external canonical vectors (snow/cacophony
+//   shape) that `Noise_IK_25519_ChaChaPoly_SHA256` must reproduce exactly.
+// - `transportVectors` cover Lyte's transport extension (extended-counter
+//   nonces from (chan, seq), epoch rekey), which no published set covers:
+//   pinned self-consistent from this implementation, a regression pin.
 
 import LyteCore
 import Foundation

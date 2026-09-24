@@ -1,20 +1,12 @@
-// The pairing vector-file model and loader (W6):
-// `Wire/Vectors/pairing-v1.json`, gate W-G7's frozen artifact. Three
-// sections with the noise-v1 provenance discipline:
-//
-// - `draftVectors` are EXTERNAL canonical vectors transcribed verbatim
-//   from draft-irtf-cfrg-cpace-21's appendices (A utilities, B.1
-//   CPACE-X25519-SHA512, B.1.10 low-order table), with the upstream
-//   file's URL and sha256 recorded — the strongest correctness claim
-//   available for the suite.
-// - `exchangeVectors` cover Lyte's PairingPake composition (the Noise
-//   handshake-hash binding, CI from the statics, the §10.4 tags in the
-//   0x0B–0x0D messages) that no published set can cover, because the
-//   composition is ours. PINNED SELF-CONSISTENT, honest about being a
-//   regression pin; the CPace math beneath them is externally verified
-//   by the section above.
-// - `messageVectors` freeze the codec byte layouts, anchored against
-//   the hand-built bytes in PairingCodecTests.
+// The pairing vector-file model and loader: `Wire/Vectors/pairing-v1.json`.
+// - `draftVectors`: external vectors transcribed from
+//   draft-irtf-cfrg-cpace-21 (A utilities, B.1 CPACE-X25519-SHA512, B.1.10
+//   low-order table), upstream URL and sha256 recorded.
+// - `exchangeVectors`: Lyte's PairingPake composition (handshake-hash
+//   binding, CI from the statics, the 0x0B–0x0D tags), pinned
+//   self-consistent as a regression pin.
+// - `messageVectors`: codec byte layouts, anchored against the hand-built
+//   bytes in PairingCodecTests.
 
 import Foundation
 import LyteWire
@@ -285,17 +277,5 @@ public struct PairingMessageVector: Codable, Sendable {
         self.tagHex = tagHex
         self.reason = reason
         self.error = error
-    }
-}
-
-/// The error-name mapper the file tests assert against.
-public func pairingMessageErrorName(_ error: PairingMessageError) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .trailingBytes: return "trailingBytes"
-    case .unexpectedType: return "unexpectedType"
-    case .unknownReason: return "unknownReason"
-    case .invalidShareLength: return "invalidShareLength"
-    case .invalidTagLength: return "invalidTagLength"
     }
 }

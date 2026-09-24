@@ -1,6 +1,5 @@
-// One shared HEVC Annex-B vocabulary and walker for every Lyte endpoint.
-// Pure Swift, allocation-free when classifying a borrowed byte collection,
-// and deliberately independent of files, sockets, clocks, and Foundation.
+// One shared HEVC Annex-B vocabulary and walker: allocation-free when
+// classifying a borrowed byte collection, and free of Foundation and IO.
 
 public enum HevcNalType {
     public static let trailN: UInt8 = 0
@@ -74,9 +73,8 @@ public struct AnnexBFrameClassification: Hashable, Sendable {
 }
 
 /// The Annex-B walker. Every entry point borrows its bytes contiguously and
-/// runs one non-generic raw-buffer scan compiled (and optimized) inside
-/// LyteCore, so callers in other modules get the fast path whatever
-/// collection type they hold; only a non-contiguous collection is copied.
+/// runs one non-generic raw-buffer scan compiled inside LyteCore; only a
+/// non-contiguous collection is copied.
 public enum AnnexBCheck {
     public static func nalUnits(in data: ArraySlice<UInt8>) -> [HevcNalUnit] {
         data.withUnsafeBufferPointer(nalUnitsRaw)

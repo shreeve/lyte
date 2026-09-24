@@ -1,31 +1,19 @@
-// AudioJitterBuffer: the adaptive audio playout buffer. Per
-// docs/decisions/20260720-145840-audio-continuity.md, delay VARIANCE, not loss,
-// is the dominant impairment — so the buffer targets variance
-// absorption with a statistical target (the doc's §5.3 percentile idea
-// at 5 ms-packet granularity), conceals true gaps through Opus PLC
-// (§5.4 — the verdict the caller turns into a decode(nil)), and never
-// grows unbounded (late packets are dropped, a post-stall burst
-// re-centers). WSOLA time-scale modification (§5.2) is deliberately NOT
-// here — LyteTransport's AudioAccelerator lives on the pump's PCM side;
-// this buffer hands it the band between target and the hard cap (the
-// re-center is now the blunt tool past the cap and for number jumps
-// only), and its target computation detrends sender/receiver clock skew
-// (§5.5) so a slow drift reads as a rate to absorb, never as depth to
-// cover.
+// AudioJitterBuffer: the adaptive audio playout buffer
+// (docs/decisions/20260720-145840-audio-continuity.md). It absorbs delay
+// variance with a skew-spread target, conceals true gaps through Opus
+// PLC, and stays bounded (late packets drop, a post-stall burst
+// re-centers). Depth between target and the hard cap belongs to
+// LyteTransport's AudioAccelerator; clock skew is detrended so drift
+// reads as a rate to absorb, never as depth to cover.
 //
-// Pull model (how the production shell drives it): the render side
-// consumes a PCM ring at exactly the hardware rate; a pump thread
-// pulls verdicts whenever the ring sits below the adaptive target.
-// Pacing therefore locks to the DAC's clock — sender/receiver clock
-// skew expresses as a slow drift the target absorbs, not as a timer
-// beating against arrivals. `urgent` is the pump's "the ring is about
-// to underrun" signal: while the ring has cushion the buffer may
-// answer a gap with `.starved` (wait — FEC recovery lands at most
-// ~3 packet durations after a loss), but an urgent gap is concealed
-// NOW, because zeros are strictly worse than PLC.
+// Pull model: the render side drains a PCM ring at the hardware rate and
+// a pump pulls verdicts while the ring sits below target. `urgent` means
+// the ring is about to underrun: a gap may otherwise be waited out
+// (`.starved`, FEC repair lands within ~3 packet durations), but an
+// urgent gap is concealed now — zeros are worse than PLC.
 //
-// Sans-IO and single-threaded by contract: AudioReceiver owns the lock
-// and injects `now` (client-monotonic µs domain of arrival stamps).
+// Sans-IO and single-threaded: AudioReceiver owns the lock and injects
+// `now` (client-monotonic µs, the arrival-stamp domain).
 
 import LyteCore
 import LyteWire
@@ -35,15 +23,11 @@ public struct AudioJitterConfig: Sendable {
     /// domain — the wire's constant, not a private copy.
     public var packetDurationMicroseconds =
         Int64(AudioWire.packetDurationMicroseconds)
-    /// Where the target starts and its floor: 5 packets (25 ms). One
-    /// packet above the brief's conservative band, and deliberately:
-    /// HS-15 emits parity behind the group's 4th packet, so a lost
-    /// group-FIRST packet becomes repairable only ~15–16 ms after its
-    /// own slot. Under the hold-until-dry gap policy the conceal fires
-    /// after (target − 1) packet durations of drain — a floor of 5
-    /// gives a 20 ms budget that beats the worst repair by a clear
-    /// margin, so a healable loss NEVER costs a PLC. (At 4 the race
-    /// loses by ε; measured in the in-tree FEC gate.)
+    /// Where the target starts and its floor: 5 packets (25 ms). FEC
+    /// parity follows a group's 4th packet, so a lost group-first packet
+    /// is repairable only ~15–16 ms after its slot; the conceal fires
+    /// after (target − 1) packet durations, and 5 leaves a 20 ms budget
+    /// so a healable loss never costs a PLC.
     public var initialTargetPackets = 5
     public var minTargetPackets = 5
     public var maxTargetPackets = 20
@@ -61,29 +45,23 @@ public struct AudioJitterConfig: Sendable {
     /// Arrival-skew window (packets) the target is computed over —
     /// 512 ≈ 2.6 s of history at the 5 ms cadence.
     public var deviationWindowPackets = 512
-    /// Recompute the percentile target every five fresh packets (25 ms
-    /// at the wire cadence). Samples still enter the windows packet by
-    /// packet; only the O(window log window) projection is decimated.
-    /// A value of 1 retains the eager controller for equivalence tests.
+    /// Recompute the target every five fresh packets (25 ms). Samples
+    /// enter the windows per packet; only the projection is decimated.
+    /// A value of 1 keeps the eager controller for equivalence tests.
     public var retargetCadencePackets = 5
-    /// A newly earned cushion survives roughly one adaptation window before
-    /// it may shrink. Live glass traces showed the eager downward projection
-    /// collapsing 20 → 5 packets in under three seconds, followed by the same
-    /// tail burst raising it again only after PLC/underrun. Rise remains
-    /// immediate; decay starts after this many fresh packets.
+    /// A cushion earned from the path survives roughly one adaptation
+    /// window before it may shrink. Rise is immediate; decay starts
+    /// after this many fresh packets.
     public var targetDecayHoldPackets = 500
-    /// Once the hold expires, remove at most one packet per ten seconds of
-    /// clean evidence. A 20-packet emergency target therefore cannot collapse
-    /// back to the 5-packet floor between recurring tail events.
+    /// Once the hold expires, shed at most one packet per ten seconds of
+    /// clean evidence, so an emergency target cannot collapse to the
+    /// floor between recurring tail events.
     public var targetDecayStepPackets = 2_000
-    /// CL-17: packets of depth beyond target before the receiver's
-    /// pull decision engages WSOLA accelerate (hysteresis: engage at
-    /// target + this, disengage at target).
+    /// Packets of depth beyond target before the receiver engages WSOLA
+    /// accelerate (engage at target + this, disengage at target).
     public var accelerateEngagePackets = 3
-    /// CL-17: the skew detrend's sanity clamp, ppm. Consumer crystals
-    /// sit under ~100 ppm; the clamp keeps a burst's step from ever
-    /// masquerading as skew (the inverse of the drift-as-depth error
-    /// the term exists to fix).
+    /// The skew detrend's clamp, ppm. Consumer crystals sit under
+    /// ~100 ppm; the clamp keeps a burst's step from masquerading as skew.
     public var maxSkewPartsPerMillion = 500.0
 
     public init() {}
@@ -119,9 +97,7 @@ public struct AudioJitterStats: Sendable {
     /// waits and blackout silence both land here).
     public var starvedVerdicts: UInt64 = 0
     /// Buffer depth in packets, recorded at every post-prime pull.
-    /// 600 pulls at the 5 ms cadence = the rolling 3 s gauge window
-    /// (one window for every overlay gauge, owner ruling 2026-07-30) —
-    /// the gauge describes NOW, not the session's opening minute.
+    /// 600 pulls at the 5 ms cadence = the rolling 3 s gauge window.
     public var depthPackets = Histogram<UInt64>(
         capacity: 600, retention: .rolling)
     /// |observed − nominal| inter-arrival deviation µs, fresh in-order
@@ -132,13 +108,11 @@ public struct AudioJitterStats: Sendable {
     public var targetPackets = 0
     /// Windowed standard deviation of inter-arrival time, µs.
     public var interArrivalStdDevMicroseconds: Double = 0
-    /// CL-17: the skew-window trend, ppm — the sender/receiver clock
-    /// skew as the arrival lattice sees it (positive = sender slow,
-    /// depth shrinks; negative = sender fast, depth grows — the drain
-    /// the accelerate side absorbs). Clamped, 0 until ≥128 samples.
+    /// Sender/receiver clock skew from the skew-window trend, ppm
+    /// (positive = sender slow, depth shrinks). Clamped; 0 until ≥128
+    /// samples.
     public var skewPartsPerMillion: Double = 0
-    /// Number of full percentile/detrend projections performed. This is
-    /// an instrumentation hook for guarding the receive hot path.
+    /// Number of full spread/detrend projections performed.
     public var retargetComputations: UInt64 = 0
 
     public init() {}
@@ -155,36 +129,25 @@ public final class AudioJitterBuffer {
     private var nextNumber: UInt32 = 0
     private var consecutiveConcealments = 0
 
-    // Adaptation state (the percentile controller, audio-continuity
-    // §5.3 at packet granularity): each fresh arrival's SKEW off the
-    // 5 ms arrival lattice — skew_n = (arrival_n − anchorArrival) −
-    // (n − anchorNumber) × 5 ms — windowed; the target covers the
-    // window's (max − min) SPREAD. Spread is the statistic that sees
-    // a burst for what it is: a 75 ms outage whose clump arrives at
-    // once leaves EVERY clumped packet 5–75 ms late on the lattice,
-    // where per-pair inter-arrival deviations hide it in one sample
-    // (found live — the first pup leg churned late/PLC with the
-    // target stuck at the floor). Windowed differences also cancel
-    // sender/receiver clock drift (≤0.2 ms across the window at
-    // consumer-crystal ppm).
-    /// Signed anchor arrival: the wrap-fold below shifts it by the
-    /// window minimum, which a sender-fast drift makes NEGATIVE — a
-    /// small test-clock origin underflowed the old unsigned form
-    /// (production uptime stamps never could; fixed at CL-17).
+    // Adaptation state: each fresh arrival's skew off the 5 ms arrival
+    // lattice — (arrival_n − anchorArrival) − (n − anchorNumber) × 5 ms —
+    // is windowed, and the target covers the window's (max − min) spread.
+    // Spread sees a burst as a burst: a clump after a 75 ms outage leaves
+    // every clumped packet 5–75 ms late, where pairwise inter-arrival
+    // deviation hides it in one sample.
+    /// Signed: the wrap-fold shifts it by the window minimum, which a
+    /// sender-fast drift makes negative.
     private var skewAnchor: (number: UInt32, arrivalMicroseconds: Int64)?
     private var skewWindow: [Int64] = []
     private var skewCursor = 0
-    /// The detrend's output (CL-17): the window's least-squares slope
-    /// read as clock skew, clamped to config bounds.
+    /// The window's least-squares slope read as clock skew, clamped.
     private var estimatedSkewPpm: Double = 0
-    // Pairwise inter-arrival deviation, kept for the σ/histogram
-    // diagnostics the stats line reports.
+    // Pairwise inter-arrival deviation, for the σ/histogram diagnostics.
     private var lastArrival: (number: UInt32, atMicroseconds: UInt64)?
     private var deviationWindow: [Int64] = []
     private var deviationCursor = 0
-    // The Conductor's proof-before-shed law, audio's spelling: the
-    // retarget cadence, the post-raise hold, and the between-sheds
-    // step are each a ProofCounter fed one fresh packet at a time.
+    // Retarget cadence, post-raise hold and between-sheds step, each a
+    // ProofCounter fed one fresh packet at a time.
     private var retargetProof = ProofCounter()
     private var raiseHoldProof = ProofCounter()
     private var shedStepProof = ProofCounter()
@@ -199,13 +162,10 @@ public final class AudioJitterBuffer {
         self.deviationWindow.reserveCapacity(config.deviationWindowPackets)
     }
 
-    /// Tripwire: an ANNOUNCED audio-quiet gap is contract, not path
-    /// evidence. Reset the arrival lattice and its windows so the
-    /// wake burst's first packet re-bases the epoch instead of
-    /// landing seconds off the old anchor and slamming the spread
-    /// target to max for a window's length. The TARGET itself
-    /// survives — cushion earned from the path is not forfeited by
-    /// silence. Idempotent across repeated check-ins.
+    /// An announced audio-quiet gap is contract, not path evidence: reset
+    /// the arrival lattice and windows so the wake burst re-bases the
+    /// epoch instead of slamming the spread target to max. The target
+    /// itself survives. Idempotent.
     public func noteIntentionalGap() {
         skewAnchor = nil
         lastArrival = nil
@@ -349,10 +309,9 @@ public final class AudioJitterBuffer {
         }
     }
 
-    /// Overgrowth discipline, CL-17 posture: backlog between target
-    /// and the hard cap belongs to WSOLA accelerate (time compression,
-    /// no content lost); only past the cap does the skip fire — a
-    /// blackout's burst must still never become unbounded latency.
+    /// Backlog between target and the hard cap belongs to WSOLA
+    /// accelerate; only past the cap does the skip fire, so a blackout's
+    /// burst never becomes unbounded latency.
     private func recenterIfOvergrown() {
         let limit = config.hardCapPackets
         guard pending.count > limit else { return }
@@ -432,20 +391,12 @@ public final class AudioJitterBuffer {
         retarget()
     }
 
-    /// The continuity controller (audio-continuity §5.3 at packet
-    /// granularity): the target covers the observed skew-window spread plus
-    /// one packet of headroom, clamped to config bounds. The former p99
-    /// discarded about five samples in a 512-packet window; live interval
-    /// traces showed those sparse tails were exactly the late/PLC events.
-    /// Audio's no-crack contract makes the bounded window maximum the honest
-    /// statistic (the hard 100 ms cap still prevents unbounded latency).
-    /// Only ever applied via natural drain/growth — no queue jumps.
-    /// CL-17 adds the M7 §5.5 skew term: the window's least-squares
-    /// trend is clock DRIFT, not jitter — it is estimated (clamped to
-    /// consumer-crystal plausibility so a burst's step can't fake it),
-    /// exposed, and removed before the spread is measured, so a slow
-    /// drift reads as a rate for accelerate to absorb, never as depth
-    /// the target must cover.
+    /// The target covers the detrended skew-window spread plus one packet
+    /// of headroom, clamped to config bounds. The window maximum (not a
+    /// percentile) is the statistic because sparse tails are exactly the
+    /// late/PLC events. The least-squares trend is clock drift, not
+    /// jitter: it is estimated, clamped, exposed, and removed before the
+    /// spread is measured. Applied only via natural drain/growth.
     private func retarget() {
         guard skewWindow.count >= 16 else { return }
         stats.retargetComputations += 1
@@ -486,10 +437,8 @@ public final class AudioJitterBuffer {
         let needed = 1 + Int((spread
             + config.packetDurationMicroseconds - 1)
             / config.packetDurationMicroseconds)
-        // The target moves only once playout runs: the configured
-        // initial target owns the priming phase (CL-17 — a primed
-        // start must actually open that deep; the controller then
-        // earns its way down and accelerate drains the surplus).
+        // The configured initial target owns the priming phase; the
+        // controller moves the target only once playout runs.
         guard started else { return }
         let desired = min(
             max(needed, config.minTargetPackets),

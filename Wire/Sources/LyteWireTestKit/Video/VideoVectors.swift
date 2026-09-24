@@ -1,9 +1,5 @@
-// The video vector-file model and loader for Wire/Vectors/video-v1.json —
-// same discipline as the envelope and FEC files: the committed file is
-// the frozen wire contract (master plan §4.12, packetized golden corpus
-// at W2), verified byte-exact on macOS and Linux. Client CL-2 codes its
-// receive path against exactly these shards and scenarios before the
-// host sends a datagram.
+// The video vector-file model and loader for Wire/Vectors/video-v1.json:
+// the packetized golden corpus and assembly scenarios, frozen wire contract.
 
 import Foundation
 import LyteCore

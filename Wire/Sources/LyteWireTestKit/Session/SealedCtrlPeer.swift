@@ -1,15 +1,10 @@
 import LyteWire
 
-/// A sans-IO stand-in for the far end of a Lyte session in gate tests:
-/// Noise IK (initiator or responder), sealed datagrams on any channel, a
-/// reliable CTRL `ArqEndpoint` (plus an optional chan-8 one), and the
-/// received-message log gates assert against.
-///
-/// It plays either role: a host test drives it as the client (initiator,
-/// `ClientClock`), a client test as the host (responder, `HostClock`,
-/// usually conn-id tagged). It holds no policy — every feature reaction
-/// stays in the test that owns the evidence; `absorb` classifies what
-/// arrived and the caller decides what it means.
+/// A sans-IO stand-in for the far end of a Lyte session in tests: Noise IK
+/// (either role), sealed datagrams on any channel, a reliable CTRL
+/// `ArqEndpoint` (plus an optional chan-8 one), and a received-message log.
+/// It holds no policy: `absorb` classifies what arrived and the caller
+/// decides what it means.
 public struct SealedCtrlPeer<ClockDomain>: Sendable {
     public typealias Instant = WireTimestamp<ClockDomain>
 
@@ -51,7 +46,7 @@ public struct SealedCtrlPeer<ClockDomain>: Sendable {
     public var arq: ArqEndpoint<ClockDomain>
     /// The chan-8 endpoint, for peers that carry bulk.
     public var bulkArq: ArqEndpoint<ClockDomain>?
-    /// Optional W7 negotiation state (see `declare` / `receiveDeclaration`).
+    /// Optional capability negotiation (see `declare` / `receiveDeclaration`).
     public var negotiator: CapabilityNegotiator?
     /// Ordered CTRL messages delivered so far, not yet taken.
     public var received: [(group: ArqGroupId, bytes: [UInt8])] = []
@@ -280,8 +275,8 @@ public struct SealedCtrlPeer<ClockDomain>: Sendable {
 
     // MARK: Capabilities
 
-    /// Starts W7 negotiation in `role` and queues the declaration on the
-    /// ordered stream.
+    /// Starts capability negotiation in `role` and queues the declaration
+    /// on the ordered stream.
     public mutating func declare(
         _ local: Capabilities, as role: CapabilityRole, nowMicros: UInt64
     ) throws {

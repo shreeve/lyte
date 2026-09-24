@@ -156,11 +156,8 @@ extension ConnectionModel {
 
     // MARK: - Chroma tier
 
-    /// The Chroma control's verb: persist the per-host preference and
-    /// reconnect cleanly with the new declaration — chroma is
-    /// connect-time only, so a flip IS a re-dial. The dormant Better tier
-    /// is refused here too (the control disables it; this is the model's
-    /// own gate).
+    /// Persists the per-host preference and reconnects — chroma is
+    /// connect-time only. The dormant Better tier is refused here too.
     func setChromaTier(_ tier: ChromaTier) {
         guard tier.isSelectable, tier != chromaTier else { return }
         chromaTier = tier
@@ -168,10 +165,8 @@ extension ConnectionModel {
         reconnectNow()
     }
 
-    /// The typed negotiation failure's fate: `noCommonChromaMode` on a
-    /// non-Good declaration re-dials at Good with the banner (the named
-    /// degradation — never silent, never a hang); everything else stays
-    /// the failure it is.
+    /// `noCommonChromaMode` on a non-Good declaration re-dials at Good
+    /// with the banner; every other failure ends the session.
     func handleCapabilitiesFailure(_ failure: CapabilityNegotiationError) {
         let declared = chromaTier
         switch ChromaFallbackPolicy.verdict(declaredTier: declared, failure: failure) {
@@ -231,11 +226,9 @@ extension ConnectionModel {
         bulkStatus = .idle
     }
 
-    /// The stream view's drop handler: extract file URLs off the item
-    /// providers (async), then judge. Returns whether the drag is worth
-    /// accepting at all (any file-URL candidate while streaming); the
-    /// capability verdict surfaces as a NOTICE after the drop — never a
-    /// silent nothing.
+    /// Extracts file URLs off the item providers, then judges. Returns
+    /// whether the drag is worth accepting at all; the capability
+    /// verdict surfaces as a notice after the drop.
     func handleDrop(providers: [NSItemProvider]) -> Bool {
         let candidates = providers.filter {
             $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)

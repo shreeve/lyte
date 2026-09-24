@@ -41,7 +41,7 @@ final class FecVectorFileTests: XCTestCase {
                     guard let fecError = error as? FecError else {
                         return XCTFail("\(vector.name): non-FecError \(error)")
                     }
-                    XCTAssertEqual(fecErrorName(fecError), expected, vector.name)
+                    XCTAssertEqual(vectorErrorName(fecError), expected, vector.name)
                 }
             }
         }

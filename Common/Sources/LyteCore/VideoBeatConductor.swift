@@ -1,41 +1,13 @@
-// VideoBeatConductor — video's part under THE CONDUCTOR
-// (docs/decisions/20260803-050422-metronome-playout-design.md), sans-IO.
-//
-// The laws, as this instrument plays them:
-//
-//   cue   = score + measured_path_delay + cushion × beat_period
-//   beat  = every fresh frame presents ON the beat grid — its mapped
-//           capture (the score) plus the cue, rounded to the nearest
-//           beat. Rounding IS the half-beat bias: capture stamp
-//           wobble under half a beat cannot move the presentation.
-//   late  = a frame whose beat has already passed at arrival KEEPS
-//           its beat (a PTS in the past): the renderer still decodes
-//           it (the chain lives there) and simply never shows it.
-//           Never rescheduled to arrival — nothing plays off-grid.
-//   hole  = a blackout re-cues by WHOLE beats, once per episode:
-//           the grid phase is preserved, the newest part lands on
-//           the next beat, one scheduled hiccup instead of a smear.
-//   slip  = when every fresh sample across an elapsed clean window
-//           proves a full beat of surplus, the cue slips back one
-//           beat — at most one per proof, phase preserved.
-//   stretch = the mirror of slip: when every fresh part across an
-//           elapsed proof window arrives past its beat (a sub-beat
-//           shortfall — a fast client clock draining the cue, or a
-//           path grown by under a beat), the cue re-cues one beat.
-//   chain = retained refinements (same source capture re-encoded)
-//           ride one microsecond behind their predecessor; stillness
-//           has no cadence to violate, and the decoder always eats.
-//
-// The debt/flush machinery is recovery policy, not beat policy: a
-// compressed catch-up train beyond the debt ceiling still flushes to
-// await-IDR exactly as before (ported from the retired adaptive
-// playout; its pins carried over).
+// VideoBeatConductor: sans-IO video playout on the Conductor's beat grid
+// (docs/decisions/20260803-050422-metronome-playout-design.md).
+// cue = score + measured path delay + cushion × beat period; every fresh
+// frame presents on the nearest beat and the grid only ever moves by
+// whole beats. The per-law rules are documented on each step below. Debt
+// flushing to await-IDR is recovery policy, separate from beat policy.
 
 public struct VideoBeatConductor: Sendable {
     public struct Config: Sendable, Equatable {
-        /// The score's beat period. The rig's contract is 60 Hz end
-        /// to end (see the Conductor doc); the value is config, not
-        /// law, so a future score can retune it.
+        /// The score's beat period (60 Hz end to end by default).
         public var beatPeriodMicroseconds: UInt64
         /// The automatic reserve floor. A hole adds whole beats; sustained
         /// clean proof returns them one at a time, never below this floor.
@@ -94,10 +66,8 @@ public struct VideoBeatConductor: Sendable {
 
     public private(set) var config: Config
 
-    /// The grid: the last fresh part's on-beat presentation. Every
-    /// move is a whole number of beats (ordinal step, re-cue, slip,
-    /// ceiling cut), so the phase set at cue establishment survives
-    /// every episode.
+    /// The last fresh part's on-beat presentation. It only moves by whole
+    /// beats, so the phase set at cue establishment survives every episode.
     private var gridPresentationMicroseconds: UInt64?
     /// The last fresh source capture, for the ordinal step.
     private var previousFreshSourceForStep: UInt64?
@@ -107,26 +77,22 @@ public struct VideoBeatConductor: Sendable {
     private var lastReserveMicroseconds: UInt64 = 0
     private var lastSourceCaptureMicroseconds: UInt64?
     private var lastFrameWasRetained = false
-    /// The quantized reserve posture currently in force. It starts at the
-    /// configured floor, grows only through the hole law, and returns one
-    /// beat at a time through ceiling cuts or sustained slip proof. An
-    /// on-time part caps it at its measured reserve (in whole beats, never
-    /// below the floor), so it counts reserve actually held, not moves.
+    /// Reserve in whole beats: starts at the floor, grows only by re-cue,
+    /// returns one beat at a time by ceiling cut or slip, and is capped by
+    /// an on-time part's measured reserve so it counts reserve actually held.
     private var cushionBeatsInForce: Int
 
-    // Video's slip proof is elapsed-time policy, not sample-count policy:
-    // Direct Eye intentionally emits fewer frames when pixels stay still.
-    // Every fresh sample in the window must retain a full beat of surplus;
-    // any contrary evidence resets the window. The maximum observed path
-    // delay keeps the final verdict at least as strict as every constituent
-    // sample without retaining stale evidence past the named duration.
+    // Slip proof is elapsed time, not sample count: still content emits
+    // fewer frames. Every sample in the window must hold a full beat of
+    // surplus; the window's maximum path delay keeps the verdict as strict
+    // as its worst sample.
     private var slipProofStartMicroseconds: UInt64?
     private var slipProofMaximumPathDelayMicroseconds: UInt64 = 0
     /// Arrival of the first part in the current unbroken run of late
     /// fresh parts (the stretch law's proof window).
     private var stretchProofStartMicroseconds: UInt64?
 
-    // Debt (ported): a genuinely compressed catch-up train.
+    // Debt: a genuinely compressed catch-up train.
     private var lastFreshSourceMicroseconds: UInt64?
     private var lastFreshArrivalMicroseconds: UInt64?
     private var freshBurstDebtMicroseconds: UInt64 = 0
@@ -174,8 +140,6 @@ public struct VideoBeatConductor: Sendable {
 
         let shouldFlush = accrueDebt(
             sourceCapture: sourceCapture, arrival: arrival)
-        // The measured path delay is injected evidence; no OS clock enters
-        // this sans-IO policy.
         let pathDelay = arrival >= mapped ? arrival - mapped : 0
 
         var presentation = step(
@@ -298,18 +262,12 @@ public struct VideoBeatConductor: Sendable {
             cushionBeatsInForce - Int(clamping: cuts), config.cushionBeats)
     }
 
-    /// stretch + hole: re-cue forward by WHOLE beats so the newest part
-    /// lands on the next beat, once per episode, within the cue ceiling
-    /// and the cushion ceiling (the remainder stays honest lateness).
-    ///
-    /// hole — the part's beat is already ≥ 1 beat gone.
-    /// stretch — the mirror of slip: EVERY fresh part across an elapsed
-    ///   proof window arrived past its beat. The cue is short by a sub-beat
-    ///   amount (a fast client clock draining it, or a path grown by under
-    ///   a beat) and the late law alone would never show those parts.
-    ///
-    /// A single merely-late part keeps its past beat and is never shown;
-    /// that is the late law, and it does not move the grid.
+    /// hole + stretch: re-cue forward by whole beats so the newest part
+    /// lands on the next beat, within the cue and cushion ceilings (the
+    /// remainder stays lateness). A hole is a beat already ≥ 1 beat gone;
+    /// a stretch is every fresh part across an elapsed proof window
+    /// arriving past its beat (a sub-beat shortfall). A single late part
+    /// keeps its past beat and does not move the grid.
     private mutating func recue(
         _ presentation: inout UInt64, mapped: UInt64, arrival: UInt64
     ) {
@@ -343,13 +301,9 @@ public struct VideoBeatConductor: Sendable {
         resetSlipProof()
     }
 
-    /// slip: an elapsed proof window in which EVERY fresh sample proves a
-    /// full beat of surplus above the floor hands one beat back. Time owns
-    /// the duration, so 60 Hz motion, 30 Hz video, and one-Hz static
-    /// keepalives all return cushion on the same schedule. The maximum
-    /// path delay seen inside the window keeps the verdict at least as
-    /// strict as every constituent sample; no stale outlier survives
-    /// merely because content is sparse.
+    /// slip: an elapsed proof window in which every fresh sample proves a
+    /// full beat of surplus above the floor hands one beat back, on the
+    /// same schedule at any frame rate.
     private mutating func slip(
         _ presentation: inout UInt64, mapped: UInt64, arrival: UInt64,
         pathDelay: UInt64
@@ -373,9 +327,8 @@ public struct VideoBeatConductor: Sendable {
         }
         guard measuredCue >= slipProofMaximumPathDelayMicroseconds
             &+ cushionFloor &+ period else {
-            // The window's earlier worst path sample still refutes the
-            // return. Begin a new exact-duration proof with the current
-            // qualifying sample; old evidence cannot linger by count.
+            // The window's worst sample refutes the return; restart the
+            // proof from this qualifying sample.
             startSlipProof(at: arrival, pathDelay: pathDelay)
             return
         }
@@ -383,10 +336,8 @@ public struct VideoBeatConductor: Sendable {
         cushionBeatsInForce = max(
             cushionBeatsInForce - 1, config.cushionBeats)
         resetSlipProof()
-        // This same fresh sample may begin the next proof after the
-        // one-beat return. Reusing the boundary sample makes "one beat
-        // every two seconds" literal even at one Hz; it never authorizes a
-        // second return in this call.
+        // The boundary sample may begin the next proof (never a second
+        // return in this call), so the return rate holds even at one Hz.
         let slippedCue = presentation > mapped ? presentation - mapped : 0
         if slippedCue >= pathDelay &+ cushionFloor &+ period {
             startSlipProof(at: arrival, pathDelay: pathDelay)
@@ -415,11 +366,9 @@ public struct VideoBeatConductor: Sendable {
         let cue = presentation > mapped ? presentation - mapped : 0
         let reserve = cue > pathDelay ? cue - pathDelay : 0
 
-        // The posture never claims more beats than the measured reserve
-        // of an on-time part. A hole lands its part on the NEXT beat, so a
-        // drift-driven hole leaves under one beat of real reserve; without
-        // this, drift holes would spend the ceiling as if they had banked
-        // cushion and the hole law would fall silent.
+        // Cap the posture at an on-time part's measured reserve; otherwise
+        // drift-driven holes would spend the ceiling as banked cushion and
+        // the hole law would fall silent.
         if lateness == 0 {
             let reserveBeats = Int(clamping: (reserve &+ period &- 1) / period)
             cushionBeatsInForce = min(

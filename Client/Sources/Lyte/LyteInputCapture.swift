@@ -3,39 +3,29 @@
 // layout), absolute pointer pixels in the host's recorded-monitor space,
 // smooth-scroll pixel deltas.
 //
-// Coordinate mapping: the display layer draws with resizeAspect, so the
-// video occupies the aspect-fit rect inside the view — absolute
-// positions map through that rect (letterbox bars excluded) and scale
-// to the host's stream dimensions, learned from the first delivered
-// sample's format description. Until the size is known, absolute moves
-// are DROPPED rather than guessed: a wrongly-scaled click is worse
-// than a swallowed one.
+// Coordinate mapping: the display layer draws with resizeAspect, so
+// absolute positions map through the aspect-fit rect (letterbox bars
+// excluded) and scale to the host's stream dimensions from the first
+// delivered sample. Until the size is known, absolute moves are dropped
+// — a wrongly-scaled click is worse than a swallowed one.
 //
-// Key and button forwarding decisions (what stays local, what the host
-// holds, ⌘ as Super) live in the pure InputForwardingPolicy; this shell
-// measures the facts and executes the verdicts.
+// Forwarding decisions (what stays local, what the host holds, ⌘ as
+// Super) live in the pure InputForwardingPolicy; this shell measures the
+// facts and executes the verdicts.
 //
-// The control-strip seam: local monitors see every mouse event in the
-// window, which would make any overlaid SwiftUI control unclickable. So
-// mouse events HIT-TEST first — an event lands on the video iff the hit
-// view is the video layer view or a descendant of it. NSHostingView
-// answers hitTest with the HOSTING view (an ANCESTOR of the video view)
-// whenever SwiftUI content like the strip's buttons owns the point, so
-// an ancestor hit belongs to the overlay. Every mouse move (captured or
-// passed) also feeds `onActivity` with the pointer's edge geometry — the
-// strip's reveal is a dwell-near-the-edge verdict (StripRevealPolicy).
+// Mouse events hit-test first so overlaid SwiftUI controls stay
+// clickable: an event lands on the video iff the hit view is the video
+// layer view or a descendant. Every mouse move also feeds `onActivity`
+// with the pointer's edge geometry for the strip's reveal policy.
 
 import AppKit
 import LyteClientCore
 import LyteTransport
 import LyteWire
 
-/// One mouse event's edge geometry (CL-18) — everything the strip's
-/// reveal policy needs, measured window-side where the capture already
-/// lives: distances from both horizontal window edges (the container
-/// picks the one its edge preference names) and whether those edges
-/// are real SCREEN edges right now (fullscreen — arming the policy's
-/// system-sliver rule).
+/// One mouse event's edge geometry for the strip's reveal policy:
+/// distances from both horizontal window edges and whether they are
+/// real screen edges right now (fullscreen).
 struct PointerActivity {
     var distanceFromBottom: CGFloat
     var distanceFromTop: CGFloat
@@ -53,8 +43,8 @@ final class LyteInputCapture {
     /// owning model (updated when the first sample arrives).
     private let videoSize: @MainActor () -> CGSize
     /// Fed on every mouse event in the window — the control strip's
-    /// reveal/idle-fade clock (CL-13; geometry-carrying since CL-18).
-    /// Never fed for keys: typing must not resurface the strip.
+    /// reveal/idle-fade clock. Never fed for keys: typing must not
+    /// resurface the strip.
     private let onActivity: @MainActor (PointerActivity) -> Void
     private var monitors: [Any] = []
     private var forwarding = InputForwardingPolicy()
@@ -124,9 +114,8 @@ final class LyteInputCapture {
 
     // MARK: - Mouse
 
-    /// The aspect-fit rect the video actually occupies (resizeAspect
-    /// math — the InputCapture precedent); nil until the stream size
-    /// is known.
+    /// The aspect-fit rect the video actually occupies; nil until the
+    /// stream size is known.
     private func videoRect(in bounds: CGRect) -> CGRect? {
         let size = videoSize()
         guard size.width > 0, size.height > 0 else { return nil }
@@ -136,12 +125,10 @@ final class LyteInputCapture {
                       width: fitted.width, height: fitted.height)
     }
 
-    /// True when the event lands on the video surface: the hit view is
-    /// the video layer view or a DESCENDANT of it — the only two shapes
-    /// hitTest produces for a point the video genuinely owns. Anything
-    /// else — nil, a sibling, or an ANCESTOR (NSHostingView answering
-    /// for its own SwiftUI content, like the strip's buttons) — means an
-    /// overlay claimed the point.
+    /// True when the hit view is the video layer view or a descendant.
+    /// Anything else — nil, a sibling, or an ancestor (NSHostingView
+    /// answering for its own SwiftUI content) — means an overlay
+    /// claimed the point.
     private func landsOnVideoSurface(_ event: NSEvent) -> Bool {
         guard let view, let content = event.window?.contentView else {
             return false
@@ -159,9 +146,8 @@ final class LyteInputCapture {
 
     private func handleMouse(_ event: NSEvent) -> NSEvent? {
         guard let view, let window, event.window === window, window.isKeyWindow else { return event }
-        // locationInWindow's origin is the window frame's bottom-left,
-        // which is also the content view's bottom-left (titlebars sit
-        // at the top) — good enough edge geometry for the reveal zone.
+        // The window frame's bottom-left is also the content view's
+        // bottom-left — good enough for the reveal zone.
         let contentHeight = window.contentView?.frame.height ?? 0
         onActivity(PointerActivity(
             distanceFromBottom: event.locationInWindow.y,

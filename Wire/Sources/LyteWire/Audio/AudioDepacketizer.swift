@@ -1,40 +1,16 @@
-// AudioDepacketizer (HS-15 → CL-11, promoted home by the second
-// codec-promotion slice — the bytes never changed): the receive half of
-// the audio wire — chan-1 datagrams in, ordered-enough 5 ms Opus
-// packets out, with the RS 4+2 recovery the video path already trusts
-// (the SAME FecDecoder; "audio's 4+2 expresses in the same field").
-// The AudioFramer alongside is the send half; this pair is the audio
-// interior's VideoPacketizer/VideoAssembler analogue.
+// AudioDepacketizer: the receive half of the audio wire (AudioFramer.swift
+// documents the layout) — chan-1 datagrams in, 5 ms Opus packets out,
+// with RS recovery through the same FecDecoder video uses. The geometry
+// rides the wire, so this side follows whatever the fec field declares.
 //
-// The contract, restated from the framer's pin:
-//   • channel 1 (ChannelId.audio); one 5 ms Opus packet = one data
-//     shard = one datagram payload, verbatim, zero interior framing.
-//   • fec field = FecField.reedSolomon(shardIndex, geometry) — the
-//     video-identical 8-byte interior; k data + m parity per group
-//     (4 + 2 today; the geometry rides the wire, so this side follows
-//     whatever the field declares).
-//   • frame field = the FEC group id = the group's FIRST packet
-//     number: packet n = frame + shardIndex (Vocabulary's two
-//     readings holding at once).
-//   • timestamp: data shards carry THEIR packet's capture µs (the
-//     PipeWire graph clock); parity shards the group's FIRST packet's.
-//     A reconstructed packet n derives its stamp as
-//     groupFirstTs + (n − frame) × packetDuration — honest under the
-//     hard-CBR dialect ("seq × packetDuration IS the sender media
-//     timeline", audio-continuity §3).
-//   • Data shards were emitted immediately by the sender (cadence
-//     before protection), parity behind the group's 4th packet — so
-//     recovery becomes possible at most ~3 packet durations after a
-//     loss, which is what sizes the jitter buffer's reorder wait.
-//
-// Sans-IO: no clock reads, no locks, no sockets. Recovery is attempted
-// eagerly the moment any k distinct shards of a group are present —
-// recovered bytes are byte-identical to the originals by RS
-// construction, so an original arriving after its recovery is just a
-// counted duplicate.
+// Parity follows a group's last data packet, so recovery is possible at
+// most ~3 packet durations after a loss; that sizes the jitter buffer's
+// reorder wait. Recovery runs eagerly once any k distinct shards of a
+// group are present; recovered bytes are byte-identical to the originals,
+// so an original arriving afterwards is a counted duplicate. Sans-IO.
 
-/// The audio ground truth both ends code against (mirrors the host
-/// C-leaf pins — 48 kHz stereo, 5 ms CELT-only frames).
+/// The audio format both ends code against: 48 kHz stereo, 5 ms
+/// CELT-only frames.
 public enum AudioWire {
     public static let sampleRate = 48_000
     public static let channels = 2
@@ -92,11 +68,10 @@ public struct AudioDepacketizer: Sendable {
     /// Groups kept in flight behind the newest — 8 groups of 4 packets
     /// = 160 ms, comfortably past any jitter the buffer would absorb.
     public let horizonGroups: Int
-    /// The retention horizon in packet numbers — LOCAL POLICY, pinned
-    /// at init from the wire's nominal group size. It must never follow
-    /// an arriving shard's declared geometry: one legal k=1 shard would
-    /// shrink retention 4× (flushing groups still awaiting parity) and
-    /// a k=254 shard would widen admission ~64× (T2-10).
+    /// The retention horizon in packet numbers — local policy fixed at
+    /// init from the nominal group size. It must never follow an arriving
+    /// shard's declared geometry: a k=1 shard would shrink retention 4×
+    /// and a k=254 shard would widen admission ~64×.
     private let horizonPackets: Int32
 
     public private(set) var stats = AudioDepacketizerStats()

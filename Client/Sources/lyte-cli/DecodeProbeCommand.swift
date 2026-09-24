@@ -1,18 +1,13 @@
-// decode-probe (H4 V-2): an Annex-B HEVC file through the EXACT
-// production render construction — AnnexBAccessUnits → DecodeUnit →
-// VideoRenderFactory (the same CMSampleBuffer assembly every wire frame
-// rides) — then two kinds of eyes:
+// decode-probe: an Annex-B HEVC file through the production render
+// construction (AnnexBAccessUnits → DecodeUnit → VideoRenderFactory),
+// then observed two ways:
 //
-//   1. the VideoReadbackTap (VTDecompressionSession): which decoder
-//      engaged (hardware asserted, not assumed), what pixel format
-//      comes out, and — with --dump — the decoded planes on disk for
-//      offline gate math (chroma integrity, color truth);
-//   2. with --snapshot, the real glass: an AVSampleBufferDisplayLayer
-//      in a real window (the wire-view construction), screenshotted
-//      after the last frame — what Core Animation actually composites.
+//   1. the VideoReadbackTap: which decoder engaged, what pixel format
+//      comes out, and — with --dump — the decoded planes on disk;
+//   2. with --snapshot, an AVSampleBufferDisplayLayer in a real window,
+//      screenshotted after the last frame.
 //
-// Offline by construction: no socket, no session, no host. This is the
-// §7 corpus harness's client half growing in place (V-3 inherits it).
+// Offline: no socket, no session, no host.
 
 import AppKit
 import ArgumentParser
@@ -355,11 +350,10 @@ struct DecodeProbe: AsyncParsableCommand {
             print("probe: display layer status rendering — \(samples.count) samples enqueued")
         }
 
-        // Window capture via screencapture(1) — CGWindowListCreateImage
-        // is obsoleted at this deployment target and ScreenCaptureKit
-        // wants a consent flow; the CLI tool inherits the terminal's
-        // screen-recording grant, and a missing grant fails LOUDLY
-        // (wallpaper-only or empty image), never silently.
+        // screencapture(1): CGWindowListCreateImage is obsoleted at this
+        // deployment target and ScreenCaptureKit wants a consent flow.
+        // The tool inherits the terminal's screen-recording grant; a
+        // missing grant yields a wallpaper-only or empty image.
         let windowID = CGWindowID(window.windowNumber)
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")

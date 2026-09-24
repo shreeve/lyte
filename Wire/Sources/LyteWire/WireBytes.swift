@@ -146,3 +146,14 @@ extension WireExtension {
         return found
     }
 }
+
+/// A codec that decodes from a byte slice; a whole array decodes the same.
+public protocol SliceDecodable {
+    static func decode(_ bytes: ArraySlice<UInt8>) throws -> Self
+}
+
+extension SliceDecodable {
+    public static func decode(_ bytes: [UInt8]) throws -> Self {
+        try decode(bytes[...])
+    }
+}

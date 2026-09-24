@@ -1,26 +1,11 @@
-// The chan=3 feedback cadence (CL-3): every 25–50 ms, snapshot
-// ReceiveDemux's per-channel ledgers, drain its arrival samples into the
-// report's dispersion section, and send the FeedbackReport through the
-// TransportSender. This is the host estimator's (HS-16) whole diet —
-// cumulative loss/duplicate ledgers plus per-packet arrival spacing for
-// the paced trains (resiliency §2.2, RFC 8888 semantics) — and doubles as
-// the fast-liveness signal (350 ms of feedback silence is the host's
-// blackout detector, resiliency §3).
+// The chan=3 feedback cadence: every 25–50 ms, snapshot ReceiveDemux's
+// per-channel ledgers and arrival samples into a FeedbackReport and send it.
+// It feeds the host's estimator and doubles as its fast-liveness signal.
 //
-// The NACK section (CL-12, closing §4.7's ruling): NackPolicy's entries
-// queue here via `enqueueNacks` and ride the NEXT report — the policy's
-// emit closure follows the enqueue with an immediate out-of-cadence
-// `tick`, because the host's rule-3 freeze budget (2 frame intervals,
-// ~33 ms) is tighter than the 25–50 ms cadence. Reports stay unreliable:
-// a lost NACK is NOT re-queued (dedupe discipline — the host one-attempts
-// per shard); rule 4's deadline escalation to IDR covers the loss.
-// FeedbackBounds.maxNackEntries (6) caps a report's section; spill waits
-// for the next beat.
-//
-// Reports are unreliable by design (build plan §4.11): a lost report is
-// superseded 25–50 ms later, so sends never retry and failures only count.
-// The timer is a DispatchSourceTimer for production; tests drive
-// `tick(now:)` with an injected clock and never start the timer.
+// NackPolicy's entries queue via `enqueueNacks` and ride the next report
+// (up to FeedbackBounds.maxNackEntries; spill waits a beat). Reports are
+// unreliable: a lost report is superseded by the next, a lost NACK is not
+// re-queued (the IDR deadline covers it), and failures only count.
 
 import LyteIO
 import Dispatch
@@ -29,40 +14,33 @@ import LyteCore
 import LyteWire
 
 public final class FeedbackSender: @unchecked Sendable {
-    /// Cadence counters, snapshotted for the CLI.
     public struct Stats: Sendable {
         public var reportsSent: UInt64 = 0
         public var reportsFailed: UInt64 = 0
         public var dispersionSamplesReported: UInt64 = 0
         public var dispersionSamplesDecimated: UInt64 = 0
-        /// NACK entries carried on the wire (CL-12).
+        /// NACK entries carried on the wire.
         public var nackEntriesSent: UInt64 = 0
     }
 
-    /// The build plan pins the cadence to 25–50 ms; anything outside is a
-    /// caller bug, clamped loudly at init rather than silently obeyed.
+    /// The cadence is clamped to 25–50 ms at init.
     public static let cadenceRangeMilliseconds = 25...50
 
     private let demux: ReceiveDemux
     private let sender: TransportSender
     private let intervalMilliseconds: Int
     private let now: @Sendable () -> ClientTimestamp
-    /// Fires after each cadence report — the IdrRequester's flushIfDue
-    /// hook (the cadence is always shorter than the IDR rate window, so
-    /// coalesced requests wait at most one tick).
+    /// Fires after each cadence report (the IdrRequester's flush hook).
     private let onTick: (@Sendable (ClientTimestamp) -> Void)?
 
     private let lock = NSLock()
     private var stats = Stats()
     private var timer: DispatchSourceTimer?
-    /// The cadence beats on a private serial queue so `stop()` can drain
-    /// an in-flight beat with a sync barrier — cancel alone returns while
-    /// a tick may still be between its transmit and its counter update.
+    /// A private serial queue so `stop()` can drain an in-flight beat.
     private let timerQueue = DispatchQueue(
         label: "lyte.feedback-cadence", qos: .userInitiated)
-    /// NACK entries awaiting the next report (CL-12). Bounded: the
-    /// policy's dedupe keeps volume low; past the cap the OLDEST drop —
-    /// their frames are closest to stale and rule 4 backstops them.
+    /// NACK entries awaiting the next report; past the cap the oldest
+    /// drop (closest to stale; the IDR deadline backstops them).
     private var pendingNacks = Deque<FeedbackReport.NackEntry>()
     private static let pendingNackCap = 24
 
@@ -111,17 +89,12 @@ public final class FeedbackSender: @unchecked Sendable {
         lock.unlock()
         guard let source else { return }
         source.cancel()
-        // Teardown is a join: drain the serial queue so a beat that has
-        // already transmitted also lands its counters before stop()
-        // returns — callers may reconcile stats against sent datagrams.
-        // Safe: nothing on the tick path (onTick → IdrRequester flush,
-        // NackPolicy tick) ever calls stop().
+        // Join: an in-flight beat lands its counters before stop() returns.
+        // Safe because nothing on the tick path calls stop().
         timerQueue.sync {}
     }
 
-    /// Queues NACK entries for the next report. The caller (NackPolicy's
-    /// emit closure) follows with `tick(now:)` when the freeze budget
-    /// demands an out-of-cadence report.
+    /// Queues NACK entries for the next report.
     public func enqueueNacks(_ entries: [FeedbackReport.NackEntry]) {
         guard !entries.isEmpty else { return }
         lock.lock()
@@ -132,8 +105,7 @@ public final class FeedbackSender: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// One cadence beat: build the report from live demux state and send
-    /// it. The timer calls this; tests call it directly with their clock.
+    /// One cadence beat: build the report and send it.
     public func tick(now: ClientTimestamp) {
         let report = buildReport(now: now)
         do {
@@ -145,8 +117,7 @@ public final class FeedbackSender: @unchecked Sendable {
             if sent { stats.reportsSent += 1 } else { stats.reportsFailed += 1 }
             lock.unlock()
         } catch {
-            // Encode rejects and seal failures are counted, not fatal:
-            // the next beat rebuilds from fresh state.
+            // Counted, not fatal: the next beat rebuilds from fresh state.
             lock.lock()
             stats.reportsFailed += 1
             lock.unlock()
@@ -154,9 +125,7 @@ public final class FeedbackSender: @unchecked Sendable {
         onTick?(now)
     }
 
-    /// Builds one report from the demux's current ledgers and drained
-    /// arrival samples. Public so tests can pin the mapping without a
-    /// socket anywhere.
+    /// Builds one report from the demux's ledgers and drained samples.
     public func buildReport(now: ClientTimestamp) -> FeedbackReport {
         var channels = [FeedbackReport.ChannelStats]()
         for (channel, stats) in demux.snapshotChannels()
@@ -164,9 +133,8 @@ public final class FeedbackSender: @unchecked Sendable {
             channels.append(FeedbackReport.ChannelStats(
                 channel: ChannelId(rawValue: channel),
                 highestSeq: ChannelSeq(rawValue: stats.seqHighest ?? 0),
-                // u32 wraps in days at peak rate and the host differences
-                // successive reports (codec comment) — truncation is the
-                // documented wire semantics, not data loss.
+                // Truncation is the wire semantics: the host differences
+                // successive reports.
                 received: UInt32(truncatingIfNeeded: stats.datagrams - stats.seqDuplicates),
                 missing: UInt32(truncatingIfNeeded: stats.seqMissing),
                 duplicates: UInt32(truncatingIfNeeded: stats.seqDuplicates)))
@@ -174,9 +142,7 @@ public final class FeedbackSender: @unchecked Sendable {
 
         let dispersion = buildDispersion(from: demux.drainArrivalSamples())
 
-        // Drain queued NACK entries up to the section bound; spill rides
-        // the next beat. Drained entries are spent either way (header
-        // comment: a lost report is NOT re-asked; rule 4 backstops).
+        // Drained entries are spent even if the report is lost.
         lock.lock()
         let nacks = Array(
             pendingNacks.prefix(FeedbackBounds.maxNackEntries))
@@ -185,7 +151,7 @@ public final class FeedbackSender: @unchecked Sendable {
         lock.unlock()
 
         return FeedbackReport(
-            pathId: 0,   // v1: single path (resiliency §6)
+            pathId: 0,   // v1: single path
             clientTimestamp: now,
             channels: channels,
             dispersion: dispersion,
@@ -201,12 +167,9 @@ public final class FeedbackSender: @unchecked Sendable {
 
     // MARK: - Dispersion section
 
-    /// Arrival samples → the report's dispersion section: base = earliest
-    /// arrival, deltas from it. Samples whose delta exceeds the u24 field
-    /// (clock-domain mixups, multi-second stalls) are dropped rather than
-    /// encoded wrong; when more samples than the section can carry
-    /// survive, evenly-spaced decimation keeps the trains' shape (the
-    /// estimator weights trains, it does not need every packet).
+    /// Arrival samples → dispersion section: deltas from the earliest
+    /// arrival. Deltas past the u24 field are dropped, not encoded wrong;
+    /// overflow is decimated evenly to keep the trains' shape.
     private func buildDispersion(
         from arrivals: [ArrivalSample]
     ) -> FeedbackReport.Dispersion? {

@@ -39,7 +39,7 @@ final class CapabilityVectorFileTests: XCTestCase {
                         return XCTFail("\(vector.name): foreign error")
                     }
                     XCTAssertEqual(
-                        cborErrorName(error), vector.error, vector.name
+                        vectorErrorName(error), vector.error, vector.name
                     )
                 }
             }
@@ -78,7 +78,7 @@ final class CapabilityVectorFileTests: XCTestCase {
                         return XCTFail("\(vector.name): foreign error")
                     }
                     XCTAssertEqual(
-                        capabilityErrorName(error), vector.error,
+                        vectorErrorName(error), vector.error,
                         vector.name
                     )
                 }
@@ -149,7 +149,7 @@ final class CapabilityVectorFileTests: XCTestCase {
                         return XCTFail("\(vector.name): foreign error")
                     }
                     XCTAssertEqual(
-                        capabilityMessageErrorName(error), vector.error,
+                        vectorErrorName(error), vector.error,
                         vector.name
                     )
                 }

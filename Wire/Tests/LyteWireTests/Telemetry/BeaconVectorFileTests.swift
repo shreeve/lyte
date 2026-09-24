@@ -115,7 +115,7 @@ final class BeaconVectorFileTests: XCTestCase {
             guard let beaconError = error as? BeaconError else {
                 return XCTFail("\(vector.name): non-BeaconError \(error)")
             }
-            XCTAssertEqual(beaconErrorName(beaconError), expected, vector.name)
+            XCTAssertEqual(vectorErrorName(beaconError), expected, vector.name)
         }
     }
 
@@ -153,7 +153,7 @@ final class BeaconVectorFileTests: XCTestCase {
             guard let feedbackError = error as? FeedbackError else {
                 return XCTFail("\(vector.name): non-FeedbackError \(error)")
             }
-            XCTAssertEqual(feedbackErrorName(feedbackError), expected, vector.name)
+            XCTAssertEqual(vectorErrorName(feedbackError), expected, vector.name)
         }
     }
 
@@ -169,7 +169,7 @@ final class BeaconVectorFileTests: XCTestCase {
             guard let feedbackError = error as? FeedbackError else {
                 return XCTFail("\(vector.name): non-FeedbackError \(error)")
             }
-            XCTAssertEqual(feedbackErrorName(feedbackError), expected, vector.name)
+            XCTAssertEqual(vectorErrorName(feedbackError), expected, vector.name)
         }
     }
 }

@@ -130,7 +130,7 @@ final class RetryVectorFileTests: XCTestCase {
                         return XCTFail("\(vector.name): foreign error")
                     }
                     XCTAssertEqual(
-                        retryMessageErrorName(error), vector.error,
+                        vectorErrorName(error), vector.error,
                         vector.name
                     )
                 }
@@ -142,7 +142,7 @@ final class RetryVectorFileTests: XCTestCase {
                         return XCTFail("\(vector.name): foreign error")
                     }
                     XCTAssertEqual(
-                        retryMessageErrorName(error), vector.error,
+                        vectorErrorName(error), vector.error,
                         vector.name
                     )
                 }

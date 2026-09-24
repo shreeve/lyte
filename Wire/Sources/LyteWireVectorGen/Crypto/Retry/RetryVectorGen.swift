@@ -1,10 +1,6 @@
-// Retry-cookie vector authoring (W8, the HS-9 deferred flood
-// hardening): RetryCookie's transcript MAC frozen as data, plus the
-// CTRL 0x13/0x14 codec layouts. Run once, commit, freeze. The
-// circularity is broken twice over: the codec bytes are anchored by
-// the hand-built layouts in RetryCodecTests, and the MAC beneath the
-// cookie vectors is anchored in RetryCookieTests against an
-// independent RFC 2104 HMAC over LyteCore's FIPS-verified Sha256.
+// Authors Vectors/retry-v1.json: RetryCookie's transcript MAC and the
+// CTRL 0x13/0x14 layouts. Anchored by RetryCodecTests, and the MAC by
+// RetryCookieTests against an independent RFC 2104 HMAC.
 
 import LyteCore
 import LyteWire

@@ -1,66 +1,38 @@
-// RoamingPolicy (F-5): pure client roaming/reconnect policy — what to
-// do when the host moves out from under a standing session (the hotel
-// move: the host's address changed and the old experience was "No
-// hosts found" + a frozen frame with no recovery story), or when the
-// Mac itself hops networks mid-session.
+// RoamingPolicy: pure client roaming/reconnect policy — what to do when
+// the host moves out from under a standing session, or the Mac itself
+// hops networks mid-session. FROZEN/RECOVERY are local overlays of the
+// session machine; its 30 s liveness clock closes a dead session.
 //
-// The detection ladder, tiered on top of the session machine's own
-// semantics (W4b — FROZEN/RECOVERY are local overlays, never wire
-// states; the 30 s liveness clock closes a dead session):
+// The detection ladder:
+//   1. A short gap is the machine's FROZEN; this policy only starts its
+//      silence clock.
+//   2. Silence past `scanAfterSilence` (3 s) begins quiet discovery
+//      re-browsing; returning evidence cancels everything.
+//   3. The same host identity (advertised pkh — sha256 of the Noise
+//      static, the pinned-host store's key) at a NEW address means the
+//      host moved: tear down and re-dial now. Pairing is identity-keyed;
+//      the address is only a dial hint, so no re-PIN.
+//   4. The same identity at the SAME address while silent means the path
+//      works but the session is dark: re-dial after
+//      `redialSameAddressAfter` (8 s) — well before the 30 s liveness
+//      close, late enough that an ordinary Wi-Fi roam never triggers it.
+//   5. The liveness close flips to full roaming: scan on a backoff
+//      ladder and probe-dial the last-known address between fruitless
+//      scans (mDNS-less routed networks have nothing to sight).
 //
-//   1. A short gap (350 ms tightened / 2.5 s beacon-bounded) is the
-//      machine's FROZEN — the CL-8 pill covers it, this policy only
-//      starts its silence clock.
-//   2. Silence past `scanAfterSilence` (3 s) means the blip is not
-//      blinking away: begin QUIET discovery re-browsing (`_lyte._udp`
-//      multicast is cheap; the session still stands and evidence
-//      returning cancels everything).
-//   3. The same host identity (the advertisement's TXT pkh — sha256
-//      of the Noise static, the same hash the pinned-host store keys
-//      by) appearing at a NEW address is the "host moved" verdict:
-//      the old session is unreachable by construction — tear it down
-//      and re-dial immediately. A fresh 1-RTT Noise IK against the
-//      pinned static is the whole re-acquisition: same pairing, no
-//      re-PIN (pairing is identity-keyed, address is a dial hint).
-//   4. The same identity at the SAME address while we are this silent
-//      means the network path works but the session is dark (host
-//      restarted, or our source address changed under a host whose
-//      HS-12 migration didn't bite): re-dial after
-//      `redialSameAddressAfter` (8 s) — early enough to beat the 30 s
-//      liveness close by a wide margin, late enough that an ordinary
-//      Wi-Fi roam never triggers it.
-//   5. The liveness close itself (the session machine's verdict that
-//      the peer is gone) flips to full roaming: scan on a backoff
-//      ladder, and probe-dial the last-known address between fruitless
-//      scans (mDNS-less routed networks have no advertisement to
-//      sight — the last dial hint is the only target).
+// Client-side path changes: the host's path validation owns migration,
+// so a path change gets a grace window (3 s — past the 2.5 s detector,
+// so a dead path is observably FROZEN at expiry) before escalating, and
+// the same-address re-dial is allowed at once.
 //
-// CLIENT-SIDE path changes (the Mac hops Wi-Fi; the host stays put):
-// HS-12's PathValidator on the host owns migration — the client keeps
-// sending from its new source address (the feedback cadence does that
-// unprompted) and to the receiver a migrated peer is just evidence
-// returning. So a path change gets a GRACE window (3 s — past the
-// 2.5 s untightened detector, so a dead path is observably FROZEN at
-// expiry) before this policy escalates; if the path healed itself the
-// deadline dissolves. On expiry the same scan/dial ladder runs, with
-// the same-address re-dial allowed at once (our own address changed —
-// a fresh handshake is the mechanism when migration didn't carry).
+// There is no give-up: backoff ladders are capped (scan 1 s → 15 s,
+// dial 2 s → 30 s); Disconnect is the exit and Reconnect resets every
+// ladder.
 //
-// GIVE-UP POSTURE: there isn't one — the policy keeps looking
-// passively, forever, with the backoff ladders capped (scan gap 1 s
-// doubling to 15 s, dial retry 2 s doubling to 30 s) so it never spins
-// hot; the human's Disconnect is the exit, and the manual Reconnect
-// verb resets every ladder and acts immediately.
-//
-// Sans-IO, the SessionStateMachine discipline exactly: a struct,
-// inputs applied with an injected `now` (monotonic microseconds),
-// decisions returned as actions, `nextDeadline` tells the driver when
-// to tick — the whole thing pins in virtual time. The driver
-// (ConnectionModel) owns the sockets, the browse passes, and the
-// re-dial; one failed dial is never fatal — a re-dial against a host
-// that still holds the dead session draws silence until the host's
-// own liveness frees it (the host-side busy/takeover story is the
-// F-5 Host half), so the ladder simply keeps climbing.
+// Sans-IO: a struct fed inputs with an injected monotonic `now` (µs),
+// returning actions; `nextDeadline` tells the driver (ConnectionModel)
+// when to tick. A failed dial is never fatal — a host still holding the
+// dead session answers with silence, so the ladder keeps climbing.
 
 /// One discovery sighting the driver feeds back after a browse pass:
 /// the advertisement's identity hash and resolved dial target.
@@ -100,17 +72,15 @@ public enum RoamingStatus: Equatable, Sendable {
 }
 
 public struct RoamingPolicyConfig: Hashable, Sendable {
-    /// Continuous silence before the quiet re-browse begins. Sits
-    /// above the blackout detector's tiers (350 ms tightened, 2.5 s
-    /// beacon-bounded) — FROZEN alone is a blip, this is a story.
+    /// Continuous silence before the quiet re-browse begins; above the
+    /// blackout detector's tiers (350 ms tightened, 2.5 s untightened).
     public var scanAfterSilenceMicroseconds: Int64
     /// Silence before a SAME-address sighting justifies tearing the
     /// standing session down for a fresh dial.
     public var redialSameAddressAfterMicroseconds: Int64
-    /// The migration grace after a client-side path change: HS-12
-    /// gets this long to carry the session before roaming escalates.
-    /// Deliberately past the 2.5 s untightened detector so a dead
-    /// path is observably FROZEN when the deadline fires.
+    /// The migration grace after a client-side path change, past the
+    /// 2.5 s untightened detector so a dead path is observably FROZEN
+    /// when the deadline fires.
     public var pathChangeGraceMicroseconds: Int64
     /// The gap between fruitless scans: starts at the floor, doubles
     /// to the ceiling, never past it — passive looking, never hot.

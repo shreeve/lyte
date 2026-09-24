@@ -32,12 +32,10 @@ public struct PostureVectorFile: FrozenVectorFile {
     }
 }
 
-/// One posture vector. `roundtrip` encodes the typed fields to exactly
-/// `messageHex` and decodes back; `decodeReject` throws `error`, the
-/// codec's error case name. `state` (audioTrackState) and `posture`
-/// (videoPostureState) are the enum case names; for `capabilitySet`,
-/// `messageHex` is a declaration's CBOR map and the two flags are what
-/// the key-15/16 accessors must read.
+/// One posture vector. `roundtrip`/`decodeReject` as elsewhere (`error` is
+/// the codec's error case name). `state`/`posture` are enum case names; for
+/// `capabilitySet`, `messageHex` is a declaration's CBOR map and the two
+/// flags are what the key-15/16 accessors must read.
 public struct PostureVector: Codable, Sendable {
     public var name: String
     public var description: String
@@ -86,28 +84,5 @@ public struct PostureVector: Codable, Sendable {
         self.audioQuietPosture = audioQuietPosture
         self.videoQuietPosture = videoQuietPosture
         self.error = error
-    }
-}
-
-/// Stable names for `AudioTrackStateError` cases, as they appear in
-/// vectors.
-public func audioTrackStateErrorName(_ error: AudioTrackStateError) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .unexpectedType: return "unexpectedType"
-    case .trailingBytes: return "trailingBytes"
-    case .unknownState: return "unknownState"
-    }
-}
-
-/// Stable names for `VideoPostureStateError` cases, as they appear in
-/// vectors.
-public func videoPostureStateErrorName(_ error: VideoPostureStateError) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .unexpectedType: return "unexpectedType"
-    case .trailingBytes: return "trailingBytes"
-    case .unknownPosture: return "unknownPosture"
-    case .zeroInterval: return "zeroInterval"
     }
 }

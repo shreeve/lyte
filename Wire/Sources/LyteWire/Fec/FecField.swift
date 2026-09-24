@@ -1,7 +1,5 @@
-// The envelope's 8-byte `fec` field (envelope offset 16), interior layout
-// owned by resiliency and pinned here at W1. Documented in the envelope's
-// own style — as the little-endian u64 the envelope already carries, byte
-// n below is bit range [8n, 8n+8):
+// The envelope's 8-byte `fec` field (offset 16). As the little-endian u64
+// the envelope carries, byte n below is bit range [8n, 8n+8):
 //
 //   byte  field
 //   0     shardIndex   position in the FEC group: 0…k−1 data shards in
@@ -13,26 +11,19 @@
 //   4–6   groupByteCount  u24: total payload bytes across the group's k
 //                      data shards — every shard advertises the whole
 //                      group's extent, so a single arrival sizes the
-//                      assembler's buffers, makes the NACK-impossible
-//                      test immediate (resiliency §1.1 rule 2), and
-//                      trims the recovered trailing shard honestly
-//   7     reserved     MUST be 0 on send, ignored on receive (the
-//                      envelope flags rule)
+//                      assembler's buffers and the unrecoverable test
+//   7     reserved     MUST be 0 on send, ignored on receive
 //
-// Scheme `none` is the all-zero field (byte 7 excepted): CTRL, feedback,
-// and every other datagram that carries no FEC-coded payload sends fec=0.
-// A `none` field with non-zero geometry bytes is rejected as malformed —
-// some other layer's zero-fill bug, kept loud.
-//
-// The group binding is the envelope `frame` field (per-channel FEC group
-// id, Vocabulary.swift); this field carries the shard's place within
-// that group, never the group's identity.
+// Scheme `none` is the all-zero field (byte 7 excepted); a `none` field
+// with non-zero geometry bytes is rejected as malformed. The group's
+// identity is the envelope `frame` field; this field carries only the
+// shard's place within it.
 
 public enum FecField: Hashable, Sendable {
     /// No FEC-coded payload; encodes as fec = 0.
     case none
     /// One RS shard: its index within the group, plus the full group
-    /// geometry — the per-frame ratio advertisement of resiliency §5.2.
+    /// geometry.
     case reedSolomon(shardIndex: UInt8, geometry: FecGeometry)
 
     public enum Scheme {

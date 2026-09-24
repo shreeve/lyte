@@ -79,9 +79,8 @@ class MotionFrames:
         frame[cy - radius:cy + radius, cx - radius:cx + radius] = \
             self.colors[3]
 
-        # Unambiguous 24-bit frame marker. Fixed cyan/magenta sentinels bound
-        # little-endian binary blocks; each block is a full 24×24 source-pixel
-        # cell so the ID survives HEVC while a wrong phase remains obvious.
+        # 24-bit frame marker: cyan/magenta sentinels bound little-endian
+        # blocks of 24×24 source-pixel cells, so the ID survives HEVC.
         if include_marker:
             self.draw_marker(frame, frame_id)
         return frame
@@ -248,9 +247,8 @@ def run_presenter(args, definition):
                     (predicted_us - self.origin_presentation_us)
                     * self.definition["fps"] / 1_000_000)
             if target_frame <= self.frame_id:
-                # Frozen: keep the frame clock alive just long enough to
-                # collect the held frame's presentation evidence, then go
-                # truly still so the glass shows authored stillness.
+                # Frozen: keep the frame clock alive only long enough to
+                # collect the held frame's presentation evidence.
                 if self.args.freeze is not None and self.pending_presentations:
                     self.canvas.queue_draw()
                 return GLib.SOURCE_CONTINUE

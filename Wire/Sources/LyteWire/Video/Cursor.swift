@@ -1,18 +1,11 @@
-// Cursor-shape sync (E3, the direct-eye plan §5 obligation —
-// docs/history/20260801-105800-direct-eye-plan.md): without Mutter's screen-cast
-// stream there is no composited cursor in the video, and that is a
-// FEATURE — the client's local cursor gives zero-latency positioning
-// (input is absolute from the Mac). What the direct eye loses is the
-// SHAPE: the hardware cursor plane's image never touches the encoded
-// frames. This message carries it as metadata — the host watches the
-// cursor plane and announces each shape change; the client wears it
-// as the local NSCursor over the video view.
+// Cursor-shape sync: the video carries no composited cursor (the client's
+// local cursor gives zero-latency positioning), so the host announces each
+// hardware-cursor-plane shape change as metadata and the client wears it
+// as the local cursor over the video view.
 //
-// CursorShape (0x24), host→client only: "the host cursor now looks
-// like this" (or "is hidden"). Rides the ARQ ordered CTRL stream
-// (group 0) like clipboard — a reordered shape swap would leave the
-// client wearing yesterday's cursor, so ordering is the contract and
-// the last delivered shape wins. Layout (LE, the W4a convention):
+// CursorShape (0x24), host→client only, rides the ARQ ordered CTRL stream
+// (group 0): ordering is the contract and the last delivered shape wins.
+// Layout (little-endian):
 //
 //   offset size field
 //   0      1    type     0x24
@@ -26,23 +19,14 @@
 //                        packed (no row padding — the host crops the
 //                        plane's content box and repacks)
 //
-// Unlike clipboard, EMPTY IS A STATE: width == height == 0 with no
-// pixel bytes means the cursor is hidden (the plane holds fb 0), and
-// hiding must sync. Validation at encode AND decode: sides ≤ 256
-// (DRM_CAP_CURSOR_WIDTH/HEIGHT's ceiling), image ≤ 65,536 bytes (the
-// clipboard precedent for the shared ordered stream — area ≤ 16,384
-// px, so 128×128 square or any equal-area crop), pixel byte count
-// exactly width*height*4, hotspot inside the image. Truncation and
-// foreign type bytes reject with what they found. Never traps on
-// hostile bytes.
+// Empty is a state: width == height == 0 with no pixel bytes means the
+// cursor is hidden, and hiding must sync. Validation at encode AND decode:
+// sides ≤ 256, image ≤ 65,536 bytes, pixel byte count exactly
+// width*height*4, hotspot inside the image. Never traps on hostile bytes.
 //
-// CAPABILITY CARRIAGE — the W7 forward-compat spine, keys 9–12
-// repeated: key 13 (CapabilityKey.cursorShape, bool) rides the
-// declaration through `Capabilities.unknownEntries` as one canonical
-// `0D F5` map entry and survives intersection only on mutual
-// byte-equal declaration. ZERO frozen bytes move. Declaration is
-// dialect, not policy: a host whose capture organ composites the
-// cursor into the video (the portal-era backends) truthfully never
+// Capability key 13 (`CapabilityKey.cursorShape`, bool) rides
+// `Capabilities.unknownEntries` and survives intersection only on mutual
+// declaration. A host that composites the cursor into the video never
 // declares it.
 
 /// The cursor-shape layer's fixed numbers (wire v1).
@@ -50,12 +34,9 @@ public enum CursorWire {
     /// DRM cursor planes cap at 256 per side
     /// (DRM_CAP_CURSOR_WIDTH/HEIGHT on every driver Lyte targets).
     public static let maxSide = 256
-    /// The image ceiling, bytes (width*height*4). The clipboard
-    /// precedent sizes it: 65,536 B on the shared ordered stream —
-    /// area ≤ 16,384 px. The host crops the plane to its content box
-    /// (real cursor themes are ≤ 96 px of content inside a padded
-    /// buffer), so an over-ceiling crop is a suppress-and-count
-    /// weather event, never a send.
+    /// The image ceiling, bytes (width*height*4): area ≤ 16,384 px. The
+    /// host crops the plane to its content box; an over-ceiling crop is
+    /// suppressed and counted, never sent.
     public static let maxImageByteCount = 65_536
     /// type ‖ width ‖ height ‖ hotspotX ‖ hotspotY.
     public static let headerByteCount = 9
@@ -79,7 +60,7 @@ extension Capabilities {
 // MARK: - The CTRL codec
 
 /// The host's cursor-shape announcement (type 0x24).
-public struct CursorShape: Hashable, Sendable {
+public struct CursorShape: Hashable, Sendable, SliceDecodable {
     /// Pixels; 0 = hidden (then height, hotspots, and pixels are all
     /// zero/empty).
     public var width: UInt16
@@ -156,16 +137,10 @@ public struct CursorShape: Hashable, Sendable {
         return shape
     }
 
-    public static func decode(_ payload: [UInt8]) throws -> CursorShape {
-        try decode(payload[...])
-    }
-
     /// The shared encode/decode contract.
     private func validate() throws {
         let w = Int(width), h = Int(height)
-        // Zero is all-or-nothing: a 0×N image has no pixels to carry
-        // a hotspot in, and a lone zero side is a zero-fill-adjacent
-        // bug to surface.
+        // Zero is all-or-nothing: a lone zero side is malformed.
         guard (w == 0) == (h == 0),
               w <= CursorWire.maxSide, h <= CursorWire.maxSide else {
             throw CursorMessageError.invalidDimensions(

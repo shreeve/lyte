@@ -1,7 +1,5 @@
 // The ARQ frame vector-file model and loader: `Wire/Vectors/arq-v1.json`
-// — the W3 wire formats (data segment 0x07, ACK 0x08, and the
-// frame-sequence payload rule). Same doctrine as the other loaders:
-// TestKit may import Foundation, LyteWire may not.
+// (data segment 0x07, ACK 0x08, and the frame-sequence payload rule).
 
 import LyteCore
 import Foundation
@@ -125,22 +123,6 @@ public struct ArqVector: Codable, Sendable {
         self.payloadHex = payloadHex
         self.frames = frames
         self.error = error
-    }
-}
-
-/// Stable names for `ArqFrameError` cases, as they appear in vectors.
-public func arqFrameErrorName(_ error: ArqFrameError) -> String {
-    switch error {
-    case .truncatedFrame: return "truncatedFrame"
-    case .unknownFrameType: return "unknownFrameType"
-    case .emptyPayload: return "emptyPayload"
-    case .zeroLengthSegmentBody: return "zeroLengthSegmentBody"
-    case .segmentBodyOverBudget: return "segmentBodyOverBudget"
-    case .zeroAckBlocks: return "zeroAckBlocks"
-    case .tooManyAckBlocks: return "tooManyAckBlocks"
-    case .ackBitmapTooLong: return "ackBitmapTooLong"
-    case .nonCanonicalAckBitmap: return "nonCanonicalAckBitmap"
-    case .payloadOverBudget: return "payloadOverBudget"
     }
 }
 

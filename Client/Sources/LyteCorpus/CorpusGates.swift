@@ -1,9 +1,7 @@
-// CorpusGates (H4 V-3): the §7 acceptance math with the pillar's
-// thresholds PINNED IN CODE (docs/history/20260720-191701-lyte-protocol-
-// image-quality.md §7) — "gate thresholds pinned in code, not prose"
-// is the V-3 gate. Every metric compares in RGB space after full
-// decode (YUV-domain PSNR hides exactly the chroma and range bugs the
-// harness exists to catch).
+// CorpusGates: the image-quality acceptance math, thresholds pinned in
+// code (docs/history/20260720-191701-lyte-protocol-image-quality.md §7).
+// Every metric compares in RGB after full decode — YUV-domain PSNR hides
+// exactly the chroma and range bugs the harness exists to catch.
 //
 // Buffer convention throughout: 4 bytes per pixel with B,G,R in bytes
 // 0/1/2 — packed BGRX (the corpus reference) and packed BGRA (the
@@ -14,33 +12,25 @@
 import Foundation
 
 public enum CorpusGates {
-    // MARK: - The pinned thresholds (§7 verbatim)
+    // MARK: - The pinned thresholds
 
     /// Text-region RGB PSNR (per-channel min), Work-mode active phase.
     public static let textActiveMinDB = 40.0
     /// Text-region RGB PSNR (per-channel min), post-ratchet.
-    /// Owner ruling 2026-07-29 (bar-vs-path, after V-4's STOP-clause):
-    /// the pillar's 50 dB was written for a mathematically exact path;
-    /// the shipped rgb_mode 601-limited conversion caps text at
-    /// ~46–47 dB at TRANSPARENT coding (cq1 — the residual is the
-    /// 8-bit limited-range YCbCr round trip, not bits). The bar moves
-    /// to the path's proven ceiling; the full-range/identity road
-    /// stays named-and-queued for the eyeball's veto.
+    /// 45 dB, not the pillar's 50: the rgb_mode 601-limited conversion
+    /// caps text at ~46–47 dB even at transparent coding (the residual
+    /// is the 8-bit limited-range YCbCr round trip, not bits).
     public static let textConvergedMinDB = 45.0
     /// Full-frame SSIM post-ratchet, corpus kinds (a)–(c).
     public static let ssimConvergedMin = 0.995
     /// Per-channel error at grating edges, Work mode, in codes.
-    /// Same 2026-07-29 ruling: ±2 is unreachable on 601-limited
-    /// (±3–4 at transparent coding); recalibrated to ±4.
+    /// ±4, not ±2: 601-limited reaches only ±3–4 at transparent coding.
     public static let gratingMaxCodes = 4
     /// Ratchet convergence budget at LAN surplus: ≤ 3 s at 60 fps.
     public static let convergenceMaxFrames = 180
-    /// Owner decision 2 (2026-07-29): rgb_mode 601-limited ships and
-    /// the byte-exact range round-trip is NAMED-AND-QUEUED (the
-    /// full-range conversion leaf / 10-bit rung). Under the limited601
-    /// posture the patch gate allows one extra code — the measured
-    /// cost of the limited-range quantization round trip — while the
-    /// raw deltas keep being reported against the pillar's exact bar.
+    /// Under rgb_mode 601-limited the patch gate allows one extra code
+    /// (the limited-range quantization round trip); raw deltas are
+    /// still reported against the exact bar.
     public static let limited601PatchAllowance = 1
     /// Patch interiors are measured inset from the authored rect —
     /// codec ringing at a patch EDGE is not a range-round-trip failure.
@@ -231,15 +221,11 @@ public enum CorpusGates {
         }
     }
 
-    /// The convergence detector on a static-repeat leg's size books:
-    /// the first frame index from which every later frame sits on the
+    /// The first frame index from which every later frame sits on the
     /// keepalive plateau — QP-identical to the last frame and within
-    /// ±⅛ (min ±16 B) of its byte size. Synthetic corpus keepalives
-    /// are byte-IDENTICAL; natural content (the photo frame) hovers by
-    /// a few bytes at converged QP, and that hover is convergence, not
-    /// a walk. Requires the plateau to run at least `minStableTail`
-    /// frames (1 s at 60 fps) — a trivially stable final frame is not
-    /// convergence. Nil = never converged.
+    /// ±⅛ (min ±16 B) of its byte size (natural content hovers by a few
+    /// bytes at converged QP). The plateau must run at least
+    /// `minStableTail` frames. Nil = never converged.
     public static func convergenceFrame(sizes: [SizeBookEntry],
                                         minStableTail: Int = 60) -> Int? {
         guard let last = sizes.last else { return nil }

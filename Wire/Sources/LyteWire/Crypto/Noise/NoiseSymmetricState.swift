@@ -1,7 +1,7 @@
 // Noise spec §5.2: SymmetricState is (ck, h) over a CipherState, with the
 // spec's own HKDF (§4.3: HMAC-chained, one to three outputs). `h` is the
-// transcript hash — after Split it becomes the handshake hash W6's PAKE
-// binds to (Lyte-UDP decision §8.2).
+// transcript hash — after Split it becomes the handshake hash the pairing
+// PAKE binds to.
 
 struct NoiseSymmetricState: Sendable {
     private(set) var chainingKey: [UInt8]

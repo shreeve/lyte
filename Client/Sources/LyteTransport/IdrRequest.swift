@@ -14,8 +14,7 @@ public final class IdrRequester: @unchecked Sendable {
     private let lock = NSLock()
     private var recovery: ClientIdrRecovery
 
-    /// - Parameter emit: sends one encoded request (TransportSender via
-    ///   CTRL in production, a capture closure in tests).
+    /// - Parameter emit: sends one encoded request.
     public init(
         retryIntervalMilliseconds: Int = 500,
         emit: @escaping @Sendable (IdrRequest) -> Void

@@ -1,27 +1,20 @@
 #!/bin/sh
-# Sign Lyte with a stable identity. Prefer an Apple Development certificate:
-# macOS Local Network privacy explicitly relies on Apple-issued signing for
-# reliable app tracking. Contributors without one fall back to the dedicated
+# Sign Lyte with a stable identity: an Apple Development certificate
+# (Local Network privacy relies on Apple-issued signing), else the
 # self-signed "Lyte Dev" identity, which still preserves Keychain ACLs.
 #
 # Usage: Scripts/sign-dev.sh <binary-or-.app> [<binary-or-.app> ...]
 #
-# One-time setup lives in Scripts/setup-dev-signing.sh (creates the identity in
-# a dedicated ~/Library/Keychains/lyte-signing keychain). Identity-bearing
-# binaries fail closed when it is absent: an ad-hoc fallback silently destroys
-# the Keychain ACL invariant and guarantees another authorization prompt.
+# One-time setup: Scripts/setup-dev-signing.sh. Identity-bearing binaries
+# fail closed without an identity: ad-hoc signing breaks the Keychain ACL
+# and guarantees another authorization prompt.
 #
-# Every target is signed with the hardened runtime and no entitlements. The
-# helper admits any peer that satisfies the app's designated requirement, and
-# lyte-cli holds the Keychain pairing key; without the runtime a same-user
-# process could inject into either (DYLD_* variables, task-port attach) and
-# inherit that trust. No exception is needed: the binaries link only system
-# libraries (test-hermetic-linkage.sh), use no JIT or unsigned executable
-# memory, and only play audio (no microphone or camera entitlement). The
-# consequences are deliberate: DYLD_* variables are ignored, and lldb,
-# Instruments and other tools cannot attach (there is no get-task-allow). To
-# debug, run the unsigned SwiftPM binary or re-sign a scratch copy with
-# `codesign --force --sign - <copy>`.
+# Every target is signed with the hardened runtime and no entitlements: the
+# helper trusts the app's designated requirement and lyte-cli holds the
+# pairing key, so a same-user process must not inject (DYLD_*, task-port
+# attach). The binaries link only system libraries and use no JIT, so no
+# exception is needed. Consequence: debuggers cannot attach; debug the
+# unsigned SwiftPM binary or a copy re-signed with `codesign --force --sign -`.
 set -e
 
 if [ "$#" -eq 0 ]; then

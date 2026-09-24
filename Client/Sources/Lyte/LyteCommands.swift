@@ -4,16 +4,13 @@ import LyteTransport
 import LyteUI
 
 /// The Actions menu, driven by the focused window's connection. Every
-/// item is the SAME ConnectionModel verb the control strip drives
-/// (CL-13) — menu and strip cannot disagree because neither holds
-/// state of its own. The menu is also the strip's FULL FALLBACK
-/// (CL-18): with the strip hidden or out of reach, everything here
-/// still works, shortcuts included.
+/// item is the same ConnectionModel verb the control strip drives, so
+/// menu and strip cannot disagree. The menu is also the strip's full
+/// fallback: with the strip hidden, everything here still works.
 struct LyteCommands: Commands {
     @FocusedValue(\.connection) private var connection
 
-    // CL-18: the strip's app-wide ergonomics preferences — same keys
-    // the stream container binds, so menu and strip cannot disagree.
+    // Same keys the stream container binds.
     @AppStorage(StripPreferences.edgeKey)
     private var stripEdgeRaw = StripEdge.bottom.rawValue
     @AppStorage(StripPreferences.hiddenKey)
@@ -21,8 +18,7 @@ struct LyteCommands: Commands {
 
     var body: some Commands {
         CommandMenu("Actions") {
-            // CL-18, the mute distinction: the titles name the machine
-            // (the owner muted the wrong end when both said "audio").
+            // The titles name the machine, not just "audio".
             Toggle("Mute Playback on This Mac", isOn: Binding(
                 get: { connection?.muted ?? false },
                 set: { connection?.muted = $0 }
@@ -30,11 +26,9 @@ struct LyteCommands: Commands {
             .keyboardShortcut("m", modifiers: [.command, .shift])
             .disabled(connection?.lyteSession == nil)
 
-            // Host audio routing (CL-13): capability-gated exactly like
-            // the strip's button — present but disabled when key 9
-            // never survived intersection (menus can't vanish items
-            // per-session as gracefully as the strip can). The check
-            // mark is the 0x19-confirmed posture, never the ask.
+            // Capability-gated like the strip's button, but present and
+            // disabled rather than hidden. The check mark is the
+            // 0x19-confirmed posture, never the ask.
             Toggle("Mute Host Speakers", isOn: Binding(
                 get: { connection?.hostMuted ?? false },
                 set: { connection?.setHostMuted($0) }
@@ -43,11 +37,8 @@ struct LyteCommands: Commands {
             .disabled(connection?.negotiated.hostAudioRouting != true
                 || connection?.hostAudioPosture == nil)
 
-            // The per-host session-start default (CL-13; opt-out
-            // semantics since CL-18 — unset means muted, so this is
-            // checked by default; unchecking is the "start audible"
-            // opt-out). Applied at the NEXT connect to this host; the
-            // toggles above are the live session.
+            // The per-host session-start default (unset means muted),
+            // applied at the next connect to this host.
             Toggle("Start Sessions with Host Muted", isOn: Binding(
                 get: { connection?.startHostMutedPreference ?? true },
                 set: { connection?.startHostMutedPreference = $0 }
@@ -56,11 +47,8 @@ struct LyteCommands: Commands {
 
             Divider()
 
-            // Clipboard sharing (CL-15): capability-gated like the
-            // host-audio toggle — present but disabled when key 10
-            // never survived intersection. The check mark is the live
-            // consent state; while off, nothing leaves and nothing
-            // lands.
+            // Present but disabled without capability key 10. The check
+            // mark is the live consent state.
             Toggle("Share Clipboard", isOn: Binding(
                 get: { connection?.clipboardSharing ?? false },
                 set: { connection?.setClipboardSharing($0) }
@@ -68,17 +56,15 @@ struct LyteCommands: Commands {
             .keyboardShortcut("c", modifiers: [.command, .shift])
             .disabled(connection?.negotiated.clipboardText != true)
 
-            // The images rung (P-1): the tier's third step, gated on
-            // keys 10∧12 — disabled against a text-only host. Images
-            // move only while "Share Clipboard" is ALSO on.
+            // Gated on keys 10 and 12; images move only while "Share
+            // Clipboard" is also on.
             Toggle("Share Clipboard Images", isOn: Binding(
                 get: { connection?.clipboardImageSharing ?? false },
                 set: { connection?.setClipboardImageSharing($0) }
             ))
             .disabled(connection?.negotiated.clipboardImages != true)
 
-            // The per-host consent defaults (CL-15 text, P-1 images):
-            // applied at the NEXT connect to this host.
+            // Per-host consent defaults, applied at the next connect.
             Toggle("Share Clipboard with This Host by Default", isOn: Binding(
                 get: { connection?.shareClipboardPreference ?? false },
                 set: { connection?.shareClipboardPreference = $0 }
@@ -93,10 +79,8 @@ struct LyteCommands: Commands {
 
             Divider()
 
-            // F-4: files travel by DROP (drag onto the stream window);
-            // the menu carries the cancel so a hidden strip still has
-            // a full surface (the CL-18 fallback rule). Cancels the
-            // active transfer AND the queue.
+            // Files travel by drop; the menu carries the cancel (active
+            // transfer and queue) so a hidden strip loses nothing.
             Button("Cancel File Transfer") {
                 connection?.cancelBulkTransfers()
             }
@@ -104,12 +88,8 @@ struct LyteCommands: Commands {
 
             Divider()
 
-            // Chroma: the strip control's full fallback (with the strip
-            // hidden, everything still works from here). Same model verb,
-            // so menu and strip cannot disagree; picking a tier
-            // reconnects cleanly with the new declaration. The dormant
-            // Better row is visible but disabled for every host — it has
-            // no wire id yet.
+            // Picking a tier reconnects with the new declaration; the
+            // dormant Better row has no wire id and stays disabled.
             Menu("Chroma") {
                 ForEach(ChromaTier.allCases, id: \.self) { tier in
                     Toggle(
@@ -141,9 +121,6 @@ struct LyteCommands: Commands {
 
             Divider()
 
-            // CL-18: the strip's ergonomics — app-wide, live. Hiding
-            // the strip disables reveal-on-hover entirely; this menu
-            // (and its shortcuts) remains the full surface.
             Picker("Control Strip Position", selection: $stripEdgeRaw) {
                 Text("Bottom Edge").tag(StripEdge.bottom.rawValue)
                 Text("Top Edge").tag(StripEdge.top.rawValue)
@@ -153,18 +130,13 @@ struct LyteCommands: Commands {
 
             Divider()
 
-            // F-5: the manual re-acquisition verb — tears the wire
-            // session down (typed goodbye) and dials fresh at the
-            // last-known address while a discovery scan runs, ladders
-            // reset. Enabled for the window's whole streaming life:
-            // during a roaming hunt it is the "act now" nudge, over a
-            // limping session it is the honest kick.
+            // Tears the wire session down and dials fresh at the
+            // last-known address while a scan runs, ladders reset.
             Button("Reconnect") { connection?.reconnectNow() }
                 .keyboardShortcut("r", modifiers: [.command])
                 .disabled(connection?.canReconnect != true)
 
-            // Disconnect must work during roaming too — the session
-            // object is gone but the window still hunts (F-5).
+            // Works during roaming too: the window still hunts.
             Button("Disconnect") { connection?.disconnect() }
                 .keyboardShortcut("d", modifiers: [.command])
                 .disabled(connection?.canEndSession != true)

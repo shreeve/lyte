@@ -2,19 +2,13 @@ import SwiftUI
 import LyteTransport
 import LyteWire
 
-/// CL-6: the pairing sheet, off a discovered Lyte host row — pure
-/// SwiftUI per the plan's cross-cutting rule. The flow mirrors
-/// `wire-pair`: the host's console shows a static-key banner and a
-/// 6-digit PIN (`lyte-host --wire-listen PORT --pair`); the operator
-/// pastes the key (validated live against the TXT `pkh` this host
-/// advertises — the typo firewall) and types the PIN; CPace does the
-/// rest. On success the host static is pinned and reconnects are
-/// zero-UI Noise IK.
-///
-/// The key paste is a bootstrap-era surface: the advertisement carries
-/// only the identity HASH on purpose (HS-10), so first contact needs the
-/// key itself hand-carried once. A host already pinned under the same
-/// identity skips the paste (re-pair path).
+/// The pairing sheet, off a discovered Lyte host row; the flow mirrors
+/// `wire-pair`. The operator pastes the host's static key (validated
+/// live against the advertised TXT `pkh`) and types the PIN; CPace does
+/// the rest. On success the host static is pinned and reconnects are
+/// zero-UI Noise IK. The advertisement carries only the identity hash,
+/// so first contact needs the key hand-carried once; a host already
+/// pinned under the same identity skips the paste.
 struct LytePairingSheet: View {
     let host: DiscoveredLyteHost
     /// Called on dismiss; true when a pairing landed (the caller

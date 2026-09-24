@@ -1,17 +1,11 @@
-// The chan=3 feedback report (W4a): the one datagram payload the client
-// sends every 25–50 ms (build plan §4.11 — telemetry class, unreliable by
-// design; a lost report is superseded by the next). It carries everything
-// the host's estimator and NACK responder consume:
+// The chan=3 feedback report the client sends every 25–50 ms (telemetry
+// class, unreliable; a lost report is superseded by the next). It carries:
 //
-// - per-channel receive ledgers (loss/duplicate accounting, HS-16's
-//   post-FEC loss regime input),
-// - burst-dispersion samples — per-packet arrival timestamps for the
-//   packet trains the sender paced, resiliency §2.2's delivery-rate and
-//   queue-gradient measurement (RFC 8888 semantics, compact encoding),
-// - NACK entries naming FEC-impossible frames' missing shards
-//   (resiliency §1.1 rule 2; emitted from CL-3, honored at HS-17),
-// - the client clock at report build, and a path ID byte (0 in v1) so
-//   multi-path later is new instances, not a wire change (resiliency §6).
+// - per-channel receive ledgers (loss/duplicate accounting),
+// - burst-dispersion samples — per-packet arrival times for paced packet
+//   trains (RFC 8888 semantics, compact encoding),
+// - NACK entries naming FEC-impossible frames' missing shards,
+// - the client clock at report build, and a path ID byte (0 in v1).
 //
 // Layout, all multi-byte fields little-endian. Fixed 21-byte header:
 //
@@ -22,9 +16,7 @@
 //                               receive
 //   2      8    clientTimestamp client monotonic µs at report build
 //   10     8    dispersionBase  client µs base for sample deltas; MUST be
-//                               0 when sampleCount is 0 (loud fill-bug
-//                               rule), non-zero base without samples
-//                               rejects
+//                               0 when sampleCount is 0 (rejects otherwise)
 //   18     1    channelBlockCount   0…8
 //   19     1    sampleCount         0…112
 //   20     1    nackCount           0…6
@@ -38,9 +30,8 @@
 //
 //   dispersion sample, 6 bytes × sampleCount:
 //     chan:u8  seq:u16  arrivalDelta:u24
-//     (arrival = dispersionBase + delta µs; u24 spans 16.7 s, far beyond
-//     any 25–50 ms report window — a delta that does not fit rejects at
-//     encode rather than silently truncating)
+//     (arrival = dispersionBase + delta µs; u24 spans 16.7 s — a delta
+//     that does not fit rejects at encode rather than truncating)
 //
 //   NACK entry, (5 + bitmapByteCount) bytes × nackCount:
 //     frame:u32  bitmapByteCount:u8  bitmap
@@ -49,30 +40,24 @@
 //     255-shard GF(2⁸) block; the bitmap is canonical: sized by the
 //     highest set bit, so a zero final byte rejects)
 //
-//   TLV block when flags bit0 (the envelope's exact scheme, WireExtension
-//   types): count:u8 (type:u8 len:u8 value)* — the escape hatch for v1.x
-//   fields this slice cannot foresee; unknown types are skipped by
-//   consumers and preserved verbatim by the codec.
+//   TLV block when flags bit0 (the envelope's scheme):
+//   count:u8 (type:u8 len:u8 value)*; unknown types preserved verbatim.
 //
-// The payload is exactly the report: trailing bytes reject. Budget: the
-// section bounds (FeedbackBounds) cap the structural encoding at 1035
-// bytes — inside the 1112 B plaintext shard budget with 77 bytes of TLV
-// headroom — and encode additionally enforces the 1112 B ceiling so a fat
-// TLV set can never produce an unsendable datagram.
+// The payload is exactly the report: trailing bytes reject. FeedbackBounds
+// cap the structural encoding at 1035 bytes; encode also enforces the
+// 1112 B shard ceiling so a fat TLV set can never produce an unsendable
+// datagram.
 
 public enum FeedbackBounds {
     /// Channel blocks per report: the 5 registered channels plus feature
     /// headroom.
     public static let maxChannelBlocks = 8
     /// Dispersion samples per report: a worst-case protected IDR train
-    /// (~80 data + ~20 parity shards, resiliency §2.2's "superb chirp")
-    /// plus the 10-packet audio probe of a 50 ms window, with slack.
-    /// Senders with more arrivals than this decimate; the estimator
-    /// weights trains, it does not need every packet.
+    /// (~80 data + ~20 parity shards) plus a 50 ms window's audio, with
+    /// slack. Senders with more arrivals decimate.
     public static let maxDispersionSamples = 112
     /// NACK entries per report: more than 6 FEC-impossible frames in
-    /// flight means the stream is past NACK repair and into IDR-request
-    /// territory (resiliency §1.1 rule 4) anyway.
+    /// flight means the stream needs an IDR, not NACK repair.
     public static let maxNackEntries = 6
     /// ceil(255 / 8): one GF(2⁸) FEC block's worth of shard indices.
     public static let maxNackBitmapByteCount = 32
@@ -92,7 +77,7 @@ public enum FeedbackBounds {
         + maxNackEntries * (5 + maxNackBitmapByteCount)
 }
 
-public struct FeedbackReport: Hashable, Sendable {
+public struct FeedbackReport: Hashable, Sendable, SliceDecodable {
     /// One channel's cumulative receive ledger.
     public struct ChannelStats: Hashable, Sendable {
         public var channel: ChannelId
@@ -180,7 +165,7 @@ public struct FeedbackReport: Hashable, Sendable {
         }
     }
 
-    /// 0 in v1 (resiliency §6); the codec carries any value verbatim.
+    /// 0 in v1; the codec carries any value verbatim.
     public var pathId: UInt8
     /// Client monotonic µs at report build.
     public var clientTimestamp: ClientTimestamp
@@ -384,15 +369,10 @@ public struct FeedbackReport: Hashable, Sendable {
             extensions: extensions
         )
     }
-
-    public static func decode(_ payload: [UInt8]) throws -> FeedbackReport {
-        try decode(payload[...])
-    }
 }
 
-/// Everything the feedback codec can refuse. Same doctrine as WireError:
-/// bounds violations and hostile bytes throw — never trap, never truncate
-/// silently.
+/// Everything the feedback codec can refuse: bounds violations and hostile
+/// bytes throw — never trap, never truncate silently.
 public enum FeedbackError: Error, Equatable, Sendable {
     /// Fewer bytes than the header + counts promise.
     case truncatedReport
@@ -408,7 +388,7 @@ public enum FeedbackError: Error, Equatable, Sendable {
     case emptyDispersionSection
     /// A sample delta that does not fit the u24 field.
     case arrivalDeltaOutOfRange(UInt32)
-    /// sampleCount 0 but dispersionBase non-zero — a fill bug, kept loud.
+    /// sampleCount 0 but dispersionBase non-zero.
     case nonZeroBaseWithoutSamples
     /// A NACK entry naming no shards.
     case emptyNackShardList

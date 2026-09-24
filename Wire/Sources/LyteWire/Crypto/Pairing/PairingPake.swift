@@ -1,11 +1,5 @@
-// PairingPake (W6): the CPace pairing flow that turns a short human PIN
-// into pinned Noise statics without ever exposing the PIN to offline
-// attack. This is the core plan's `PairingPake` — "CPace over X25519,
-// transcript bound to the Noise handshake hash (adjudication §8.2);
-// emits the static keys to pin (storage is shell-side)".
-//
-// How the composition works (the decision record's §8.2 collapse of
-// "bind via TLS exporter" onto Noise):
+// PairingPake: the CPace pairing flow that turns a short human PIN into
+// pinned Noise statics without ever exposing the PIN to offline attack.
 //
 // 1. First contact runs Noise IK against the DISCOVERED host static
 //    (the `pkh` in the _lyte._udp TXT record) — encrypted, but trust-
@@ -20,26 +14,19 @@
 //    messages) then proves BOTH ends hold the same PIN AND saw the
 //    same Noise session with the same statics. A MITM terminating
 //    Noise separately with each side has different handshake hashes
-//    and different statics on the two legs — different generators,
-//    different ISKs, confirmation fails. Wrong PIN fails the same way,
-//    and the transcript (two public shares) yields nothing offline-
-//    testable: recovering K from Ya/Yb is the Diffie-Hellman problem,
-//    per PIN guess (the draft's "quantum-annoying" property).
+//    and statics on the two legs, so confirmation fails. Wrong PIN fails
+//    the same way, and the two public shares yield nothing
+//    offline-testable (recovering K is a DH problem per PIN guess).
 // 4. On success each shell pins the statics the Noise session already
 //    authenticated cryptographically — the client pins the host static
 //    it dialed, the host pins the client static message 1 delivered.
-//    The "static-key handover" is a promotion of keys both ends
-//    already hold, not a transport of new ones; every later connect is
-//    plain Noise IK against the pinned static, no PAKE, no UI.
+//    Every later connect is plain Noise IK against the pinned static.
 //
-// Sans-IO: consumes and produces typed pairing messages; carriage
-// (sealing, ARQ, timers, retry-cookie flood control) is HS-9/CL-6
-// shell territory. Randomness is the CPace scalar — injected for tests
-// and vectorgen, platform CSPRNG otherwise (the NoiseSession
-// fixedEphemeral pattern). The PIN is consumed at init to derive the
-// generator; neither is stored, and the scalar is dropped as soon as the
-// peer share is consumed, so no PIN-testing material outlives the
-// exchange (the ISK lives on only in a verified `result`).
+// Sans-IO: consumes and produces typed pairing messages; carriage is the
+// shell's. The CPace scalar is injected for tests and vectorgen, platform
+// CSPRNG otherwise. The PIN is consumed at init to derive the generator
+// and never stored; the scalar is dropped once the peer share is
+// consumed, so no PIN-testing material outlives the exchange.
 
 /// The pairing outcome both roles expose on success: the ISK (already
 /// authenticated by confirmation; hash it through a KDF if a key for a
@@ -110,7 +97,7 @@ public struct PairingPakeInitiator: Sendable {
     ///   - hostStaticPublicKey: the host static this Noise session
     ///     dialed — the key pairing is deciding whether to pin.
     ///   - noiseHandshakeHash: `NoiseSession.handshakeHash` of the
-    ///     session carrying the pairing — the §8.2 transcript binding.
+    ///     session carrying the pairing — the transcript binding.
     ///   - fixedScalar: tests and vectorgen only.
     public init(
         pin: [UInt8],

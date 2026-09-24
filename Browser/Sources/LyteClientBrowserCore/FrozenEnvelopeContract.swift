@@ -2,9 +2,8 @@ import LyteCore
 import LyteWire
 
 /// Exercises the frozen envelope vector `nominal-video-shard` from
-/// `Wire/Vectors/envelope-v1.json` (byte-identical to the hand-computed
-/// anchor in `EnvelopeTests`). Decode → field check → re-encode → hex
-/// compare. This is the datagram framing contract every Lyte channel rides.
+/// `Wire/Vectors/envelope-v1.json`: decode → field check → re-encode → hex
+/// compare.
 public enum FrozenEnvelopeContract {
     public static let vectorName = "envelope-v1/nominal-video-shard"
 

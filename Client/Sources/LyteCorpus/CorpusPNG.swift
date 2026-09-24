@@ -1,9 +1,7 @@
-// CorpusPNG (H4 V-3): lossless PNG in/out for the §7 harness's visual
-// goldens and corpus previews. Everything rides the harness's one
-// buffer convention — 4 bytes per pixel, B,G,R in bytes 0/1/2 — and
-// the round trip is byte-exact on those three channels (gate-tested):
-// the write context and the read context use the identical sRGB
-// BGRX layout, so no color conversion ever touches the samples.
+// CorpusPNG: lossless PNG in/out for the corpus harness's goldens and
+// previews. Write and read contexts use the identical sRGB BGRX layout,
+// so the round trip is byte-exact on B/G/R — no color conversion ever
+// touches the samples.
 
 import CoreGraphics
 import Foundation
@@ -58,9 +56,7 @@ public enum CorpusPNG {
         }
     }
 
-    /// Reads a PNG back into the same packed BGRX layout. The draw
-    /// target matches the write context exactly — byte-stable round
-    /// trip on B/G/R.
+    /// Reads a PNG back into the same packed BGRX layout.
     public static func read(from path: String, expectedWidth: Int? = nil,
                      expectedHeight: Int? = nil) throws
         -> (bgrx: [UInt8], width: Int, height: Int) {

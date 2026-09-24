@@ -36,8 +36,7 @@ public struct ChannelStats: Sendable {
     public var firstFrame: UInt32?
     public var lastFrame: UInt32?
     public var maxFrame: UInt32?
-    /// Consecutive-arrival frame-number changes — approximates frames seen
-    /// while shards of one frame arrive together (exact once CL-2 assembles).
+    /// Consecutive-arrival frame-number changes (approximates frames seen).
     public var frameTransitions: UInt64 = 0
 
     /// Sender-clock µs delta between the last two datagrams.
@@ -59,23 +58,18 @@ public struct DemuxTotals: Sendable {
     public var arrivalSamplesDropped: UInt64 = 0
 }
 
-/// One accepted datagram's arrival record — the raw material of the
-/// feedback report's dispersion section (resiliency §2.2: paced bursts are
-/// packet trains; per-packet arrival spacing is the host estimator's
-/// delivery-rate and queue-gradient sample).
+/// One accepted datagram's arrival record, for the feedback report's
+/// dispersion section.
 public struct ArrivalSample: Sendable {
     public var channel: UInt8
     public var seq: UInt16
-    /// The endpoint's arrival stamp, SystemMonotonicClock µs (kernel
-    /// monotonic stamp when present). Meaningful as spacing between
-    /// samples; the host reads only its gradient.
+    /// SystemMonotonicClock µs; meaningful only as spacing.
     public var arrivalMicroseconds: UInt64
 }
 
 public final class ReceiveDemux: @unchecked Sendable {
-    /// Arrival samples retained between feedback drains. Sized for several
-    /// 25–50 ms windows of worst-case traffic (an ~100-shard IDR train plus
-    /// audio) so a late drain decimates rather than misses whole trains.
+    /// Arrival samples retained between feedback drains; sized for several
+    /// windows of worst-case traffic.
     public static let maxRetainedArrivalSamples = 512
 
     private let crypto: TransportCrypto
@@ -88,13 +82,9 @@ public final class ReceiveDemux: @unchecked Sendable {
         self.crypto = crypto
     }
 
-    /// Feeds one raw datagram. `arrivalMicroseconds` is the endpoint's
-    /// arrival stamp (SystemMonotonicClock µs; see `UdpReceiveEndpoint`).
-    /// It feeds arrival spacing and the host's delay gradient, never an
-    /// absolute clock.
-    ///
-    /// Decode and unseal run outside the lock, so snapshot readers never
-    /// wait behind an AEAD open; the lock covers only the books.
+    /// Feeds one raw datagram. `arrivalMicroseconds` (SystemMonotonicClock)
+    /// feeds arrival spacing only. Decode and unseal run outside the lock;
+    /// the lock covers only the books.
     @discardableResult
     public func ingest(
         datagram: ArraySlice<UInt8>,
@@ -103,9 +93,7 @@ public final class ReceiveDemux: @unchecked Sendable {
         let envelope: Envelope
         let plaintext: [UInt8]
         do {
-            // Envelope.openDatagram decodes, hands the received header
-            // bytes to the unseal as AAD, and lets the reserved-channel
-            // check run before any AEAD work.
+            // The reserved-channel check runs before any AEAD work.
             (envelope, plaintext) = try Envelope.openDatagram(datagram) {
                 envelope, wirePayload, aad in
                 guard !envelope.channel.isReserved else {
@@ -154,15 +142,13 @@ public final class ReceiveDemux: @unchecked Sendable {
                 seq: envelope.seq.rawValue,
                 arrivalMicroseconds: arrivalMicroseconds))
         } else {
-            // The estimator weights trains, it does not need every packet
-            // (FeedbackBounds rationale) — drop the newest, count honestly.
+            // Drop the newest and count it.
             totals.arrivalSamplesDropped += 1
         }
         return .accepted(envelope: envelope, payload: plaintext)
     }
 
-    /// Removes and returns the arrival samples accumulated since the last
-    /// drain, in arrival order — the FeedbackSender's per-cadence pull.
+    /// Removes and returns the arrival samples since the last drain.
     public func drainArrivalSamples() -> [ArrivalSample] {
         lock.lock()
         defer { lock.unlock() }

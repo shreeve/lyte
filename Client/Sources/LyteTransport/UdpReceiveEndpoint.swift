@@ -1,24 +1,12 @@
 // The client's UDP socket: bind, the Noise handshake, one receive thread
 // running decode + demux inline, and the send leg back to the host.
 //
-// Socket posture: a 2 MiB SO_RCVBUF so kernel drops never masquerade as
-// network loss; SO_NET_SERVICE_TYPE VI to discourage Wi-Fi RX power-save;
-// SO_TIMESTAMP_MONOTONIC kernel arrival stamps (mach ticks, converted to
-// the SystemMonotonicClock domain) so gap measurements blame the radio
-// rather than thread stalls; a receive timeout (SO_RCVTIMEO, 100 ms by
-// default) so stop() unblocks the loop; ECONNREFUSED tolerance; and the protected CS6 lane (0xC0), since
-// everything the client originates is control, input or feedback.
-//
-// The return leg: `sendToPeer` fires client→host datagrams (feedback,
-// beacon echoes, IDR requests and reliable ARQ carriage) from the same
-// socket, so replies carry the bound port and land inside the host's
-// connected-socket filter. The peer is the handshake's host tuple, then
-// the source of the latest authenticated datagram (roaming). Without a
-// peer, sends report false; every sender treats that as loss.
-//
-// Start is two steps so the owner can publish its datagram consumer
-// between them: `bindAndHandshake` (no thread reads yet — the host's
-// first datagrams wait in the kernel buffer) and `startReceiving`.
+// Kernel monotonic arrival stamps let gap measurements blame the radio,
+// not thread stalls. `sendToPeer` uses the same socket so replies pass
+// the host's connected-socket filter; the peer is the handshake's host
+// tuple, then the source of the latest authenticated datagram (roaming).
+// Start is two steps (`bindAndHandshake`, `startReceiving`) so the owner
+// can publish its datagram consumer in between.
 
 import LyteCore
 import LyteIO
@@ -30,8 +18,7 @@ public enum TransportEndpointError: Error, Sendable {
     case socketFailed(errno: Int32)
     case bindFailed(errno: Int32)
     case badAddress(String)
-    /// A session-shell entry point was called before `start()` built
-    /// the core (CL-9's sendInput is the first such surface).
+    /// A session-shell entry point was called before `start()`.
     case notStarted
 }
 
@@ -41,17 +28,12 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
     private let requestedPort: UInt16
     private let bindAddress: String
     private let crypto: TransportCrypto
-    /// Per-datagram hook, with the same arrival stamp the demux got: µs
-    /// in the SystemMonotonicClock domain — the kernel's monotonic stamp
-    /// when the cmsg is present, the receive thread's own reading
-    /// otherwise. One domain either way, so arrival spacing never mixes
-    /// clocks and an NTP step cannot reach it.
+    /// Per-datagram hook with the demux's arrival stamp: SystemMonotonic
+    /// µs (kernel stamp when present, else the thread's own reading).
     private let onDatagram: (@Sendable (IngestOutcome, _ arrivalMicroseconds: UInt64) -> Void)?
 
-    /// Atomic because timer threads (ARQ PTO, feedback) read it in
-    /// `sendToPeer` while `stop()` closes it. Internal so the stop-order
-    /// pin can observe that the fd survives until the receive thread is
-    /// joined.
+    /// Atomic because timer threads read it in `sendToPeer` while
+    /// `stop()` closes it.
     private let socketFd = Atomic<Int32>(-1)
     internal var fd: Int32 { socketFd.load(ordering: .acquiring) }
     private var receiveThread: Thread?
@@ -90,20 +72,14 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
         self.onDatagram = onDatagram
     }
 
-    /// `bindAndHandshake()` then `startReceiving()`, for owners that
-    /// have nothing to publish in between.
     public func start() throws {
         try bindAndHandshake()
         startReceiving()
     }
 
-    /// Opens the transport and binds the socket. A handshaking crypto
-    /// (Noise) needs the bound socket for the IK exchange, so it binds
-    /// first, handshakes over the socket, then opens; any other crypto
-    /// opens before the socket exists. No datagram is read until
-    /// `startReceiving()`: the peer's first datagrams wait in the kernel
-    /// buffer while the owner publishes the consumer `onDatagram` feeds.
-    /// On failure the socket is closed.
+    /// Opens the transport and binds the socket; a handshaking crypto
+    /// handshakes over the bound socket before opening. No datagram is
+    /// read until `startReceiving()`. On failure the socket is closed.
     public func bindAndHandshake() throws {
         let handshaking = crypto as? any HandshakingTransportCrypto
         if handshaking == nil {
@@ -165,8 +141,7 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
             tv_usec: Int32(micros % 1_000_000))
         _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
-        // The client sends control/input/feedback, never fresh video:
-        // the protected CS6 lane, not the video queue.
+        // The client never sends video: the protected CS6 lane.
         var tos = Int32(WireTos.protected)
         _ = setsockopt(fd, IPPROTO_IP, IP_TOS, &tos, socklen_t(MemoryLayout<Int32>.size))
 
@@ -216,9 +191,7 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
             )
             try handshaking.performHandshake(io: io)
             HandshakeWitness.record("noiseHandshakeCompleted")
-            // The host tuple is the peer from the first byte, so the
-            // return leg (feedback ticks before any sealed host datagram
-            // arrives) has somewhere to go.
+            // The host tuple is the peer until an authenticated arrival.
             peerLock.lock()
             peerAddress = io.hostSockaddr
             peerLock.unlock()
@@ -232,13 +205,9 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
 
     public func stop() {
         running.store(false, ordering: .releasing)
-        // Join BEFORE close (analysis finding 12's residue): the receive
-        // thread may be inside recvmsg on this fd, and closing first
-        // frees the fd number while that syscall is in flight — a
-        // roaming re-dial can then bind a fresh socket onto the same
-        // number and the old loop steals its datagrams. The receive
-        // timeout bounds the join; the 1 s deadline is the wedge
-        // backstop, after which close() proceeds as the forcing move.
+        // Join before close: closing first frees the fd number while
+        // recvmsg is in flight, and a re-dial could reuse it. The receive
+        // timeout bounds the join; 1 s is the wedge backstop.
         if Thread.current !== receiveThread {
             receiveExit.lock()
             let deadline = Date(timeIntervalSinceNow: 1)
@@ -263,9 +232,8 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
             receiveExit.broadcast()
             receiveExit.unlock()
         }
-        // Datagrams over the 1152 B budget must be *seen* over-budget, not
-        // silently truncated to it — read into a larger buffer and let
-        // Envelope.decode reject the length.
+        // Oversized datagrams must be seen, not truncated: Envelope.decode
+        // rejects the length.
         var buffer = [UInt8](repeating: 0, count: 4096)
         var control = [UInt8](repeating: 0, count: 64)
         // stop() joins this thread before closing, so the fd is stable
@@ -404,17 +372,12 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
         return (info.numer, info.denom)
     }()
 
-    // MARK: - Send path (CL-3)
+    // MARK: - Send path
 
-    /// Sends one encoded datagram back at the current peer, from the same
-    /// socket (so the source port matches what the peer's connected
-    /// socket filters for). Returns false when no peer is known yet, the
-    /// socket is closed, or the kernel refused — each counted by the
-    /// caller and healed like loss (reliable carriage retransmits).
-    ///
-    /// The send runs under `sendLock`, which `stop()` also holds while it
-    /// closes, so a timer thread's send can never reach an fd number a
-    /// later socket has reused.
+    /// Sends one datagram to the current peer. Returns false with no peer,
+    /// a closed socket, or a kernel refusal; callers treat that as loss.
+    /// Runs under `sendLock`, which `stop()` holds while closing, so a send
+    /// never reaches a reused fd number.
     @discardableResult
     public func sendToPeer(_ datagram: [UInt8]) -> Bool {
         peerLock.lock()
@@ -445,10 +408,8 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
     }
 }
 
-/// Blocking datagram IO over the endpoint's bound socket for the
-/// pre-thread Noise handshake window: sends aim at the resolved host
-/// tuple, receives poll() with the caller's timeout. Single-threaded by
-/// construction (the receive thread does not exist yet).
+/// Blocking datagram IO over the bound socket for the Noise handshake,
+/// before the receive thread exists.
 final class SocketHandshakeIO: NoiseHandshakeIO {
     private let fd: Int32
     let hostSockaddr: sockaddr_in
@@ -508,9 +469,8 @@ final class SocketHandshakeIO: NoiseHandshakeIO {
             capturedErrno: sendErrno)
     }
 
-    /// `errno` belongs to the failing syscall, not to later diagnostics.
-    /// Keep this seam executable so logging can never silently change the
-    /// transport error that reaches recovery policy.
+    /// Takes the errno captured right after the syscall, so logging can
+    /// never change the error that reaches recovery policy.
     static func validateSend(
         sent: Int, expected: Int, capturedErrno: Int32
     ) throws {
@@ -535,8 +495,7 @@ final class SocketHandshakeIO: NoiseHandshakeIO {
             recv(fd, buf.baseAddress, buf.count, 0)
         }
         guard n > 0 else {
-            // ECONNREFUSED bounced off the host between sends is
-            // transient; timeouts and empties are the caller's retry.
+            // Transient; the caller retries.
             return nil
         }
         HandshakeWitness.record("handshakeReceive", fields: [

@@ -1,9 +1,7 @@
-// Capability vector authoring (W7): the deterministic CBOR profile,
-// the typed capability set, the intersect algebra as data, and the
-// CTRL codecs 0x0F/0x11/0x12. Run once, commit, freeze. The
-// circularity is broken by RFC 8949's appendix-A examples (transcribed
-// into CborTests as external anchors) and the hand-computed set/
-// message bytes in CapabilitiesTests / CapabilityCodecTests.
+// Authors Vectors/capabilities-v1.json: the deterministic CBOR profile,
+// the typed capability set, the intersect algebra, and CTRL 0x0F/0x11/
+// 0x12. Anchored by RFC 8949 appendix A (CborTests) and hand-computed
+// bytes in CapabilitiesTests / CapabilityCodecTests.
 
 import LyteCore
 import LyteWire

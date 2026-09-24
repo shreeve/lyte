@@ -2,8 +2,8 @@ import SwiftUI
 import AppKit
 import LyteTransport
 
-/// The window's empty state (D6): discovered Lyte hosts and pairing.
-/// Melts away when the stream starts.
+/// The window's empty state: discovered Lyte hosts and pairing. Melts
+/// away when the stream starts.
 struct ConnectView: View {
     @Bindable var model: ConnectionModel
     @Environment(\.scenePhase) private var scenePhase
@@ -136,9 +136,8 @@ struct ConnectView: View {
             fileURLWithPath: "/System/Applications/System Settings.app"))
     }
 
-    /// One Lyte host row: unpaired opens the pairing sheet; paired is a
-    /// launch button — clicking it dials the pinned static with the
-    /// Keychain identity and opens the stream (CL-8's session slice).
+/// One Lyte host row: unpaired opens the pairing sheet; paired dials the
+/// pinned static with the Keychain identity and opens the stream.
     @ViewBuilder
     private func lyteHostRow(_ host: DiscoveredLyteHost) -> some View {
         let pinned = pinnedStore.host(publicKeyHash: host.publicKeyHash)
@@ -161,11 +160,9 @@ struct ConnectView: View {
         .help(lyteHostTooltip(host, paired: pinned != nil))
         .contextMenu {
             if let pinned {
-                // CL-13: the per-host session-start posture — applied
-                // at connect; the strip's toggle overrides live.
-                // CL-18: opt-out semantics — unset means muted (the
-                // flipped default), so this reads `!= false` (checked
-                // by default) and writes BOTH directions explicitly.
+                // The per-host session-start posture, applied at connect.
+                // Unset means muted, so this reads `!= false` and writes
+                // both directions explicitly.
                 Toggle("Start with Host Muted", isOn: Binding(
                     get: {
                         pinnedStore.host(publicKeyHash: host.publicKeyHash)?
@@ -177,9 +174,8 @@ struct ConnectView: View {
                         }
                     }
                 ))
-                // CL-15: the per-host clipboard consent — applied at
-                // connect; the strip's toggle overrides live. OFF by
-                // default (clipboards carry passwords).
+                // The per-host clipboard consent, applied at connect. Off
+                // by default (clipboards carry passwords).
                 Toggle("Share Clipboard", isOn: Binding(
                     get: {
                         pinnedStore.host(publicKeyHash: host.publicKeyHash)?
@@ -191,9 +187,8 @@ struct ConnectView: View {
                         }
                     }
                 ))
-                // P-1: the images rung — meaningful only with text
-                // consent on (the Off / Text only / Text + images
-                // tier); OFF by default like text.
+                // The images rung — meaningful only with text consent on;
+                // off by default like text.
                 Toggle("Share Clipboard Images", isOn: Binding(
                     get: {
                         pinnedStore.host(publicKeyHash: host.publicKeyHash)?

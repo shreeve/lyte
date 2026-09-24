@@ -1,7 +1,6 @@
 // The repair-refusal vector-file model and loader:
-// `Wire/Vectors/repair-refusal-v1.json` — the HS-32 repair-refusal CTRL
-// message (0x23). Same doctrine as the other loaders: TestKit may
-// import Foundation, LyteWire may not.
+// `Wire/Vectors/repair-refusal-v1.json` — the repair-refusal CTRL message
+// (0x23).
 
 import Foundation
 import LyteWire
@@ -34,10 +33,9 @@ public struct RepairRefusalVectorFile: FrozenVectorFile {
 
 }
 
-/// One repair-refusal vector. Kinds match the session file (`roundtrip`
-/// encodes the typed fields byte-exact to `messageHex` and decodes
-/// back; `decodeReject` throws `error`, a `RepairRefusalError` case
-/// name). `frame`/`reason` are present on roundtrips.
+/// One repair-refusal vector. Kinds match the session file; `error` is a
+/// `RepairRefusalError` case name; `frame`/`reason` are present on
+/// roundtrips.
 public struct RepairRefusalVector: Codable, Sendable {
     public var name: String
     public var description: String
@@ -68,16 +66,5 @@ public struct RepairRefusalVector: Codable, Sendable {
         self.frame = frame
         self.reason = reason
         self.error = error
-    }
-}
-
-/// Stable names for `RepairRefusalError` cases, as they appear in
-/// vectors.
-public func repairRefusalErrorName(_ error: RepairRefusalError) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .trailingBytes: return "trailingBytes"
-    case .unexpectedType: return "unexpectedType"
-    case .unknownReason: return "unknownReason"
     }
 }

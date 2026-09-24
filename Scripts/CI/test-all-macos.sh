@@ -32,8 +32,7 @@ run_package_tests() {
     fi
 
     # Path-only sibling-package moves do not always invalidate SwiftPM's
-    # existing workspace state. Resolve first so the gate is valid in an
-    # incremental developer checkout as well as a clean clone.
+    # workspace state; resolve first.
     swift package \
         --package-path "$package_path" \
         --scratch-path "$scratch_path" \
@@ -90,10 +89,8 @@ build_graph_hash="$({
         fi
     done
 
-    # SwiftPM can retain absolute dependency source paths after a file-only
-    # layout migration even when every manifest is unchanged. Make the
-    # structural source graph part of cache identity so dependent packages
-    # rebuild cleanly after files are added, removed, or moved.
+    # SwiftPM can retain absolute dependency paths after a file-only layout
+    # move; make the source graph part of cache identity.
     for package_root in Client Common Wire Host SystemTests Browser; do
         for tree in Sources Tests Plugins; do
             source_root="$package_root/$tree"
@@ -107,10 +104,9 @@ build_graph_hash="$({
 run_package_tests "Common" "$repo_root/Common" "$repo_root/Common/.build"
 run_package_tests "Wire" "$repo_root/Wire" "$repo_root/Wire/.build"
 run_package_tests "Host" "$repo_root/Host" "$repo_root/Host/.build"
-# `.build/Lyte.app` is the published owner app and may be running while this
-# read-only gate executes. SwiftPM `clean` removes the entire scratch root, so
-# Client verification must have a package-local scratch directory and must
-# never erase the live bundle out from under its process.
+# `.build/Lyte.app` is the published app and may be running; SwiftPM
+# `clean` removes the whole scratch root, so Client verification uses a
+# package-local scratch directory.
 run_package_tests "client" "$repo_root/Client" "$repo_root/Client/.build"
 run_package_tests \
     "SystemTests" "$repo_root/SystemTests" "$repo_root/SystemTests/.build"

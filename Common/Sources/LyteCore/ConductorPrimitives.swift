@@ -1,16 +1,12 @@
-// THE CONDUCTOR's shared primitives (docs/decisions/20260803-050422-metronome-playout-
-// design.md). Instruments keep their own verbs, constants and doctrine:
-// audio's clock of record is the DAC (never HostClockModel) and audio sizes
-// its cushion from the detrended window spread, not a percentile. Nothing
-// here may flatten those asymmetries.
+// The Conductor's shared primitives
+// (docs/decisions/20260803-050422-metronome-playout-design.md). Instruments
+// keep their own constants: audio's clock of record is the DAC and its
+// cushion comes from the detrended window spread, not a percentile.
 //
-//   ScoreBeat    — the one beat both ends play to: the host samples the
-//                  screen on it and the client conductor steps its grid by
-//                  it. The two must be equal, or every frame steps a beat
-//                  per mismatched source step.
-//   ProofCounter — audio's sample-cadenced proof-before-shed law. Video uses
-//                  elapsed injected time because its source cadence is
-//                  content-driven.
+//   ScoreBeat    — the one beat both ends play to; host sampling and the
+//                  client grid must agree or every frame steps a beat.
+//   ProofCounter — audio's sample-cadenced proof-before-shed law (video
+//                  uses elapsed time because its cadence is content-driven).
 
 /// The score's beat: 60 Hz, as whole microseconds.
 public enum ScoreBeat {

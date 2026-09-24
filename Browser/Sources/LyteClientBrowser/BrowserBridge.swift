@@ -3,14 +3,11 @@ import LyteClientBrowserCore
 import LyteCore
 import LyteWire
 
-/// Publishes `globalThis.lyteBrowser`: the page's only door into the
-/// sans-IO core. All policy lives in `LyteClientBrowserCore`; this file
-/// converts values and owns the single session instance.
-///
-/// Datagrams cross the boundary in binary, packed as a sequence of
-/// `u16 big-endian length + bytes` records in one `Uint8Array`, so a burst
-/// costs one call and one copy each way. A step with nothing to act on
-/// returns `null`.
+/// Publishes `globalThis.lyteBrowser`, the page's only door into the
+/// sans-IO core; this file converts values and owns the single session.
+/// Datagrams cross in one `Uint8Array` of `u16 big-endian length + bytes`
+/// records, so a burst costs one call and one copy each way. A step with
+/// nothing to act on returns `null`.
 enum BrowserBridge {
     // The page's single-threaded pump owns this; JavaScriptKit calls are serial.
     nonisolated(unsafe) private static var session: BrowserControlSession?

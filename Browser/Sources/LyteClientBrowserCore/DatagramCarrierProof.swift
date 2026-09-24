@@ -1,9 +1,8 @@
 import LyteCore
 import LyteWire
 
-/// WASM-side checks for B-2 opaque carrier echoes. The browser JavaScript
-/// owns WebTransport; this verifies that bytes which crossed the sidecar
-/// are still the Lyte envelopes / sealed ciphertext the page claimed to send.
+/// WASM-side checks for opaque carrier echoes: bytes that crossed the
+/// sidecar are still the envelopes / sealed ciphertext the page sent.
 public enum DatagramCarrierProof {
     public static let wireBudgetBytes = WireBudget.maxDatagramByteCount
 

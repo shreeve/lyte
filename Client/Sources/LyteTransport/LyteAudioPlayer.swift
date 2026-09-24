@@ -1,38 +1,14 @@
-// LyteAudioPlayer (CL-11): the production audio shell — AVAudioEngine
-// out of a lock-free SPSC ring, fed by a pump that pulls verdicts from
-// the sans-IO AudioReceiver and decodes on ITS thread, never the
-// render callback (the audio-continuity doc's render-thread rule §5.1,
-// honored from the first commit here rather than retrofitted).
+// LyteAudioPlayer: AVAudioEngine out of a lock-free SPSC ring, fed by a
+// pump that pulls verdicts from AudioReceiver and decodes on its own
+// thread, never the render callback.
 //
-// Pacing doctrine: the render callback consumes at exactly the DAC's
-// rate; the pump refills whenever the ring sits below the receiver's
-// adaptive target. Playout therefore locks to the hardware clock —
-// no timer beats against the 5 ms arrivals, and sender/receiver clock
-// skew expresses as slow target drift the jitter buffer absorbs.
-//
-// The pump cadence is adaptive one-shot (item 18): the render side
-// drains the ring at exactly the DAC rate, so after each pass the
-// next instant the ring could approach the urgent threshold (one
-// packet) is computable — the timer re-arms for that instant, clamped
-// to a 2 ms floor (the dry-ring reflex: scheduling jitter shows up as
-// ring-depth ripple well inside one packet, and the `urgent` flag
-// turns a nearly-dry ring into immediate PLC instead of zeros) and a
-// 10 ms ceiling (bounds the cost of any wrong guess to two packets).
-// A healthy ring rides the ceiling — 100 wakeups/s instead of the old
-// fixed 2 ms cadence's 500 — while a shallow or draining ring walks
-// the floor exactly as before.
-//
-// CL-17 grows the pump two ways. (1) Decoded PCM rides through the
-// WSOLA AudioAccelerator whenever the receiver's pull decision says
-// the pipe is overfull — backlog drains by pitch-preserving time
-// compression (≤5% fast) instead of parking as latency or dying in a
-// content skip; a nearly-dry ring flushes the accelerator's gather
-// first (zeros are strictly worse than 20 ms of uncompressed audio).
-// (2) An output-device change (AirPods in/out, default-device switch)
-// posts AVAudioEngineConfigurationChange and STOPS the engine — the
-// handler rebuilds the source node and restarts on a serial queue
-// while the ring (and everything upstream) survives untouched, so
-// playback resumes where the old device left it; counted.
+// The render callback consumes at the DAC's rate and the pump refills
+// below the receiver's adaptive target, so playout locks to the hardware
+// clock. The pump re-arms for the instant the ring could reach one packet,
+// clamped to 2–10 ms. When the receiver says the pipe is overfull, decoded
+// PCM drains through the WSOLA AudioAccelerator (≤5% fast). An output
+// device change stops the engine; the source node is rebuilt on a serial
+// queue while the ring survives, so playback resumes where it left off.
 
 import LyteIO
 import AVFoundation
@@ -53,16 +29,12 @@ public struct LyteAudioPlayerStats: Sendable {
     /// Ring depth in frames at the last pump pass.
     public var ringDepthFrames: Int = 0
     /// Decoded-signal evidence over the last full 1 s window: RMS in
-    /// dBFS and a zero-crossing frequency estimate (objective proof a
-    /// generated tone crossed — the HS-15 tone-verification pattern).
+    /// dBFS and a zero-crossing frequency estimate.
     public var lastWindowRmsDbfs: Double = -Double.infinity
     public var lastWindowZeroCrossingHz: Double = 0
     public var decodeFailures: UInt64 = 0
-    /// CL-17: the WSOLA accelerate books (ops, frames excised, ms
-    /// drained).
     public var accelerate = AudioAccelerateStats()
-    /// CL-17: output-device changes survived (engine rebuilt, ring
-    /// kept) and rebuilds that never came back (device refused).
+    /// Output-device changes survived and rebuilds the device refused.
     public var routeChangesHandled: UInt64 = 0
     public var routeChangeFailures: UInt64 = 0
 
@@ -70,31 +42,23 @@ public struct LyteAudioPlayerStats: Sendable {
 }
 
 /// The lock-free SPSC PCM ring the render callback reads and the pump
-/// writes — its own class so the render block captures IT, never the
-/// player (no lock, no allocation, no self-cycle on the render thread).
-/// Counters are monotonically increasing frame counts, masked in.
+/// writes — its own class so the render block captures it, never the
+/// player. Counters are monotonically increasing frame counts.
 final class AudioPcmRing: @unchecked Sendable {
     static let capacityFrames = 48_000                        // 1 s
     let buffer: UnsafeMutablePointer<Float>
     let readCounter = Atomic<Int>(0)
     let writeCounter = Atomic<Int>(0)
-    /// µs uptime of the last write — the render callback counts
-    /// underruns only while the stream is actively flowing (a FROZEN
-    /// blackout's silence is the machine's business, not an underrun).
+    /// µs uptime of the last write; underruns count only while the stream
+    /// is flowing (a blackout's silence is not an underrun).
     let lastWriteMicros = Atomic<UInt64>(0)
     let underrunFrames = Atomic<UInt64>(0)
     let framesRendered = Atomic<UInt64>(0)
 
-    /// HS-31 declick: a ring underrun used to hard-cut to zeros, and
-    /// every edge was an audible crack (worst live leg: 1.58 s of
-    /// zero-fill = hundreds of them). Instead, the pad now DECAYS the
-    /// boundary sample linearly to true zero over ~2 ms — continuous
-    /// by construction no matter where inside a callback the shortfall
-    /// lands — and recovery CROSSFADES from the tail's current value
-    /// into the real samples over the same window. All state below is
-    /// render-thread-only (the callback is the sole toucher) and
-    /// preallocated: no locks, no allocation, no runtime calls join
-    /// the hot path.
+    /// Declick: an underrun decays the boundary sample linearly to zero
+    /// over ~2 ms and recovery crossfades back in over the same window, so
+    /// output stays continuous. The state below is render-thread-only and
+    /// preallocated.
     static let declickFrames = 96                    // 2 ms at 48 kHz
     private let tailBase: UnsafeMutablePointer<Float>    // per channel
     private let resumeBase: UnsafeMutablePointer<Float>  // per channel
@@ -127,13 +91,9 @@ final class AudioPcmRing: @unchecked Sendable {
             - readCounter.load(ordering: .relaxed)
     }
 
-    /// Render-thread side: fills the DEINTERLEAVED channel buffers the
-    /// engine hands a standard-format source node (mixer inputs must
-    /// be standard — an interleaved connection raises an NSException).
-    /// A shortfall is declicked (HS-31), never hard-cut: the pad
-    /// decays the boundary sample to zero over ~2 ms and recovery
-    /// crossfades back in; underruns are counted while the stream
-    /// flows, exactly as before.
+    /// Render-thread side: fills the deinterleaved channel buffers of a
+    /// standard-format source node (an interleaved mixer input raises an
+    /// NSException). Shortfalls are declicked, never hard-cut.
     func render(
         into buffers: UnsafeMutableAudioBufferListPointer, wanted: Int
     ) {
@@ -146,10 +106,8 @@ final class AudioPcmRing: @unchecked Sendable {
         let starving = available < wanted
         let episodeStart = starving && !inStarvation
         let tailStart = episodeStart ? 0 : tailDone
-        // First callback after an episode: the crossfade-in starts
-        // from the tail's CURRENT value — zero once the decay ran its
-        // 2 ms (the common case: underruns last ≥ one 5 ms packet),
-        // mid-decay if recovery came sooner. Either way, continuous.
+        // After an episode the crossfade starts from the tail's current
+        // value (zero, or mid-decay if recovery came sooner).
         if !starving, inStarvation {
             let level = Float(max(0, fade - tailDone)) * invFade
             for channel in 0..<channels {
@@ -179,9 +137,7 @@ final class AudioPcmRing: @unchecked Sendable {
                     tailBase[channel] = available > 0
                         ? out[available - 1] : lastOut[channel]
                 }
-                // The decay tail: continuous with the boundary sample
-                // wherever the shortfall lands, true zero from `fade`
-                // pad frames onward.
+                // Decay tail: true zero from `fade` pad frames onward.
                 let base = tailBase[channel]
                 for frame in available..<wanted {
                     let index = tailStart + (frame - available)
@@ -238,9 +194,7 @@ public final class LyteAudioPlayer: @unchecked Sendable {
     private let engine = AVAudioEngine()
     private var sourceNode: AVAudioSourceNode?
     private var pump: DispatchSourceTimer?
-    /// Engine-graph mutations (start/stop/route rebuild) exclude each
-    /// other here — the session's audio queue and the route queue both
-    /// arrive at the same engine.
+    /// Serializes engine-graph mutations (start/stop/route rebuild).
     private let engineLock = NSLock()
     private let routeQueue = DispatchQueue(
         label: "lyte.audio.route", qos: .userInitiated)
@@ -270,10 +224,8 @@ public final class LyteAudioPlayer: @unchecked Sendable {
         self.decoder = try OpusStreamDecoder()
     }
 
-    /// Builds the graph and starts the engine + pump. Throws what the
-    /// engine throws — the caller treats a refused audio device as
-    /// weather (video must stream even when audio cannot; the host's
-    /// rule, mirrored).
+    /// Builds the graph and starts the engine and pump. The caller treats
+    /// a refused audio device as non-fatal: video streams regardless.
     public func start() throws {
         engineLock.lock()
         do {
@@ -294,8 +246,7 @@ public final class LyteAudioPlayer: @unchecked Sendable {
         }
         engineLock.unlock()
 
-        // The route seam (CL-17): a default-output switch stops the
-        // engine and posts this — rebuild off the notification thread.
+        // A default-output switch stops the engine and posts this.
         configChangeObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
             object: engine, queue: nil
@@ -303,11 +254,8 @@ public final class LyteAudioPlayer: @unchecked Sendable {
             self?.handleOutputConfigurationChange()
         }
 
-        // Adaptive one-shot cadence: each pass re-arms the timer for
-        // the next instant the ring could matter (see the header
-        // doctrine). The handler captures the timer weakly and checks
-        // isCancelled before re-arming — a cancelled source never
-        // fires again, so a racing stop() needs no lock here.
+        // Adaptive one-shot cadence. A cancelled source never fires again,
+        // so checking isCancelled makes a racing stop() safe without a lock.
         let timer = DispatchSource.makeTimerSource(
             queue: .global(qos: .userInteractive))
         timer.schedule(deadline: .now() + .milliseconds(2),
@@ -325,13 +273,9 @@ public final class LyteAudioPlayer: @unchecked Sendable {
         pump = timer
     }
 
-    /// The adaptive pump schedule (item 18), pure so the gate can pin
-    /// it: microseconds until the ring — draining at exactly the DAC
-    /// rate — could reach the urgent threshold (one packet), clamped
-    /// to [`pumpFloorMicros`, `pumpCeilingMicros`]. Only the ring
-    /// counts as headroom: the accelerator's gather can rescue a dry
-    /// ring, but only a pump pass flushes it, so it must not stretch
-    /// the sleep that would run that pass.
+    /// Microseconds until the ring, draining at the DAC rate, could reach
+    /// one packet, clamped to [floor, ceiling]. Only the ring counts as
+    /// headroom: the accelerator's gather is flushed only by a pump pass.
     static let pumpFloorMicros = 2_000
     static let pumpCeilingMicros = 10_000
     static func nextPumpDelayMicros(ringDepthFrames: Int) -> Int {
@@ -356,16 +300,14 @@ public final class LyteAudioPlayer: @unchecked Sendable {
         engineLock.unlock()
     }
 
-    /// The notification target, public so a diagnostic (or the gate)
-    /// can drive the exact production path. Serialized on the route
-    /// queue; safe against a racing stop().
+    /// The configuration-change handler; serialized on the route queue and
+    /// safe against a racing stop().
     public func handleOutputConfigurationChange() {
         routeQueue.async { [weak self] in self?.rebuildOutput() }
     }
 
-    /// The standard format (float32 deinterleaved) — the only format
-    /// a mixer input accepts; the ring deinterleaves in the render
-    /// callback. The closure captures the RING, never self.
+    /// Standard format (float32 deinterleaved); the closure captures the
+    /// ring, never self.
     private func makeSourceNode() throws -> AVAudioSourceNode {
         guard let format = AVAudioFormat(
             standardFormatWithSampleRate: Double(AudioWire.sampleRate),
@@ -382,10 +324,8 @@ public final class LyteAudioPlayer: @unchecked Sendable {
         }
     }
 
-    /// The route-change recovery: tear the graph down to the ring and
-    /// put it back on the NEW device. The ring is never touched —
-    /// whatever was queued toward the old speaker plays on the new
-    /// one; upstream (jitter buffer, accelerator, pump) never notices.
+    /// Rebuilds the graph on the new device; the ring and everything
+    /// upstream are untouched.
     private func rebuildOutput() {
         engineLock.lock()
         defer { engineLock.unlock() }
@@ -411,9 +351,8 @@ public final class LyteAudioPlayer: @unchecked Sendable {
                 if attempt < 4 { usleep(100_000) }   // HAL settles
             }
         }
-        // The new device refused every attempt; counted loudly. The
-        // node stays attached so the NEXT configuration change (or a
-        // fresh device) walks this same path again.
+        // Every attempt refused. The node stays attached so the next
+        // configuration change retries this path.
         sourceNode = node
         _ = routeChangeFailures.add(1, ordering: .relaxed)
     }
@@ -462,8 +401,7 @@ public final class LyteAudioPlayer: @unchecked Sendable {
                 return
             }
             let urgent = ringDepth < packetFrames
-            // The pipe the receiver judges: ring + the gather — both
-            // sit between the jitter buffer and the speaker.
+            // The receiver judges ring + gather.
             let heldFrames = ringDepth + accelerator.pendingFrames
             let pipelineMicros = UInt64(heldFrames) * 1_000_000
                 / UInt64(AudioWire.sampleRate)
@@ -498,17 +436,14 @@ public final class LyteAudioPlayer: @unchecked Sendable {
         }
     }
 
-    /// The accelerator is pump-thread-only; its books cross to
-    /// snapshotStats through the stats lock.
     private func snapshotAccelBooks() {
         statsLock.lock()
         accelSnapshot = accelerator.stats
         statsLock.unlock()
     }
 
-    /// Decoded-signal evidence, rolled once per second of fed audio:
-    /// window RMS (dBFS) + zero-crossing rate on the left channel —
-    /// the objective half of the live gate's tone verification.
+    /// Rolls window RMS (dBFS) and zero-crossing rate on the left channel
+    /// once per second of fed audio.
     private func noteSignal(_ pcm: [Float]) {
         let channels = AudioWire.channels
         var index = 0

@@ -304,7 +304,7 @@ final class PairingVectorFileTests: XCTestCase {
                 return XCTFail("\(vector.name): foreign error \(error)")
             }
             XCTAssertEqual(
-                pairingMessageErrorName(error), vector.error, vector.name
+                vectorErrorName(error), vector.error, vector.name
             )
         }
     }

@@ -32,8 +32,7 @@ final class SessionVideoSink: VideoSink, @unchecked Sendable {
 
     func submit(sample: CMSampleBuffer, unit: DecodeUnit) {
         guard let owner else {
-            // Preserve the retired weak-self callback's teardown behavior:
-            // sample work already in flight still reaches its owned sink.
+            // In-flight sample work still reaches its sink after teardown.
             downstream.submit(sample: sample, unit: unit)
             return
         }
