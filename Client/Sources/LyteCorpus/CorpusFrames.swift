@@ -131,6 +131,9 @@ public enum CorpusFrames {
     /// The reference-pair session geometry.
     public static let defaultWidth = 2048
     public static let defaultHeight = 1280
+    /// The smallest geometry every frame's fixed margins and cells fit.
+    public static let minimumWidth = 256
+    public static let minimumHeight = 160
     /// Bump only deliberately: the corpus is a frozen measurement
     /// contract, not a fixture.
     public static let corpusVersion = 1
@@ -143,7 +146,8 @@ public enum CorpusFrames {
 
     public static func generate(width: Int = defaultWidth,
                                 height: Int = defaultHeight) -> [GeneratedFrame] {
-        [
+        precondition(width >= minimumWidth && height >= minimumHeight)
+        return [
             textFrame(width: width, height: height, zoomName: "100", scale: 1.0),
             textFrame(width: width, height: height, zoomName: "125", scale: 1.25),
             textFrame(width: width, height: height, zoomName: "200", scale: 2.0),

@@ -3,30 +3,95 @@ import XCTest
 import LyteWireTestKit
 import LyteWireVectorGen
 
-// Every committed vector file must be exactly what its builder in
-// LyteWireVectorGen produces today. The builders are how new cases get
-// appended, so a builder that drifted from the frozen bytes would
-// silently rewrite old cases the next time someone regenerates a file.
-// Comparison is by the canonical JSON of the decoded values, which is
-// platform-independent where raw file bytes need not be.
+// Every committed vector file must be byte-for-byte what its builder in
+// LyteWireVectorGen writes today, and the builder registry must name
+// every committed file exactly once. Raw bytes, not decoded values, are
+// compared: a decode-then-re-encode comparison forgives escaping,
+// whitespace, key order and any key the model does not declare.
 
 final class VectorRegenerationTests: XCTestCase {
 
-    private func assertRegenerates<File: FrozenVectorFile>(
-        _ build: () throws -> File,
-        file: StaticString = #filePath, line: UInt = #line
-    ) throws {
-        let committed = try File.loadCommitted().canonicalJSON()
-        let rebuilt = try build().canonicalJSON()
-        guard committed != rebuilt else { return }
-        XCTFail(
-            "\(File.fileName): builder output differs from the committed file\(firstDifference(committed, rebuilt))",
-            file: file, line: line
-        )
+    /// `cursor-v1.json` was committed with one `/` unescaped where the
+    /// encoder writes `\/`. The frozen file stays as committed, so its
+    /// comparison un-escapes `\/` in the rebuilt bytes and forgives
+    /// nothing else.
+    private static let unescapedSlashFiles: Set<String> = ["cursor-v1.json"]
+
+    func testRegistryNamesEveryCommittedFileOnce() throws {
+        let committed = try FileManager.default
+            .contentsOfDirectory(atPath: WireVectors.directory)
+            .filter { $0.hasSuffix(".json") }
+        let registered = vectorFileBuilders.map(\.fileName)
+        XCTAssertEqual(Set(registered).count, registered.count,
+                       "one builder per file")
+        XCTAssertEqual(Set(vectorFileBuilders.map(\.kind)).count,
+                       registered.count, "one kind per builder")
+        XCTAssertEqual(Set(committed), Set(registered),
+                       "every Vectors/*.json has a builder and vice versa")
     }
 
-    /// Where two canonical JSON renderings first diverge, so a failure
-    /// names the drifted field instead of just the file.
+    func testEveryCommittedFileHasItsIdentity() throws {
+        for builder in vectorFileBuilders {
+            XCTAssertEqual(
+                try builder.loadCommitted().identityProblems, [],
+                builder.fileName
+            )
+        }
+    }
+
+    func testEveryCommittedFileIsItsBuildersExactBytes() throws {
+        for builder in vectorFileBuilders {
+            let committed = try Data(contentsOf: URL(
+                fileURLWithPath: WireVectors.path(builder.fileName)
+            ))
+            var rebuilt = try builder.build().canonicalJSON()
+            if Self.unescapedSlashFiles.contains(builder.fileName) {
+                rebuilt = Data(String(decoding: rebuilt, as: UTF8.self)
+                    .replacingOccurrences(of: "\\/", with: "/").utf8)
+            }
+            guard committed != rebuilt else { continue }
+            XCTFail(
+                "\(builder.fileName): builder output differs from the committed bytes\(firstDifference(committed, rebuilt))"
+            )
+        }
+    }
+
+    /// A file's identity follows the versions its type pins, not the live
+    /// wire major, so raising `WireVersion.major` cannot invalidate the
+    /// committed v1 files and a later file version can exist beside them.
+    func testIdentityFollowsTheTypesPinnedVersions() {
+        struct Later: FrozenVectorFile {
+            static let expectedFormat = "later"
+            static let fileName = "later-v2.json"
+            static let expectedFormatVersion = 2
+            static let expectedWireVersion = 2
+            var format = "later"
+            var formatVersion = 2
+            var wireVersion = 2
+            var vectorNameGroups: [[String]] { [["only"]] }
+        }
+        XCTAssertEqual(Later().identityProblems, [])
+        var stale = Later()
+        stale.wireVersion = 1
+        XCTAssertEqual(stale.identityProblems, ["wireVersion 1, expected 2"])
+    }
+
+    /// The exemption is live: without it the cursor file would differ.
+    func testSlashExemptionIsStillNeeded() throws {
+        for fileName in Self.unescapedSlashFiles {
+            let builder = try XCTUnwrap(
+                vectorFileBuilders.first { $0.fileName == fileName }
+            )
+            let committed = try Data(contentsOf: URL(
+                fileURLWithPath: WireVectors.path(fileName)
+            ))
+            XCTAssertNotEqual(try builder.build().canonicalJSON(), committed,
+                              fileName)
+        }
+    }
+
+    /// Where two renderings first diverge, so a failure names the drifted
+    /// line instead of just the file.
     private func firstDifference(_ committed: Data, _ rebuilt: Data) -> String {
         let old = String(decoding: committed, as: UTF8.self).split(separator: "\n", omittingEmptySubsequences: false)
         let new = String(decoding: rebuilt, as: UTF8.self).split(separator: "\n", omittingEmptySubsequences: false)
@@ -38,31 +103,5 @@ final class VectorRegenerationTests: XCTestCase {
             }
         }
         return ""
-    }
-
-    func testEnvelope() throws { try assertRegenerates(makeEnvelopeVectorFile) }
-    func testFec() throws { try assertRegenerates(makeFecVectorFile) }
-    func testBeacon() throws { try assertRegenerates(makeBeaconVectorFile) }
-    func testNoise() throws { try assertRegenerates(makeNoiseVectorFile) }
-    func testSession() throws { try assertRegenerates(makeSessionVectorFile) }
-    func testArq() throws { try assertRegenerates(makeArqVectorFile) }
-    func testLifecycle() throws { try assertRegenerates(makeLifecycleVectorFile) }
-    func testPairing() throws { try assertRegenerates(makePairingVectorFile) }
-    func testCapabilities() throws { try assertRegenerates(makeCapabilityVectorFile) }
-    func testRetry() throws { try assertRegenerates(makeRetryVectorFile) }
-    func testControl() throws { try assertRegenerates(makeControlVectorFile) }
-    func testClipboard() throws { try assertRegenerates(makeClipboardVectorFile) }
-    func testBulk() throws { try assertRegenerates(makeBulkVectorFile) }
-    func testClipboardImages() throws { try assertRegenerates(makeClipboardImageVectorFile) }
-    func testCursor() throws { try assertRegenerates(makeCursorVectorFile) }
-    func testRepairRefusal() throws { try assertRegenerates(makeRepairRefusalVectorFile) }
-    func testPostures() throws { try assertRegenerates(makePostureVectorFile) }
-
-    func testVideo() throws {
-        try assertRegenerates {
-            try makeVideoVectorFile(
-                corpusDirectory: WireVectors.path("video-corpus-v1")
-            )
-        }
     }
 }

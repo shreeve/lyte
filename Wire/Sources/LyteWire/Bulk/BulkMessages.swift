@@ -120,21 +120,38 @@ public struct BulkChunkMap: Hashable, Sendable {
     ) -> BulkChunkMap {
         var contiguous = contiguousCount
         var pending = Set(extras.filter { $0 >= contiguousCount })
-        while pending.contains(contiguous) {
-            pending.remove(contiguous)
+        while pending.remove(contiguous) != nil {
             contiguous += 1
         }
+        return describing(normalized: contiguous, extras: pending)
+    }
+
+    /// The canonical map for a normalized possession: every extra lies
+    /// strictly past `contiguous`. Visits the smaller of the extras and
+    /// the bitmap window, so its cost never grows with extras beyond
+    /// the window — a sender that leaves a hole below every chunk cannot
+    /// make each credit refresh walk the whole transfer.
+    static func describing(
+        normalized contiguous: UInt64, extras: Set<UInt64>
+    ) -> BulkChunkMap {
+        let windowBits = BulkWire.maxBitmapByteCount * 8
         var bytes = [UInt8](repeating: 0, count: BulkWire.maxBitmapByteCount)
         var highestBit = -1
-        for index in pending {
-            // index > contiguous here (== was drained above).
-            let offset = index - contiguous - 1
-            guard offset < UInt64(BulkWire.maxBitmapByteCount * 8) else {
-                continue // under-claim past the window
-            }
-            let bit = Int(offset)
+        func mark(_ bit: Int) {
             bytes[bit / 8] |= 1 << (bit % 8)
             highestBit = max(highestBit, bit)
+        }
+        if extras.count <= windowBits {
+            for index in extras {
+                let offset = index - contiguous - 1
+                // Under-claim past the window.
+                if offset < UInt64(windowBits) { mark(Int(offset)) }
+            }
+        } else {
+            for bit in 0..<windowBits
+            where extras.contains(contiguous &+ 1 &+ UInt64(bit)) {
+                mark(bit)
+            }
         }
         let bitmap = highestBit >= 0
             ? Array(bytes[0...(highestBit / 8)]) : []
@@ -154,23 +171,20 @@ public struct BulkChunkMap: Hashable, Sendable {
         return bitmap[bit / 8] & (1 << (bit % 8)) != 0
     }
 
-    /// The chunk indices the bitmap marks held, past the prefix.
+    /// The chunk indices the bitmap marks held, past the prefix. A
+    /// decoded map may place bits past `UInt64.max`; no chunk lives
+    /// there, so those bits name nothing.
     public var bitmapChunkIndices: [UInt64] {
         var indices: [UInt64] = []
         for (byteOffset, byte) in bitmap.enumerated() {
             for bit in 0..<8 where byte & (1 << bit) != 0 {
-                indices.append(
-                    contiguousCount + 1 + UInt64(byteOffset * 8 + bit)
+                let (index, overflow) = contiguousCount.addingReportingOverflow(
+                    1 + UInt64(byteOffset * 8 + bit)
                 )
+                if !overflow { indices.append(index) }
             }
         }
         return indices
-    }
-
-    /// Total chunks this map claims held.
-    public var heldChunkCount: UInt64 {
-        contiguousCount
-            + UInt64(bitmap.reduce(0) { $0 + $1.nonzeroBitCount })
     }
 
     var encodedByteCount: Int {

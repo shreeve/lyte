@@ -8,7 +8,6 @@
 import LyteCorpus
 import ArgumentParser
 import Foundation
-import LyteTransport
 
 // MARK: - corpus-gen
 
@@ -28,6 +27,15 @@ struct CorpusGen: ParsableCommand {
 
     @Flag(name: .long, help: "Also write PNG previews next to the raws")
     var png = false
+
+    func validate() throws {
+        guard width >= CorpusFrames.minimumWidth,
+              height >= CorpusFrames.minimumHeight else {
+            throw ValidationError(
+                "corpus frames need at least \(CorpusFrames.minimumWidth)x"
+                    + "\(CorpusFrames.minimumHeight), got \(width)x\(height)")
+        }
+    }
 
     func run() throws {
         let fm = FileManager.default

@@ -1,7 +1,8 @@
 import AppKit
 
-/// Programmatic app icon for the unbundled dev CLI: an indigo→blue
-/// squircle with a white bolt, for the Dock and the About panel.
+/// The programmatic app icon, shared by the app and the CLI's windows: an
+/// indigo→blue squircle with a white bolt, for the Dock, the About panel
+/// and the host picker.
 public enum AppIcon {
     public static let shared: NSImage = make()
 

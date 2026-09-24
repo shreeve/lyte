@@ -1,5 +1,30 @@
 import Foundation
 
+/// What the app's diagnostic entry points (autoconnect, the benchmark
+/// driver and its overrides, the build badge, the link-health trace) may
+/// read. A bundle obeys the environment only when its signed Info.plist
+/// says `LyteDiagnosticEntryPoints` (make-app.sh writes it on request);
+/// every other bundle reads an empty environment, so no same-user process
+/// can drive it into a Keychain-authenticated connect or a frame readback
+/// with `open --env` or `launchctl setenv`.
+enum DiagnosticEnvironment {
+    static let infoKey = "LyteDiagnosticEntryPoints"
+
+    static let current = variables(
+        info: Bundle.main.infoDictionary,
+        environment: ProcessInfo.processInfo.environment)
+
+    static func variables(
+        info: [String: Any]?, environment: [String: String]
+    ) -> [String: String] {
+        info?[infoKey] as? Bool == true ? environment : [:]
+    }
+
+    static var isEnabled: Bool {
+        Bundle.main.infoDictionary?[infoKey] as? Bool == true
+    }
+}
+
 /// A benchmark process proves its identity before connection work begins.
 /// The matching command-line claim lets the harness attest the PID again
 /// before it sends a signal; environment alone is not reliably observable
@@ -31,7 +56,8 @@ enum DiagnosticRunIdentity {
     }
 
     static var isRequested: Bool {
-        let environment = ProcessInfo.processInfo.environment
+        guard DiagnosticEnvironment.isEnabled else { return false }
+        let environment = DiagnosticEnvironment.current
         return environment["LYTE_BENCHMARK_RUN_ID"] != nil
             || environment["LYTE_BENCHMARK_PIDFILE"] != nil
             || CommandLine.arguments.contains(argument)
@@ -41,7 +67,7 @@ enum DiagnosticRunIdentity {
     static func publishIfRequested() throws -> Bool {
         guard isRequested else { return false }
 
-        let environment = ProcessInfo.processInfo.environment
+        let environment = DiagnosticEnvironment.current
         let argumentIndices = CommandLine.arguments.indices.filter {
             CommandLine.arguments[$0] == argument
         }

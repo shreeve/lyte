@@ -58,8 +58,9 @@ public struct Envelope: Hashable, Sendable {
 
     // MARK: Encode
 
-    /// Encodes header + wire payload (ciphertext + tag, or the bare shard in
-    /// insecure mode). Rejects payloads over 1128 B and datagrams over 1152 B.
+    /// Encodes header + wire payload (on the wire, always ciphertext + tag;
+    /// the codec itself is byte-agnostic). Rejects payloads over 1128 B,
+    /// more than 255 TLVs and datagrams over 1152 B.
     public func encode(payload: ArraySlice<UInt8>) throws -> [UInt8] {
         guard payload.count <= WireBudget.maxWirePayloadByteCount else {
             throw WireError.payloadOverBudget(payload.count)

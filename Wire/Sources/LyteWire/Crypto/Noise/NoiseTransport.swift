@@ -32,9 +32,10 @@
 /// as stale or opens under the wrong counter, and because the anchor only
 /// moves on a successful open, nothing would ever open again. After
 /// `resyncFailureThreshold` consecutive failures the receiver therefore
-/// also tries the next `resyncWrapCount` forward wraps of the same seq;
-/// the AEAD tag arbitrates, so a forged datagram can cost at most
-/// `resyncWrapCount` extra opens and never moves the anchor.
+/// also tries the forward wraps of the same seq; the AEAD tag
+/// arbitrates, so a forged datagram costs at most `resyncWrapCount + 1`
+/// extra opens (plus the grace-key attempt after a rekey) and never
+/// moves the anchor.
 package struct ExtendedCounterTracker: Sendable {
     /// Highest extended counter seen/sent; nil until the first datagram.
     /// The first datagram on a channel anchors at rollover 0 — extended =
@@ -189,8 +190,9 @@ public struct NoiseTransport: Sendable {
     /// to it.
     public let handshakeHash: [UInt8]
 
-    /// Recommended rekey trigger: every 2^24 datagrams per direction (the
-    /// hourly timer is the shell's).
+    /// A rekey trigger for when one exists: every 2^24 datagrams per
+    /// direction. Wire v1 has no CTRL message that coordinates a rekey,
+    /// so no v1 end calls `rekeySend`/`rekeyReceive`.
     public static let rekeyDatagramThreshold: UInt64 = 1 << 24
 
     init(

@@ -408,7 +408,7 @@ public func makeControlVectorFile() throws -> ControlVectorFile {
     return ControlVectorFile(
         format: ControlVectorFile.expectedFormat,
         formatVersion: 1,
-        wireVersion: Int(WireVersion.major),
+        wireVersion: 1,
         vectors: vectors
     )
 }

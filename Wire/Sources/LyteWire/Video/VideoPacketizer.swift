@@ -150,24 +150,6 @@ public struct VideoPacketizer: Sendable {
         }
     }
 
-    /// Packetizes a frame borrowed for this call's dynamic extent. The
-    /// returned shards own all payload bytes and retain no view of `annexB`.
-    public mutating func packetize(
-        frame annexB: UnsafeBufferPointer<UInt8>,
-        frameNumber: FrameNumber,
-        captureTimestamp: HostTimestamp,
-        isIDR: Bool,
-        regime: FecRegime
-    ) throws -> [VideoShard] {
-        try packetize(
-            frame: Array(annexB)[...],
-            frameNumber: frameNumber,
-            captureTimestamp: captureTimestamp,
-            isIDR: isIDR,
-            regime: regime
-        )
-    }
-
     public mutating func packetize(
         frame annexB: [UInt8],
         frameNumber: FrameNumber,

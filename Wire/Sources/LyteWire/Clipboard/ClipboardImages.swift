@@ -112,7 +112,7 @@ extension Capabilities {
 ///   9      1    mimeLen     1…255
 ///   10     …    mime        UTF-8; exactly its layout, trailing
 ///                           bytes reject
-public struct ClipboardImageCargo: Hashable, Sendable {
+public struct ClipboardImageCargo: Hashable, Sendable, SliceDecodable {
     public var transferId: UInt64
     public var mime: String
 
@@ -173,12 +173,6 @@ public struct ClipboardImageCargo: Hashable, Sendable {
         }
         return try ClipboardImageCargo(transferId: transferId, mime: mime)
     }
-
-    public static func decode(
-        _ payload: [UInt8]
-    ) throws -> ClipboardImageCargo {
-        try decode(payload[...])
-    }
 }
 
 /// Everything the cargo-marker codec can refuse. Hostile bytes throw,
@@ -228,6 +222,9 @@ public enum ClipboardImageRefuseReason: Hashable, Sendable {
     /// The clipboard receive lane already carries a transfer —
     /// abort(busy).
     case receiveBusy
+    /// The caller's consent tier said no (`declineCargo`) —
+    /// abort(declined).
+    case consentDeclined
 }
 
 /// Everything the channel surfaces to its embedding session core.
@@ -447,7 +444,7 @@ public struct ClipboardImageChannel: Sendable {
     ) -> [ClipboardImageEvent] {
         counters.receivesRefused += 1
         return refusal(
-            .unsupportedMime(cargo.mime),
+            .consentDeclined,
             transferId: cargo.transferId, reason: .declined
         )
     }

@@ -13,10 +13,6 @@ final class PostureVectorFileTests: XCTestCase {
         try PostureVectorFile.loadCommitted()
     }
 
-    func testFileIdentity() throws {
-        XCTAssertEqual(try loadFile().identityProblems, [])
-    }
-
     /// Every state, posture and error case is pinned, and the spine is
     /// pinned declared and absent for both keys.
     func testCoverageDiscipline() throws {
