@@ -539,10 +539,18 @@ final class ConnectionModel {
             let session = lyteSession
             bulkCoordinator?.sessionReady(
                 negotiated: agreed.bulkTransfer,
-                send: { [weak session] bytes in
-                    // A refused send is a teardown race — the ARQ state is
-                    // dying with the session; resume covers.
-                    try? session?.core?.sendBulkMessage(bytes)
+                send: { [weak self, weak session] bytes in
+                    // A refused message never reaches chan 8's reliable
+                    // stream, so the transfer cannot finish on this
+                    // session: say so instead of stalling silently.
+                    do {
+                        try session?.core?.sendBulkMessage(bytes)
+                    } catch {
+                        let notice = Self.bulkSendRefusalNotice(error)
+                        Task { @MainActor [weak self] in
+                            self?.showBulkNotice(notice)
+                        }
+                    }
                 })
         case .bulkMessageReceived(let message):
             bulkCoordinator?.ingest(message)

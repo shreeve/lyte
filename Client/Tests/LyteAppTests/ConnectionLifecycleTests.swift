@@ -205,6 +205,22 @@ final class ConnectionLifecycleTests: XCTestCase {
         XCTAssertEqual(ConnectionModel.closeVerdict(.peerTeardown(.takenOver)),
                        .end("session taken over by another client"))
     }
+
+    // MARK: - File transfer
+
+    /// A chan-8 message the session refuses to queue never reaches the
+    /// host; the pill names why instead of the transfer stalling silently.
+    func testRefusedBulkSendNoticeNamesTheCause() {
+        XCTAssertEqual(
+            ConnectionModel.bulkSendRefusalNotice(ArqSendError.queueFull),
+            "File transfer stalled — the send queue is full")
+        XCTAssertEqual(
+            ConnectionModel.bulkSendRefusalNotice(ArqSendError.emptyMessage),
+            "File transfer stalled — send refused (emptyMessage)")
+        XCTAssertEqual(
+            ConnectionModel.bulkSendRefusalNotice(BulkChannelError.notNegotiated),
+            "File transfer stopped — the host no longer accepts files")
+    }
 }
 
 /// In-process stand-ins for everything `ConnectionModel` reaches outside

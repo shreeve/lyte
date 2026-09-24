@@ -272,8 +272,20 @@ extension ConnectionModel {
         bulkCoordinator?.cancelAll()
     }
 
+    /// The pill's line for a chan-8 message the session refused to queue.
+    nonisolated static func bulkSendRefusalNotice(_ error: any Error) -> String {
+        switch error {
+        case ArqSendError.queueFull:
+            return "File transfer stalled — the send queue is full"
+        case BulkChannelError.notNegotiated:
+            return "File transfer stopped — the host no longer accepts files"
+        default:
+            return "File transfer stalled — send refused (\(error))"
+        }
+    }
+
     /// Transient verdict line under the pill; fades after a beat.
-    private func showBulkNotice(_ text: String) {
+    func showBulkNotice(_ text: String) {
         bulkNotice = text
         bulkNoticeTask?.cancel()
         bulkNoticeTask = Task { @MainActor [weak self] in
