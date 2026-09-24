@@ -96,7 +96,7 @@ struct WirePair: AsyncParsableCommand {
         // ── Our persistent identity (Keychain; minted on first pairing). ──
         let identity: NoiseKeyPair
         do {
-            identity = try ClientNoiseIdentity.loadOrCreate()
+            identity = try await ClientNoiseIdentityProvider.shared.identity()
         } catch ClientNoiseIdentityError.keychain(let status) {
             throw ValidationError(
                 "Keychain refused the client identity (OSStatus \(status)) — build via Scripts/build-cli.sh so the binary is signed (docs/MACOS-SIGNING.md)")
@@ -114,40 +114,21 @@ struct WirePair: AsyncParsableCommand {
             timeoutSeconds: timeout,
             onProgress: { print("wire-pair: \($0)") }))
 
-        switch outcome {
-        case .paired(let key):
-            var store = PinnedHostStore.load()
-            let fresh = store.pin(
-                staticPublicKey: key,
-                name: isLiteralAddress ? address : host,
-                address: address,
-                port: dialPort,
-                pairedAt: ISO8601DateFormatter().string(from: Date()))
-            try store.save()
-            let hex = Hex.string(key)
-            print("wire-pair: PAIRED — host static \(hex) "
-                + (fresh ? "pinned" : "re-pinned") + " → \(PinnedHostStore.url.path)")
-            print("wire-pair: reconnects are now 1-RTT Noise IK with zero UI: "
-                + "lyte-cli wire-view \(dialPort) --host \(address)")
-        case .pinMismatch:
-            print("wire-pair: WRONG PIN — the host's tag disagreed with this "
-                + "entry (each displayed PIN survives 3 wrong guesses; a "
-                + "burned PIN answers nothing until --pair reruns)")
-            throw ExitCode(1)
-        case .hostRejected(let reason):
-            print("wire-pair: host rejected the run (\(reason))")
-            throw ExitCode(1)
-        case .invalidShare:
-            print("wire-pair: the host's share was cryptographically invalid")
-            throw ExitCode(1)
-        case .timedOut:
-            print("wire-pair: no verdict in \(Int(timeout))s — wrong port, "
-                + "host not in --pair mode, or a burned PIN's silence")
-            throw ExitCode(1)
-        case .failed(let message):
-            print("wire-pair: FAILED — \(message)")
+        guard case .paired(let key) = outcome else {
+            print("wire-pair: FAILED — \(outcome.failureMessage ?? "\(outcome)")")
             throw ExitCode(1)
         }
+        var store = PinnedHostStore.load()
+        let fresh = store.pinPaired(
+            staticPublicKey: key,
+            name: isLiteralAddress ? address : host,
+            address: address,
+            port: dialPort)
+        try store.save()
+        print("wire-pair: PAIRED — host static \(Hex.string(key)) "
+            + (fresh ? "pinned" : "re-pinned") + " → \(PinnedHostStore.url.path)")
+        print("wire-pair: reconnects are now 1-RTT Noise IK with zero UI: "
+            + "lyte-cli wire-view \(dialPort) --host \(address)")
     }
 }
 

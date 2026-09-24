@@ -129,7 +129,7 @@ struct WireView: AsyncParsableCommand {
             }
             let identity: NoiseKeyPair
             do {
-                identity = try ClientNoiseIdentity.loadOrCreate()
+                identity = try await ClientNoiseIdentityProvider.shared.identity()
             } catch ClientNoiseIdentityError.keychain(let status) {
                 throw ValidationError(
                     "Keychain refused the client identity (OSStatus \(status)) — build via Scripts/build-cli.sh (docs/MACOS-SIGNING.md)")
@@ -172,42 +172,28 @@ struct WireView: AsyncParsableCommand {
 
         // The production session object, event-printed. Every event
         // fires off-main (receive/timer threads) — printing is safe.
-        var sessionConfig = LyteUdpSession.Config()
+        //
+        // Debug-shell posture: host audio stays NEUTRAL unless
+        // --host-audio asks (the app asks for muted), --clipboard-images
+        // implies --clipboard (images never move without text consent),
+        // and --chroma is the declaration.
+        var sessionConfig = LyteUdpSession.Config(
+            hostAudioRouting: hostAudio.flatMap(Self.parseHostAudio),
+            shareClipboard: clipboard || clipboardImages,
+            shareClipboardImages: clipboardImages,
+            chroma: Self.parseChroma(chroma) ?? .good)
         sessionConfig.bindPort = port
         sessionConfig.bindAddress = bind
-        // Debug shell posture: audio is explicit opt-in here (the app
-        // plays it by default) so unattended gate runs stay silent.
+        // Audio playback is opt-in here so unattended gate runs stay silent.
         sessionConfig.audioPlayback = audio
-        // CL-17: the prime forces the drain scenario — the buffer
-        // waits for N packets before playout begins, so the pipe
-        // opens ~N×5 ms deep and the controller + accelerate earn
-        // their way back down on the live wire.
+        // --audio-prime forces the drain scenario: playout waits for N
+        // packets, so the pipe opens ~N×5 ms deep and the controller and
+        // accelerate earn their way back down on the live wire.
         if audioPrime > 0 {
             sessionConfig.core.audioJitter.initialTargetPackets = audioPrime
             sessionConfig.core.audioJitter.maxTargetPackets = max(
                 sessionConfig.core.audioJitter.maxTargetPackets, audioPrime)
         }
-        // CL-13: the session-start posture ask (one 0x18 after the
-        // host's first 0x19, when they differ) — tonight's catch-up
-        // worker drives the whole negotiation live without the app.
-        // The nil assignment is DELIBERATE (CL-18): the core's default
-        // flipped to hostMuted for the app, but the debug shell stays
-        // neutral unless the flag says otherwise — scripted gate runs
-        // keep their pre-CL-18 wire shape.
-        sessionConfig.core.desiredHostAudioRouting =
-            hostAudio.flatMap(Self.parseHostAudio)
-        // CL-15: --clipboard seeds the sharing gate ON (the app's
-        // per-host default's role); the pasteboard watcher arms after
-        // the session starts (it needs the session to funnel into).
-        // P-1: --clipboard-images implies --clipboard (the tier's
-        // shape — images never move without text consent).
-        sessionConfig.core.shareClipboard = clipboard || clipboardImages
-        sessionConfig.core.shareClipboardImages = clipboardImages
-        // V-5: the declared chroma tier — the singleton IS the choice
-        // (the app's per-host preference plays this role; the flag is
-        // the harness's leg).
-        sessionConfig.core.capabilities = sessionConfig.core.capabilities
-            .declaringChroma(tier: Self.parseChroma(chroma) ?? .good)
         let pasteboardBox = LockedCell<PasteboardSync?>(nil)
         // The app's renderer path, exactly: bounded handoff, Conductor
         // playout, recovery flush barrier, IRAP episode close.
