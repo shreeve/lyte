@@ -96,6 +96,10 @@ public final class HostClockModel: @unchecked Sendable {
     private let lock = NSLock()
     private var window: [ClockSample] = []
     private var newestMicroseconds: UInt64 = 0
+    /// The fit of the current window; ingest invalidates it. Readers run
+    /// per delivered frame and per NACK candidate while samples change at
+    /// beacon cadence, so the regression runs once per sample.
+    private var cachedEstimate: Estimate??
 
     public init(config: Config = Config()) {
         self.config = config
@@ -108,6 +112,7 @@ public final class HostClockModel: @unchecked Sendable {
     public func ingest(_ sample: ClockSample) {
         lock.lock()
         defer { lock.unlock() }
+        cachedEstimate = nil
         window.append(sample)
         if sample.measuredAt.microseconds > newestMicroseconds {
             newestMicroseconds = sample.measuredAt.microseconds
@@ -118,12 +123,20 @@ public final class HostClockModel: @unchecked Sendable {
         }
     }
 
-    /// The current fit, or nil before the first sample. Cheap at beacon
-    /// cadence: the window holds ≤ ~30 samples at 1 Hz.
+    /// The current fit, or nil before the first sample. Computed once
+    /// per window change (≤ ~30 samples at 1 Hz) and served from cache.
     public func estimate() -> Estimate? {
         lock.lock()
-        let samples = window
-        lock.unlock()
+        defer { lock.unlock() }
+        if let cachedEstimate { return cachedEstimate }
+        let fit = Self.fit(window, config: config)
+        cachedEstimate = .some(fit)
+        return fit
+    }
+
+    private static func fit(
+        _ samples: [ClockSample], config: Config
+    ) -> Estimate? {
         guard !samples.isEmpty else { return nil }
 
         let minRtt = samples.lazy.map(\.rttMicroseconds).min()!
