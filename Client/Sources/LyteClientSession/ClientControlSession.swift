@@ -12,21 +12,32 @@ public enum ClientControlSessionEvent: Hashable, Sendable {
     case mediaPosture(ClientMediaPostureSessionEvent)
 }
 
+/// A blackout-detector threshold change, for the shell's log line.
+public enum ClientDetectorPosture: Hashable, Sendable {
+    /// Audio evidence arrived: the detector watches at this tighter bound.
+    case tightened(blackoutSilenceMicroseconds: Int64)
+    /// The host announced audio quiet: back to the baseline bound.
+    case relaxed(blackoutSilenceMicroseconds: Int64)
+}
+
 /// One composed client-control decision. The shell sends the returned bytes,
 /// projects the typed event, then executes any lifecycle actions.
 public struct ClientControlSessionDecision: Hashable, Sendable {
     public let outboundReliable: [[UInt8]]
     public let event: ClientControlSessionEvent
     public let lifecycle: ClientSessionLifecycleDecision?
+    public let detectorPosture: ClientDetectorPosture?
 
     public init(
         outboundReliable: [[UInt8]] = [],
         event: ClientControlSessionEvent,
-        lifecycle: ClientSessionLifecycleDecision? = nil
+        lifecycle: ClientSessionLifecycleDecision? = nil,
+        detectorPosture: ClientDetectorPosture? = nil
     ) {
         self.outboundReliable = outboundReliable
         self.event = event
         self.lifecycle = lifecycle
+        self.detectorPosture = detectorPosture
     }
 }
 
@@ -34,7 +45,16 @@ public struct ClientControlSessionDecision: Hashable, Sendable {
 /// It composes capability and lifecycle organs so cross-organ consequences,
 /// such as an unworkable capability set causing typed teardown, are decided
 /// once rather than reimplemented by each platform.
+///
+/// Blackout detector posture: every authenticated host arrival is evidence
+/// the host→client path moves. The baseline threshold sits past an idle
+/// host's 1 Hz beacons; the first audio datagram (a dense path probe)
+/// re-arms it at the tightened bound, and an announced audio quiet relaxes
+/// it until audio resumes. A host without audio never tightens.
 public struct ClientControlSession: Sendable {
+    private let machineConfig: SessionMachineConfig
+    private let tightenedBlackoutSilenceMicroseconds: Int64?
+    public private(set) var detectorTightened = false
     private var lifecycle: ClientSessionLifecycle
     private var capabilities: ClientCapabilitySession
     private var audioRouting: ClientAudioRoutingSession
@@ -48,8 +68,12 @@ public struct ClientControlSession: Sendable {
         desiredHostAudioRouting: HostAudioRoutingMode?,
         clipboardSharingAtStart: Bool = false,
         clipboardImageSharingAtStart: Bool = false,
+        tightenedBlackoutSilenceMicroseconds: Int64? = nil,
         now: ClientTimestamp
     ) {
+        self.machineConfig = machineConfig
+        self.tightenedBlackoutSilenceMicroseconds =
+            tightenedBlackoutSilenceMicroseconds
         lifecycle = ClientSessionLifecycle(config: machineConfig, now: now)
         capabilities = ClientCapabilitySession(local: localCapabilities)
         audioRouting = ClientAudioRoutingSession(
@@ -164,8 +188,26 @@ public struct ClientControlSession: Sendable {
         clipboard.receiveBulk(message, hasher: hasher)
     }
 
+    /// Media-posture bookkeeping only; a shell that tightens the detector
+    /// calls `noteAudioEvidence(now:)` instead.
     public mutating func noteAudioEvidence() {
         mediaPosture.noteAudioEvidence()
+    }
+
+    /// One authenticated audio datagram: the track is active again and, on
+    /// the first one, the detector tightens.
+    public mutating func noteAudioEvidence(
+        now: ClientTimestamp
+    ) -> ClientDetectorPosture? {
+        mediaPosture.noteAudioEvidence()
+        guard let tightened = tightenedBlackoutSilenceMicroseconds,
+              !detectorTightened
+        else { return nil }
+        var config = machineConfig
+        config.blackoutSilenceMicroseconds = tightened
+        guard lifecycle.reconfigure(config, now: now) else { return nil }
+        detectorTightened = true
+        return .tightened(blackoutSilenceMicroseconds: tightened)
     }
 
     /// Advances injected time or applies a local lifecycle input.
@@ -225,7 +267,8 @@ public struct ClientControlSession: Sendable {
                 bytes, agreed: capabilities.agreed
             ) {
                 return ClientControlSessionDecision(
-                    event: .mediaPosture(event))
+                    event: .mediaPosture(event),
+                    detectorPosture: relaxDetectorIfQuiet(event, now: now))
             }
             return nil
         }
@@ -237,5 +280,19 @@ public struct ClientControlSession: Sendable {
             event: .capability(decision.event),
             lifecycle: lifecycleDecision
         )
+    }
+
+    /// An announced audio quiet restores the baseline threshold until
+    /// audio resumes; repeated quiet check-ins change nothing.
+    private mutating func relaxDetectorIfQuiet(
+        _ event: ClientMediaPostureSessionEvent, now: ClientTimestamp
+    ) -> ClientDetectorPosture? {
+        guard case .audioState(let state) = event, state.state == .quiet,
+              detectorTightened,
+              lifecycle.reconfigure(machineConfig, now: now)
+        else { return nil }
+        detectorTightened = false
+        return .relaxed(
+            blackoutSilenceMicroseconds: machineConfig.blackoutSilenceMicroseconds)
     }
 }

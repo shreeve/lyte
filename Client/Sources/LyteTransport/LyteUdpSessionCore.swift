@@ -4,11 +4,6 @@
 // ClientControlSession, and the media organs, behind one lock with an
 // injected clock so tests drive the real assembly in virtual time.
 // `LyteUdpSession` is the production shell that owns the socket.
-//
-// Blackout detector: every authenticated host arrival is evidence the
-// host→client path moves. Default threshold 2.5 s (past an idle host's
-// 1 Hz beacons, under the 30 s liveness teardown); the first audio
-// datagram re-arms it at 350 ms, and an announced audio quiet relaxes it.
 
 import LyteClientCore
 import LyteIO
@@ -54,9 +49,6 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// Every IDR's SPS chroma_format_idc against the agreed chroma.
     private var chromaAudit = ChromaStreamAudit()
     private var counters = LyteUdpSessionCounters()
-    /// True once the first authenticated chan-1 datagram landed and
-    /// (config permitting) the detector re-armed at 350 ms.
-    public private(set) var detectorTightened = false
     /// The production machine-poll wake; nil until `startTimers()`.
     private var machineTimer: DispatchSourceTimer?
 
@@ -120,6 +112,8 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             desiredHostAudioRouting: config.desiredHostAudioRouting,
             clipboardSharingAtStart: config.shareClipboard,
             clipboardImageSharingAtStart: config.shareClipboardImages,
+            tightenedBlackoutSilenceMicroseconds:
+                config.tightenedBlackoutSilenceMicroseconds,
             now: now()
         )
 
@@ -661,13 +655,14 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                 envelope: envelope, payload: payload, now: now)
         } else if envelope.channel == .audio {
             // Audio flows in every non-closed state, so the first audio
-            // datagram tightens the blackout detector to 350 ms.
+            // datagram tightens the blackout detector.
             lock.lock()
             counters.audioDatagramsReceived += 1
-            controlSession.noteAudioEvidence()
+            let posture = controlSession.noteAudioEvidence(now: now)
             lock.unlock()
             audio.ingest(envelope: envelope, payload: payload, now: now)
-            tightenDetectorIfNeeded(now: now)
+            // The next applyMachine pass surfaces any edge this caused.
+            notePosture(posture)
         }
         // Stamp evidence for the beat; only FROZEN must act immediately.
         lastEvidenceMicros.store(now.microseconds, ordering: .relaxed)
@@ -717,42 +712,19 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         }
     }
 
-    /// Restores the default detector threshold until audio resumes.
-    /// No-op when already relaxed (quiet check-ins repeat every ~5 s).
-    private func relaxDetectorForAnnouncedQuiet(now: ClientTimestamp) {
-        lock.lock()
-        guard detectorTightened, controlSession.state != .closed else {
-            lock.unlock()
-            return
+    private func notePosture(_ posture: ClientDetectorPosture?) {
+        switch posture {
+        case .tightened(let bound):
+            onEvent(.protocolNote(
+                "audio evidence — blackout detector tightened to "
+                + "\(bound / 1_000) ms"))
+        case .relaxed(let bound):
+            onEvent(.protocolNote(
+                "audio quiet announced — blackout detector relaxed "
+                + "to \(bound / 1_000) ms"))
+        case nil:
+            break
         }
-        detectorTightened = false
-        _ = controlSession.reconfigure(config.machineConfig, now: now)
-        lock.unlock()
-        onEvent(.protocolNote(String(
-            format: "audio quiet announced — blackout detector relaxed "
-                + "to %d ms",
-            config.machineConfig.blackoutSilenceMicroseconds / 1_000)))
-    }
-
-    /// Rebuilds the receiver machine at the tightened threshold; the wire
-    /// mode is its only durable state and carries over.
-    private func tightenDetectorIfNeeded(now: ClientTimestamp) {
-        guard let tightened = config.tightenedBlackoutSilenceMicroseconds
-        else { return }
-        lock.lock()
-        guard !detectorTightened, controlSession.state != .closed else {
-            lock.unlock()
-            return
-        }
-        detectorTightened = true
-        var machineConfig = config.machineConfig
-        machineConfig.blackoutSilenceMicroseconds = tightened
-        _ = controlSession.reconfigure(machineConfig, now: now)
-        // The next applyMachine pass surfaces any edge this caused.
-        lock.unlock()
-        onEvent(.protocolNote(String(
-            format: "audio evidence — blackout detector tightened to %d ms",
-            tightened / 1_000)))
     }
 
     /// Audits one IDR's in-band SPS chroma; no parseable SPS says nothing.
@@ -806,6 +778,14 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
 
     /// Local overlay only: the path is dark. Never a wire state.
     public var isFrozen: Bool { state == .frozen }
+
+    /// True once authenticated audio tightened the blackout detector, until
+    /// an announced audio quiet relaxes it.
+    public var detectorTightened: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return controlSession.detectorTightened
+    }
 
     public var agreedCapabilities: Capabilities? {
         lock.lock()
@@ -990,6 +970,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         if let note = decision.note {
             onEvent(.protocolNote(note))
         }
+        notePosture(decision.detectorPosture)
         switch decision.event {
         case .capability(.agreed(let intersection)):
             onEvent(.capabilitiesAgreed(intersection))
@@ -1003,7 +984,6 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             onEvent(.hostCursorShapeChanged(shape))
         case .mediaPosture(.audioState(let state)) where state.state == .quiet:
             audio.noteAnnouncedQuiet()
-            relaxDetectorForAnnouncedQuiet(now: now)
         default:
             break
         }
