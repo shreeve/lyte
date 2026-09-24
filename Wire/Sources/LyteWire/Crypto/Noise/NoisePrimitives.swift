@@ -68,7 +68,11 @@ enum NoisePrimitives {
     /// A ChaCha20-Poly1305 key: the raw bytes (REKEY derives from them)
     /// plus the provider's key object, built once per key rather than
     /// once per datagram.
-    struct AeadKey: Sendable {
+    ///
+    /// `@unchecked`: swift-crypto's non-Apple backend (Linux, WebAssembly)
+    /// does not mark `SymmetricKey` `Sendable`, though it is an immutable
+    /// value. Both stored properties are `let` and never mutated.
+    struct AeadKey: @unchecked Sendable {
         let bytes: [UInt8]
         fileprivate let symmetric: SymmetricKey
 
