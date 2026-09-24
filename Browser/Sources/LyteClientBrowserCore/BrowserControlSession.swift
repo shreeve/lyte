@@ -226,15 +226,25 @@ public final class BrowserControlSession {
         return step(outbound: [carriage])
     }
 
-    /// Ingests one opaque datagram from the host.
+    /// Ingests one opaque datagram from the host that arrived just now.
     public func ingest(datagram: [UInt8], nowMicros: UInt64) -> Step {
+        ingest(datagram: datagram[...], arrivalMicros: nowMicros, nowMicros: nowMicros)
+    }
+
+    /// Ingests one opaque datagram that arrived at `arrivalMicros`: the
+    /// beacon echo's t2, the Conductor's arrival and the feedback
+    /// dispersion read the arrival; sends and timers read `nowMicros`.
+    public func ingest(
+        datagram: ArraySlice<UInt8>, arrivalMicros: UInt64, nowMicros: UInt64
+    ) -> Step {
+        let arrival = min(arrivalMicros, nowMicros)
         switch status {
         case .handshaking:
             return ingestHandshake(datagram, nowMicros: nowMicros)
         case .established, .ready, .closed:
-            return ingestSealed(datagram, nowMicros: nowMicros)
+            return ingestSealed(datagram, arrivalMicros: arrival, nowMicros: nowMicros)
         case .failed where transport != nil:
-            return ingestSealed(datagram, nowMicros: nowMicros)
+            return ingestSealed(datagram, arrivalMicros: arrival, nowMicros: nowMicros)
         case .idle, .failed:
             return step(outbound: [])
         }
@@ -414,10 +424,10 @@ public final class BrowserControlSession {
     }
 
     private func ingestHandshake(
-        _ datagram: [UInt8], nowMicros: UInt64
+        _ datagram: ArraySlice<UInt8>, nowMicros: UInt64
     ) -> Step {
         guard var initiator else { return failStep("handshake state missing") }
-        let outcome = initiator.ingest(datagram[...], nowMicros: nowMicros)
+        let outcome = initiator.ingest(datagram, nowMicros: nowMicros)
         self.initiator = initiator
         syncHandshakeCounters()
         switch outcome {
@@ -487,7 +497,7 @@ public final class BrowserControlSession {
     // MARK: Established sealed path
 
     private func ingestSealed(
-        _ datagram: [UInt8], nowMicros: UInt64
+        _ datagram: ArraySlice<UInt8>, arrivalMicros: UInt64, nowMicros: UInt64
     ) -> Step {
         guard var transport else { return failStep("no transport") }
         let envelope: Envelope
@@ -503,7 +513,7 @@ public final class BrowserControlSession {
         }
         self.transport = transport
         pendingEvidenceMicros = nowMicros
-        record(envelope, arrivalMicros: nowMicros)
+        record(envelope, arrivalMicros: arrivalMicros)
 
         // Learned only from an authenticated datagram: a forged first
         // datagram must not choose the conn-id every later send carries.
@@ -512,14 +522,16 @@ public final class BrowserControlSession {
         }
 
         do {
-            return try route(envelope, plaintext, nowMicros: nowMicros)
+            return try route(
+                envelope, plaintext, arrivalMicros: arrivalMicros, nowMicros: nowMicros)
         } catch {
             return failStep("ingest: \(error)")
         }
     }
 
     private func route(
-        _ envelope: Envelope, _ plaintext: [UInt8], nowMicros: UInt64
+        _ envelope: Envelope, _ plaintext: [UInt8],
+        arrivalMicros: UInt64, nowMicros: UInt64
     ) throws -> Step {
         let now = ClientTimestamp(microseconds: nowMicros)
         if isDraining {
@@ -540,7 +552,7 @@ public final class BrowserControlSession {
             let ingested = video.ingestShard(
                 envelope: envelope,
                 payload: plaintext[...],
-                arrivalMicroseconds: nowMicros,
+                arrivalMicroseconds: arrivalMicros,
                 hostClock: hostClock.estimate()
             )
             for line in ingested.events { note(line) }
@@ -588,7 +600,8 @@ public final class BrowserControlSession {
             outbound += try pollArq(nowMicros: nowMicros)
             return step(outbound: outbound)
         default:
-            return step(outbound: try exemptControl(plaintext, nowMicros: nowMicros))
+            return step(outbound: try exemptControl(
+                plaintext, arrivalMicros: arrivalMicros, nowMicros: nowMicros))
         }
     }
 
@@ -597,13 +610,15 @@ public final class BrowserControlSession {
     /// probed, a repair refusal escalates to an IDR. Unknown types are
     /// skipped; malformed words count and drop.
     private func exemptControl(
-        _ payload: [UInt8], nowMicros: UInt64
+        _ payload: [UInt8], arrivalMicros: UInt64, nowMicros: UInt64
     ) throws -> [[UInt8]] {
-        let now = ClientTimestamp(microseconds: nowMicros)
         switch ClientExemptControl(payload: payload) {
         case .clockBeacon(let beacon):
+            // t2 is the beacon's arrival, t3 this echo's emit.
             let (echo, sample) = echoBook.answer(
-                beacon, receivedAt: now, sendingAt: now)
+                beacon,
+                receivedAt: ClientTimestamp(microseconds: arrivalMicros),
+                sendingAt: ClientTimestamp(microseconds: nowMicros))
             if let sample { hostClock.ingest(sample) }
             return [try sealCtrl(plaintext: echo.encode(), nowMicros: nowMicros)]
         case .pathChallenge(let response):

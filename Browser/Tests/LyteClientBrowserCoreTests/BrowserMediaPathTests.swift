@@ -79,6 +79,35 @@ final class BrowserMediaPathTests: XCTestCase {
             "a minute of skew leaked into the path delay")
     }
 
+    /// A beacon's echo carries its arrival as t2: time the page spends
+    /// before draining the datagram is turnaround the host subtracts, not
+    /// round-trip time.
+    func testBeaconEchoStampsTheBeaconsArrivalNotTheDrain() throws {
+        let host = BrowserHostPeer()
+        let (client, readyNotes) = try host.readyClient()
+        var notes = readyNotes
+        let pageDelay: UInt64 = 10_000
+        for _ in 0..<300 {
+            let arrived = host.nowMicros
+            let datagrams = host.drain()
+            host.advance(microseconds: pageDelay)
+            for datagram in datagrams {
+                host.deliver(
+                    client.ingest(
+                        datagram: datagram[...], arrivalMicros: arrived,
+                        nowMicros: host.nowMicros),
+                    notes: &notes)
+            }
+            host.deliver(client.tick(nowMicros: host.nowMicros), notes: &notes)
+        }
+        let rtts: [Int64] = host.events.compactMap {
+            if case .beaconEchoAccepted(_, _, let rtt) = $0 { return rtt }
+            return nil
+        }
+        XCTAssertGreaterThanOrEqual(rtts.count, 2)
+        XCTAssertLessThan(rtts.max() ?? .max, 1_000, "the page's drain delay read as RTT")
+    }
+
     /// A P-frame that loses more data shards than it has parity cannot be
     /// healed by FEC: the browser NACKs the missing shards in an immediate
     /// feedback report, the host's repair judgement honors it, and the

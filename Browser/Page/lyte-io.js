@@ -21,25 +21,32 @@ export function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// A received datagram's age at the batch's `now` rides in its record, so
+// WASM stamps each one at its arrival, not at the drain.
+const MAX_AGE_MICROS = 0xffff_ffff;
+
 /**
- * Datagrams cross the WASM boundary packed as `u16 big-endian length +
- * bytes` records in one Uint8Array (see BrowserBridge.swift).
+ * Received datagrams cross into WASM packed as `u16 big-endian length +
+ * u32 big-endian age µs + bytes` records in one Uint8Array (see
+ * BrowserBridge.swift); `arrivals` are their nowMicros() stamps.
  */
-export function packDatagrams(datagrams) {
+export function packDatagrams(datagrams, arrivals, now) {
   let total = 0;
-  for (const d of datagrams) total += 2 + d.length;
+  for (const d of datagrams) total += 6 + d.length;
   const out = new Uint8Array(total);
+  const view = new DataView(out.buffer);
   let offset = 0;
-  for (const d of datagrams) {
-    out[offset] = d.length >> 8;
-    out[offset + 1] = d.length & 0xff;
-    out.set(d, offset + 2);
-    offset += 2 + d.length;
+  for (let i = 0; i < datagrams.length; i++) {
+    const d = datagrams[i];
+    view.setUint16(offset, d.length);
+    view.setUint32(offset + 2, Math.min(Math.max(now - arrivals[i], 0), MAX_AGE_MICROS));
+    out.set(d, offset + 6);
+    offset += 6 + d.length;
   }
   return out;
 }
 
-/** Zero-copy views over a packed batch. */
+/** Zero-copy views over an outbound batch (`u16 length + bytes` records). */
 export function* unpackDatagrams(packed) {
   let offset = 0;
   while (offset + 2 <= packed.length) {
@@ -52,12 +59,14 @@ export function* unpackDatagrams(packed) {
 
 /**
  * One background reader per WebTransport session. Datagrams queue as they
- * arrive; the pump drains them synchronously, so an empty burst costs no
- * timer and no per-datagram promise race.
+ * arrive, each stamped with its arrival; the pump drains them
+ * synchronously, so an empty burst costs no timer and no per-datagram
+ * promise race.
  */
 export class DatagramReader {
   constructor(readable, { maxQueued = 4096 } = {}) {
     this.queue = [];
+    this.arrivals = [];
     this.dropped = 0;
     this.done = false;
     this.error = null;
@@ -75,9 +84,11 @@ export class DatagramReader {
         if (!value) continue;
         if (this.queue.length >= this.maxQueued) {
           this.queue.shift();
+          this.arrivals.shift();
           this.dropped += 1;
         }
         this.queue.push(value);
+        this.arrivals.push(nowMicros());
         this.wake();
       }
     } catch (error) {
@@ -94,10 +105,11 @@ export class DatagramReader {
     for (const resolve of waiters) resolve();
   }
 
-  /** Everything queued so far. */
+  /** Everything queued so far, with the arrival stamps. */
   take() {
-    const taken = this.queue;
+    const taken = { datagrams: this.queue, arrivals: this.arrivals };
     this.queue = [];
+    this.arrivals = [];
     return taken;
   }
 
@@ -105,11 +117,16 @@ export class DatagramReader {
   wait(ms) {
     if (this.queue.length || this.done) return Promise.resolve();
     return new Promise((resolve) => {
-      const timer = setTimeout(resolve, ms);
-      this.waiters.push(() => {
+      const waiter = () => {
         clearTimeout(timer);
         resolve();
-      });
+      };
+      const timer = setTimeout(() => {
+        const index = this.waiters.indexOf(waiter);
+        if (index >= 0) this.waiters.splice(index, 1);
+        resolve();
+      }, ms);
+      this.waiters.push(waiter);
     });
   }
 

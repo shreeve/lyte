@@ -308,7 +308,12 @@ export async function createOpusDecoder(onPcm) {
     decode(bytes, timestampUs) {
       if (error) throw error;
       decoder.decode(
-        new EncodedAudioChunk({ type: "key", timestamp: timestampUs, data: bytes })
+        new EncodedAudioChunk({
+          type: "key",
+          timestamp: timestampUs,
+          data: bytes,
+          transfer: [bytes.buffer],
+        })
       );
     },
     outputs: () => outputs,

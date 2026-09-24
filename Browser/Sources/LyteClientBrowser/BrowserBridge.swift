@@ -5,9 +5,10 @@ import LyteWire
 
 /// Publishes `globalThis.lyteBrowser`, the page's only door into the
 /// sans-IO core; this file converts values and owns the single session.
-/// Datagrams cross in one `Uint8Array` of `u16 big-endian length + bytes`
-/// records, so a burst costs one call and one copy each way. A step with
-/// nothing to act on returns `null`.
+/// A burst crosses as one `Uint8Array` each way, copied once into WASM
+/// memory and sliced there: received datagrams as `u16 big-endian length +
+/// u32 big-endian age µs + bytes` records, datagrams to send as `u16
+/// length + bytes`. A step with nothing to act on returns `null`.
 enum BrowserBridge {
     // The page's single-threaded pump owns this; JavaScriptKit calls are serial.
     nonisolated(unsafe) private static var session: BrowserControlSession?
@@ -48,15 +49,18 @@ enum BrowserBridge {
         expose("controlIngestBatch") { args in
             withSession { session in
                 // A malformed batch is a page bug, not session evidence.
-                guard let packed = bytes(args, 0), let datagrams = unpack(packed) else {
+                guard let packed = bytes(args, 0), let records = received(packed) else {
                     return .null
                 }
                 let now = micros(args, 1)
                 let before = session.currentStatus
                 var merged: BrowserControlSession.Step?
-                for datagram in datagrams {
-                    let step = session.ingest(datagram: datagram, nowMicros: now)
-                    merged = merged.map { merge($0, step) } ?? step
+                for record in records {
+                    let step = session.ingest(
+                        datagram: packed[record.bytes],
+                        arrivalMicros: now &- min(record.ageMicros, now),
+                        nowMicros: now)
+                    if merged == nil { merged = step } else { merged!.append(step) }
                 }
                 guard let merged else { return .null }
                 return quietOrStep(merged, statusBefore: before)
@@ -184,11 +188,17 @@ enum BrowserBridge {
         return UInt32(value)
     }
 
+    /// One copy, straight from the JS buffer into the array's storage.
     private static func bytes(_ args: [JSValue], _ index: Int) -> [UInt8]? {
         guard index < args.count,
               let typed = JSTypedArray<UInt8>(from: args[index])
         else { return nil }
-        return typed.withUnsafeBytes { Array($0) }
+        let count = typed.length
+        guard count > 0 else { return [] }
+        return [UInt8](unsafeUninitializedCapacity: count) { buffer, initialized in
+            typed.copyMemory(to: buffer)
+            initialized = count
+        }
     }
 
     private static func inputBody(_ args: [JSValue]) -> InputEvent.Body? {
@@ -255,16 +265,6 @@ enum BrowserBridge {
             "message1Transmissions": Double(counters.message1Transmissions).jsValue,
             "idrRequestsSent": Double(counters.idrRequestsSent).jsValue,
         ].jsValue
-    }
-
-    private static func merge(
-        _ into: BrowserControlSession.Step, _ next: BrowserControlSession.Step
-    ) -> BrowserControlSession.Step {
-        var merged = next
-        merged.outbound = into.outbound + next.outbound
-        merged.events = into.events + next.events
-        merged.scheduled = into.scheduled + next.scheduled
-        return merged
     }
 
     private static func quietOrStep(
@@ -335,18 +335,25 @@ enum BrowserBridge {
         return out
     }
 
-    static func unpack(_ packed: [UInt8]) -> [[UInt8]]? {
-        var datagrams: [[UInt8]] = []
+    /// The received batch's records, or nil when it is malformed.
+    static func received(
+        _ packed: [UInt8]
+    ) -> [(bytes: Range<Int>, ageMicros: UInt64)]? {
+        var records: [(bytes: Range<Int>, ageMicros: UInt64)] = []
         var offset = 0
         while offset < packed.count {
-            guard offset + 2 <= packed.count else { return nil }
+            guard offset + 6 <= packed.count else { return nil }
             let length = Int(packed[offset]) << 8 | Int(packed[offset + 1])
-            offset += 2
+            var age: UInt64 = 0
+            for byte in packed[(offset + 2)..<(offset + 6)] {
+                age = age << 8 | UInt64(byte)
+            }
+            offset += 6
             guard offset + length <= packed.count else { return nil }
-            datagrams.append(Array(packed[offset..<offset + length]))
+            records.append((offset..<(offset + length), age))
             offset += length
         }
-        return datagrams
+        return records
     }
 
     // MARK: Frames
@@ -360,5 +367,17 @@ enum BrowserBridge {
             "byteCount": Double(bytes.count).jsValue,
             "summary": AnnexBCheck.summary(of: bytes).jsValue,
         ].jsValue
+    }
+}
+
+extension BrowserControlSession.Step {
+    /// Folds a later step of the same burst into this one, in place.
+    fileprivate mutating func append(_ next: Self) {
+        outbound.append(contentsOf: next.outbound)
+        events.append(contentsOf: next.events)
+        scheduled.append(contentsOf: next.scheduled)
+        status = next.status
+        detail = next.detail
+        passed = next.passed
     }
 }
