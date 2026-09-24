@@ -24,7 +24,7 @@ final class SansIOArchitectureTests: XCTestCase {
         ),
         Boundary(
             path: "Client/Sources/LyteClientSession",
-            allowedImports: ["LyteWire"]
+            allowedImports: ["LyteCore", "LyteWire"]
         ),
         Boundary(
             path: "Wire/Sources/LyteWire",
@@ -36,7 +36,7 @@ final class SansIOArchitectureTests: XCTestCase {
         ),
         Boundary(
             path: "Host/Sources/HostSession",
-            allowedImports: ["LyteWire"]
+            allowedImports: ["LyteCore", "LyteWire"]
         ),
     ]
 

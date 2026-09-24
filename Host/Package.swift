@@ -33,7 +33,10 @@ var targets: [Target] = [
     ),
     .target(
         name: "HostSession",
-        dependencies: [.product(name: "LyteWire", package: "Wire")]
+        dependencies: [
+            .product(name: "LyteCore", package: "Common"),
+            .product(name: "LyteWire", package: "Wire"),
+        ]
     ),
     .testTarget(
         name: "HostSessionTests",
