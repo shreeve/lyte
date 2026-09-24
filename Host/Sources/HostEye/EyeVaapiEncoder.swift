@@ -70,6 +70,8 @@ public final class EyeVaapiEncoder {
     private var poc: UInt32 = 0
     private var previousRecon = VASurfaceID(VA_INVALID_ID)
     private var previousPoc: UInt32 = 0
+    /// Joins a multi-segment coded buffer; capacity is kept across frames.
+    private var assembly: [UInt8] = []
 
     private func check(_ status: VAStatus, _ what: String) throws {
         guard status == VA_STATUS_SUCCESS else {
@@ -377,12 +379,16 @@ public final class EyeVaapiEncoder {
 
     // MARK: The per-frame drive
 
-    /// Encodes one blitted input surface; returns the complete
-    /// access unit (Annex-B, packed headers included — the driver
-    /// writes them into the coded buffer ahead of the slice data).
-    public func encode(
-        surface: VASurfaceID, forceIDR: Bool
-    ) throws -> (data: [UInt8], keyframe: Bool) {
+    /// Encodes one blitted input surface and lends the complete access
+    /// unit (Annex-B, packed headers included — the driver writes them
+    /// into the coded buffer ahead of the slice data) to `body`, with
+    /// whether it is an IDR. The bytes are valid only inside `body`: a
+    /// single coded segment (the common case) is the mapped VA buffer
+    /// itself; a segment chain is joined into a reused scratch buffer.
+    public func encode<R>(
+        surface: VASurfaceID, forceIDR: Bool,
+        _ body: (UnsafeRawBufferPointer, Bool) throws -> R
+    ) throws -> R {
         let idr = frameIndex == 0 || forceIDR
         if idr { poc = 0 }
         let recon = reconSurfaces[Int(frameIndex % 2)]
@@ -437,25 +443,40 @@ public final class EyeVaapiEncoder {
         var mapped: UnsafeMutableRawPointer?
         try check(vaMapBuffer(display, codedBuffer, &mapped),
                   "vaMapBuffer(coded)")
-        var out: [UInt8] = []
+        defer { _ = vaUnmapBuffer(display, codedBuffer) }
+        // The picture is encoded: the reference chain advances before the
+        // bytes are lent, so a throwing `body` cannot desync it.
+        previousRecon = recon
+        previousPoc = poc
+        poc &+= 1
+        frameIndex += 1
+        var segments: [UnsafeRawBufferPointer] = []
         var segment = mapped?.assumingMemoryBound(
             to: VACodedBufferSegment.self)
         while let s = segment {
             let seg = s.pointee
             if let buf = seg.buf, seg.size > 0 {
-                out.append(contentsOf: UnsafeRawBufferPointer(
+                segments.append(UnsafeRawBufferPointer(
                     start: buf, count: Int(seg.size)))
             }
             segment = seg.next?.assumingMemoryBound(
                 to: VACodedBufferSegment.self)
         }
-        _ = vaUnmapBuffer(display, codedBuffer)
+        if segments.count == 1 {
+            return try body(segments[0], idr)
+        }
+        assembly.removeAll(keepingCapacity: true)
+        for piece in segments { assembly.append(contentsOf: piece) }
+        return try assembly.withUnsafeBytes { try body($0, idr) }
+    }
 
-        previousRecon = recon
-        previousPoc = poc
-        poc &+= 1
-        frameIndex += 1
-        return (out, idr)
+    /// Owned-bytes convenience over the lending `encode`.
+    public func encode(
+        surface: VASurfaceID, forceIDR: Bool
+    ) throws -> (data: [UInt8], keyframe: Bool) {
+        try encode(surface: surface, forceIDR: forceIDR) {
+            (Array($0), $1)
+        }
     }
 
     // MARK: Buffer builders (vaapi_encode_h265.c's fills, mirrored)

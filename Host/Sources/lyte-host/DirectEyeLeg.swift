@@ -258,13 +258,13 @@ final class DirectEyeLeg {
         // loop while screen reads stay on their independent 60 Hz grid.
         func serveRetainedFrameIfNeeded() throws -> Bool {
             if staticIdrWanted, let sid = lastEncodedSurface {
-                let packet = try encoder.encode(surface: sid, forceIDR: true)
-                let causes = packet.keyframe ? pendingCauses : []
-                if packet.keyframe { pendingCauses.removeAll() }
-                deliver(Data(packet.data),
-                        keyframe: packet.keyframe,
-                        causes: causes,
-                        captureUs: lastEncodedCaptureUs)
+                try encoder.encode(surface: sid, forceIDR: true) {
+                    bytes, keyframe in
+                    let causes = keyframe ? pendingCauses : []
+                    if keyframe { pendingCauses.removeAll() }
+                    deliver(bytes, keyframe: keyframe, causes: causes,
+                            captureUs: lastEncodedCaptureUs)
+                }
                 staticIdrWanted = false
                 staticIdrsServed += 1
                 lastDeliveryWallSeconds = SystemMonotonicClock.nowSeconds
@@ -292,12 +292,11 @@ final class DirectEyeLeg {
             if wire != nil, let sid = lastEncodedSurface,
                SystemMonotonicClock.nowSeconds - lastDeliveryWallSeconds
                    >= keepaliveInterval {
-                let packet = try encoder.encode(
-                    surface: sid, forceIDR: false)
-                deliver(Data(packet.data),
-                        keyframe: packet.keyframe,
-                        causes: [],
-                        captureUs: lastEncodedCaptureUs)
+                try encoder.encode(surface: sid, forceIDR: false) {
+                    bytes, keyframe in
+                    deliver(bytes, keyframe: keyframe, causes: [],
+                            captureUs: lastEncodedCaptureUs)
+                }
                 keepalivesSent += 1
                 lastDeliveryWallSeconds = SystemMonotonicClock.nowSeconds
                 return true
@@ -565,16 +564,18 @@ final class DirectEyeLeg {
                 }
                 let encodeStart = SystemMonotonicClock.nowMicroseconds
                 lastStages.blitUs = encodeStart - blitStart
-                let packet = try encoder.encode(
-                    surface: sid, forceIDR: forceIdr)
-                let deliverStart = SystemMonotonicClock.nowMicroseconds
-                lastStages.encodeUs = deliverStart - encodeStart
-                lastEncodedSurface = sid
-                lastEncodedCaptureUs = captureUs
-                let causes = packet.keyframe ? pendingCauses : []
-                if packet.keyframe { pendingCauses.removeAll() }
-                deliver(Data(packet.data), keyframe: packet.keyframe,
-                        causes: causes, captureUs: captureUs)
+                var deliverStart: UInt64 = 0
+                try encoder.encode(surface: sid, forceIDR: forceIdr) {
+                    bytes, keyframe in
+                    deliverStart = SystemMonotonicClock.nowMicroseconds
+                    lastStages.encodeUs = deliverStart - encodeStart
+                    lastEncodedSurface = sid
+                    lastEncodedCaptureUs = captureUs
+                    let causes = keyframe ? pendingCauses : []
+                    if keyframe { pendingCauses.removeAll() }
+                    deliver(bytes, keyframe: keyframe, causes: causes,
+                            captureUs: captureUs)
+                }
                 lastStages.deliverUs = SystemMonotonicClock.nowMicroseconds - deliverStart
                 maxStages.formMax(lastStages)
                 frames += 1
@@ -718,30 +719,31 @@ final class DirectEyeLeg {
             pixels: frame.pixels))
     }
 
-    private func deliver(_ packet: Data, keyframe: Bool,
+    /// One encoded access unit, borrowed from the encoder's coded buffer
+    /// for the duration of the call.
+    private func deliver(_ packet: UnsafeRawBufferPointer, keyframe: Bool,
                          causes: [String], captureUs: UInt64) {
-        packet.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-            let base = raw.baseAddress!.assumingMemoryBound(to: UInt8.self)
-            if firstPacket.isEmpty {
-                firstPacket = Array(raw.bindMemory(to: UInt8.self))
+        guard let base = packet.baseAddress?.assumingMemoryBound(
+            to: UInt8.self) else { return }
+        if firstPacket.isEmpty {
+            firstPacket = Array(packet)
+        }
+        if let wire {
+            do {
+                try wire.sendFrame(
+                    data: base, size: packet.count,
+                    isKeyframe: keyframe, captureMicros: captureUs)
+                wire.annotateLastVideoFrame(
+                    averageQP: nil,
+                    idrCauses: keyframe
+                        ? (causes.isEmpty ? ["spontaneous"] : causes)
+                        : [])
+            } catch {
+                lastError = "direct: session send failed: \(error)"
+                return
             }
-            if let wire {
-                do {
-                    try wire.sendFrame(
-                        data: base, size: packet.count,
-                        isKeyframe: keyframe, captureMicros: captureUs)
-                    wire.annotateLastVideoFrame(
-                        averageQP: nil,
-                        idrCauses: keyframe
-                            ? (causes.isEmpty ? ["spontaneous"] : causes)
-                            : [])
-                } catch {
-                    lastError = "direct: session send failed: \(error)"
-                    return
-                }
-            } else if let file {
-                fwrite(base, 1, packet.count, file)
-            }
+        } else if let file {
+            fwrite(base, 1, packet.count, file)
         }
         bytes += packet.count
         if keyframe { keyframes += 1 }

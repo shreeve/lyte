@@ -259,11 +259,17 @@ func runNativeCapture(
             blitMs += (SystemMonotonicClock.nowSeconds - tBlit) * 1e3
 
             let tEnc = SystemMonotonicClock.nowSeconds
-            let (data, keyframe) = try encoder.encode(
-                surface: surface, forceIDR: false)
-            encodeMs += (SystemMonotonicClock.nowSeconds - tEnc) * 1e3
-            file.write(Data(data))
-            bytes += data.count
+            var tWrite = 0.0
+            let (count, keyframe) = try encoder.encode(
+                surface: surface, forceIDR: false) { bytes, keyframe in
+                let start = SystemMonotonicClock.nowSeconds
+                file.write(Data(bytes))
+                tWrite = SystemMonotonicClock.nowSeconds - start
+                return (bytes.count, keyframe)
+            }
+            encodeMs +=
+                (SystemMonotonicClock.nowSeconds - tEnc - tWrite) * 1e3
+            bytes += count
             if keyframe { keyframes += 1 }
             frames += 1
             framesThisSecond += 1
