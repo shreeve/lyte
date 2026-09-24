@@ -120,13 +120,15 @@ public enum AudioFramerError: Error, Equatable, Sendable {
     case packetOverBudget(Int)
 }
 
+/// Lifetime totals, `UInt64` like `AudioDepacketizerStats` so a 32-bit
+/// (wasm32) `Int` cannot overflow on a long-running stream.
 public struct AudioFramerCounters: Equatable, Sendable {
-    public var packetsIngested = 0
-    public var groupsCompleted = 0
+    public var packetsIngested: UInt64 = 0
+    public var groupsCompleted: UInt64 = 0
     /// Groups closed early without parity: by a packet size change
     /// mid-group, or by `abandonOpenGroup()`.
-    public var groupsAbandoned = 0
-    public var datagramsFramed = 0
+    public var groupsAbandoned: UInt64 = 0
+    public var datagramsFramed: UInt64 = 0
 
     public init() {}
 }
@@ -206,7 +208,7 @@ public final class AudioFramer {
         if groupPackets.count == config.dataShardsPerGroup {
             out += try completeGroup(geometry: geometry)
         }
-        counters.datagramsFramed += out.count
+        counters.datagramsFramed += UInt64(out.count)
         return out
     }
 
