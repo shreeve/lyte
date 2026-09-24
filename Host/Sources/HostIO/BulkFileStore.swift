@@ -8,9 +8,11 @@
 //   .lyte-bulk-<16-hex transferId>.resume  the persisted
 //                                          BulkResumeState (SecretFile:
 //                                          atomic tmp+fsync+rename)
-// Completion promotes the .part by fsync-then-rename to the sanitized
-// final name, then fsyncs the directory: a kill -9 at any instant leaves
-// the dotted staging pair or the finished file, never a visible partial.
+// Completion fsyncs the .part, links it to the sanitized final name only
+// if that name is free, unlinks the .part and fsyncs the directory: a
+// kill -9 at any instant leaves the dotted staging pair or the finished
+// file, never a visible partial, and a promotion never replaces a file
+// already in the directory.
 
 #if canImport(Darwin)
 import Darwin
@@ -72,6 +74,12 @@ public final class BulkFileStore: BulkReceiveStore {
         _ data: [UInt8], atByteOffset byteOffset: UInt64
     ) throws {
         guard fd >= 0 else { throw BulkStoreError.noStagingOpen }
+        // The wire bounds offsets by a UInt64 total; the file by off_t.
+        guard let base = off_t(exactly: byteOffset),
+              base <= off_t.max - off_t(data.count)
+        else {
+            throw BulkStoreError.writeFailed("offset \(byteOffset) past off_t")
+        }
         var written = 0
         while written < data.count {
             let result = data.withUnsafeBytes { buffer -> Int in
@@ -79,7 +87,7 @@ public final class BulkFileStore: BulkReceiveStore {
                     fd,
                     buffer.baseAddress!.advanced(by: written),
                     data.count - written,
-                    off_t(byteOffset) + off_t(written)
+                    base + off_t(written)
                 )
             }
             if result < 0 {
@@ -128,11 +136,23 @@ public final class BulkFileStore: BulkReceiveStore {
         close(fd)
         fd = -1
         openTransferId = nil
+        let staging = stagingPath(transferId)
         let destination = directoryPath + "/\(name)"
-        guard rename(stagingPath(transferId), destination) == 0 else {
+        if link(staging, destination) == 0 {
+            unlink(staging)
+        } else if [EPERM, ENOTSUP, EOPNOTSUPP, EMLINK].contains(errno) {
+            // A filesystem without hard links: the best no-replace
+            // rename it offers.
+            guard access(destination, F_OK) != 0 else {
+                throw BulkStoreError.renameFailed("\(destination): exists")
+            }
+            guard rename(staging, destination) == 0 else {
+                throw BulkStoreError.renameFailed(
+                    "\(destination): \(Posix.errnoText())")
+            }
+        } else {
             throw BulkStoreError.renameFailed(
-                "\(destination): \(Posix.errnoText())"
-            )
+                "\(destination): \(Posix.errnoText())")
         }
         Posix.syncDirectory(directoryPath)
     }

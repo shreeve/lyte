@@ -8,7 +8,8 @@ import HostIO
 import LyteWire
 import XCTest
 
-/// The POSIX file-drop store on its own.
+/// The POSIX file-drop store on its own: descriptor ownership, the
+/// no-overwrite promotion, and hostile offsets at the filesystem seam.
 final class BulkFileStoreTests: XCTestCase {
     private var directory = ""
 
@@ -40,6 +41,43 @@ final class BulkFileStoreTests: XCTestCase {
         XCTAssertEqual(sentinel.stolen, 0,
                        "persistResumeState closed a descriptor it did not own")
         XCTAssertEqual(store.loadResumeStates(), [state])
+    }
+
+    /// A name that became taken after the collision check — another
+    /// writer, or a name the client planted — is never replaced: the
+    /// promotion fails and the verified staging bytes stay.
+    func testPromotionNeverReplacesAFileAlreadyThere() throws {
+        let store = try BulkFileStore(directoryPath: directory)
+        let existing = directory + "/photo.png"
+        XCTAssertTrue(FileManager.default.createFile(
+            atPath: existing, contents: Data([0xAA, 0xBB])))
+        try store.openStaging(transferId: 7)
+        try store.writeChunkDurably([1, 2, 3], atByteOffset: 0)
+        XCTAssertThrowsError(try store.promoteStaging(toName: "photo.png"))
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: existing)),
+            Data([0xAA, 0xBB]))
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: store.stagingPath(7))),
+            Data([1, 2, 3]))
+
+        try store.openStaging(transferId: 7)
+        try store.promoteStaging(toName: "photo (1).png")
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: directory + "/photo (1).png")),
+            Data([1, 2, 3]))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.stagingPath(7)))
+    }
+
+    /// The wire allows offsets up to UInt64.max; one past off_t is a
+    /// refused write, not a trap.
+    func testChunkOffsetPastTheFileOffsetRangeIsRefused() throws {
+        let store = try BulkFileStore(directoryPath: directory)
+        try store.openStaging(transferId: 9)
+        for offset in [UInt64.max, UInt64(Int64.max), UInt64(Int64.max) - 1] {
+            XCTAssertThrowsError(
+                try store.writeChunkDurably([1, 2, 3], atByteOffset: offset))
+        }
     }
 
     private func resumeState(transferId: UInt64) -> BulkResumeState {
