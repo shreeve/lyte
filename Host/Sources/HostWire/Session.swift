@@ -656,6 +656,23 @@ public final class Session {
     /// The message 1 this session answered; nil before its handshake and
     /// once the initiator is confirmed.
     public var answeredMessage1: [UInt8]? { answeredHandshake?.message1 }
+    /// When message 2 last left for the unconfirmed handshake: its first
+    /// answer or the latest verbatim resend.
+    private var lastAnswerNS: UInt64?
+    /// How long an unconfirmed answer outlives its latest send. The
+    /// client's longest message-1 retransmit span is a connect's first
+    /// dial, 5 × 2 s = 10 s (`ClientHandshakeInitiator.Retry.firstDial`
+    /// in LyteClientSession); 2 s more covers the confirming round trip.
+    /// Every verbatim resend restarts the span, so a client whose early
+    /// message 2s were lost is still answered on its last retransmit.
+    public static let unconfirmedAnswerLifetimeNS: UInt64 = 12_000_000_000
+    /// True once an answered handshake has gone unconfirmed for
+    /// `unconfirmedAnswerLifetimeNS` since message 2 last left: no client
+    /// is behind it (a replay, a spoofed source, an abandoned dial).
+    public func isUnconfirmedAnswerAbandoned(now: UInt64) -> Bool {
+        guard !isPeerConfirmed, let lastAnswerNS else { return false }
+        return now &- lastAnswerNS >= Self.unconfirmedAnswerLifetimeNS
+    }
     private var supersedingHandshake: SupersedingHandshake?
     /// Whether the flood dial currently demands a retry cookie.
     public var handshakeCookieMode: Bool { handshakeGate.cookieMode }
@@ -934,6 +951,7 @@ public final class Session {
             // Key possession proven: the session is committed.
             isPeerConfirmed = true
             answeredHandshake = nil
+            lastAnswerNS = nil
             supersedingHandshake = nil
         }
 
@@ -1229,6 +1247,7 @@ public final class Session {
                     body: answered.message2Body, sealed: false,
                     now: now, hostMicroseconds: hostMicroseconds)
                 counters.handshakeMessage2Resends += 1
+                lastAnswerNS = now
                 return []
             } catch {
                 return [.sendFailed(String(describing: error))]
@@ -2938,6 +2957,7 @@ public final class Session {
             )
             transport = try responder.makeTransport()
             answeredHandshake = (Array(message1), message2Body)
+            lastAnswerNS = now
         } catch {
             return [.dropped(.handshakeFailed(String(describing: error)))]
         }

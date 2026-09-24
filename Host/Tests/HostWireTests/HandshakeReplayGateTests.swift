@@ -167,6 +167,56 @@ final class HandshakeReplayGateTests: XCTestCase {
         XCTAssertTrue(session.isPeerConfirmed)
     }
 
+    /// A connect's first dial retransmits message 1 at 0, 2, 4, 6 and 8 s
+    /// and waits until 10 s. Every message 2 but the last is lost: the
+    /// answer is never abandoned while the client is still dialing, and
+    /// the resend at 8 s completes the session. Only a lifetime of quiet
+    /// after the latest send abandons an answer.
+    func testAnAnswerLivesThroughTheClientsWholeFirstDial() throws {
+        let host = NoiseKeyPair.generate()
+        let sink = Sink()
+        let session = makeSession(host: host, tuple: Self.client, sink: sink, seed: 12)
+        var client = try SealedCtrlPeer<ClientClock>(initiatorTo: host.publicKey)
+        let first = try client.message1Datagram(timestamp: 1)
+        let second: UInt64 = 1_000_000_000
+        XCTAssertTrue(completed(session.receive(
+            first, from: Self.client, now: 0, hostMicroseconds: 0)))
+        session.pump(now: 0)
+        _ = sink.take() // lost
+
+        var lastAnswer: VideoChannelDatagram?
+        for attempt in UInt64(1)...4 {
+            let now = attempt * 2 * second
+            XCTAssertFalse(session.isUnconfirmedAnswerAbandoned(now: now),
+                           "abandoned before the retransmit at \(attempt * 2) s")
+            _ = session.receive(
+                try reenvelope(first, timestamp: now / 1_000),
+                from: Self.client, now: now, hostMicroseconds: now / 1_000)
+            session.pump(now: now)
+            lastAnswer = sink.take().first {
+                (try? Envelope.decode($0.bytes[...]))?.1.first
+                    == CtrlMessageType.noiseHandshake2
+            }
+            XCTAssertNotNil(lastAnswer, "message 2 resent at \(attempt * 2) s")
+        }
+        XCTAssertEqual(session.counters.handshakeMessage2Resends, 4)
+        let delivered = 8 * second
+        XCTAssertFalse(session.isUnconfirmedAnswerAbandoned(
+            now: delivered + Session.unconfirmedAnswerLifetimeNS - 1))
+        XCTAssertTrue(session.isUnconfirmedAnswerAbandoned(
+            now: delivered + Session.unconfirmedAnswerLifetimeNS))
+
+        _ = try client.absorb(try XCTUnwrap(lastAnswer).bytes, nowMicros: 8_000_001)
+        let sealed = try client.datagram(
+            body: [CtrlMessageType.arqAck, 0, 0], timestamp: 8_000_002)
+        _ = session.receive(sealed, from: Self.client,
+                            now: delivered + 1_000_000, hostMicroseconds: 8_001_000)
+        XCTAssertTrue(session.isPeerConfirmed)
+        XCTAssertFalse(session.isUnconfirmedAnswerAbandoned(
+            now: delivered + 10 * Session.unconfirmedAnswerLifetimeNS),
+            "a confirmed session is never an abandoned answer")
+    }
+
     /// The confirming datagram is sealed; its first ciphertext byte is
     /// 0x05 (message 1's type) one time in 256. It must still confirm —
     /// the AEAD is asked before the handshake shape is.
