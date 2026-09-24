@@ -160,7 +160,10 @@ final class ConnectionModel {
     /// The link-health fold over the recorder's ring. Ticked at 1 Hz; its
     /// ordinal high-water mark makes overlapping scans idempotent, and a
     /// recorder reset (ordinals restart) clears it implicitly.
-    private let linkHealthMeter = LinkHealthMeter()
+    private let linkHealthMeter = LinkHealthMeter(
+        trace: ProcessInfo.processInfo
+            .environment["LYTE_LINK_HEALTH_DEBUG"] == "1"
+            ? { line in print(line); fflush(stdout) } : nil)
     /// nil until streaming produces a verdict; .good renders nothing.
     private(set) var linkHealth: LinkHealthAssessment?
     /// in-fps over the delivery books' out-fps window shape, so the

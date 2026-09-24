@@ -1,5 +1,6 @@
 import LyteIO
 import SwiftUI
+import LyteClientCore
 import LyteTransport
 import LyteUI
 import UniformTypeIdentifiers

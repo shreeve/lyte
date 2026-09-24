@@ -1,5 +1,6 @@
+import Foundation
 import XCTest
-@testable import LyteTransport
+@testable import LyteClientCore
 
 /// The user-facing video-health law: successful correction is silent. Only a
 /// terminal, uncorrectable presentation miss or renderer failure enters the
