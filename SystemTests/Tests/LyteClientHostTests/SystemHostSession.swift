@@ -11,7 +11,7 @@ import XCTest
 /// Both cross-end gates use this one host boundary; feature policy remains in
 /// the real Session and its production services.
 final class SystemHostSession: NoiseHandshakeIO {
-    private static let tuple = FourTuple(
+    static let initialClientTuple = FourTuple(
         localAddress: "10.0.0.249", localPort: 41_081,
         remoteAddress: "10.0.0.23", remotePort: 61_000
     )
@@ -27,10 +27,12 @@ final class SystemHostSession: NoiseHandshakeIO {
     private var nextFrameNumber: UInt32 = 0
     private var repairsTaken = 0
     private(set) var events: [SessionEvent] = []
+    /// Where client datagrams arrive from; a gate moves it to roam.
+    var clientTuple = SystemHostSession.initialClientTuple
 
     private(set) lazy var session = Session(
         config: config,
-        clientTuple: Self.tuple,
+        clientTuple: Self.initialClientTuple,
         now: 0,
         rng: SplitMix64(seed: 0xC1_12),
         send: { [outbox] datagram in
@@ -54,7 +56,7 @@ final class SystemHostSession: NoiseHandshakeIO {
     func sendToHost(_ datagram: [UInt8]) throws {
         record(session.receive(
             datagram,
-            from: Self.tuple,
+            from: clientTuple,
             now: nowNS,
             hostMicroseconds: nowNS / 1_000
         ))
@@ -77,7 +79,7 @@ final class SystemHostSession: NoiseHandshakeIO {
         try advanceClock(to: arrivalNS)
         let received = session.receive(
             bytes,
-            from: Self.tuple,
+            from: clientTuple,
             now: nowNS,
             hostMicroseconds: nowNS / 1_000
         )

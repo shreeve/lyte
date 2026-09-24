@@ -23,6 +23,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public let config: LyteUdpSessionCoreConfig
 
     private let now: @Sendable () -> ClientTimestamp
+    private let sender: TransportSender
     /// Makes the clipboard-image hasher (LyteCore's SHA-256 unless
     /// injected): a local copy is hashed whole, outside the lock; an
     /// incoming image one chunk per message.
@@ -111,6 +112,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         self.config = config
         self.clockModel = clockModel
         self.now = now
+        self.sender = sender
         self.imageHasher = imageHasher
         self.onEvent = onEvent
         self.onVideoRecoveryDemand = onVideoRecoveryDemand
@@ -657,11 +659,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             if !reliable.handleCtrlDatagram(
                 envelope: envelope, payload: payload, now: now
             ) {
-                if !echoResponder.handleCtrlPayload(
-                    payload, arrivalMicroseconds: now.microseconds
-                ) {
-                    handleExemptCtrl(payload, now: now)
-                }
+                handleExemptCtrl(payload, now: now)
             }
         } else if envelope.channel == pipeline.channel {
             // Record the lastInputSeq TLV before ingest: delivery may
@@ -690,23 +688,45 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         }
     }
 
-    /// ARQ-exempt CTRL beyond the beacon: a 0x23 repair refusal escalates
-    /// that frame to an IDR now. Unknown types are skipped silently (the
-    /// forward-compat contract); malformed refusals count and drop.
+    /// ARQ-exempt CTRL, classified by the shared session vocabulary: a
+    /// beacon is echoed, a path challenge answered on the path it probed,
+    /// a 0x23 repair refusal escalates that frame to an IDR now. Unknown
+    /// types are skipped silently (the forward-compat contract);
+    /// malformed words count and drop.
     private func handleExemptCtrl(
         _ payload: [UInt8], now: ClientTimestamp
     ) {
-        guard payload.first == CtrlMessageType.repairRefused else {
-            return
-        }
-        guard let refusal = try? RepairRefusal.decode(payload) else {
+        switch ClientExemptControl(payload: payload) {
+        case .clockBeacon(let beacon):
+            echoResponder.answer(beacon, arrivalMicroseconds: now.microseconds)
+        case .pathChallenge(let response):
+            // The reply leaves from wherever this socket now sends, which
+            // is the tuple the host probed; the tag names the session.
+            let tag = reliable.learnedConnectionId.map { [$0.wireExtension] }
+            do {
+                _ = try sender.send(
+                    channel: .ctrl, timestamp: self.now(),
+                    plaintext: response.encode(), extensions: tag ?? [])
+                lock.lock()
+                counters.pathChallengesAnswered += 1
+                lock.unlock()
+            } catch {
+                onEvent(.protocolNote("path response send refused: \(error)"))
+            }
+        case .repairRefused(let refusal):
+            onEvent(.protocolNote(
+                "nack: frame \(refusal.frame.rawValue) repair refused "
+                + "by host (\(refusal.reason)) — IDR now"))
+            nackPolicy.handleRefusal(frame: refusal.frame, now: now)
+        case .malformed(type: CtrlMessageType.clockBeacon):
+            echoResponder.noteMalformedBeacon()
+        case .malformed(type: CtrlMessageType.pathChallenge):
+            noteMalformed("path challenge")
+        case .malformed:
             noteMalformed("repair refusal")
-            return
+        case .unclaimed:
+            break
         }
-        onEvent(.protocolNote(
-            "nack: frame \(refusal.frame.rawValue) repair refused "
-            + "by host (\(refusal.reason)) — IDR now"))
-        nackPolicy.handleRefusal(frame: refusal.frame, now: now)
     }
 
     /// Restores the default detector threshold until audio resumes.

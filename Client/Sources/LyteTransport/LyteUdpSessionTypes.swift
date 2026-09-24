@@ -104,6 +104,8 @@ public struct LyteUdpSessionCounters: Sendable {
     public var malformedReliableMessages: UInt64 = 0
     /// 0x17 echo messages consumed.
     public var inputEchoMessagesReceived: UInt64 = 0
+    /// 0x03 path challenges answered with their 0x04 echo.
+    public var pathChallengesAnswered: UInt64 = 0
     /// Chan-1 datagrams routed to the audio receiver.
     public var audioDatagramsReceived: UInt64 = 0
     /// 0x18 flip requests sent, the session-start ask included.

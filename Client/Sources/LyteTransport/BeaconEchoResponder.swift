@@ -47,19 +47,19 @@ public final class BeaconEchoResponder: @unchecked Sendable {
         _ payload: [UInt8],
         arrivalMicroseconds: UInt64
     ) -> Bool {
-        guard CtrlMessageType.peek(payload) == CtrlMessageType.clockBeacon else {
+        switch ClientExemptControl(payload: payload) {
+        case .clockBeacon(let beacon):
+            answer(beacon, arrivalMicroseconds: arrivalMicroseconds)
+        case .malformed(type: CtrlMessageType.clockBeacon):
+            noteMalformedBeacon()
+        default:
             return false
         }
-        let beacon: ClockBeacon
-        do {
-            beacon = try ClockBeacon.decode(payload)
-        } catch {
-            lock.lock()
-            stats.malformedBeacons += 1
-            lock.unlock()
-            return true   // it named itself a beacon; it was consumed here
-        }
+        return true
+    }
 
+    /// Echoes one decoded beacon, stamping t3 now.
+    public func answer(_ beacon: ClockBeacon, arrivalMicroseconds: UInt64) {
         let t2 = ClientTimestamp(microseconds: arrivalMicroseconds)
         let t3 = now()
 
@@ -74,7 +74,13 @@ public final class BeaconEchoResponder: @unchecked Sendable {
 
         if let closed { onClockSample?(closed) }
         emit(echo)
-        return true
+    }
+
+    /// A payload named itself a beacon and did not decode.
+    public func noteMalformedBeacon() {
+        lock.lock()
+        stats.malformedBeacons += 1
+        lock.unlock()
     }
 
     public func snapshotStats() -> Stats {

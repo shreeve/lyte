@@ -190,6 +190,24 @@ final class ClientInitiatorPiecesTests: XCTestCase {
         XCTAssertEqual(book.mirrorsRefused, 3)
     }
 
+    // MARK: Exempt CTRL
+
+    func testExemptControlAnswersChallengesAndCountsMalformedWords() {
+        let challenge = PathChallenge(token: 0x0123_4567_89AB_CDEF)
+        XCTAssertEqual(
+            ClientExemptControl(payload: challenge.encode()),
+            .pathChallenge(response: PathResponse(token: challenge.token)))
+        XCTAssertEqual(
+            ClientExemptControl(payload: [CtrlMessageType.pathChallenge, 0]),
+            .malformed(type: CtrlMessageType.pathChallenge))
+        let beacon = ClockBeacon(
+            beaconSeq: 4, hostSend: HostTimestamp(microseconds: 9))
+        XCTAssertEqual(ClientExemptControl(payload: beacon.encode()),
+                       .clockBeacon(beacon))
+        XCTAssertEqual(ClientExemptControl(payload: [0x7E, 1, 2]), .unclaimed)
+        XCTAssertEqual(ClientExemptControl(payload: []), .unclaimed)
+    }
+
     // MARK: Carriage books
 
     func testConnectionIdIsLearnedOnceAndSequencesArePerChannel() throws {
