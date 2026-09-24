@@ -7,7 +7,7 @@ import XCTest
 
 /// The browser's half of the media-path loops the host depends on —
 /// feedback, repair, path validation and the host clock — against the
-/// shipping HostWire.Session with its default lifecycle.
+/// shipping HostWire.Session.
 final class BrowserMediaPathTests: XCTestCase {
     /// The host freezes a session 350 ms after its last feedback report;
     /// a browser that reports on cadence keeps it ACTIVE.
@@ -77,5 +77,136 @@ final class BrowserMediaPathTests: XCTestCase {
         XCTAssertLessThan(
             frame.pathDelayMicroseconds, 5_000,
             "a minute of skew leaked into the path delay")
+    }
+
+    /// A P-frame that loses more data shards than it has parity cannot be
+    /// healed by FEC: the browser NACKs the missing shards in an immediate
+    /// feedback report, the host's repair judgement honors it, and the
+    /// repaired frame reaches the Conductor with no IDR.
+    func testPastParityLossDrawsARepairInsteadOfAnIdr() throws {
+        let host = BrowserHostPeer()
+        let (client, readyNotes) = try host.readyClient()
+        var notes = readyNotes
+        var scheduled = try lossyChain(host, client, notes: &notes) { step, notes in
+            host.deliver(step, notes: &notes)
+        }
+        for _ in 0..<50 where scheduled.count < 3 {
+            host.advance(microseconds: 1_000)
+            scheduled += deliver(host.drain(), host, client, notes: &notes)
+        }
+
+        XCTAssertTrue(host.events.contains {
+            if case .repairEnqueued(let frame, _) = $0 { return frame.rawValue == 1 }
+            return false
+        }, "the host never honored a NACK: \(notes.joined(separator: " | "))")
+        XCTAssertEqual(scheduled.sorted(), [1, 2, 3], "the repaired frame never assembled")
+        XCTAssertEqual(client.nackStats.framesCompletedByRepair, 1)
+        XCTAssertEqual(client.counters.idrRequestsSent, 0, "repair healed it — no IDR")
+        XCTAssertEqual(host.session.counters.idrRequests, 0)
+    }
+
+    /// A NACK the host can no longer honor inside its freeze budget draws a
+    /// 0x23 refusal; the browser escalates that frame to an IDR at once
+    /// instead of waiting out its 250 ms repair deadline.
+    func testRefusedRepairEscalatesToAnIdrAtOnce() throws {
+        let host = BrowserHostPeer()
+        let (client, readyNotes) = try host.readyClient()
+        var notes = readyNotes
+        // The report carrying the NACK is held past the host's budget.
+        var held: [[UInt8]] = []
+        _ = try lossyChain(host, client, notes: &notes) { step, notes in
+            notes += step.events
+            held += step.outbound
+        }
+        XCTAssertTrue(notes.contains { $0.hasPrefix("nack: frame 1 asks") })
+        host.advance(microseconds: 150_000)
+        for datagram in held { host.receive(datagram) }
+        _ = deliver(host.drain(), host, client, notes: &notes)
+        host.deliver(client.tick(nowMicros: host.nowMicros), notes: &notes)
+
+        XCTAssertGreaterThanOrEqual(host.session.counters.repairRefusalsSent, 1)
+        XCTAssertGreaterThanOrEqual(client.counters.repairRefusals, 1)
+        XCTAssertEqual(
+            client.counters.idrRequestsSent, 1,
+            "the refusal must escalate before the repair deadline")
+        XCTAssertTrue(host.events.contains {
+            if case .idrRequested = $0 { return true }
+            return false
+        })
+    }
+
+    // MARK: Helpers
+
+    /// Frame 0 (IDR) arrives whole; frame 1 loses parity + 2 data shards;
+    /// frames 2 and 3 push the channel's highest seq past the loss. Every
+    /// client step goes to `route`. Returns the frames scheduled so far.
+    private func lossyChain(
+        _ host: BrowserHostPeer, _ client: BrowserControlSession,
+        notes: inout [String],
+        route: (BrowserControlSession.Step, inout [String]) -> Void
+    ) throws -> [UInt32] {
+        let corpus = try VideoCorpus.frames()
+        // Beacon echoes give the host the SRTT its repair budget needs.
+        host.run(client, notes: &notes, beats: 500) { _ in false }
+        XCTAssertEqual(
+            try host.sendFrame(corpus[0], keyframe: true, to: client).count, 1)
+        host.run(client, notes: &notes, beats: 20) { _ in false }
+
+        var scheduled: [UInt32] = []
+        for index in 1...3 {
+            try host.session.ingestVideoFrame(
+                corpus[index], captureTimestampMicroseconds: host.hostMicros,
+                isKeyframe: false, now: host.hostMicros * 1_000)
+            var flight: [VideoChannelDatagram] = []
+            for _ in 0..<30 {
+                host.advance(microseconds: 1_000)
+                flight += host.drainReleased()
+            }
+            let dropped = index == 1 ? try pastParity(flight) : []
+            for datagram in flight {
+                if datagram.pacerClass == .freshVideo,
+                   dropped.contains(try shardIndex(datagram.bytes)) {
+                    continue
+                }
+                let step = client.ingest(datagram: datagram.bytes, nowMicros: host.nowMicros)
+                scheduled += step.scheduled.map(\.frameNumber)
+                route(step, &notes)
+            }
+        }
+        return scheduled
+    }
+
+    /// Data-shard indices past what parity can heal: parity + 2 of them.
+    private func pastParity(_ flight: [VideoChannelDatagram]) throws -> Set<Int> {
+        let first = try XCTUnwrap(flight.first { $0.pacerClass == .freshVideo })
+        let (envelope, _) = try Envelope.decode(first.bytes)
+        guard case .reedSolomon(_, let geometry) = try FecField.decode(envelope.fec)
+        else {
+            XCTFail("the corpus frame must be RS-coded")
+            return []
+        }
+        XCTAssertLessThan(geometry.parityShards + 2, geometry.dataShards)
+        return Set(0..<(geometry.parityShards + 2))
+    }
+
+    private func shardIndex(_ datagram: [UInt8]) throws -> Int {
+        let (envelope, _) = try Envelope.decode(datagram)
+        guard case .reedSolomon(let index, _) = try FecField.decode(envelope.fec)
+        else { return -1 }
+        return Int(index)
+    }
+
+    private func deliver(
+        _ datagrams: [[UInt8]], _ host: BrowserHostPeer,
+        _ client: BrowserControlSession, notes: inout [String]
+    ) -> [UInt32] {
+        var scheduled: [UInt32] = []
+        for datagram in datagrams {
+            let step = host.deliver(
+                client.ingest(datagram: datagram, nowMicros: host.nowMicros),
+                notes: &notes)
+            scheduled += step.scheduled.map(\.frameNumber)
+        }
+        return scheduled
     }
 }

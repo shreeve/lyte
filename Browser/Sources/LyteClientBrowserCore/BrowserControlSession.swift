@@ -129,6 +129,7 @@ public final class BrowserControlSession {
     public var framesAssembled: UInt64 { video.framesAssembled }
     public var framesPresented: UInt64 { video.framesPresented }
     public var videoCounters: BrowserVideoPlayout.Counters { video.counters }
+    public var nackStats: ClientNackPolicy.Stats { video.nackStats }
     /// Assembled frames whose Annex-B the page has not taken yet.
     public var videoDecodeBacklog: Int { video.decodeBacklogCount }
     /// Frames whose presentation metadata the playout still holds.
@@ -482,7 +483,17 @@ public final class BrowserControlSession {
                 hostClock: hostClock.estimate()
             )
             for line in ingested.events { note(line) }
-            return step(outbound: [], scheduled: ingested.scheduled)
+            guard !ingested.nacks.isEmpty else {
+                return step(outbound: [], scheduled: ingested.scheduled)
+            }
+            // Report at once: the host's freeze budget is cadence-derived.
+            for entry in ingested.nacks {
+                note("nack: frame \(entry.frame.rawValue) asks shards \(entry.missingShards)")
+            }
+            feedback.enqueueNacks(ingested.nacks)
+            return step(
+                outbound: feedbackReport(nowMicros: nowMicros),
+                scheduled: ingested.scheduled)
         case .audio:
             control?.noteAudioEvidence()
             for line in audio.ingestShard(envelope: envelope, payload: plaintext[...]) {
@@ -531,6 +542,11 @@ public final class BrowserControlSession {
         case .repairRefused(let refusal):
             counters.repairRefusals += 1
             note("nack: frame \(refusal.frame.rawValue) repair refused (\(refusal.reason))")
+            for line in video.handleRepairRefusal(
+                frame: refusal.frame, nowMicros: nowMicros)
+            {
+                note(line)
+            }
             return []
         case .malformed:
             counters.malformedControl += 1

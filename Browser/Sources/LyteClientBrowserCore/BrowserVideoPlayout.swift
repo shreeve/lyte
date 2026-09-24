@@ -3,8 +3,9 @@ import LyteCore
 import LyteWire
 
 /// Sans-IO browser video organ: `VideoAssembler` + `VideoBeatConductor` +
-/// `BoundedRendererHandoff`. Page JS owns WebCodecs decode and WebGPU
-/// present. Every assembled frame's Annex-B waits in the decode backlog
+/// `BoundedRendererHandoff`, with the shared repair policy
+/// (`ClientNackPolicy`) and IDR episode (`ClientIdrRecovery`) over them.
+/// Page JS owns WebCodecs decode and WebGPU present. Every assembled frame's Annex-B waits in the decode backlog
 /// until the page takes it (decode order is the only order a P-frame chain
 /// allows); presentation metadata lives only while the handoff holds the
 /// frame. Rejected or late frames are still decoded but never presented.
@@ -38,18 +39,30 @@ public struct BrowserVideoPlayout {
         public init() {}
     }
 
+    /// What one ingested shard produced: log notes, frames the Conductor
+    /// scheduled, and NACK entries for an immediate feedback report.
+    public struct Ingested: Sendable {
+        public var events: [String] = []
+        public var scheduled: [ScheduledFrame] = []
+        public var nacks: [FeedbackReport.NackEntry] = []
+    }
+
     /// Undrained decode input is bounded: about two seconds at 60 fps.
     public static let decodeBacklogCapacity = 120
 
-    private var assembler = VideoAssembler(
-        channel: .videoActive,
-        // WT + WASM ingest is slower than native UDP; groups get longer
-        // before stale eviction so paced shards can finish.
-        config: VideoAssemblerConfig(
-            holdbackFrameCount: 6,
-            staleAfterMicroseconds: 1_000_000
-        )
+    /// WT + WASM ingest is slower than native UDP; groups get longer
+    /// before stale eviction so paced shards can finish.
+    static let assemblerConfig = VideoAssemblerConfig(
+        holdbackFrameCount: 6,
+        staleAfterMicroseconds: 1_000_000
     )
+
+    private var assembler = VideoAssembler(
+        channel: .videoActive, config: BrowserVideoPlayout.assemblerConfig)
+    /// Rule 3's staleness budget is the assembler's own horizon.
+    private var nack = ClientNackPolicy(config: ClientNackPolicy.Config(
+        staleBudgetMicroseconds:
+            BrowserVideoPlayout.assemblerConfig.staleAfterMicroseconds))
     private var conductor = VideoBeatConductor()
     private var handoff = BoundedRendererHandoff<UInt32>(
         // The page decodes asynchronously; a long deadline keeps expire()
@@ -82,40 +95,41 @@ public struct BrowserVideoPlayout {
     public var presentationBacklogCount: Int {
         scheduledByFrame.count
     }
-    public var recoveryOutstanding: Bool { recovery.isOutstanding }
+    public var nackStats: ClientNackPolicy.Stats { nack.stats }
 
     /// Unsealed video shard → assembler → Conductor schedule → handoff.
-    /// Capture times map to the client clock through `hostClock`.
+    /// Capture times map to the client clock through `hostClock`, whose
+    /// min RTT also feeds the NACK staleness gate.
     public mutating func ingestShard(
         envelope: Envelope,
         payload: ArraySlice<UInt8>,
         arrivalMicroseconds: UInt64,
         hostClock: ClientHostClock.Estimate? = nil
-    ) -> (events: [String], scheduled: [ScheduledFrame]) {
-        var notes: [String] = []
-        var newly: [ScheduledFrame] = []
-        let events = assembler.ingest(
-            envelope: envelope,
-            payload: payload,
-            now: ClientTimestamp(microseconds: arrivalMicroseconds)
-        )
-        for event in events {
+    ) -> Ingested {
+        var ingested = Ingested()
+        let now = ClientTimestamp(microseconds: arrivalMicroseconds)
+        for event in assembler.ingest(envelope: envelope, payload: payload, now: now) {
+            repair(event, rttMicroseconds: hostClock?.minRttMicroseconds,
+                   now: now, into: &ingested)
             switch event {
             case .decoded(let unit):
                 counters.framesAssembled &+= 1
-                newly.append(schedule(
+                ingested.scheduled.append(schedule(
                     unit, arrival: arrivalMicroseconds, hostClock: hostClock))
             case .framesSkipped(let from, let through, let reason):
-                notes.append(
+                ingested.events.append(
                     "video: skipped frames \(from.rawValue)…\(through.rawValue) (\(reason))"
                 )
                 demandRecovery(frame: through.rawValue)
             case .fecImpossible(let frame, let lost, let parity):
                 counters.fecImpossible &+= 1
-                notes.append(
+                ingested.events.append(
                     "video: fecImpossible frame=\(frame.rawValue) lostData=\(lost) parity=\(parity)"
                 )
-                demandRecovery(frame: frame.rawValue)
+                // A live repair ask holds the IDR for its deadline.
+                if !nack.shouldDeferFecImpossible(frame: frame, now: now) {
+                    demandRecovery(frame: frame.rawValue)
+                }
             case .shardDropped:
                 // Routine: FEC surplus arriving after its frame completed.
                 counters.shardsDropped &+= 1
@@ -123,25 +137,43 @@ public struct BrowserVideoPlayout {
                 break
             }
         }
-        return (notes, newly)
+        return ingested
     }
 
+    /// The beat: stale assembler groups, the NACK deadlines, and the
+    /// handoff's own expiry.
     public mutating func evictStale(nowMicros: UInt64) -> [String] {
-        var notes: [String] = []
-        for event in assembler.evictStale(now: ClientTimestamp(microseconds: nowMicros)) {
+        var swept = Ingested()
+        let now = ClientTimestamp(microseconds: nowMicros)
+        for event in assembler.evictStale(now: now) {
+            repair(event, rttMicroseconds: nil, now: now, into: &swept)
             if case .framesSkipped(let from, let through, let reason) = event {
-                notes.append(
+                swept.events.append(
                     "video: stale-skip \(from.rawValue)…\(through.rawValue) (\(reason))"
                 )
                 demandRecovery(frame: through.rawValue)
             }
         }
+        escalate(nack.tick(now: now), into: &swept)
         let expired = handoff.expire(nowMicroseconds: nowMicros)
         if expired.recoveryRequested {
-            notes.append("video: handoff expire → await IRAP")
+            swept.events.append("video: handoff expire → await IRAP")
         }
         absorb(expired)
-        return notes
+        return swept.events
+    }
+
+    /// The host refused to repair `frame` (0x23): its ask stops waiting
+    /// and escalates to the IDR episode now.
+    public mutating func handleRepairRefusal(
+        frame: FrameNumber, nowMicros: UInt64
+    ) -> [String] {
+        var refused = Ingested()
+        escalate(
+            nack.handleRefusal(
+                frame: frame, now: ClientTimestamp(microseconds: nowMicros)),
+            into: &refused)
+        return refused.events
     }
 
     /// Hands out an assembled frame's Annex-B exactly once, for decode.
@@ -208,6 +240,28 @@ public struct BrowserVideoPlayout {
     }
 
     // MARK: Interior
+
+    /// Forwards one assembler event to the NACK policy, in event order.
+    private mutating func repair(
+        _ event: VideoAssemblerEvent, rttMicroseconds: Int64?,
+        now: ClientTimestamp, into ingested: inout Ingested
+    ) {
+        guard let signal = VideoRepairSignal(event) else { return }
+        escalate(
+            nack.handle(signal, rttMicroseconds: rttMicroseconds, now: now),
+            into: &ingested)
+    }
+
+    private mutating func escalate(
+        _ decision: ClientNackPolicy.Decision, into ingested: inout Ingested
+    ) {
+        ingested.nacks += decision.nacks
+        for frame in decision.escalations {
+            ingested.events.append(
+                "nack: frame \(frame.rawValue) repair abandoned — IDR instead")
+            demandRecovery(frame: frame.rawValue)
+        }
+    }
 
     private mutating func noteRandomAccessHandedOff() {
         handoff.noteRandomAccessEnqueued()
