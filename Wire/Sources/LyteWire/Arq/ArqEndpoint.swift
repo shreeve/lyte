@@ -398,69 +398,27 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
 
     // MARK: Receive-side state
 
-    private struct Buffered {
-        var seq: UInt16
-        var endOfMessage: Bool
-        var body: [UInt8]
-    }
-
     private struct RecvGroup {
         /// Seq of the last in-order segment (initial − 1 when none).
         var cumulative: UInt16
-        /// Out-of-order segments, at slot `seq & 0xFF`: the window never
-        /// exceeds 256, so the seqs it admits map to distinct slots.
-        /// Allocated on the first out-of-order arrival.
-        var buffered: [Buffered?] = []
-        var bufferedCount = 0
+        /// Out-of-order segments past the cumulative, by seq.
+        var buffered: [UInt16: (endOfMessage: Bool, body: [UInt8])] = [:]
         /// In-order bytes of the message being reassembled.
         var assembling: [UInt8] = []
         var poisoned = false
         var openedAt: Instant
 
-        init(cumulative: UInt16, openedAt: Instant) {
-            self.cumulative = cumulative
-            self.openedAt = openedAt
-        }
-
-        func holds(_ seq: UInt16) -> Bool {
-            bufferedCount > 0 && buffered[Int(seq & 0xFF)]?.seq == seq
-        }
-
-        mutating func store(_ entry: Buffered) {
-            if buffered.isEmpty {
-                buffered = Array(
-                    repeating: nil, count: ArqBounds.maxReceiveWindowSegments
-                )
-            }
-            buffered[Int(entry.seq & 0xFF)] = entry
-            bufferedCount += 1
-        }
-
-        /// Removes and returns the segment right after the cumulative.
-        mutating func takeNext() -> Buffered? {
-            let next = cumulative &+ 1
-            guard holds(next) else { return nil }
-            defer {
-                buffered[Int(next & 0xFF)] = nil
-                bufferedCount -= 1
-            }
-            return buffered[Int(next & 0xFF)]
-        }
-
-        mutating func dropBuffered() {
-            buffered = []
-            bufferedCount = 0
-        }
-
         /// The canonical ACK bitmap: bit n set when `cumulative + 1 + n`
         /// is buffered, sized by the highest set bit. Walks offsets in
-        /// serial order and stops once every buffered segment is found.
+        /// serial order (every buffered seq sits inside the window) and
+        /// stops once each buffered segment is found.
         var ackBitmap: [UInt8] {
             var bytes: [UInt8] = []
             var found = 0
             var offset = 0
-            while found < bufferedCount {
-                if holds(cumulative &+ 1 &+ UInt16(truncatingIfNeeded: offset)) {
+            while found < buffered.count {
+                let seq = cumulative &+ 1 &+ UInt16(truncatingIfNeeded: offset)
+                if buffered[seq] != nil {
                     while bytes.count <= offset / 8 { bytes.append(0) }
                     bytes[offset / 8] |= 1 << (offset % 8)
                     found += 1
@@ -694,25 +652,22 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
         guard Int(distance) <= config.receiveWindowSegments else {
             return .beyondWindow
         }
-        if state.holds(seq) { return .duplicate }
-        let incoming = Buffered(
-            seq: seq, endOfMessage: segment.endOfMessage, body: segment.body
-        )
-        var next: Buffered?
+        if state.buffered[seq] != nil { return .duplicate }
+        var next: (endOfMessage: Bool, body: [UInt8])?
         if distance == 1 {
-            next = incoming
+            next = (segment.endOfMessage, segment.body)
         } else {
-            state.store(incoming)
+            state.buffered[seq] = (segment.endOfMessage, segment.body)
         }
 
         while let entry = next {
-            state.cumulative = entry.seq
+            state.cumulative &+= 1
             guard state.assembling.count + entry.body.count
                 <= config.maxMessageByteCount
             else {
                 state.poisoned = true
                 state.assembling = []
-                state.dropBuffered()
+                state.buffered = [:]
                 events.append(.ignored(.messageOverBudget(segment.group)))
                 return .accepted(closed: false)
             }
@@ -726,7 +681,7 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
                     return .accepted(closed: true)
                 }
             }
-            next = state.takeNext()
+            next = state.buffered.removeValue(forKey: state.cumulative &+ 1)
         }
         return .accepted(closed: false)
     }
@@ -875,31 +830,26 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
         reclaimAbandonedReceiveGroups(now: now)
         firePtoTimers(now: now)
 
-        var packer = DatagramPacker(ceiling: config.maxDatagramPayloadByteCount)
-        appendAckFrames(into: &packer)
-        appendSegmentFrames(now: now, into: &packer)
-        return (packer.finish(), nextDeadline())
-    }
+        var frames: [[UInt8]] = []
+        appendAckFrames(into: &frames)
+        appendSegmentFrames(now: now, into: &frames)
 
-    /// Packs frames into datagrams in emission order, starting a new
-    /// datagram whenever the next frame would cross the ceiling.
-    private struct DatagramPacker {
-        let ceiling: Int
+        // Pack frames in order, starting a new datagram whenever the
+        // next frame would cross the ceiling.
         var datagrams: [[UInt8]] = []
         var current: [UInt8] = []
-
-        mutating func append(_ frame: [UInt8]) {
-            if !current.isEmpty, current.count + frame.count > ceiling {
+        for frame in frames {
+            if !current.isEmpty,
+               current.count + frame.count > config.maxDatagramPayloadByteCount {
                 datagrams.append(current)
                 current = []
             }
             current.append(contentsOf: frame)
         }
-
-        mutating func finish() -> [[UInt8]] {
-            if !current.isEmpty { datagrams.append(current) }
-            return datagrams
+        if !current.isEmpty {
+            datagrams.append(current)
         }
+        return (datagrams, nextDeadline())
     }
 
     private mutating func firePtoTimers(now: Instant) {
@@ -940,7 +890,7 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
         }
     }
 
-    private mutating func appendAckFrames(into packer: inout DatagramPacker) {
+    private mutating func appendAckFrames(into frames: inout [[UInt8]]) {
         guard !ackNeeded.isEmpty else { return }
         var blocks: [ArqAck.Block] = []
         for gid in ackNeeded.sorted() {
@@ -968,7 +918,7 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
         while start < blocks.count {
             let end = min(start + ArqBounds.maxAckBlocks, blocks.count)
             if let ack = try? ArqAck(blocks: Array(blocks[start..<end])) {
-                packer.append(ack.encode())
+                frames.append(ack.encode())
             }
             start = end
         }
@@ -979,24 +929,24 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
     /// `sendWindowSegments` in flight, and never past
     /// `receiveWindowSegments` above the lowest unacknowledged seq.
     private mutating func appendSegmentFrames(
-        now: Instant, into packer: inout DatagramPacker
+        now: Instant, into frames: inout [[UInt8]]
     ) {
         for gid in sendGroups.keys.sorted() {
             Self.emitSegments(
                 of: &sendGroups[gid]!, group: ArqGroupId(rawValue: gid),
-                config: config, now: now, into: &packer
+                config: config, now: now, into: &frames
             )
         }
     }
 
     private static func emitSegments(
         of state: inout SendGroup, group: ArqGroupId, config: ArqConfig,
-        now: Instant, into packer: inout DatagramPacker
+        now: Instant, into frames: inout [[UInt8]]
     ) {
         var sentAny = false
         for index in state.head..<state.slots.count {
             guard var out = state.slots[index], out.needsSend else { continue }
-            packer.append(out.frameBytes)
+            frames.append(out.frameBytes)
             out.lastSentAt = now
             out.sendCount += 1
             out.needsSend = false
@@ -1007,7 +957,7 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
         while state.hasQueuedMessages,
               state.inFlight < config.sendWindowSegments,
               state.span < config.receiveWindowSegments {
-            packer.append(state.cutSegment(
+            frames.append(state.cutSegment(
                 group: group, bodyCeiling: config.maxSegmentBodyByteCount,
                 now: now
             ))
