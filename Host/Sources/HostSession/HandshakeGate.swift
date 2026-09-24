@@ -18,11 +18,18 @@
 //     clears with hysteresis at `cookieExitThreshold`. It is OFF unless
 //     `cookieSecret` is set. LyteWire's RetryCookie owns the crypto.
 //
+// With a secret, a message 1 the bucket cannot admit is challenged, never
+// dropped, in either posture: a spoofed flood fast enough to drain the
+// bucket but below the dial's threshold would otherwise starve every
+// honest dial.
+//
 // A verified cookie proves an address, not good intent: one real client
 // can replay the same RetryHandshake1 at line rate for the cookie's whole
-// lifetime, and every admission costs the Noise DH. Cookie admissions
-// therefore spend from their own (larger) bucket, and an exact replay of
-// a cookie already admitted is dropped before it spends anything.
+// lifetime, or mint fresh ones with fresh ephemerals, and every admission
+// costs the Noise DH. Cookie admissions therefore spend from their own
+// (larger) bucket, each proven address from a small share of it, and an
+// exact replay of a cookie already admitted is dropped before it spends
+// anything.
 //
 // Sans-IO: `now` is injected monotonic ns; the cookie secret is injected
 // bytes; the client tuple is opaque bytes the caller serializes (only the
@@ -60,6 +67,10 @@ public struct HandshakeGate: Sendable {
         public var cookieAdmissionsPerSecond: Int
         /// Verified-cookie admissions allowed back to back.
         public var cookieAdmissionBurst: Int
+        /// One proven address's share of the cookie budget, per second and
+        /// back to back: a holder minting fresh cookies at line rate
+        /// cannot spend every other client's admissions.
+        public var cookieAdmissionsPerAddressPerSecond: Int
 
         public init(
             ratePerSecond: Int = 10,
@@ -70,7 +81,8 @@ public struct HandshakeGate: Sendable {
             floodWindowNS: UInt64 = 1_000_000_000,
             cookieLifetimeNS: UInt64 = RetryCookie.defaultLifetimeNanoseconds,
             cookieAdmissionsPerSecond: Int = 50,
-            cookieAdmissionBurst: Int = 50
+            cookieAdmissionBurst: Int = 50,
+            cookieAdmissionsPerAddressPerSecond: Int = 2
         ) {
             self.ratePerSecond = ratePerSecond
             self.burst = burst
@@ -83,6 +95,8 @@ public struct HandshakeGate: Sendable {
             self.cookieLifetimeNS = cookieLifetimeNS
             self.cookieAdmissionsPerSecond = cookieAdmissionsPerSecond
             self.cookieAdmissionBurst = cookieAdmissionBurst
+            self.cookieAdmissionsPerAddressPerSecond =
+                cookieAdmissionsPerAddressPerSecond
         }
     }
 
@@ -98,8 +112,9 @@ public struct HandshakeGate: Sendable {
         case drop(Reason)
 
         public enum Reason: Equatable, Sendable {
-            /// Bucket empty and cookie mode off, or a
-            /// verified cookie that is a replay or over the cookie budget.
+            /// Bucket empty and no secret to challenge with, or a verified
+            /// cookie that is a replay or over its address's or the
+            /// host's cookie budget.
             case throttled
             /// A cookie was presented but did not verify (wrong tuple,
             /// wrong msg1, expired, or forged) — dropped quietly.
@@ -149,7 +164,11 @@ public struct HandshakeGate: Sendable {
     private var recentArrivals = Deque<UInt64>()
     /// Cookies already admitted. A cookie binds (tuple, msg1), so an exact
     /// repeat is a replay of a handshake the host already answered.
-    private var admittedCookies = BoundedRing<[UInt8]>(capacity: 256)
+    private var admittedCookies = BoundedFifoMap<[UInt8], Void>(capacity: 256)
+    /// Each proven address's share of the cookie budget. The oldest
+    /// address is forgotten first; re-proving it costs a round trip.
+    private var addressBuckets = BoundedFifoMap<[UInt8], TokenBucket>(
+        capacity: 256)
 
     public private(set) var admitted = 0
     public private(set) var refused = 0
@@ -159,7 +178,7 @@ public struct HandshakeGate: Sendable {
     public private(set) var cookiesVerified = 0
     /// Cookies presented that did not verify — spoof evidence.
     public private(set) var cookiesRejected = 0
-    /// Verified cookies dropped as exact replays or over the cookie budget.
+    /// Verified cookies dropped as exact replays or over a cookie budget.
     public private(set) var cookiesThrottled = 0
     /// Whether the gate is currently demanding a cookie (the observable
     /// dial; the caller surfaces its transitions).
@@ -216,21 +235,32 @@ public struct HandshakeGate: Sendable {
             }
             cookiesVerified += 1
             let cookie = Array(presentedCookie)
-            guard !admittedCookies.contains(cookie), cookieBucket.spend()
-            else {
+            var share = addressBuckets[clientTuple] ?? TokenBucket(
+                ratePerSecond: config.cookieAdmissionsPerAddressPerSecond,
+                burst: config.cookieAdmissionsPerAddressPerSecond)
+            share.refill(now: now)
+            let spent = admittedCookies[cookie] == nil
+                && share.spend() && cookieBucket.spend()
+            addressBuckets.set(share, for: clientTuple)
+            guard spent else {
                 cookiesThrottled += 1
                 refused += 1
                 return decided(.drop(.throttled))
             }
-            admittedCookies.append(cookie)
+            admittedCookies.set((), for: cookie)
             admitted += 1
             return decided(.admit)
         }
 
-        // No cookie. In require-cookie mode, answer with a stateless
-        // challenge (one HMAC, no Noise, no state); the honest client
-        // resubmits with the cookie echoed.
-        if cookieMode, let secret = config.cookieSecret,
+        // No cookie: the token bucket, unless the dial is engaged. What
+        // the bucket does not admit is answered, with a secret, by a
+        // stateless challenge (one HMAC, no Noise, no state); the honest
+        // client resubmits with the cookie echoed.
+        if !cookieMode, bucket.spend() {
+            admitted += 1
+            return decided(.admit)
+        }
+        if let secret = config.cookieSecret,
            let cookie = try? RetryCookie.mint(
                 clientTuple: clientTuple, message1: message1,
                 now: now, secret: secret
@@ -239,23 +269,16 @@ public struct HandshakeGate: Sendable {
             refused += 1
             return decided(.challenge(cookie: cookie))
         }
-
-        // Normal posture (or the mint refused a malformed tuple): the
-        // token bucket.
-        if spendToken() { return decided(.admit) }
+        // The mint refused a malformed tuple: the bucket still applies.
+        if cookieMode, bucket.spend() {
+            admitted += 1
+            return decided(.admit)
+        }
+        refused += 1
         return decided(.drop(.throttled))
     }
 
     // MARK: - Internals
-
-    private mutating func spendToken() -> Bool {
-        guard bucket.spend() else {
-            refused += 1
-            return false
-        }
-        admitted += 1
-        return true
-    }
 
     private mutating func noteArrival(now: UInt64) {
         recentArrivals.append(now)
