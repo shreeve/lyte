@@ -271,6 +271,21 @@ final class PacerTests: XCTestCase {
         XCTAssertEqual(order, [7, 7, 8, 8, 9])
     }
 
+    func testDropExpiredTakesTheStalePrefixOfEachFifoAndKeepsTheRest() {
+        let pacer = Pacer(rateBitsPerSecond: 20_000_000, now: 0)
+        for (tag, at) in [(0, 0), (1, 10), (2, 20)] as [(UInt64, UInt64)] {
+            pacer.enqueue(.videoTail, bytes: 100, tag: tag, now: at)
+            pacer.enqueue(.videoTail, bytes: 200, urgent: true,
+                          tag: 10 + tag, now: at)
+        }
+        XCTAssertTrue(pacer.dropExpired(.videoTail, olderThan: 0).isEmpty)
+        XCTAssertEqual(
+            pacer.dropExpired(.videoTail, olderThan: 15).map(\.tag),
+            [10, 11, 0, 1])
+        XCTAssertEqual(pacer.queuedBytes(.videoTail), 300)
+        XCTAssertEqual(pacer.nextBatch(now: 20)?.tokens.map(\.tag), [12, 2])
+    }
+
     func testFifoWithinClass() {
         let pacer = Pacer(rateBitsPerSecond: 50_000_000, now: 0)
         for tag in 0..<5 {

@@ -169,11 +169,17 @@ public final class Pacer {
         /// Every queued token, urgent first, FIFO within each.
         var queued: [PacerToken] { Array(urgent) + Array(normal) }
 
+        /// Each FIFO is pushed in nondecreasing `enqueuedAt` order (every
+        /// entry point takes the caller's monotonic `now`), so its expired
+        /// tokens are a prefix: O(expired), never a copy of the backlog.
         mutating func dropEnqueued(before cutoff: UInt64) -> [PacerToken] {
-            let dropped = queued.filter { $0.enqueuedAt < cutoff }
-            guard !dropped.isEmpty else { return [] }
-            urgent.removeAll { $0.enqueuedAt < cutoff }
-            normal.removeAll { $0.enqueuedAt < cutoff }
+            var dropped: [PacerToken] = []
+            while let t = urgent.first, t.enqueuedAt < cutoff {
+                dropped.append(urgent.removeFirst())
+            }
+            while let t = normal.first, t.enqueuedAt < cutoff {
+                dropped.append(normal.removeFirst())
+            }
             for token in dropped { bytesQueued -= token.bytes }
             return dropped
         }
