@@ -47,7 +47,7 @@ Six SwiftPM packages, Swift tools version 6.0, Swift 6 language mode.
   `LyteClientTestKit` owns client test equipment. Production streaming code
   never depends on corpus or harness code. The named exception: the `Lyte`
   app target links `LyteCorpus` for its diagnostic benchmark. Only a
-  diagnostic bundle (`LYTE_APP_DIAGNOSTICS=1 Scripts/make-app.sh`, which
+  diagnostic bundle (`Scripts/make-app.sh --diagnostics`, which
   writes Info.plist `LyteDiagnosticEntryPoints`) obeys the benchmark and
   witness environment; every other bundle ignores it.
 - **`Browser/` — `LyteClientBrowser`:** `LyteClientBrowserCore` is the

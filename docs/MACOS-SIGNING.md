@@ -138,6 +138,14 @@ Scripts/make-app.sh             # release (default)
 Scripts/launch-app.sh
 ```
 
+Only `Scripts/make-app.sh --diagnostics release` builds a bundle whose
+signed Info.plist enables the diagnostic entry points (autoconnect, the
+benchmark driver); `LYTE_APP_DIAGNOSTICS` in the environment is ignored.
+`Scripts/benchmark-app.sh` builds that bundle at `.build/Lyte.app` itself —
+there is only ever one physical copy — and rebuilds the plain bundle when
+it exits. If that restore fails it prints a WARNING; run
+`Scripts/make-app.sh release` before using the app again.
+
 `make-app.sh` refuses to replace the bundle while any `Lyte` process is
 running, including its helper. Assembly and scripted launch share one
 non-waiting artifact lock, and publication checks process state again after
@@ -249,11 +257,14 @@ Security surface:
 Registering the daemon tells launchd to run whatever `lyte-helperd` is in
 the bundle as root, and the bundle is user-owned. So the app registers
 only when it has to. At launch it leaves an enabled registration alone
-when the registered helper answers `version` with the current value. It
-leaves a registration awaiting Login Items approval alone too. It
-registers when there is no registration, or when the enabled helper is
-silent or stale: a rebuild re-signs the helper, and launchd then refuses
-the old launch requirement with `EX_CONFIG`.
+when the registered helper answers `version` with the current value: the
+XPC protocol version plus the code-directory hash of the helper's signed
+code, which the helper reads once at startup and the app computes from the
+helper embedded in its own bundle. It leaves a registration awaiting Login
+Items approval alone too. It registers when there is no registration, or
+when the enabled helper is silent or stale: a rebuild re-signs the helper
+(changing its hash, so even a still-running old helper reads as stale), and
+launchd then refuses the old launch requirement with `EX_CONFIG`.
 
 Before any `register()`, the app validates the embedded helper on disk
 (`SecStaticCodeCheckValidity`, every architecture, strict). The helper must
