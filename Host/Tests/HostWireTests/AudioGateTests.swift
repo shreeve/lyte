@@ -663,32 +663,14 @@ final class AudioGateTests: XCTestCase {
 
     // MARK: Leg 6 — lifecycle: the probe never stops (except closed)
 
-    func testAudioFlowsInIdleAndStopsOnlyWhenClosed() throws {
+    func testAudioFlowsUntilTheSessionCloses() throws {
         let (session, clientValue, box) = try establish()
         var client = clientValue
         var forwarded = 0
         var t: UInt64 = 1_000
         try settle(session, &client, box, forwarded: &forwarded, t: &t)
 
-        // Reach IDLE the honest way (the lifecycle suite's recipe):
-        // a frame, convergence, the one-shot ack.
-        _ = try session.ingestVideoFrame(
-            syntheticFrame(byteCount: 900),
-            captureTimestampMicroseconds: 42, isKeyframe: false,
-            now: t * 1_000
-        )
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
-        _ = session.noteRatchetConverged(
-            finalFrame: syntheticFrame(byteCount: 700),
-            captureTimestampMicroseconds: 42,
-            now: t * 1_000, hostMicroseconds: t
-        )
-        session.pump(now: t * 1_000)
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
-        XCTAssertEqual(session.wireMode, .idle)
-
-        // IDLE: datagram video is off — audio keeps flowing (the 5 ms
-        // probe that lets the client detector tighten to 350 ms).
+        // Audio is the 5 ms path probe: it flows whatever video does.
         let audioBefore = client.audio.count
         for n in 0..<4 {
             t += 5_000
@@ -702,7 +684,6 @@ final class AudioGateTests: XCTestCase {
             try client.absorb(box.datagrams[forwarded].bytes, nowMicros: t)
             forwarded += 1
         }
-        XCTAssertEqual(session.wireMode, .idle, "audio must not wake IDLE")
         XCTAssertEqual(client.audio.count - audioBefore, 6)
 
         // closed: teardown, then audio is suppressed — counted, silent.

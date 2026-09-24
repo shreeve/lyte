@@ -105,21 +105,6 @@ public struct SessionConfig: Sendable {
     /// The W4b lifecycle machine's knobs: the 350 ms blackout detector,
     /// the 30 s liveness clock, RECOVERY's clean-window count.
     public var lifecycle: SessionMachineConfig
-    /// HS-22: how long damage must stay quiet AFTER the ratchet
-    /// converges before the idle handoff starts (the one-shot ride
-    /// whose ack flips the mode to IDLE). The pillar's decision of
-    /// record stands — idle→active restarts with an IDR — which is
-    /// exactly why the flip must not be entered eagerly: a desktop
-    /// metronome (a 1 Hz clock, a ~1 Hz cursor blink) that keeps
-    /// converging and re-damaging would otherwise cycle
-    /// IDLE→WAKE→full-frame-IDR every beat — the owner's "1 Hz blur
-    /// while paused". 3 s is three missed beats of the slowest common
-    /// ticker: a genuinely static desktop still flips (3 s late, one
-    /// converged frame held meanwhile), a ticking one stays ACTIVE on
-    /// small P-frames at near-idle bandwidth. Convergence noted with
-    /// NO damage ever recorded flips immediately (the pre-HS-22
-    /// behavior — and the shape every existing pin drives).
-    public var idleFlipQuietNS: UInt64
     /// The HS-16 congestion estimator's knobs. Nil derives the default
     /// config with `rateBitsPerSecond` as the ceiling — the negotiated
     /// session rate IS the ceiling (no capability key carries bitrate
@@ -203,7 +188,6 @@ public struct SessionConfig: Sendable {
         handshakeGate: HandshakeGate.Config = HandshakeGate.Config(),
         capabilities: Capabilities = .wireDefault,
         lifecycle: SessionMachineConfig = SessionMachineConfig(),
-        idleFlipQuietNS: UInt64 = 3_000_000_000,
         estimator: RateEstimatorConfig? = nil,
         repairFreezeBudgetOverrideNS: UInt64? = nil,
         repairBudgetCadenceMultiplier: Double = 1.5,
@@ -228,7 +212,6 @@ public struct SessionConfig: Sendable {
         self.handshakeGate = handshakeGate
         self.capabilities = capabilities
         self.lifecycle = lifecycle
-        self.idleFlipQuietNS = idleFlipQuietNS
         self.estimator = estimator
         self.repairFreezeBudgetOverrideNS = repairFreezeBudgetOverrideNS
         self.repairBudgetCadenceMultiplier = repairBudgetCadenceMultiplier
@@ -308,9 +291,6 @@ public enum SessionEvent: Equatable, Sendable {
     /// A ModeTransition (0x09) left on the reliable stream — the
     /// mediaSender's ACTIVE⇄IDLE flip, as the wire hears it.
     case modeTransitionSent(SessionWireMode)
-    /// The converged ratchet frame left on its reliable one-shot group
-    /// (HS-11). Its `.reliableOneShotAcknowledged` is the idle flip.
-    case finalFrameSent(ArqGroupId)
     /// A typed SessionTeardown (0x0A) left on the reliable stream.
     case teardownSent(SessionTeardownReason)
     /// The W4b machine changed state (wire modes and the local
@@ -750,7 +730,6 @@ public final class Session {
     private var lifecycleLane: SessionLifecycleLane
     /// The W7 negotiation machine, host role.
     private var negotiator: CapabilityNegotiator
-    private var idleHandoff = SessionIdleHandoffBook()
     /// The HS-16 congestion estimator: send ledger + delivery-rate/
     /// queuing-delay/loss evidence → the pacer's setRate seam, W4b's
     /// RECOVERY window verdicts, and the IdrPacing numbers.
@@ -1463,34 +1442,6 @@ public final class Session {
 
     // MARK: Lifecycle inputs (HS-11)
 
-    /// The encoder loop's damage note: call when a FRESH damage frame
-    /// arrives from capture, BEFORE encoding it. In IDLE this is the
-    /// WAKE — mode=active leaves on the reliable stream and the damage
-    /// frame is owed as an IDR (`takeFreshKeyframeRequest` turns true,
-    /// paced at the healthy-path rate once HS-16 owns numbers). In
-    /// ACTIVE it aborts a pending idle flip: new damage during the
-    /// convergence handoff means the session never left ACTIVE.
-    public func noteDamage(
-        now: UInt64, hostMicroseconds: UInt64
-    ) -> [SessionEvent] {
-        idleHandoff.noteDamage(now: now)
-        return runLifecycle(
-            .damage, now: now, hostMicroseconds: hostMicroseconds
-        )
-    }
-
-    /// The HS-13 seam, now wired: an injected input event pre-arms the
-    /// wake IDR before its damage exists (W4b's pre-arm rule — a
-    /// keypress during a blackout persists through FROZEN and is
-    /// consumed exactly once by RECOVERY's IDR). `consumeReliable`'s
-    /// 0x16 arm calls this on every delivered input event; it stays
-    /// public for shells with input paths of their own.
-    public func notePreArmInput(
-        now: UInt64, hostMicroseconds: UInt64
-    ) -> [SessionEvent] {
-        runLifecycle(.preArmInput, now: now, hostMicroseconds: hostMicroseconds)
-    }
-
     /// The shell's injection report (HS-13): the event with `seq` was
     /// handed to the desktop session at `injectedAtMicroseconds` (host
     /// µs, the beacon domain). Buffers one echo tuple — flushed as 0x17
@@ -1706,48 +1657,6 @@ public final class Session {
             .bulk, now: now, hostMicroseconds: hostMicroseconds
         )
         return events
-    }
-
-    /// The ratchet's all-skip stop (HS-3's detector via HS-11): retains
-    /// the final converged frame and starts the idle handoff — the
-    /// frame rides a reliable one-shot group, and ONLY its full
-    /// acknowledgment flips the wire mode to IDLE (the receiver must
-    /// hold the converged frame before it learns the session went
-    /// idle). When the agreed capabilities say the client does not
-    /// speak idle silence, the session stays ACTIVE.
-    ///
-    /// HS-22: the handoff additionally waits out `idleFlipQuietNS`
-    /// from the LAST damage note (the machine hears `.ratchetConverged`
-    /// from `advance` once the quiet holds; fresh damage meanwhile
-    /// drops the pending flip). A desktop metronome — a 1 Hz clock, a
-    /// blinking cursor — used to converge, flip to IDLE, and pay a
-    /// full-frame WAKE IDR on its next beat, every beat: the owner's
-    /// "1 Hz blur while paused". The idle→active-restarts-with-an-IDR
-    /// decision of record is untouched; the session just refuses to
-    /// enter IDLE between the beats of a ticker.
-    public func noteRatchetConverged(
-        finalFrame annexB: [UInt8],
-        captureTimestampMicroseconds: UInt64,
-        now: UInt64,
-        hostMicroseconds: UInt64
-    ) -> [SessionEvent] {
-        if let agreed = negotiator.agreed, !agreed.idleSilence { return [] }
-        guard !annexB.isEmpty,
-              let lastAdmittedVideoFrameNumber,
-              lastAdmittedVideoFrameNumber.next.rawValue > 0 else { return [] }
-        let ready = idleHandoff.noteConverged(
-            IdleFrame(
-                frame: lastAdmittedVideoFrameNumber,
-                captureTimestampMicroseconds: captureTimestampMicroseconds,
-                annexB: annexB
-            ),
-            now: now,
-            quietWindowNanoseconds: config.idleFlipQuietNS
-        )
-        guard ready else { return [] }
-        return runLifecycle(
-            .ratchetConverged, now: now, hostMicroseconds: hostMicroseconds
-        )
     }
 
     /// An orderly local close: the typed SessionTeardown leaves on the
@@ -2000,14 +1909,6 @@ public final class Session {
                 }
             case .oneShotAcknowledged(let group):
                 events.append(.reliableOneShotAcknowledged(group))
-                if idleHandoff.acknowledge(group) {
-                    // The converged frame landed: this ack IS the
-                    // idle-flip signal (W4b's ordering rule).
-                    events += runLifecycle(
-                        .finalFrameAcknowledged,
-                        now: now, hostMicroseconds: hostMicroseconds
-                    )
-                }
             case .ignored(let reason):
                 counters.arqIgnored += 1
                 events.append(.arqIgnored(reason))
@@ -2212,9 +2113,10 @@ public final class Session {
                     events.append(.sendFailed("teardown: \(error)"))
                 }
             case .sendFinalFrameReliably:
-                events += sendFinalFrame(
-                    now: now, hostMicroseconds: hostMicroseconds
-                )
+                // The lane asks for this only after `.ratchetConverged`,
+                // which the host never feeds: the direct eye has no
+                // convergence ratchet, so the session stays ACTIVE.
+                break
             case .armNextDamageAsIdr(let pacing), .forceIdr(let pacing):
                 switch pacing {
                 case .lastGoodRate: freshKeyframes.arm(.machineWake)
@@ -2242,26 +2144,6 @@ public final class Session {
             }
         }
         return events
-    }
-
-    /// The converged frame onto its one-shot group. A refused send is
-    /// loud, not fatal: the pending flip simply never completes, and
-    /// the next damage/convergence cycle starts fresh.
-    private func sendFinalFrame(
-        now: UInt64, hostMicroseconds: UInt64
-    ) -> [SessionEvent] {
-        guard let send = idleHandoff.pendingFinalFrameSend() else {
-            return [.sendFailed("final frame: no converged frame retained")]
-        }
-        do {
-            try sendReliableOneShot(
-                send.frame.encode(), group: send.group,
-                now: now, hostMicroseconds: hostMicroseconds
-            )
-            return [.finalFrameSent(idleHandoff.commitFinalFrameSent())]
-        } catch {
-            return [.sendFailed("final frame one-shot: \(error)")]
-        }
     }
 
     /// The W7 declaration: the session's first ARQ-carried message.
@@ -2689,13 +2571,6 @@ public final class Session {
             )
         }
         events += flushInputEchoes(now: now, hostMicroseconds: hostMicroseconds)
-        // HS-22: a convergence that waited out the idle-flip quiet —
-        // damage stayed silent, the handoff may start now.
-        if idleHandoff.takeDueHandoff(now: now) {
-            events += runLifecycle(
-                .ratchetConverged, now: now, hostMicroseconds: hostMicroseconds
-            )
-        }
         if let due = ctrlArqLane.nextDeadlineNanoseconds, now >= due {
             events += serviceArqLane(
                 .control, now: now, hostMicroseconds: hostMicroseconds
@@ -2791,7 +2666,6 @@ public final class Session {
             ctrlArqLane.nextDeadlineNanoseconds,
             bulkArqLane?.nextDeadlineNanoseconds,
             lifecycleLane.nextDeadlineNanoseconds, validator.nextDeadline,
-            idleHandoff.nextDeadlineNanoseconds,
         ] {
             guard let candidate else { continue }
             wake = wake.map { min($0, candidate) } ?? candidate

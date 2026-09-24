@@ -39,10 +39,6 @@ final class SessionGateTests: XCTestCase {
         XCTAssertFalse(source.contains("nextVideoFrameNumber ="))
         XCTAssertTrue(source.contains(
             "lastAdmittedVideoFrameNumber?.next ?? FrameNumber(rawValue: 0)"))
-        XCTAssertTrue(source.contains(
-            "lastAdmittedVideoFrameNumber.next.rawValue > 0"))
-        XCTAssertTrue(source.contains(
-            "frame: lastAdmittedVideoFrameNumber"))
     }
 
     private func sessionSource() throws -> String {

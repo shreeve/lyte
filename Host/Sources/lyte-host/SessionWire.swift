@@ -1832,9 +1832,6 @@ final class SessionWire {
         case .modeTransitionSent(let mode):
             emit("mode: → \(mode == .idle ? "IDLE" : "ACTIVE") "
                 + "(0x09 on the reliable stream)")
-        case .finalFrameSent(let group):
-            emit("mode: converged frame riding one-shot group "
-                + "\(group.rawValue) — its ack is the idle flip")
         case .teardownSent(let reason):
             emit("session: teardown 0x0A queued (\(reason))")
         case .lifecycleChanged(let state):
