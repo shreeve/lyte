@@ -112,3 +112,20 @@ public struct ChannelId: RawRepresentable, Hashable, Sendable {
         }
     }
 }
+
+extension ChannelId: CustomStringConvertible {
+    /// The registry name, for logs and dissectors: `ctrl`, `audio`,
+    /// `video-active`, `feedback`, `video-idle`, `reserved` (5–7),
+    /// `bulk-transfer` (8), and `feature` for the rest of 9…255.
+    public var description: String {
+        switch self {
+        case .ctrl: return "ctrl"
+        case .audio: return "audio"
+        case .videoActive: return "video-active"
+        case .feedback: return "feedback"
+        case .videoIdle: return "video-idle"
+        case .bulkTransfer: return "bulk-transfer"
+        default: return isReserved ? "reserved" : "feature"
+        }
+    }
+}

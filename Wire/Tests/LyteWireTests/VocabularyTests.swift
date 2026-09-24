@@ -143,6 +143,15 @@ final class ChannelIdTests: XCTestCase {
         XCTAssertFalse(ChannelId(rawValue: 8).isReserved)
     }
 
+    func testChannelNames() {
+        let names = (0...9).map { ChannelId(rawValue: UInt8($0)).description }
+        XCTAssertEqual(names, [
+            "ctrl", "audio", "video-active", "feedback", "video-idle",
+            "reserved", "reserved", "reserved", "bulk-transfer", "feature",
+        ])
+        XCTAssertEqual("\(ChannelId(rawValue: 255))", "feature")
+    }
+
     func testFeatureChannels() {
         XCTAssertNil(ChannelId.feature(7))
         XCTAssertEqual(ChannelId.feature(8)?.rawValue, 8)
