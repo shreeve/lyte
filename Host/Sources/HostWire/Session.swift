@@ -482,6 +482,10 @@ public enum SessionDropReason: Equatable, Sendable {
     /// A RetryHandshake1 (0x14) whose cookie did not verify — a spoofer
     /// or a stale/replayed cookie, dropped before any Noise (HS-21).
     case handshakeCookieInvalid
+    /// A verbatim repeat of the answered message 1 from a tuple other
+    /// than the one it was answered on: message 2 goes only to the
+    /// tuple that asked, so a replayer cannot aim it elsewhere.
+    case handshakeRepeatOffPath
     /// A chan-3 payload FeedbackReport.decode refused. Still counted as
     /// media-path evidence (an authenticated arrival is an arrival) but
     /// the estimator never sees it — HS-16 runs on parsed reports only.
@@ -590,6 +594,13 @@ public struct SessionCounters: Equatable, Sendable {
     public var handshakeCookiesVerified = 0
     /// RetryHandshake1s whose cookie did NOT verify (spoof/replay).
     public var handshakeCookiesRejected = 0
+    /// Verbatim repeats of the answered message 1 (the client's
+    /// retransmit timer) answered with the same message 2 while the
+    /// initiator had not yet proved key possession.
+    public var handshakeMessage2Resends = 0
+    /// Newer message 1s that authenticated while this session's
+    /// handshake was still unconfirmed, handed to the shell to replace it.
+    public var handshakesSuperseded = 0
     /// Video frames the lifecycle machine refused to put on the wire
     /// (FROZEN's freezeDatagramSends, or a closed session).
     public var videoFramesSuppressed = 0
@@ -666,6 +677,17 @@ public struct SessionCounters: Equatable, Sendable {
     public init() {}
 }
 
+/// A message 1 that authenticated while a session's handshake was
+/// answered but unconfirmed. The shell hands it to a fresh session
+/// (`completeSupersedingHandshake`), which answers it without re-running
+/// the gate or re-reading message 1, and drops the unconfirmed one.
+public struct SupersedingHandshake: Sendable {
+    public let clientTuple: FourTuple
+    public let message1: [UInt8]
+    let responder: NoiseSession
+    let handshakeGate: HandshakeGate
+}
+
 public final class Session {
     public enum Phase: Equatable, Sendable {
         case awaitingHandshake
@@ -717,6 +739,21 @@ public final class Session {
 
     /// Message-1 admissions, consulted before any handshake allocation.
     private var handshakeGate: HandshakeGate
+    /// Whether the initiator has proved it holds the session keys (an
+    /// authenticated transport datagram arrived). Until then the session
+    /// is answered but uncommitted: a verbatim repeat of its message 1
+    /// gets the same message 2 again, and a newer message 1 that
+    /// authenticates supersedes it (`takeSupersedingHandshake`). Noise
+    /// IK message 1 carries no freshness, so answering one proves
+    /// nothing about who sent it. Always true in passthrough mode.
+    public private(set) var isPeerConfirmed: Bool
+    /// The answered handshake while unconfirmed: message 1 as received
+    /// and message 2's CTRL body, for verbatim repeats.
+    private var answeredHandshake: (message1: [UInt8], message2Body: [UInt8])?
+    /// The message 1 this session answered; nil before its handshake and
+    /// once the initiator is confirmed.
+    public var answeredMessage1: [UInt8]? { answeredHandshake?.message1 }
+    private var supersedingHandshake: SupersedingHandshake?
     /// Whether the flood dial currently demands a retry cookie (HS-21) —
     /// surfaced for the shell's live log.
     public var handshakeCookieMode: Bool { handshakeGate.cookieMode }
@@ -907,6 +944,7 @@ public final class Session {
         case .noise: lifecycleEstablishedAt = nil
         case .testPassthrough: lifecycleEstablishedAt = now
         }
+        self.isPeerConfirmed = lifecycleEstablishedAt != nil
         self.lifecycleLane = SessionLifecycleLane(
             config: config.lifecycle,
             establishedAtNanoseconds: lifecycleEstablishedAt
@@ -996,7 +1034,23 @@ public final class Session {
                 }
             }
         } catch {
+            // A handshake initiation is judged only once the AEAD has
+            // refused it: a sealed CTRL datagram's first ciphertext byte
+            // is 0x05 or 0x14 one time in 128, and the confirming
+            // datagram must never be mistaken for a message 1.
+            if !isPeerConfirmed,
+               let initiation = Self.parseInitiation(datagram) {
+                return receiveInitiationWhileUnconfirmed(
+                    initiation, from: tuple,
+                    now: now, hostMicroseconds: hostMicroseconds)
+            }
             return [refuse(error)]
+        }
+        if !isPeerConfirmed {
+            // Key possession proven: the session is committed.
+            isPeerConfirmed = true
+            answeredHandshake = nil
+            supersedingHandshake = nil
         }
 
         // The HS-12 demux trigger: only an authenticated arrival may
@@ -1133,11 +1187,9 @@ public final class Session {
         } catch {
             return [refuse(error)]
         }
-        var events: [SessionEvent] = []
         guard case .noise(let hostStatic) = config.crypto else {
             counters.dropped += 1 // unreachable: insecure never waits
-            events.append(.dropped(.notEstablished(envelope.channel.rawValue)))
-            return events
+            return [.dropped(.notEstablished(envelope.channel.rawValue))]
         }
         // Two admissible first words: a bare Noise message 1 (0x05)
         // or a RetryHandshake1 (0x14) echoing a cookie the host
@@ -1153,17 +1205,39 @@ public final class Session {
             guard let resubmission = try? RetryHandshake1.decode(payload)
             else {
                 counters.dropped += 1
-                events.append(.dropped(.malformedCtrl))
-                return events
+                return [.dropped(.malformedCtrl)]
             }
             presentedCookie = resubmission.cookie[...]
             message1 = resubmission.message1[...]
         default:
             counters.dropped += 1
-            events.append(.dropped(.notEstablished(envelope.channel.rawValue)))
-            return events
+            return [.dropped(.notEstablished(envelope.channel.rawValue))]
         }
 
+        return admitInitiation(
+            presentedCookie: presentedCookie, message1: message1,
+            from: tuple, hostStatic: hostStatic,
+            now: now, hostMicroseconds: hostMicroseconds
+        ) { responder in
+            completeHandshake(
+                responder: responder, message1: message1, from: tuple,
+                now: now, hostMicroseconds: hostMicroseconds)
+        }
+    }
+
+    /// The HandshakeGate's verdict on one message 1, executed: a stateless
+    /// challenge under flood, a counted drop, or — admitted and
+    /// authenticated — `onAuthenticated` with the responder that read it.
+    private func admitInitiation(
+        presentedCookie: ArraySlice<UInt8>?,
+        message1: ArraySlice<UInt8>,
+        from tuple: FourTuple,
+        hostStatic: NoiseKeyPair,
+        now: UInt64,
+        hostMicroseconds: UInt64,
+        onAuthenticated: (NoiseSession) -> [SessionEvent]
+    ) -> [SessionEvent] {
+        var events: [SessionEvent] = []
         let decision = handshakeGate.admitMessage1(
             presentedCookie: presentedCookie,
             clientTuple: Self.cookieTuple(tuple),
@@ -1175,13 +1249,16 @@ public final class Session {
         }
         switch decision.admission {
         case .admit:
-            events += completeHandshake(
-                message1: message1,
-                from: tuple,
-                hostStatic: hostStatic,
-                now: now,
-                hostMicroseconds: hostMicroseconds
-            )
+            if presentedCookie != nil {
+                counters.handshakeCookiesVerified += 1
+            }
+            switch authenticate(message1: message1, hostStatic: hostStatic) {
+            case .success(let responder):
+                events += onAuthenticated(responder)
+            case .failure(let refusal):
+                counters.dropped += 1
+                events.append(.dropped(refusal.reason))
+            }
         case .challenge(let cookie):
             counters.dropped += 1
             counters.handshakeChallengesMinted += 1
@@ -1207,10 +1284,130 @@ public final class Session {
             counters.handshakeCookiesRejected += 1
             events.append(.dropped(.handshakeCookieInvalid))
         }
-        if presentedCookie != nil, case .admit = decision.admission {
-            counters.handshakeCookiesVerified += 1
-        }
         return events
+    }
+
+    /// Reads message 1 on fresh responder state — a failed one (bad
+    /// version, wrong static, garbage) burns nothing — and applies the
+    /// paired-set policy to the static it names.
+    private func authenticate(
+        message1: ArraySlice<UInt8>, hostStatic: NoiseKeyPair
+    ) -> Result<NoiseSession, InboundRefusal> {
+        var responder: NoiseSession
+        do {
+            responder = try NoiseSession(role: .responder, staticKeys: hostStatic)
+            _ = try responder.readMessage1(message1)
+        } catch {
+            return .failure(InboundRefusal(
+                .handshakeFailed(String(describing: error))))
+        }
+        if let allowed = config.allowedClientStaticPublicKeys,
+           let remote = responder.remoteStaticPublicKey,
+           !allowed.contains(remote) {
+            return .failure(InboundRefusal(
+                .handshakeFailed("client static not in the paired set")))
+        }
+        return .success(responder)
+    }
+
+    /// A handshake initiation reaching an answered, unconfirmed session.
+    /// The client's retransmit timer resends message 1 verbatim, and a
+    /// client that already read our message 2 is keyed to it, so a
+    /// verbatim repeat gets the same message 2 again — on the path that
+    /// asked. Any other message 1 goes through the gate; if it
+    /// authenticates it supersedes this session (the shell replaces it),
+    /// so a replayed, abandoned, or lost-answer handshake holds the host
+    /// only until a real client dials.
+    private func receiveInitiationWhileUnconfirmed(
+        _ initiation: Initiation,
+        from tuple: FourTuple,
+        now: UInt64,
+        hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        guard case .noise(let hostStatic) = config.crypto else { return [] }
+        if let answered = answeredHandshake,
+           initiation.message1.elementsEqual(answered.message1) {
+            guard tuple == validator.primary.tuple else {
+                counters.dropped += 1
+                return [.dropped(.handshakeRepeatOffPath)]
+            }
+            do {
+                try sendCtrl(
+                    body: answered.message2Body, sealed: false,
+                    now: now, hostMicroseconds: hostMicroseconds)
+                counters.handshakeMessage2Resends += 1
+                return []
+            } catch {
+                return [.sendFailed(String(describing: error))]
+            }
+        }
+        return admitInitiation(
+            presentedCookie: initiation.presentedCookie,
+            message1: initiation.message1,
+            from: tuple, hostStatic: hostStatic,
+            now: now, hostMicroseconds: hostMicroseconds
+        ) { responder in
+            counters.handshakesSuperseded += 1
+            supersedingHandshake = SupersedingHandshake(
+                clientTuple: tuple, message1: Array(initiation.message1),
+                responder: responder, handshakeGate: handshakeGate)
+            return []
+        }
+    }
+
+    /// The authenticated message 1 that should replace this unconfirmed
+    /// session, once; nil when none arrived.
+    public func takeSupersedingHandshake() -> SupersedingHandshake? {
+        defer { supersedingHandshake = nil }
+        return supersedingHandshake
+    }
+
+    /// Answers a superseding message 1 on this fresh session: the gate
+    /// state carries over, and message 1 is not read again.
+    public func completeSupersedingHandshake(
+        _ superseding: SupersedingHandshake,
+        now: UInt64,
+        hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        precondition(phase == .awaitingHandshake,
+                     "a superseding handshake needs a fresh session")
+        handshakeGate = superseding.handshakeGate
+        return completeHandshake(
+            responder: superseding.responder,
+            message1: superseding.message1[...],
+            from: superseding.clientTuple,
+            now: now, hostMicroseconds: hostMicroseconds)
+    }
+
+    /// A handshake initiation's carriage: a bare Noise message 1 (0x05)
+    /// or a RetryHandshake1 (0x14) echoing a cookie.
+    struct Initiation {
+        var presentedCookie: ArraySlice<UInt8>?
+        var message1: ArraySlice<UInt8>
+    }
+
+    static func parseInitiation(_ datagram: ArraySlice<UInt8>) -> Initiation? {
+        guard let (envelope, payload) = try? Envelope.decode(datagram),
+              envelope.channel == .ctrl else { return nil }
+        switch payload.first {
+        case CtrlMessageType.noiseHandshake1:
+            return Initiation(presentedCookie: nil, message1: payload.dropFirst())
+        case CtrlMessageType.retryHandshake1:
+            guard let resubmission = try? RetryHandshake1.decode(payload)
+            else { return nil }
+            return Initiation(
+                presentedCookie: resubmission.cookie[...],
+                message1: resubmission.message1[...])
+        default:
+            return nil
+        }
+    }
+
+    /// The Noise message 1 a handshake initiation carries (bare or
+    /// cookie-bearing); nil for anything else. The listening shell keys
+    /// its replay memory on it.
+    public static func handshakeMessage1(in datagram: [UInt8]) -> [UInt8]? {
+        parseInitiation(datagram[...]).map { Array($0.message1) }
     }
 
     // MARK: Video
@@ -2780,9 +2977,14 @@ public final class Session {
 
     /// The earliest instant anything here has work: the pacer's wake,
     /// the next beacon, the ARQ's retransmit deadline, or a validator
-    /// deadline. The loop sleeps until this (Pacer semantics).
-    public func nextWake(now: UInt64) -> UInt64? {
-        var wake = channel.nextWake(now: now)
+    /// deadline. The loop sleeps until this (Pacer semantics). A shell
+    /// that pumps only latency classes (`pumpLatency`, a full socket)
+    /// passes `.audio`, so video that it will not release cannot make
+    /// the wake "now".
+    public func nextWake(
+        now: UInt64, upThrough highestClass: PacerClass = .bulk
+    ) -> UInt64? {
+        var wake = channel.nextWake(now: now, upThrough: highestClass)
         for candidate in [
             beaconClock.nextDeadlineNanoseconds,
             ctrlArqLane.nextDeadlineNanoseconds,
@@ -2915,30 +3117,17 @@ public final class Session {
         Array("\(tuple.remoteAddress):\(tuple.remotePort)".utf8)
     }
 
+    /// Answers an authenticated message 1: message 2, the transport, the
+    /// session-start beacon and the capability declaration. The session
+    /// is established but not yet confirmed (`isPeerConfirmed`).
     private func completeHandshake(
+        responder: NoiseSession,
         message1: ArraySlice<UInt8>,
         from tuple: FourTuple,
-        hostStatic: NoiseKeyPair,
         now: UInt64,
         hostMicroseconds: UInt64
     ) -> [SessionEvent] {
-        // Fresh responder state per attempt: a failed message 1 (bad
-        // version, wrong static, garbage) burns nothing — the client's
-        // retry meets a clean slate.
-        var responder: NoiseSession
-        do {
-            responder = try NoiseSession(role: .responder, staticKeys: hostStatic)
-            _ = try responder.readMessage1(message1)
-        } catch {
-            counters.dropped += 1
-            return [.dropped(.handshakeFailed(String(describing: error)))]
-        }
-        if let allowed = config.allowedClientStaticPublicKeys,
-           let remote = responder.remoteStaticPublicKey,
-           !allowed.contains(remote) {
-            counters.dropped += 1
-            return [.dropped(.handshakeFailed("client static not in the paired set"))]
-        }
+        var responder = responder
         // Until a handshake completes the session is bound to no client:
         // the first message 1 to authenticate names the client's path,
         // whichever tuple the shell first saw. A spoofed or unpaired
@@ -2953,13 +3142,15 @@ public final class Session {
             )
         }
         do {
-            let message2 = try responder.writeMessage2()
+            let message2Body = [CtrlMessageType.noiseHandshake2]
+                + (try responder.writeMessage2())
             try sendCtrl(
-                body: [CtrlMessageType.noiseHandshake2] + message2,
+                body: message2Body,
                 sealed: false,
                 now: now, hostMicroseconds: hostMicroseconds
             )
             transport = try responder.makeTransport()
+            answeredHandshake = (Array(message1), message2Body)
         } catch {
             return [.dropped(.handshakeFailed(String(describing: error)))]
         }

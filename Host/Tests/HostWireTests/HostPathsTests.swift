@@ -149,6 +149,53 @@ final class HostPathsTests: XCTestCase {
             ["noise_static.key"], "no temporary file is left behind")
     }
 
+    /// A crash between create and rename used to leave `.<name>.<pid>.tmp`
+    /// behind, and a later process reusing the PID then failed every write
+    /// of that file with EEXIST. Temporary names are unique now.
+    func testALeftoverTemporaryNeverBlocksAWrite() throws {
+        let target = home + "/dir/paired_clients"
+        try write([9], to: home + "/dir/.paired_clients.\(getpid()).tmp", mode: 0o600)
+        try write([9], to: home + "/dir/.paired_clients.tmp.AAAAAA", mode: 0o600)
+
+        try SecretFile.write([1, 2, 3], to: target)
+        XCTAssertEqual(try SecretFile.read(target), [1, 2, 3])
+    }
+
+    /// A crashed writer's temporaries (which may hold a copy of a private
+    /// key) are swept by the next write of that file once stale; a live
+    /// writer's young temporary and unrelated files are left alone.
+    func testStaleTemporariesAreSwept() throws {
+        let dir = home + "/dir"
+        let stale = [".noise_static.key.4242.tmp", ".noise_static.key.tmp.Zx81Qa"]
+        let kept = [".noise_static.key.tmp.young1", ".other.key.4242.tmp",
+                    ".noise_static.key.backup"]
+        for name in stale + kept {
+            try write([1], to: dir + "/" + name, mode: 0o600)
+        }
+        let old = timeval(tv_sec: time(nil) - 3_600, tv_usec: 0)
+        for name in stale {
+            XCTAssertEqual(utimes(dir + "/" + name, [old, old]), 0)
+        }
+
+        try SecretFile.write([7], to: dir + "/noise_static.key")
+
+        let left = Set(try FileManager.default.contentsOfDirectory(atPath: dir))
+        XCTAssertEqual(left, Set(kept + ["noise_static.key"]))
+    }
+
+    /// First mint is create-if-absent: two starters racing cannot both
+    /// win, and the loser never overwrites the winner's key.
+    func testCreateNeverOverwrites() throws {
+        let target = home + "/dir/noise_static.key"
+        XCTAssertTrue(try SecretFile.create([UInt8](repeating: 1, count: 32), at: target))
+        XCTAssertFalse(try SecretFile.create([UInt8](repeating: 2, count: 32), at: target))
+        XCTAssertEqual(try SecretFile.read(target), [UInt8](repeating: 1, count: 32))
+        XCTAssertEqual(try mode(of: target), 0o600)
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: home + "/dir"),
+            ["noise_static.key"], "the loser's temporary is gone too")
+    }
+
     // MARK: - Helpers
 
     private struct Snapshot: Equatable {

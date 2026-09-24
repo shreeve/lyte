@@ -91,6 +91,46 @@ public enum ClipboardImageFlavor {
     }
 }
 
+/// What a host clipboard leaf does with one selection-owner change —
+/// pure, so the gate tests pin the consent line everywhere. The host
+/// clipboard is a session's to narrate only while that session is live:
+/// a copy made before any session, or between two, is never read, let
+/// alone announced to whichever client connects next (clipboards carry
+/// passwords). The leaf outlives sessions, so it judges every change
+/// against whether one is live now.
+public enum HostSelectionChange: Equatable, Sendable {
+    /// Our own SetSelection landing: report the owned content upward
+    /// (the session's sync book suppresses the echo).
+    case reportOwnEcho
+    /// A foreign copy during a live session: read this flavor, report it.
+    case read(mime: String, image: Bool)
+    /// No session is live.
+    case ignoreOutsideSession
+    /// Nothing the agreed tier carries (rich flavors, a cleared
+    /// selection, images off the images tier).
+    case ignoreFlavor
+
+    public static func judge(
+        sessionLive: Bool,
+        sessionIsOwner: Bool,
+        offered: [String],
+        imagesEnabled: Bool
+    ) -> HostSelectionChange {
+        guard sessionLive else { return .ignoreOutsideSession }
+        if sessionIsOwner { return .reportOwnEcho }
+        // Text always wins when an owner offers both; images are the
+        // fallback flavor, and only on the images tier.
+        if let mime = ClipboardTextMime.pickForRead(fromOffered: offered) {
+            return .read(mime: mime, image: false)
+        }
+        if imagesEnabled,
+           let mime = ClipboardImageFlavor.pickForRead(fromOffered: offered) {
+            return .read(mime: mime, image: true)
+        }
+        return .ignoreFlavor
+    }
+}
+
 /// What a host clipboard leaf owes the shell. Threading is the
 /// shell's concern (the leaf's signals arrive on its own loop; the
 /// shell marshals onto the session's), text is always whole UTF-8 —

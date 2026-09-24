@@ -1,0 +1,38 @@
+// EncoderRateLatch: which rate-control posture the next frame's RC and
+// HRD buffers carry. A directive (`request`) takes effect on the next
+// frame, whatever its type; an IDR re-sends the posture in force
+// regardless (its sequence rebuild resets the driver's RC state). A fall
+// purge delivers a tightening directive together with the recovery IDR,
+// so the IDR — the largest frame, at the worst moment — must already be
+// sized to the new cap and HRD buffer.
+
+struct EncoderRateLatch {
+    struct Posture: Equatable {
+        var bitsPerSecond: Int64
+        /// Nil keeps the encoder's default window (four frames of cap).
+        var hrdBufferBits: Int64?
+    }
+
+    /// The posture the driver holds (or will, once this frame is sent).
+    private(set) var current: Posture
+    private var pending: Posture?
+
+    init(bitsPerSecond: Int64, hrdBufferBits: Int64?) {
+        current = Posture(bitsPerSecond: bitsPerSecond, hrdBufferBits: hrdBufferBits)
+    }
+
+    mutating func request(bitsPerSecond: Int64, hrdBufferBits: Int64?) {
+        pending = Posture(bitsPerSecond: bitsPerSecond, hrdBufferBits: hrdBufferBits)
+    }
+
+    /// The posture this frame's RC/HRD buffers carry, or nil when a P
+    /// frame needs none. A pending directive lands here, IDR or not.
+    mutating func take(forIDR idr: Bool) -> Posture? {
+        if let pending {
+            current = pending
+            self.pending = nil
+            return current
+        }
+        return idr ? current : nil
+    }
+}

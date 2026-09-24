@@ -688,8 +688,8 @@ final class SessionHost {
 
         // HS-10: the advertisement goes up BEFORE the first handshake
         // wait, so a browsing client can find the host and then connect
-        // to it — commit-and-retain is all Avahi needs (the entry group
-        // lives as long as the D-Bus connection; no servicing loop).
+        // to it. The advertiser re-files the record whenever the daemon
+        // or a name collision withdraws it (`serviceOrgans`).
         var published: AvahiAdvertiser?
         if opts.advertise, let listenPort = opts.wireListen {
             do {
@@ -700,7 +700,7 @@ final class SessionHost {
                 )
             } catch {
                 print("""
-                    discovery: unavailable (\(error)) — \
+                    discovery: off (\(error)) — \
                     manual host:port still works
                     """)
             }
@@ -740,6 +740,15 @@ final class SessionHost {
                 """)
             return nil
         }
+    }
+
+    /// The host organs' own service pass: the clipboard leaf (serving
+    /// host pastes; reading nothing unless attached) and the Avahi
+    /// record. Runs on the handshake wait's idle pass between sessions
+    /// and on a session's janitor during one — never both at once.
+    func serviceOrgans() {
+        clipboardLeaf?.service()
+        advertiser?.service()
     }
 
     /// The run is over: destroy the input devices (releasing anything
@@ -834,6 +843,7 @@ static func run(arguments: [String]) throws {
                 service: session \(loop.sessionsServed) closed \
                 (\(served.end)) — awaiting the next client
                 """)
+            HostLogBound.check()
         case .exit(failure: nil):
             return
         case .exit(failure: let failure?):
@@ -893,10 +903,14 @@ static func serveSession(
     do {
         // A listening service waits for its client as long as it
         // takes; a wire-out run gives its peer two minutes.
+        // The clipboard leaf is serviced while no session is live: host
+        // pastes of the content a client set last are still served, and
+        // host copies are drained unread (consent starts at attach).
         awaitOutcome = try w.awaitClient(
             hostStatic: host.hostStatic,
             timeoutSeconds: opts.wireListen != nil ? nil : 120,
-            stopRequested: { lyteTerminationRequested != 0 })
+            stopRequested: { lyteTerminationRequested != 0 },
+            idle: { host.serviceOrgans() })
     } catch {
         w.shutdown(reason: .shuttingDown, lingerSeconds: 0)
         throw error
@@ -950,17 +964,20 @@ static func serveSession(
             """)
     }
 
+    // The host organs (clipboard leaf, Avahi record) ride the
+    // janitor's off-lock service pass while the session runs.
+    w.shellServiceHook = { [weak host] in
+        host?.serviceOrgans()
+    }
     // HS-19: the clipboard loop — client 0x1A sets apply through
     // the leaf; leaf-observed changes (genuine copies AND the
     // applies' own echoes, which the session's book suppresses)
-    // flow back through noteHostClipboardChanged. All of it rides
-    // the video tick's off-lock service pass.
+    // flow back through noteHostClipboardChanged. Attaching first
+    // drains what changed while no session was live, unread.
     if let leaf = host.clipboardLeaf {
+        leaf.attach()
         w.clipboardApplyHandler = { [weak leaf] text in
             leaf?.apply(text: text)
-        }
-        w.clipboardServiceHook = { [weak leaf] in
-            leaf?.service()
         }
         leaf.onLocalChange = { [weak w] text in
             w?.noteHostClipboardChanged(text)
@@ -1086,7 +1103,9 @@ static func serveSession(
     // E2: the uinput devices outlive the session; nothing its client
     // held may stay pressed.
     host.injector?.releaseHeld()
-    // HS-19: the leaf outlives the session; stop reporting into it.
+    // HS-19: the leaf outlives the session; stop reading host copies
+    // and reporting into it (it keeps serving what it owns).
+    host.clipboardLeaf?.detach()
     host.clipboardLeaf?.onLocalChange = nil
     host.clipboardLeaf?.onLocalImageChange = nil
     // F-3: the receiving end's one resume obligation — persist the
@@ -1183,7 +1202,8 @@ static func printSessionBooks(
         clipboardLeafStats += ", \(leaf.transfersFailed) failed"
         clipboardLeafStats += ", \(leaf.readsAbandoned) reads abandoned"
         clipboardLeafStats += ", \(leaf.nonTextChangesIgnored) non-text ignored"
-        clipboardLeafStats += ", \(leaf.baselineReplaysSkipped) baseline skipped)"
+        clipboardLeafStats += ", \(leaf.baselineReplaysSkipped) baseline skipped"
+        clipboardLeafStats += ", \(leaf.changesOutsideSessionSkipped) outside a session)"
     }
     print("""
     session: \(c.framesIngested) frames → \(c.shardsEnqueued) shards → \

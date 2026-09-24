@@ -964,10 +964,13 @@ public final class VideoChannel {
         return sent
     }
 
-    /// The earliest instant `pump` can emit; nil when nothing is queued.
+    /// The earliest instant `pump` (or, bounded to `.audio`,
+    /// `pumpLatency`) can emit; nil when nothing it releases is queued.
     /// The caller's loop sleeps until this (Pacer semantics verbatim).
-    public func nextWake(now: UInt64) -> UInt64? {
-        pacer.nextWake(now: now)
+    public func nextWake(
+        now: UInt64, upThrough highestClass: PacerClass = .bulk
+    ) -> UInt64? {
+        pacer.nextWake(now: now, upThrough: highestClass)
     }
 
     public var isIdle: Bool {

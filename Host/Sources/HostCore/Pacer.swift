@@ -318,11 +318,17 @@ public final class Pacer {
                           emittedAt: now)
     }
 
-    /// The earliest time a call to `nextBatch` can emit, or nil when
-    /// nothing is queued. The caller's event loop sleeps until this.
-    public func nextWake(now: UInt64) -> UInt64? {
+    /// The earliest time a call to `nextBatch(upThrough:)` can emit, or
+    /// nil when nothing it may release is queued. The caller's event loop
+    /// sleeps until this; a caller that is holding lower classes back
+    /// (a full socket) passes the same bound so their readiness does not
+    /// wake it.
+    public func nextWake(
+        now: UInt64, upThrough highestAllowedClass: PacerClass = .bulk
+    ) -> UInt64? {
         refill(now: now)
-        guard let head = highestHead() else { return nil }
+        guard let head = highestHead(),
+              head.priorityClass <= highestAllowedClass else { return nil }
         // The latency exemption's wake half: a queued control/audio
         // token emits through a negative balance NOW (nextBatch's
         // exempt clause) — the loop must not sleep out the deficit.
