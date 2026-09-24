@@ -143,8 +143,6 @@ public final class Pacer {
             return t
         }
 
-        var queuedBytes: Int { bytesQueued }
-
         var queuedCount: Int { urgent.count + normal.count }
 
         /// Every queued token, urgent first, FIFO within each.
@@ -205,7 +203,7 @@ public final class Pacer {
     }
 
     public func queuedBytes(_ c: PacerClass) -> Int {
-        queues[c.rawValue].queuedBytes
+        queues[c.rawValue].bytesQueued
     }
 
     public func queuedCount(_ c: PacerClass) -> Int {

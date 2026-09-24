@@ -111,7 +111,7 @@ public struct SocketOutbox {
     /// A datagram the pacer released, stamped with its release instant.
     public mutating func enqueue(_ datagram: VideoChannelDatagram, now: UInt64) {
         if datagram.pacerClass == .audio {
-            let blockedByVideo = datagrams.contains { Self.isVideo($0.pacerClass) }
+            let blockedByVideo = datagrams.contains { $0.pacerClass.countsAsPendingVideo }
             audioTraces[datagram.seq.rawValue] = AudioTrace(
                 enqueuedAtNS: now, blockedByVideo: blockedByVideo)
         }
@@ -200,11 +200,11 @@ public struct SocketOutbox {
                     }
                     next += accepted
                 case .wouldBlock:
-                    requeue(queued[next...])
+                    datagrams.append(contentsOf: queued[next...])
                     noteWouldBlock(lane: lane)
                     return .wouldBlock(lane)
                 case .noBuffer:
-                    requeue(queued[next...])
+                    datagrams.append(contentsOf: queued[next...])
                     counters.noBufferCount += 1
                     if lane == .latency {
                         counters.latencyNoBufferCount += 1
@@ -271,15 +271,11 @@ public struct SocketOutbox {
     /// pacer's own backlog.
     public mutating func purgeVideo(ledger: some SocketOutboxLedger) {
         datagrams.removeAll { datagram in
-            guard Self.isVideo(datagram.pacerClass) else { return false }
+            guard datagram.pacerClass.countsAsPendingVideo else { return false }
             ledger.discardPendingDatagram(datagram)
             freshVideoReleasedAtNS.removeValue(forKey: Self.traceKey(datagram))
             return true
         }
-    }
-
-    private mutating func requeue(_ unsent: ArraySlice<VideoChannelDatagram>) {
-        datagrams.append(contentsOf: unsent)
     }
 
     private mutating func noteWouldBlock(lane: SocketLane) {
@@ -339,11 +335,6 @@ public struct SocketOutbox {
         if datagram.pacerClass == .audio {
             audioTraces.removeValue(forKey: datagram.seq.rawValue)
         }
-    }
-
-    private static func isVideo(_ pacerClass: PacerClass) -> Bool {
-        pacerClass == .freshVideo || pacerClass == .videoTail
-            || pacerClass == .refinement
     }
 
     /// Wrapping frame-number order: true when `candidate` is newer than

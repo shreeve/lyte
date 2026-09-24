@@ -34,11 +34,6 @@ func realtimeNS() -> UInt64 {
     return UInt64(ts.tv_sec) * 1_000_000_000 + UInt64(ts.tv_nsec)
 }
 
-/// Class → IPv4 TOS byte: HostCore's WireTos, the session's own policy.
-func tos(for c: PacerClass) -> UInt8 {
-    WireTos.byte(for: c)
-}
-
 func fmtMS(_ ns: UInt64) -> String { String(format: "%7.3f", Double(ns) / 1e6) }
 func fmtMS(_ ns: Double) -> String { String(format: "%7.3f", ns / 1e6) }
 
@@ -167,7 +162,7 @@ func run() throws {
                                 count: t.bytes)
                 pkts.append(lyte_netio_pkt(data: scratch.advanced(by: off),
                                            len: t.bytes,
-                                           tos: tos(for: t.priorityClass)))
+                                           tos: WireTos.byte(for: t.priorityClass)))
                 off += t.bytes
             }
             var firstID: UInt32 = 0
@@ -247,7 +242,7 @@ func run() throws {
 
     // Per-class TOS marking, verified at the receiver via IP_RECVTOS.
     var sentTosTally: [UInt8: Int] = [:]
-    for p in packets { sentTosTally[tos(for: p.cls), default: 0] += 1 }
+    for p in packets { sentTosTally[WireTos.byte(for: p.cls), default: 0] += 1 }
     let tallyLine = sentTosTally.keys.sorted(by: >).map { t in
         let hex = Hex.string(t, uppercase: true, prefix: true)
         return "\(hex) sent \(sentTosTally[t] ?? 0) recv \(rxTosTally[t] ?? 0)"

@@ -415,12 +415,6 @@ public final class VideoChannel {
         isBorrowed: Bool
     ) throws -> Int
     where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
-        let queuedBytesBeforeAdmission =
-            pacer.queuedBytes(.freshVideo) + pacer.queuedBytes(.videoTail)
-        let queuedWireTimeBeforeAdmissionNS = UInt64(
-            Double(queuedBytesBeforeAdmission) * 8e9
-                / Double(max(pacer.rateBitsPerSecond, 1))
-        )
         let prepared = try Self.prepareFrame(
             annexB,
             isKeyframe: isKeyframe,
@@ -433,8 +427,7 @@ public final class VideoChannel {
             lastInputSeq: lastInputSeq,
             interleave: interleave,
             now: now,
-            isBorrowed: isBorrowed,
-            queuedWireTimeBeforeAdmissionNS: queuedWireTimeBeforeAdmissionNS
+            isBorrowed: isBorrowed
         )
     }
 
@@ -456,28 +449,6 @@ public final class VideoChannel {
             Double(queuedBytesBeforeAdmission) * 8e9
                 / Double(max(pacer.rateBitsPerSecond, 1))
         )
-        return try ingestPrepared(
-            prepared,
-            frameNumber: frameNumber,
-            captureTimestampMicroseconds: captureTimestampMicroseconds,
-            lastInputSeq: lastInputSeq,
-            interleave: interleave,
-            now: now,
-            isBorrowed: isBorrowed,
-            queuedWireTimeBeforeAdmissionNS: queuedWireTimeBeforeAdmissionNS
-        )
-    }
-
-    private func ingestPrepared(
-        _ prepared: PreparedVideoFrame,
-        frameNumber: FrameNumber,
-        captureTimestampMicroseconds: UInt64,
-        lastInputSeq: UInt32?,
-        interleave: (() -> Void)?,
-        now: UInt64,
-        isBorrowed: Bool,
-        queuedWireTimeBeforeAdmissionNS: UInt64
-    ) throws -> Int {
         var shards: [(envelope: Envelope, payload: [UInt8])] = []
         shards.reserveCapacity(prepared.shards.count)
         for shard in prepared.shards {

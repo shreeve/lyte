@@ -6,7 +6,6 @@
 import LyteIO
 import LyteCore
 import CNetIO // lyte_stdout_linebuf
-import CNetIO
 import Foundation
 import HostWire
 
