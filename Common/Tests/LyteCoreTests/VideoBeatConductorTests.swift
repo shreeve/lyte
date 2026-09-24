@@ -499,4 +499,43 @@ final class VideoBeatConductorTests: XCTestCase {
         XCTAssertTrue(gaps.allSatisfy { $0 == period },
                       "the grid must not chatter at the ceiling: \(gaps)")
     }
+
+    // MARK: - Clock skew
+
+    /// Streams `minutes` of 60 Hz host captures through the shipping
+    /// config while the client clock runs `ppm` fast (positive) or slow
+    /// (negative) against the host: the mapped capture advances
+    /// 16,667·(1+ppm) µs per frame while the source stamps (and hence
+    /// the grid) advance exactly one beat. Path delay wobbles over 9–12
+    /// ms, a normal LAN. Returns the worst lateness observed.
+    private func worstLatenessUnderSkew(
+        ppm: Int64, minutes: Int
+    ) -> UInt64 {
+        var policy = VideoBeatConductor()
+        var worst: UInt64 = 0
+        let origin: Int64 = 1_000_000
+        for index in 0..<(minutes * 60 * 60) {
+            let source = origin + Int64(index) * Int64(period)
+            let mapped = source + source * ppm / 1_000_000 + 5_000_000
+            let arrival = mapped + 9_000 + Int64((index * 7_919) % 3_000)
+            let decision = policy.schedule(
+                mappedCaptureMicroseconds: UInt64(mapped),
+                arrivalMicroseconds: UInt64(arrival),
+                sourceCaptureMicroseconds: UInt64(source))
+            worst = max(worst, decision.latenessMicroseconds)
+        }
+        return worst
+    }
+
+    /// A client clock running fast drains the cue until the mapped
+    /// capture overtakes the grid. The hole law must still re-cue then:
+    /// its ceiling room is measured from a cue that is zero, not from a
+    /// wrapped unsigned difference.
+    func testFastClientSkewStillReachesTheHoleLaw() {
+        for ppm: Int64 in [-50, 10, 20] {
+            XCTAssertLessThan(
+                worstLatenessUnderSkew(ppm: ppm, minutes: 60), period,
+                "\(ppm) ppm for an hour must never leave a frame a full beat late")
+        }
+    }
 }

@@ -289,7 +289,11 @@ public struct VideoBeatConductor: Sendable {
            arrivalMicroseconds - presentation >= period {
             let lag = arrivalMicroseconds - presentation
             var beatsBehind = (lag + period - 1) / period
-            let cueNow = presentation &- mappedCaptureMicroseconds
+            // Under a fast client clock the mapped capture can overtake
+            // the grid; the cue in force is then zero, never a wrapped
+            // difference that would erase the ceiling room.
+            let cueNow = presentation > mappedCaptureMicroseconds
+                ? presentation - mappedCaptureMicroseconds : 0
             let room = config.maximumCueMicroseconds > cueNow
                 ? (config.maximumCueMicroseconds - cueNow) / period : 0
             let cushionRoom = UInt64(max(
