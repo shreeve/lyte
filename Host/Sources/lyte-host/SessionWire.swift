@@ -97,8 +97,20 @@ final class SessionWire {
         case terminationRequested
     }
 
-    private let netio: OpaquePointer
+    /// The listening socket: bound to the session port and never
+    /// connected, so it receives every tuple no connected socket claims —
+    /// message 1 from any client, and a migrated client's new path. It
+    /// also carries every datagram addressed explicitly (path challenges,
+    /// pre-establishment replies).
+    private let listenNetio: OpaquePointer
+    /// The media sockets, connected to the client's primary tuple once it
+    /// is known (SO_REUSEPORT members of the listening port, so the wire
+    /// 4-tuple is one): video at SO_PRIORITY 4, control and audio at 6,
+    /// each with its own kernel send buffer. Nil until then.
+    private var videoNetio: OpaquePointer?
     private var latencyNetio: OpaquePointer?
+    /// wire-out mode: only this peer may complete a handshake.
+    private let requiredPeer: (host: String, port: UInt16)?
     private let handshakeWitness: FileHandle? = {
         guard let path = ProcessInfo.processInfo.environment[
             "LYTE_HANDSHAKE_WITNESS_JSONL"] else { return nil }
@@ -502,25 +514,16 @@ final class SessionWire {
         self.pairing = pairing
         self.onPairingEvent = onPairingEvent
 
+        self.requiredPeer = peer
         var err = [CChar](repeating: 0, count: 256)
         guard let n = lyte_netio_new("0.0.0.0", listenPort ?? 0,
                                      &err, err.count) else {
             throw HostError("session socket open failed: \(errString(err))")
         }
-        netio = n
-        guard lyte_netio_set_priority(n, 4) == 0 else {
+        listenNetio = n
+        guard lyte_netio_set_priority(n, 6) == 0 else {
             lyte_netio_free(n)
-            throw HostError("video socket SO_PRIORITY failed")
-        }
-        socketSendBufferBytes = max(
-            Int(lyte_netio_send_buffer_bytes(n)), 0)
-        if let peer {
-            guard lyte_netio_set_peer(n, peer.host, peer.port,
-                                      &err, err.count) == 0 else {
-                lyte_netio_free(n)
-                throw HostError("connect to \(peer.host):\(peer.port) "
-                    + "failed: " + errString(err))
-            }
+            throw HostError("listening socket SO_PRIORITY failed")
         }
         scratch = UnsafeMutablePointer<UInt8>.allocate(
             capacity: Self.scratchCapacity)
@@ -540,7 +543,7 @@ final class SessionWire {
         }
         recvSlots = slots
         if let peer {
-            try openLatencyLane(peerHost: peer.host, peerPort: peer.port)
+            try connectMedia(host: peer.host, port: peer.port)
         }
 
         // The sender thread comes up parked (no work until the first
@@ -568,7 +571,10 @@ final class SessionWire {
         if let latencyNetio {
             lyte_netio_free(latencyNetio)
         }
-        lyte_netio_free(netio)
+        if let videoNetio {
+            lyte_netio_free(videoNetio)
+        }
+        lyte_netio_free(listenNetio)
     }
 
     private func traceHandshake(
@@ -585,30 +591,42 @@ final class SessionWire {
         handshakeWitness.write(Data([0x0A]))
     }
 
-    private func openLatencyLane(
-        peerHost: String, peerPort: UInt16
-    ) throws {
-        guard latencyNetio == nil else { return }
+    /// Points the media sockets at the client: opens them on first use
+    /// (bound to the listening port) or re-connects them (a path
+    /// promotion).
+    private func connectMedia(host: String, port: UInt16) throws {
         var err = [CChar](repeating: 0, count: 256)
-        let localPort = lyte_netio_local_port(netio)
-        guard let lane = lyte_netio_new(
-            "0.0.0.0", localPort, &err, err.count
-        ) else {
-            throw HostError("latency socket open failed: \(errString(err))")
+        func open(priority: Int32, _ what: String) throws -> OpaquePointer {
+            guard let socket = lyte_netio_new(
+                "0.0.0.0", lyte_netio_local_port(listenNetio), &err, err.count
+            ) else {
+                throw HostError("\(what) socket open failed: \(errString(err))")
+            }
+            guard lyte_netio_set_priority(socket, priority) == 0 else {
+                lyte_netio_free(socket)
+                throw HostError("\(what) socket SO_PRIORITY failed")
+            }
+            return socket
         }
-        guard lyte_netio_set_peer(
-            lane, peerHost, peerPort, &err, err.count
-        ) == 0 else {
-            lyte_netio_free(lane)
-            throw HostError("latency socket connect failed: \(errString(err))")
+        if videoNetio == nil {
+            let video = try open(priority: 4, "video")
+            videoNetio = video
+            socketSendBufferBytes = max(
+                Int(lyte_netio_send_buffer_bytes(video)), 0)
         }
-        guard lyte_netio_set_priority(lane, 6) == 0 else {
-            lyte_netio_free(lane)
-            throw HostError("latency socket SO_PRIORITY failed")
+        if latencyNetio == nil {
+            let latency = try open(priority: 6, "latency")
+            latencyNetio = latency
+            latencySocketSendBufferBytes = max(
+                Int(lyte_netio_send_buffer_bytes(latency)), 0)
         }
-        latencyNetio = lane
-        latencySocketSendBufferBytes = max(
-            Int(lyte_netio_send_buffer_bytes(lane)), 0)
+        for (socket, what) in [(videoNetio!, "video"), (latencyNetio!, "latency")] {
+            guard lyte_netio_set_peer(socket, host, port, &err, err.count) == 0
+            else {
+                throw HostError(
+                    "\(what) connect to \(host):\(port) failed: \(errString(err))")
+            }
+        }
     }
 
     private func makeSession(crypto: SessionCryptoMode, clientTuple: FourTuple) {
@@ -633,7 +651,7 @@ final class SessionWire {
     private func observeKernelPressure(
         _ session: Session, now: UInt64
     ) -> KernelPressureDecision {
-        let videoOutq = Int(lyte_netio_outq_bytes(netio))
+        let videoOutq = Int(lyte_netio_outq_bytes(videoNetio ?? listenNetio))
         if videoOutq >= 0 {
             currentVideoSocketOutqBytes = videoOutq
             socketOutqMaxBytes = max(socketOutqMaxBytes, videoOutq)
@@ -685,100 +703,82 @@ final class SessionWire {
     }
 
     /// Noise mode: block until a client completes message 1 (the session
-    /// establishes inside `receive`), up to `timeoutSeconds`. Prints the
+    /// establishes inside `receive`), for up to `timeoutSeconds` (nil = as
+    /// long as it takes, the listening service's posture). Prints the
     /// static public key the client must hold. Call before capture opens
     /// so no video is encoded for nobody.
+    ///
+    /// Until a handshake completes the host is bound to no client: only
+    /// plausible handshake initiations reach the session, from any tuple
+    /// (a wire-out host accepts only its peer), and the one that
+    /// authenticates names the client's path — the media sockets connect
+    /// there. A spoofed, unpaired, or abandoned message 1 cannot lock out
+    /// the next client.
     func awaitClient(
         hostStatic: NoiseKeyPair,
-        timeoutSeconds: Double,
+        timeoutSeconds: Double?,
         stopRequested: () -> Bool = { false }
     ) throws -> ClientAwaitOutcome {
         print("noise: host static public key "
             + Hex.string(hostStatic.publicKey))
         print("noise: awaiting client handshake on port "
-            + "\(lyte_netio_local_port(netio)) …")
+            + "\(lyte_netio_local_port(listenNetio)) …")
         traceHandshake("awaitClientBegin", fields: [
             "pid": String(getpid()),
-            "primaryLocalPort": String(lyte_netio_local_port(netio)),
-            "latencySocketExists": String(latencyNetio != nil),
+            "primaryLocalPort": String(lyte_netio_local_port(listenNetio)),
         ])
 
-        let deadline = SystemMonotonicClock.nowNanoseconds + UInt64(timeoutSeconds * 1e9)
-        while SystemMonotonicClock.nowNanoseconds < deadline {
+        let deadline = timeoutSeconds.map {
+            SystemMonotonicClock.nowNanoseconds + UInt64($0 * 1e9)
+        }
+        while deadline.map({ SystemMonotonicClock.nowNanoseconds < $0 }) ?? true {
             if stopRequested() {
                 return .terminationRequested
             }
             var established = false
             lock.lock()
             do {
-                try receiveAll(from: netio) { [weak self] datagram, tuple in
+                let handle: ([UInt8], FourTuple) -> Void = { [weak self]
+                    datagram, tuple in
                     guard let self else { return }
+                    guard self.session?.phase != .established else {
+                        self.receiveEstablished(datagram, from: tuple)
+                        return
+                    }
+                    self.awaitPrimaryDatagrams += 1
+                    // Shape check, not trust: the gate still authenticates.
+                    // A relaunched host also hears the previous session's
+                    // sealed feedback from the client's old port; only an
+                    // initiation is worth a session's attention.
+                    let plausible = Session.looksLikeHandshakeInitiation(datagram)
+                        && self.admitsPeer(tuple)
+                    let payloadType: UInt8? = (try? Envelope.decode(
+                        datagram[...]))?.1.first
+                    self.traceHandshake("primaryDatagram", fields: [
+                        "ordinal": String(self.awaitPrimaryDatagrams),
+                        "bytes": String(datagram.count),
+                        "remoteAddress": tuple.remoteAddress,
+                        "remotePort": String(tuple.remotePort),
+                        "shapeAccepted": String(plausible),
+                        "payloadType": payloadType.map(String.init) ?? "",
+                    ])
+                    guard plausible else { return }
                     if self.session == nil {
-                        self.awaitPrimaryDatagrams += 1
-                        // Only a plausible handshake initiation may pick
-                        // the tuple the socket and session pin to. A host
-                        // relaunched under a live client (the F-5 restart
-                        // rung) binds while the client's dead session is
-                        // still spraying sealed feedback from its OLD
-                        // source port — latching onto that first arrival
-                        // connect()s the socket to a tuple that will never
-                        // handshake, and the kernel then filters the real
-                        // re-dial (fresh ephemeral port) forever. Shape
-                        // check, not trust: the gate still authenticates.
-                        let plausible =
-                            Self.looksLikeHandshakeInitiation(datagram)
-                        let payloadType: UInt8? = (try? Envelope.decode(
-                            datagram[...]))?.1.first
-                        self.traceHandshake("primaryDatagram", fields: [
-                            "ordinal": String(self.awaitPrimaryDatagrams),
-                            "bytes": String(datagram.count),
-                            "remoteAddress": tuple.remoteAddress,
-                            "remotePort": String(tuple.remotePort),
-                            "shapeAccepted": String(plausible),
-                            "payloadType": payloadType.map(String.init) ?? "",
-                            "latencySocketExists":
-                                String(self.latencyNetio != nil),
-                        ])
-                        guard plausible else { return }
-                        // Its source is the session's initial tuple;
-                        // connect() so the send path has a peer.
-                        var err = [CChar](repeating: 0, count: 256)
-                        guard lyte_netio_set_peer(
-                            self.netio, tuple.remoteAddress, tuple.remotePort,
-                            &err, err.count) == 0 else {
-                            self.emit(
-                                "session: connect to \(tuple.remoteAddress):"
-                                    + "\(tuple.remotePort) failed: "
-                                    + "\(errString(err))")
-                            return
-                        }
-                        do {
-                            try self.openLatencyLane(
-                                peerHost: tuple.remoteAddress,
-                                peerPort: tuple.remotePort)
-                            self.traceHandshake(
-                                "latencySocketOpened", fields: [
-                                    "remoteAddress": tuple.remoteAddress,
-                                    "remotePort": String(tuple.remotePort),
-                                ])
-                        } catch {
-                            self.emit("session: \(error)")
-                            return
-                        }
                         self.makeSession(
                             crypto: .noise(hostStatic: hostStatic),
                             clientTuple: tuple
                         )
                     }
-                    let events = self.session.receive(
+                    for event in self.session.receive(
                         datagram, from: tuple,
-                        now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
-                    )
-                    for event in events {
+                        now: SystemMonotonicClock.nowNanoseconds,
+                        hostMicroseconds: SystemMonotonicClock.nowMicroseconds
+                    ) {
                         self.execute(event)
                         if case .handshakeCompleted = event { established = true }
                     }
                 }
+                try receiveFromAll(handle)
                 // A pre-establishment pump is what lets HS-21's 0x13
                 // RetryChallenge (enqueued into the pacer by
                 // Session.receive under flood) actually leave the box:
@@ -806,21 +806,41 @@ final class SessionWire {
         if stopRequested() {
             return .terminationRequested
         }
-        throw HostError("no client handshake within \(Int(timeoutSeconds))s "
+        throw HostError("no client handshake within \(Int(timeoutSeconds ?? 0))s "
             + "— is lyte-cli wire-view pointed at this host and holding "
             + "the printed static key?")
     }
 
-    /// True when `datagram` is shaped like a client handshake initiation:
-    /// a bare CTRL carriage whose payload is typed 0x05 (Noise message 1)
-    /// or 0x14 (the W8 cookie resubmission). This is a pre-latch shape
-    /// check only — admission, cookies, and Noise still judge the bytes.
-    static func looksLikeHandshakeInitiation(_ datagram: [UInt8]) -> Bool {
-        guard let (envelope, payload) = try? Envelope.decode(datagram),
-              envelope.channel == .ctrl
-        else { return false }
-        return payload.first == CtrlMessageType.noiseHandshake1
-            || payload.first == CtrlMessageType.retryHandshake1
+    /// wire-out mode admits only its configured peer.
+    private func admitsPeer(_ tuple: FourTuple) -> Bool {
+        guard let requiredPeer else { return true }
+        return tuple.remoteAddress == requiredPeer.host
+            && tuple.remotePort == requiredPeer.port
+    }
+
+    /// One receive batch from every socket that can hold inbound
+    /// datagrams.
+    private func receiveFromAll(
+        _ handle: ([UInt8], FourTuple) -> Void
+    ) throws {
+        try receiveAll(from: listenNetio, handle)
+        if let videoNetio { try receiveAll(from: videoNetio, handle) }
+        if let latencyNetio { try receiveAll(from: latencyNetio, handle) }
+    }
+
+    /// Requires `lock`. One datagram into an established session.
+    private func receiveEstablished(_ datagram: [UInt8], from tuple: FourTuple) {
+        guard let session else { return }
+        for event in session.receive(
+            datagram, from: tuple,
+            now: SystemMonotonicClock.nowNanoseconds,
+            hostMicroseconds: SystemMonotonicClock.nowMicroseconds
+        ) {
+            execute(event)
+        }
+        // A recvmmsg burst can contain many feedback/control packets.
+        // Do not let parsing the whole burst consume an audio period.
+        drainAudioMailboxLocked()
     }
 
     /// HS-20: arm the encoder-VBV policy once the encoder's opening
@@ -1538,22 +1558,8 @@ final class SessionWire {
         // Always service the scheduling island before lower-frequency
         // receive/timer/stat work under this lock.
         drainAudioMailboxLocked()
-        let receive: ([UInt8], FourTuple) -> Void = { [weak self]
-            datagram, tuple in
-            guard let self, let session = self.session else { return }
-            for event in session.receive(
-                datagram, from: tuple,
-                now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
-            ) {
-                self.execute(event)
-            }
-            // A recvmmsg burst can contain many feedback/control packets.
-            // Do not let parsing the whole burst consume an audio period.
-            self.drainAudioMailboxLocked()
-        }
-        try receiveAll(from: netio, receive)
-        if let latencyNetio {
-            try receiveAll(from: latencyNetio, receive)
+        try receiveFromAll { [weak self] datagram, tuple in
+            self?.receiveEstablished(datagram, from: tuple)
         }
         for event in session.advance(
             now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
@@ -1653,6 +1659,20 @@ final class SessionWire {
         case .handshakeCompleted(let remote):
             emit("noise: handshake complete — client static "
                 + Hex.string(remote))
+            // The authenticated client's path: the media sockets connect
+            // there before message 2 is flushed. Should that fail, sends
+            // still leave through the listening socket, addressed.
+            let client = session.validator.primary.tuple
+            do {
+                try connectMedia(host: client.remoteAddress, port: client.remotePort)
+                traceHandshake("mediaSocketsConnected", fields: [
+                    "remoteAddress": client.remoteAddress,
+                    "remotePort": String(client.remotePort),
+                ])
+            } catch {
+                emit("session: \(error) — sending addressed from the "
+                    + "listening socket")
+            }
             // HS-9: the pairing run binds to THIS session's transcript
             // and statics; a re-handshake rebinds (and keeps the guess
             // budget — reconnecting never refills it).
@@ -1707,17 +1727,12 @@ final class SessionWire {
             emit("path: \(pathEvent)")
             if case .promoted(let primary, _) = pathEvent {
                 // Execute the rebind: media now targets the new tuple.
-                var err = [CChar](repeating: 0, count: 256)
-                if lyte_netio_set_peer(
-                    netio, primary.tuple.remoteAddress,
-                    primary.tuple.remotePort, &err, err.count) != 0 {
-                    emit("path: rebind connect failed: \(errString(err))")
-                }
-                if let latencyNetio,
-                   lyte_netio_set_peer(
-                    latencyNetio, primary.tuple.remoteAddress,
-                    primary.tuple.remotePort, &err, err.count) != 0 {
-                    emit("path: latency rebind failed: \(errString(err))")
+                do {
+                    try connectMedia(
+                        host: primary.tuple.remoteAddress,
+                        port: primary.tuple.remotePort)
+                } catch {
+                    emit("path: rebind failed: \(error)")
                 }
             }
         case .handshakeCookieModeChanged(let requireCookie):
@@ -2027,7 +2042,8 @@ final class SessionWire {
         case .drained:
             break
         case .wouldBlock(let lane):
-            let blockedOutq = max(Int(lyte_netio_outq_bytes(socket(for: lane))), 0)
+            let blockedOutq = max(
+                Int(lyte_netio_outq_bytes(socket(for: lane) ?? listenNetio)), 0)
             if lane == .latency {
                 latencySocketOutqMaxBytes = max(latencySocketOutqMaxBytes, blockedOutq)
             } else {
@@ -2046,8 +2062,9 @@ final class SessionWire {
         }
     }
 
-    private func socket(for lane: SocketLane) -> OpaquePointer {
-        lane == .latency ? (latencyNetio ?? netio) : netio
+    /// The connected media socket for a lane, once the client is known.
+    private func socket(for lane: SocketLane) -> OpaquePointer? {
+        lane == .latency ? latencyNetio : videoNetio
     }
 
     private func writeResult(_ rc: Int32) -> SocketWriteResult {
@@ -2061,8 +2078,9 @@ final class SessionWire {
         }
     }
 
-    /// Challenges to unvalidated tuples ride sendmsg-with-address on the
-    /// connected socket (lyte_netio_send_to).
+    /// One datagram addressed explicitly, from the listening socket: path
+    /// challenges to unvalidated tuples, and anything sent before the
+    /// media sockets connect.
     private func sendOffPrimary(
         _ datagram: VideoChannelDatagram, to destination: FourTuple
     ) -> SocketWriteResult {
@@ -2071,7 +2089,7 @@ final class SessionWire {
                 data: buf.baseAddress, len: buf.count,
                 tos: WireTos.byte(for: datagram.pacerClass))
             return lyte_netio_send_to(
-                netio, &pkt,
+                listenNetio, &pkt,
                 destination.remoteAddress, destination.remotePort,
                 &sendError, sendError.count)
         }
@@ -2083,6 +2101,12 @@ final class SessionWire {
     private func writeBatch(
         _ batch: ArraySlice<VideoChannelDatagram>, lane: SocketLane
     ) -> SocketWriteResult {
+        guard let socket = socket(for: lane) else {
+            // No connected media socket yet: address the head datagram to
+            // the primary tuple from the listening socket.
+            return sendOffPrimary(
+                batch[batch.startIndex], to: session.validator.primary.tuple)
+        }
         sendPackets.removeAll(keepingCapacity: true)
         var offset = 0
         for d in batch {
@@ -2099,7 +2123,7 @@ final class SessionWire {
         }
         let rc = sendPackets.withUnsafeBufferPointer { buf in
             lyte_netio_send_batch(
-                socket(for: lane), buf.baseAddress, Int32(buf.count), nil,
+                socket, buf.baseAddress, Int32(buf.count), nil,
                 &sendError, sendError.count)
         }
         return writeResult(rc)
