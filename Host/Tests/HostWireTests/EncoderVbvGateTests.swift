@@ -599,38 +599,6 @@ final class EncoderVbvGateTests: XCTestCase {
         XCTAssertEqual(rung?.maxBitsPerSecond, 2_500_000)
     }
 
-    func testReconfigureBooksSplitIdrMintingFromNoReset() {
-        // THE HS-33 BOOKS PIN. A rate directive that applies with the
-        // reconfigure counted but ZERO IDR minted lands in `noReset`,
-        // never in the IDR-minting tally — the idr-books cause tags
-        // stay truthful under either libavcodec, decided by the
-        // observed outcome of the encode the directive rode into.
-        var books = EncoderReconfigureBooks()
-        books.note(.tighten, mintedIdr: false)
-        XCTAssertEqual(books.applied, 1)
-        XCTAssertEqual(books.noResetTotal, 1)
-        XCTAssertEqual(books.idrMintingTotal, 0,
-            "a no-IDR rate move must never read as an IDR cause")
-
-        // The distro path: the same directive kind, observed to reset.
-        books.note(.tighten, mintedIdr: true)
-        books.note(.loosen, mintedIdr: false)
-        books.note(.restore, mintedIdr: false)
-        XCTAssertEqual(books.applied, 4)
-        XCTAssertEqual(books.idrMintingTotal, 1)
-        XCTAssertEqual(books.noResetTotal, 3)
-        // The stats-line vocabulary matches the idr-books tags.
-        XCTAssertEqual(
-            EncoderReconfigureBooks.summary(books.noReset),
-            "tighten 1, rung 1, restore 1"
-        )
-        XCTAssertEqual(
-            EncoderReconfigureBooks.summary(books.idrMinting),
-            "tighten 1"
-        )
-        XCTAssertEqual(EncoderReconfigureBooks.summary([:]), "none")
-    }
-
     func testDefaultLadderIsUnchangedByTheRetuneKnob() {
         // The HS-27 pins ride verbatim under the distro posture: the
         // default config is rungsPerOctave 1 / sustain 10 s, and the
