@@ -236,6 +236,13 @@ main() {
     watchdog=$!
     exec 8<&-
 
+    # The workload never reads the control channel: on it, a stray read
+    # would block until the local gate ends.
+    run_gate </dev/null
+}
+
+# run_gate: the builds and tests, in the synced mirror.
+run_gate() {
     source "$gate_root/Scripts/lib/build-graph.sh"
 
     run_package_tests Common
