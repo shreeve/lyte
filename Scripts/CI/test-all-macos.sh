@@ -140,6 +140,7 @@ optional_leg "browser page tests" node_installed \
 echo "==> shell script lint and gate helpers"
 Scripts/Tests/test-shell-assertions.sh
 Scripts/Tests/test-build-graph.sh
+Scripts/Tests/test-gate-lock.sh
 
 echo "==> benchmark safety tests"
 Scripts/Tests/test-benchmark-safety.sh

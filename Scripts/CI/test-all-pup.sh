@@ -47,6 +47,8 @@ exec 3> "$local_state/control"
     printf 'lock_token=%q\n' "$lock_token"
     printf 'gate_owner=%q\n' "$(hostname -s):$repo_root (pid $$)"
     printf 'mirrored=%q\n' "$packages $scanned_packages"
+    # Sent inline: the mirror's Scripts/ is not synced until the lock is held.
+    cat Scripts/lib/gate-lock.sh
     cat <<'REMOTE'
 set -euo pipefail
 shopt -s inherit_errexit
@@ -55,9 +57,6 @@ export LD_LIBRARY_PATH="$HOME/.local/lib/swift-compat${LD_LIBRARY_PATH:+:$LD_LIB
 namespace="$HOME/src/lyte-gates"
 gate_root="$namespace/deterministic"
 gate_lock="$namespace/.deterministic.flock"
-# Gates from older checkouts lock the mirror with this directory instead.
-legacy_lock="$namespace/.deterministic.lock"
-holds_legacy_lock=0
 package_image_parent=""
 watchdog=""
 before_state=""
@@ -161,9 +160,6 @@ on_remote_exit() {
     if [[ -n "$before_state" ]] && ! verify_protected_state; then
         status=1
     fi
-    if (( holds_legacy_lock )); then
-        rmdir -- "$legacy_lock"
-    fi
     exit "$status"
 }
 trap on_remote_exit EXIT
@@ -213,19 +209,14 @@ main() {
     command -v findmnt >/dev/null 2>&1 \
         || fail "findmnt is required for deletion safety"
     command -v flock >/dev/null 2>&1 || fail "flock is required to lock the mirror"
+    # The baseline precedes every write in the namespace, the lock included.
+    before_state="$(protected_state_fingerprint)"
     mount_targets="$(findmnt -rn -o TARGET)" \
         || fail "cannot inspect mounted filesystems"
     real_directory "$namespace"
-    exec 9>>"$gate_lock"
-    if ! flock -n 9; then
-        fail "another deterministic gate holds the pup mirror: $(cat "$gate_lock")"
-    fi
-    printf '%s, since %s\n' "$gate_owner" "$(date -u +%FT%TZ)" > "$gate_lock"
-    if ! mkdir -- "$legacy_lock" 2>/dev/null; then
-        fail "a gate from an older checkout holds $legacy_lock" \
-            "(rmdir it if no such gate is running)"
-    fi
-    holds_legacy_lock=1
+    lyte_acquire_gate_lock "$gate_lock" \
+        "$gate_owner, since $(date -u +%FT%TZ)" \
+        || fail "$lyte_gate_lock_error"
     real_directory "$gate_root"
     for package in $mirrored Scripts docs; do
         real_directory "$gate_root/$package"
@@ -246,7 +237,6 @@ main() {
     exec 8<&-
 
     source "$gate_root/Scripts/lib/build-graph.sh"
-    before_state="$(protected_state_fingerprint)"
 
     run_package_tests Common
     run_package_tests Wire

@@ -131,7 +131,8 @@ In order:
 5. **Script tests:** `test-shell-assertions.sh` (every tracked `*.sh`
    parses, and none states a check as a bare `[[ … ]]`, `(( … ))` or
    `! cmd`, which macOS bash 3.2 never fails under `set -e`; tests use
-   `Scripts/lib/assert.sh`), `test-build-graph.sh`, `test-benchmark-safety.sh`,
+   `Scripts/lib/assert.sh`), `test-build-graph.sh`, `test-gate-lock.sh`,
+   `test-benchmark-safety.sh`,
    `test-host-release-posture.sh`, `test-host-package-image.sh --self-test`,
    `test-host-installer.sh --self-test` (which also runs
    `test-host-deploy.sh`), `test-sign-dev.sh`, `test-setup-dev-signing.sh`.
@@ -147,9 +148,11 @@ In order:
 
 ## The pup gate — `Scripts/CI/test-all-pup.sh`
 
-One ssh session to `LYTE_PUP_HOST` (default `pup`) takes an `flock` on
+One ssh session to `LYTE_PUP_HOST` (default `pup`) fingerprints protected
+state (step 1 below) before it writes anything, then takes an `flock` on
 `~/src/lyte-gates/.deterministic.flock`, which then names the holder; a
-second gate fails at once with that name. The lock lives as long as the
+second gate fails at once with that name, and a lock path that is a symlink
+or not a regular file fails the gate untouched. The lock lives as long as the
 session's processes, and the session terminates its whole process tree
 when the local gate goes away, so an interrupted gate leaves nothing
 running. Under the lock the local side mirrors Client, Common, Wire, Host
