@@ -1,4 +1,4 @@
-// The W-G3 decode-evidence harness (`video-roundtrip`): packetize every
+// The decode-evidence harness (`video-roundtrip`): packetize every
 // access unit of an Annex-B file, subject each frame's shards to seeded
 // shuffle plus loss at the parity limit, assemble, assert byte-exact
 // recovery, and write the reassembled stream — which an external

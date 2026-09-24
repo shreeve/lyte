@@ -1,7 +1,5 @@
-// ARQ frame vector authoring (W3): the data segment 0x07, the ACK 0x08,
-// and the frame-sequence payload rule. Run once, commit, freeze. The
-// circularity is broken by the hand-computed anchor bytes in
-// ArqCodecTests, which pin the same nominal frames.
+// Authors Vectors/arq-v1.json: the data segment 0x07, the ACK 0x08, and
+// the frame-sequence payload rule. Anchored by ArqCodecTests.
 
 import LyteCore
 import LyteWire

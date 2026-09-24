@@ -1,10 +1,7 @@
-// Pairing vector authoring (W6): draft-irtf-cfrg-cpace-21's external
-// vectors transcribed as constants, the pinned PairingPake exchange
-// runs, and the 0x0B–0x0E codec layouts. Run once, commit, freeze. The
-// circularity is broken twice over: the draft section is transcription
-// (not generation), and the codec/exchange sections are anchored by the
-// hand-built bytes in PairingCodecTests and the draft-pinned math in
-// CPaceCoreTests.
+// Authors Vectors/pairing-v1.json: draft-irtf-cfrg-cpace-21's external
+// vectors transcribed as constants, pinned PairingPake exchange runs, and
+// the 0x0B–0x0E codec layouts. Codec and exchange sections are anchored
+// by PairingCodecTests and CPaceCoreTests.
 
 import LyteCore
 import LyteWire

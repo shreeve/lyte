@@ -1,9 +1,5 @@
-// Clipboard-image vector authoring (P-1, clipboard v2): the 0x22
-// cargo marker and the key-12 capability spine — codecs born in the
-// registry rather than promoted, frozen at their birth slice (the
-// clipboard-v1 precedent). Run once, commit, freeze. The circularity
-// is broken by the hand-computed anchor bytes in
-// ClipboardImageCodecTests, which pin the same nominal message.
+// Authors Vectors/clipboard-images-v1.json: the 0x22 cargo marker and
+// the key-12 capability spine. Anchored by ClipboardImageCodecTests.
 
 import Foundation
 import LyteCore

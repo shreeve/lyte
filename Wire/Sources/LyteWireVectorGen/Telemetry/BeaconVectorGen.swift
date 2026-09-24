@@ -1,9 +1,5 @@
-// Beacon/feedback vector authoring (W4a). Run once, commit, freeze: a
-// byte difference against the committed file is a wire-contract break to
-// investigate, never a prompt to regenerate. The circularity (vectors
-// produced by the codecs they test) is broken by the hand-computed anchor
-// bytes in ClockBeaconTests/FeedbackReportTests, which pin the same
-// nominal messages this file carries.
+// Authors Vectors/beacon-v1.json. The hand-computed anchor bytes in
+// ClockBeaconTests / FeedbackReportTests pin the same nominal messages.
 
 import LyteCore
 import LyteWire
