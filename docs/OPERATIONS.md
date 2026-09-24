@@ -183,10 +183,10 @@ These rules protect the owner's live rig. They are repository law
   `LYTE_BENCHMARK_ALLOW_STANDING_PORT=1`.
 - **Benchmarks.** `Scripts/benchmark-app.sh` publishes its diagnostic
   build to the owner's `.build/Lyte.app`, under the same bundle identity
-  (`dev.shreeve.lyte`), and refuses to start while any Lyte process runs;
-  afterwards the owner's app is that diagnostic build until the next
-  `Scripts/make-app.sh`. Live benchmarks and netem runs need the owner's
-  go-ahead.
+  (`dev.shreeve.lyte`), refuses to start while any Lyte process runs, and
+  rebuilds the plain app when it exits (a failed restore prints the
+  `Scripts/make-app.sh release` to run). Live benchmarks and netem runs
+  need the owner's go-ahead.
 - **The pup gate** (`Scripts/CI/test-all-pup.sh`) builds in
   `~/src/lyte-gates/deterministic/` and never deploys or restarts the
   service.
