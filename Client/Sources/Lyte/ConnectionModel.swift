@@ -351,12 +351,20 @@ final class ConnectionModel {
                     + "it may be restarting; still trying…")
                 // The quiet re-browse: if the reborn host is already
                 // advertising, dial where it lives NOW.
-                let sighting = await services.browse(2.0)
-                    .first { $0.publicKeyHash == host.publicKeyHash }
+                let hosts = await services.browse(2.0)
                 guard isCurrent(generation) else { return }
-                if let sighting {
+                if let sighting = hosts.first(where: {
+                    $0.publicKeyHash?.lowercased()
+                        == host.publicKeyHash?.lowercased()
+                }) {
                     dialAddress = sighting.address
                     dialPort = sighting.port
+                } else if let pkh = host.publicKeyHash,
+                          Self.identityReplaced(
+                            in: hosts, name: host.name, publicKeyHash: pkh) {
+                    phase = .failed(.ordinary(
+                        Self.identityReplacedMessage(host.name)))
+                    return
                 }
             }
         }
@@ -617,6 +625,30 @@ final class ConnectionModel {
                 beginRoamingAfterLoss(reason)
             }
         }
+    }
+
+    /// True when a host advertises under the pinned host's name with a
+    /// different identity while none advertises the pinned one. mDNS keeps
+    /// instance names unique on a link, so the pinned host was reinstalled
+    /// or replaced: a dial against its old static can only meet silence
+    /// (the host cannot decrypt message 1), which looks exactly like a
+    /// host that is down.
+    static func identityReplaced(
+        in hosts: [DiscoveredLyteHost], name: String, publicKeyHash: String
+    ) -> Bool {
+        let pinned = publicKeyHash.lowercased()
+        guard !hosts.contains(where: {
+            $0.publicKeyHash?.lowercased() == pinned
+        }) else { return false }
+        return hosts.contains {
+            $0.name.caseInsensitiveCompare(name) == .orderedSame
+                && $0.publicKeyHash.map { $0.lowercased() != pinned } == true
+        }
+    }
+
+    static func identityReplacedMessage(_ name: String) -> String {
+        "\(name) now has a different identity — it was reinstalled or "
+            + "replaced. Pair with it again."
     }
 
     private static func endsSession(_ event: LyteUdpSessionEvent) -> Bool {

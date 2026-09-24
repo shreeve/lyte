@@ -122,6 +122,53 @@ final class ConnectionLifecycleTests: XCTestCase {
         XCTAssertEqual(harness.started.count, 2)
     }
 
+    /// The pinned host was reinstalled: its name now advertises another
+    /// key, and the pinned static can only meet silence. Say so instead of
+    /// "may be restarting" for the whole budget.
+    func testReplacedHostIdentityEndsTheConnectWithARePairVerdict() async throws {
+        let harness = LifecycleHarness()
+        harness.startPlan = [.fail(TransportCryptoError.handshakeFailed(
+            "no response from 10.9.9.9:41999 after 5 attempts"))]
+        harness.browseResult = [harness.reinstalledHost]
+        let model = ConnectionModel(services: harness.services)
+        await model.connectLyte(harness.host)
+
+        guard case .failed(.ordinary(let message)) = model.phase else {
+            return XCTFail("a replaced host kept the hunt going: \(model.phase)")
+        }
+        XCTAssertTrue(message.contains("different identity"), message)
+        XCTAssertEqual(harness.started.count, 1)
+    }
+
+    func testReplacedHostIdentityEndsARoamingWindow() async throws {
+        let harness = LifecycleHarness()
+        harness.startPlan = [.succeed, .hold]
+        let model = ConnectionModel(services: harness.services)
+        await model.connectLyte(harness.host)
+
+        harness.browseResult = [harness.reinstalledHost]
+        model.reconnectNow()
+        try await harness.waitUntil {
+            if case .failed = model.phase { return true }
+            return false
+        }
+        XCTAssertFalse(model.canReconnect)
+        XCTAssertEqual(harness.streamsEnded, 1)
+    }
+
+    func testIdentityCheckNeedsTheSameNameAndNoPinnedSighting() {
+        let harness = LifecycleHarness()
+        let pkh = harness.host.publicKeyHash!
+        XCTAssertTrue(ConnectionModel.identityReplaced(
+            in: [harness.reinstalledHost], name: "PUP", publicKeyHash: pkh))
+        XCTAssertFalse(ConnectionModel.identityReplaced(
+            in: [harness.reinstalledHost, harness.host], name: "pup",
+            publicKeyHash: pkh), "the pinned identity is right there")
+        XCTAssertFalse(ConnectionModel.identityReplaced(
+            in: [harness.reinstalledHost], name: "kit", publicKeyHash: pkh),
+            "another host's key says nothing about ours")
+    }
+
     func testDialFailureClassification() {
         XCTAssertEqual(
             DialFailure(TransportCryptoError.handshakeFailed(
@@ -470,6 +517,15 @@ final class LifecycleHarness: @unchecked Sendable {
             _ = pins.setShareClipboard(
                 publicKeyHash: host.publicKeyHash!, share: true)
         }
+    }
+
+    /// The pinned host after a reinstall: same name and address, new key.
+    var reinstalledHost: DiscoveredLyteHost {
+        DiscoveredLyteHost(
+            name: host.name, address: host.address, port: host.port,
+            wireVersion: nil,
+            publicKeyHash: LyteDiscovery.publicKeyHash(
+                ofStaticPublicKey: [UInt8](repeating: 0x5A, count: 32)))
     }
 
     /// The pinned host's default chroma declaration.
