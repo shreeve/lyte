@@ -56,12 +56,21 @@ public func findActivePlanes(fd: Int32) -> ActivePlanes? {
     return ActivePlanes(primary: prim, cursor: cursor)
 }
 
-/// Current FB_ID of a plane — an import-cache key, not damage evidence.
-public func currentFB(fd: Int32, planeId: UInt32) -> UInt32? {
+/// A plane's FB_ID as the kernel reports it: nil when the plane cannot
+/// be read, 0 when it scans out nothing (detached or disabled).
+public func planeFramebuffer(fd: Int32, planeId: UInt32) -> UInt32? {
     guard let plane = drmModeGetPlane(fd, planeId) else { return nil }
     defer { drmModeFreePlane(plane) }
-    let framebufferId = plane.pointee.fb_id
-    return framebufferId == 0 ? nil : framebufferId
+    return plane.pointee.fb_id
+}
+
+/// Current non-zero FB_ID of a plane — an import-cache key, not damage
+/// evidence. nil covers both "unreadable" and "scans out nothing".
+public func currentFB(fd: Int32, planeId: UInt32) -> UInt32? {
+    guard let framebufferId = planeFramebuffer(fd: fd, planeId: planeId),
+          framebufferId != 0
+    else { return nil }
+    return framebufferId
 }
 
 /// One grabbed scanout frame: geometry plus per-plane dmabufs. The
