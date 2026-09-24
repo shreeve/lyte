@@ -49,8 +49,25 @@ Which suites to run after a change: Wire → all packages; Common → Host,
 Client, SystemTests, Browser; Host → SystemTests, Browser; Client →
 SystemTests, Browser.
 
-Iterate with `--filter <TestClass>`. `LYTE_ARQ_TRIALS` raises the seeded
-ARQ simulation from its default trial count for a long run.
+Iterate with `--filter <TestClass>`. Environment knobs read by the suites:
+
+| Variable | Effect |
+|---|---|
+| `LYTE_ARQ_TRIALS` | Seeded ARQ simulation trials (default 2,000; `25000` or more for the long form) |
+| `LYTE_ARQ_SEED` | Replay one ARQ simulation seed |
+| `LYTE_HARDWARE_TESTS=1` | Run tests that use real machine hardware (today: the audio route-change test, which plays through the real output device); skipped otherwise |
+
+### Test equipment
+
+Gate tests drive the real engines through shared kits instead of per-file
+fakes:
+
+| Kit | Target | Use |
+|---|---|---|
+| `SealedCtrlPeer` | `LyteWireTestKit` | A role-agnostic sealed far end: handshake, per-channel seqs, ARQ, capability declaration, retry answers |
+| `HostSessionHarness`, `PeerBackedClient` | `HostWireTestKit` (test-only target) | A shipping `HostWire.Session` with an outbox and virtual time |
+| `ScriptedHost`, `ClientCoreHarness`, `ManualMicrosClock` | `LyteClientTestKit` | The real `LyteUdpSessionCore` without a socket, against a scripted host |
+| `SimNet`, `SplitMix64` | `LyteWireTestKit` | Deterministic impairment; 64-bit seeded draws identical on every platform |
 
 ### What the suites contain
 
@@ -148,7 +165,8 @@ the same.
 Not part of either gate. It always rebuilds, starts `lyte-control-peer
 --emit-corpus` on a fresh loopback port (never 41151) behind
 `lyte-wt-sidecar --udp-peer`, and drives headless Chrome through the
-session proof. It passes when every line below is present:
+session proof. It passes when every line below is present (each PASS line continues with
+its measurements):
 
 ```text
 PASS  envelope-v1/nominal-video-shard
@@ -169,6 +187,17 @@ PASS  audio/webcodecs
 PASS  audio-worklet/ring
 PASS  interaction-shell/b6
 ```
+
+The video legs are paced: the page runs one loop (ingest, decode,
+present) and presents each frame on the Conductor's clock.
+`conductor-video/schedule` asserts that presented PTS sit on the beat grid
+and that no frame was shown before its PTS; `conductor-video/present`
+asserts at least five frames presented and at least three decoded ahead of
+their beat and held until it. The log also prints a `sink={…}` counter
+line and a `pacing` line (per frame: ms decoded and presented relative to
+its PTS). Frame 0 always presents about 20–45 ms late (it anchors the score
+with a one-beat cushion), and frame 1 is sometimes skipped as late; both are
+the Conductor's laws working, not failures.
 
 The WebTransport carrier echo proofs (`wt-carrier/*`) are skipped in peer
 mode. Environment: `LYTE_WT_RUNTIME` (`node`|`bun`), `LYTE_CHROME`,

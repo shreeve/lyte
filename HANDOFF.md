@@ -1,145 +1,40 @@
-# Lyte — session handoff
+# Lyte — handoff
 
-*Current as of 2026-08-07. Live resume only; Git owns completed history.*
+*Live resume point, 2026-09-23. Git owns completed history.*
 
-## Resume here
+## Branch
 
-- **Campaign:** harsh-path control plane is **closed** on `main` —
-  #209 ownership/floor, #210 RECOVERY grace, #212 cursor ATOMIC hotspot,
-  #220 wire-view IRAP episode close (~114 → 2 IDRs), #222 sparse-evidence
-    rate freeze (quiet-static no-climb is doctrine; motion climb proven).
-  Living-doc cleanup landed in the #216 family.
-- **Tip:** `main` @ #242 — browser B-6 interaction shell (pull if HEAD
-  moved): sealed input echo, capability-gated clipboard text, Opus →
-  AudioWorklet, product connect/PIN/video UI on top of B-3…B-5 Conductor
-  video.
-- **Next:** daily-driver browser RD remainders (live Direct Eye against
-  standing host, persistent interactive session, Safari, OS clipboard on
-  non-GNOME paths). Wayland clipboard leaf remains **blocked on GNOME** —
-  `docs/20260807-015743-wayland-clipboard-gnome-blocker.md`.
+- Work is on **`revamp`** (not yet on `main`): bug fixes with reproducing
+  tests across every package, the shared client initiator, the host's
+  in-process session loop, the XDG host layout, hardened-runtime signing,
+  the browser core with native tests, and this documentation restructure.
+- Last macOS gate counts: Wire 576, Common 111, Host 349, Client 423 (+1
+  hardware test skipped), SystemTests 14, Browser 17; Host on pup 362.
+  Browser smoke 10/10 PASS with paced presentation.
 
 ## Live rig
 
-### Client (pop)
+- **pup** (standing host) is reachable on Wi-Fi only, `10.0.0.249`. The
+  wired `enxf8e43b7ede7c` leg is absent, and `host.conf` advertises on it,
+  so mDNS discovery finds nothing: dial `10.0.0.249` directly, and set
+  `LYTE_BENCHMARK_HOST=10.0.0.249` for benchmarks.
+- `lyte-host.service` serves UDP **41151** from the XDG layout:
+  `~/.local/bin/lyte-host` → `versions/e600dbe53c98`, deployed with
+  `Host/Scripts/deploy-host.sh`. The in-process session loop is on (no
+  `--seconds`); the PID survives client reconnects.
+- Identity is `~/.config/lyte/`; the pre-XDG `~/.config/lyte-host/` and
+  `/etc/lyte/lyte-host.conf` remain as leftovers the owner may delete
+  ([OPERATIONS](docs/OPERATIONS.md#pre-xdg-leftovers)). Log:
+  `~/.local/state/lyte/host.log`.
+- The Mac client reaches pup over Wi-Fi. Do not launch a benchmark or a
+  second app while the owner's `Lyte.app` is open.
 
-- Fresh release app from tip (`LyteSourceRevision` matches the rebuilt
-  bundle), launched via `Scripts/launch-app.sh`. Bundle identity
-  `dev.shreeve.lyte` — do not launch a benchmark or second ordinary app while
-  interactive Lyte is open.
-- Mac path to pup is **Wi‑Fi `en0` / 10.0.0.211** (no dedicated Ethernet NIC
-  on this client). Local Network exception `10.0.0.0/24` remains active
-  (FB21858319/FB21858436).
+## Next
 
-### Host (pup)
-
-- Wired `10.0.0.232/24` on `enxf8e43b7ede7c`; Wi‑Fi `.249` backup.
-  `/etc/lyte/lyte-host.conf` advertises the wired interface.
-- Standing service: `lyte-host.service` on UDP **41151**. PID changes on the
-  configured 120 s no-client-handshake systemd restart — not alone a crash.
-- Deployed binary SHA-256
-  `e8b5664361827974b55df6244b183ea2fd73898407a9753b615adc8452c23fb4` at
-  `/home/shreeve/src/lyte-host/.build/release/lyte-host` (#222 tip).
-  Identity files verified unchanged through the climb re-proof cycle.
-  Session log: `/tmp/lyte-host-session.log`.
-
-**Safety (law in `AGENTS.md`):** never touch
-`~/.config/lyte-host/{portal_token,noise_static.key,paired_clients}`; never
-displace 41151 — test hosts use a fresh 41xxx port and `--no-advertise`; no
-second Direct Eye while 41151 holds the DRM seat (parallel eyes black the
-glass); hand-run binaries under the home build tree with `setcap` (not
-`/tmp`). Browser B-3…B-6 use `lyte-control-peer` (no DRM) on a fresh 41xxx
-port; media is sealed Wire corpus + Opus tone replay (no Direct Eye).
-
-## Proof (final bars)
-
-### Browser B-6 — PASS (Chrome)
-
-```sh
-Browser/Scripts/build.sh
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-  Browser/Scripts/smoke-chrome.sh
-# PASS  envelope-v1/nominal-video-shard
-# PASS  noise-v1/snow-ik-25519-chachapoly-sha256
-# SKIP  wt-carrier/* — sidecar --udp-peer mode (B-2 already landed)
-# PASS  control-session/noise-pair-caps
-# PASS  control-session/clipboard-cap
-# PASS  control-session/teardown
-# PASS  frame-present/classify
-# PASS  frame-present/webcodecs — Conductor PTS
-# PASS  frame-present/webgpu
-# PASS  conductor-video/assemble
-# PASS  conductor-video/schedule
-# PASS  conductor-video/present
-# PASS  session-input/echo
-# PASS  clipboard/text-roundtrip
-# PASS  audio/depacketize
-# PASS  audio/webcodecs
-# PASS  audio-worklet/ring
-# PASS  interaction-shell/b6
-```
-
-Interactive: `Browser/Scripts/serve.sh` → http://127.0.0.1:8765/ in Chrome
-(starts `lyte-control-peer --emit-corpus` + `lyte-wt-sidecar --udp-peer`).
-Smoke needs GPU (no `--disable-gpu`). Safari not a gate. Peer clipboard is
-**in-memory ack only** (not Wayland OS). Input echoes without uinput inject.
-Not live Direct Eye / not daily-driver RD.
-
-### Browser B-5 — PASS (Chrome)
-
-Sealed corpus Conductor video over WT. Landed #240/#241. B-6 subsumes the
-video lines in the same smoke.
-
-### Browser B-4 — PASS (Chrome)
-
-One timestamped canned HEVC IRAP via WebCodecs + WebGPU. Landed #238/#239.
-
-### Browser B-3 — PASS (Chrome)
-
-Control-only session (Noise / PIN PAKE / capabilities / teardown) via
-sidecar `--udp-peer` → DRM-free `lyte-control-peer`. Landed #236/#237.
-
-### Browser B-2 — PASS (Chrome)
-
-Opaque Lyte envelopes / Noise ciphertext round-trip WT↔UDP via
-`lyte-wt-sidecar` echo mode; measured ceiling ≥ 1152 B. Landed #234/#235.
-
-### Harsh-path — PASS (closed)
-
-Doctrine: quiet-static 0 upshifts is correct (no delivery trains; do not
-pad). Wire-view “quality Mbps” is content bitrate, not standing rate.
-Book: `docs/20260806-115922-harsh-path-control-plane.md`.
-
-| Check | Result |
-|---|---|
-| #220 IRAP / IDR storm | **PASS** — episode ~114 → 2 IDRs; re-proof 1 IDR / 60 s, 0 client IDR-requests acted, 0 FROZEN |
-| #222 sparse hold | **PASS** — unit pins; live book 1 sparse hold; static no-climb correct |
-| Motion climb | **PASS** — **5 upshifts**, final **3208 kbps** (> 2 Mbps floor); 21 downs (loss-limited ~3 Mbps; belief ~33 Mbps) |
-| RECOVERY thrash | **PASS** — 0 frames suppressed (FROZEN/closed) |
-
-Artifacts: `.build/benchmarks/harsh-path-climb-20260806T234411Z/` (motion);
-`.build/benchmarks/harsh-path-20260806T213410Z/` (prior static PARTIAL).
-
-### Conductor cue/reserve — PASS (Wi‑Fi)
-
-Path: Mac Wi‑Fi 10.0.0.211 → pup wired `.232`. Ethernet client path optional
-later (`TODO.md`).
-
-- **Motion 30 s:** analyzer **PASS**. Cue p50/p95/max
-  **47.933 / 65.270 / 127.900** ms; reserve p50/p95/max
-  **22.100 / 55.068 / 55.240** ms (**~1.33 / 3.30 / 3.31** beats); reserve
-  never above four.
-  Artifact: `.build/benchmarks/conductor-20260806T212417Z/motion-20260806T212428Z-11686-71df5e4e53d0.jsonl`.
-- **Static reserve return** (20 s idle after motion): reserve **3.76 → 1.05**
-  beats across ~18 s; never above four. (Analyzer FAIL on static
-  presentation-gap is expected for sparse keepalives.)
-  Artifact: `.build/benchmarks/conductor-static-20260806T212519Z/`.
-
-## Pointers
-
-- Law and canonical commands: `AGENTS.md`
-- Deferred work: `TODO.md`
-- Browser living direction: `docs/BROWSER.md`
-- Browser platform B-0: `docs/20260807-021425-browser-client-platform-slice.md`
-- Harsh-path control plane: `docs/20260806-115922-harsh-path-control-plane.md`
-- Metronome design: `docs/20260803-050422-metronome-playout-design.md`
-- Direct Eye correction: `docs/20260805-084033-direct-eye-pixel-observation.md`
+1. Land `revamp` on `main`: Mac and pup gates, PR, merge
+   ([TESTING](docs/TESTING.md)).
+2. Live checks the revamp could not run unattended: host session loop
+   (reconnect cycles, fd/thread/GEM counts flat, held input released),
+   roam on host restart, ⌘ shortcuts not reaching GNOME, helper SIGTERM
+   restore, one `benchmark-app.sh motion` pass.
+3. Deferred work: [TODO.md](TODO.md).

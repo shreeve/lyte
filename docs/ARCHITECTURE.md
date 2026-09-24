@@ -59,6 +59,7 @@ Client never depends on Host and Host never depends on Client. Only
 | `HostCore` | sans-IO | HEVC parameter-set and slice-header writers ("pens"), `Pacer`, kernel-pressure governor, `HostServiceLoop`, audio tripwire, quiet-video pacer, screen sampling cadence |
 | `HostSession` | sans-IO | Responder policy: `HandshakeGate` (rate limit, retry cookies), lifecycle lane, path validation |
 | `HostWire` | sans-IO | `Session` (Noise responder, sealing, ARQ lanes, beacons), `VideoChannel` (packetize, FEC, repair store), `RateEstimator`, `SocketOutbox`, `VideoAdmissionGate`, encoder VBV/HRD policy, pairing responder, client keystore |
+| `HostWireTestKit` | test kit | `HostSessionHarness`: a shipping `Session` in virtual time for the gate tests |
 | `HostIO` | adapter | `HostPaths` (XDG layout, legacy identity adoption), `SecretFile`, `BulkFileStore` |
 | `HostAudio` | policy | 5 ms hard-CBR Opus over `COpus` |
 | `HostEye` | Linux | Direct Eye: DRM scanout import, GPU pixel fingerprint, NV12/AYUV EGL blit, VAAPI encoder seat, cursor plane |

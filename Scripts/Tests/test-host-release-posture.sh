@@ -8,6 +8,8 @@ cd "$repo_root"
 
 files=(
     AGENTS.md
+    docs/OPERATIONS.md
+    docs/TESTING.md
     Host/INSTALL.md
     Host/README.md
     Host/Scripts/deploy-host.sh
@@ -53,6 +55,7 @@ then
     exit 1
 fi
 grep -Fq 'swift build --package-path Host -c release' Host/INSTALL.md
-grep -Fq 'swift build -c release' AGENTS.md
+# The pup build recipe lives in the operations runbook (AGENTS.md links it).
+grep -Fq 'swift build -c release' docs/OPERATIONS.md
 
 echo "host release posture tests PASSED"
