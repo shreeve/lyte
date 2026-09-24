@@ -30,6 +30,25 @@ final class RendererHandoffPolicyTests: XCTestCase {
             [0, 1, 2, 3])
     }
 
+    /// Submission stamps are taken on different threads: a frame stamped
+    /// a microsecond before the queue's head has waited no time, and
+    /// neither has the head at a clock reading that trails it.
+    func testAStampBehindTheHeadIsNotAnExpiredEpisode() {
+        var handoff = BoundedRendererHandoff<Int>(
+            config: .init(capacity: 4, deadlineMicroseconds: 50_000))
+        XCTAssertTrue(handoff.offer(
+            0, frame: frame(randomAccess: true, submittedMicroseconds: 10_000)
+        ).accepted)
+        let earlier = handoff.offer(
+            1, frame: frame(randomAccess: false, submittedMicroseconds: 9_999))
+        XCTAssertTrue(earlier.accepted)
+        XCTAssertFalse(earlier.recoveryRequested)
+        XCTAssertTrue(earlier.discarded.isEmpty)
+        XCTAssertTrue(handoff.expire(nowMicroseconds: 9_000).discarded.isEmpty)
+        XCTAssertEqual(handoff.count, 2)
+        XCTAssertFalse(handoff.awaitingRandomAccess)
+    }
+
     func testPressureDropsEpisodeAndRequestsOneRecoveryUntilIdr() {
         var handoff = BoundedRendererHandoff<Int>(
             config: .init(capacity: 3, deadlineMicroseconds: 50_000))

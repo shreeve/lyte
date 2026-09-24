@@ -18,6 +18,10 @@
 //   PROBING ──validation timeout, or a matching response never came──▶
 //       unknown (the probe slot frees; a later datagram re-probes with a
 //        NEW token — a stale or guessed token can never promote)
+//   FALLBACK ──authenticated datagram from that tuple──▶ PRIMARY
+//       (no probe: it was validated inside the retention window, QUIC
+//        §9.3; the primary it replaces becomes the FALLBACK and
+//        freshKeyframeNeeded fires — a Wi-Fi flap A→B→A costs no RTT)
 //   FALLBACK ──retention window expires──▶ unknown
 //
 // One probe slot: while a probe is outstanding, datagrams from *other*
@@ -70,9 +74,9 @@ public enum PathValidatorEvent: Hashable, Sendable {
     /// Transmit this challenge body (CTRL, ARQ-exempt, conn-id TLV
     /// attached by the send loop) on the given — unvalidated — tuple.
     case sendChallenge(on: FourTuple, challenge: PathChallenge)
-    /// The probed tuple answered: it is now the primary; route all media
-    /// there. The old primary is retained as `fallback` until its
-    /// retention window lapses.
+    /// The probed tuple answered, or the fallback spoke again: it is now
+    /// the primary; route all media there. The old primary is retained as
+    /// `fallback` until its retention window lapses.
     case promoted(primary: SessionPath, fallback: SessionPath)
     /// Fires exactly once per promotion: force the encoder's next frame
     /// to be an IDR.
@@ -88,7 +92,8 @@ public struct PathValidatorConfig: Sendable {
     /// frees; a genuine roam re-probes on its next datagram.
     public var validationTimeoutNS: UInt64
     /// How long the demoted primary stays known after a promotion — the
-    /// escape hatch if the new path dies immediately.
+    /// escape hatch if the new path dies immediately: an authenticated
+    /// datagram from it inside this window re-promotes it without a probe.
     public var fallbackRetentionNS: UInt64
     /// Pre-validation send cap: ≤ factor × bytes received on that tuple.
     public var amplificationFactor: Int
@@ -159,13 +164,16 @@ public struct PathValidator {
     ) -> [PathValidatorEvent] {
         var events = expire(now: now)
 
-        // Known tuples need no probing; unknown tuples without our
+        // The primary needs no probing; unknown tuples without our
         // conn-id are not ours to answer at all (never a challenge —
         // that would make the host a reflector for arbitrary sources).
-        guard claimed == connectionId,
-              tuple != primary.tuple,
-              tuple != fallback?.tuple
+        guard claimed == connectionId, tuple != primary.tuple
         else { return events }
+
+        if let retained = fallback, retained.tuple == tuple {
+            events += promote(retained, now: now)
+            return events
+        }
 
         if var active = probe {
             // One probe slot. Same tuple: the bytes raise the budget but
@@ -227,14 +235,21 @@ public struct PathValidator {
         else { return events }
 
         probe = nil
+        events += promote(SessionPath(tuple: tuple, validatedAt: now), now: now)
+        return events
+    }
+
+    /// `path` becomes the primary; the one it replaces is retained as the
+    /// fallback for a fresh window, and the encoder owes an IDR.
+    private mutating func promote(
+        _ path: SessionPath, now: UInt64
+    ) -> [PathValidatorEvent] {
         let old = primary
-        primary = SessionPath(tuple: tuple, validatedAt: now)
+        primary = path
         fallback = old
         fallbackDeadline = now + config.fallbackRetentionNS
         keyframePending = true
-        events.append(.promoted(primary: primary, fallback: old))
-        events.append(.freshKeyframeNeeded)
-        return events
+        return [.promoted(primary: path, fallback: old), .freshKeyframeNeeded]
     }
 
     /// Clock advance with no datagram — the caller's timer wake. Emits

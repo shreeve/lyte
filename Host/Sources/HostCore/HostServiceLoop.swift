@@ -105,8 +105,11 @@ public struct HostServiceLoop: Sendable {
             // course; a client that leaves first (a pairing client always
             // does) owed the eye nothing.
             guard leg.frames > 0 || end == .sessionEnded else {
+                // Any positive bound reaches here, infinity included.
+                let within = Int(exactly: seconds.rounded(.towardZero))
+                    .map { " in \($0)s" } ?? ""
                 return .exit(
-                    failure: "direct eye produced no frames in \(Int(seconds))s")
+                    failure: "direct eye produced no frames\(within)")
             }
             return .exit(failure: nil)
         case .service:
