@@ -1,13 +1,9 @@
-// The end-to-end proof the smoke gate and the harness page run: a control
+// The end-to-end proof the smoke run and the harness page run: a control
 // session (Noise / PIN / capabilities), the peer's sealed corpus video
 // through the Conductor to WebCodecs + WebGPU, then input, clipboard and
-// Opus audio, then an orderly teardown.
-//
-// Video runs the product's loop shape: each turn ingests, decodes, and
-// presents whatever the Conductor says is due, so presentation is paced by
-// the Conductor's clock. The video proofs assert that: presented PTS sit on
-// the beat grid, no frame is shown before its PTS, and frames that decoded
-// ahead of their beat were held until it (not merely decoded).
+// Opus audio, then an orderly teardown. The video proofs assert presented
+// PTS sit on the beat grid, no frame shows before its PTS, and frames
+// decoded ahead of their beat were held until it.
 
 import { runInteractionProofs } from "./interaction.js";
 import { nowMicros } from "./lyte-io.js";

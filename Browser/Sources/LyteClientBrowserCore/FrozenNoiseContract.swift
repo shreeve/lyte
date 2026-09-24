@@ -2,14 +2,13 @@ import LyteCore
 import LyteWire
 
 /// Exercises the published Noise IK vector
-/// `snow-ik-25519-chachapoly-sha256` from `Wire/Vectors/noise-v1.json`.
-/// Fixed ephemerals produce byte-exact handshake messages — the same
-/// bytes the wasmtime Wire suite and native platforms already gate.
+/// `snow-ik-25519-chachapoly-sha256` from `Wire/Vectors/noise-v1.json`:
+/// fixed ephemerals produce byte-exact handshake messages.
 public enum FrozenNoiseContract {
     public static let vectorName = "noise-v1/snow-ik-25519-chachapoly-sha256"
 
-    /// Committed IK message-1 ciphertext hex from noise-v1.json — reused as
-    /// an opaque sealed payload for the B-2 WebTransport carrier proof.
+    /// Committed IK message-1 ciphertext hex from noise-v1.json, reused as
+    /// an opaque sealed payload for the WebTransport carrier proof.
     public static let msg1CiphertextHex =
         "6d21fec9141f3f37cc464e936a48b2d9521b5a44e0f3d960895d3c3fba30282f731f445c25e898e2534ac0536715b24308c108fc46bd260c887b36c3f68e3a05654fc8295c068ed53fb2022560961224e0b10b0835e1efc82fc587cd50f7178fe3d9eb06e0351c6e7334162c10bed670bfa2a105f7b2768a140b3fd597782601"
 

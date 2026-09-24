@@ -1,8 +1,6 @@
-// AudioWorklet PCM ring. The main thread posts { pcm: Float32Array } of
-// interleaved stereo at 48 kHz. Underruns play silence; the ring never
-// invents samples. The queue is bounded so clock drift between the host's
-// capture and this device cannot grow latency without limit: past the bound
-// the oldest audio is dropped.
+// AudioWorklet PCM ring fed { pcm: Float32Array } of interleaved 48 kHz
+// stereo. Underruns play silence; past the bound the oldest audio drops, so
+// clock drift cannot grow latency without limit.
 
 const MAX_QUEUED_FRAMES = 9_600; // 200 ms at 48 kHz
 

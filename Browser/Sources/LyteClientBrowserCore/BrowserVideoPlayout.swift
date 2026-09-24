@@ -2,15 +2,12 @@ import LyteClientSession
 import LyteCore
 import LyteWire
 
-/// Sans-IO browser video organ: LyteWire `VideoAssembler` plus LyteCore
-/// `VideoBeatConductor` / `BoundedRendererHandoff`. Page JS owns WebCodecs
-/// decode and WebGPU present; this type never invents frames.
-///
-/// Decode and presentation are separate lifetimes. Every assembled frame's
-/// Annex-B waits in the decode backlog until the page takes it (decode order
-/// is the only order a P-frame chain allows); presentation metadata lives
-/// only while the handoff holds the frame. A frame the handoff rejects or
-/// that arrives late is still decoded for the chain but never presented.
+/// Sans-IO browser video organ: `VideoAssembler` + `VideoBeatConductor` +
+/// `BoundedRendererHandoff`. Page JS owns WebCodecs decode and WebGPU
+/// present. Every assembled frame's Annex-B waits in the decode backlog
+/// until the page takes it (decode order is the only order a P-frame chain
+/// allows); presentation metadata lives only while the handoff holds the
+/// frame. Rejected or late frames are still decoded but never presented.
 public struct BrowserVideoPlayout {
     public struct ScheduledFrame: Sendable, Equatable {
         public var frameNumber: UInt32
@@ -55,9 +52,8 @@ public struct BrowserVideoPlayout {
     )
     private var conductor = VideoBeatConductor()
     private var handoff = BoundedRendererHandoff<UInt32>(
-        // The page decodes and presents asynchronously from ingest; a long
-        // deadline keeps expire() from discarding frames before WebCodecs
-        // has run.
+        // The page decodes asynchronously; a long deadline keeps expire()
+        // from discarding frames before WebCodecs has run.
         config: .init(capacity: 12, deadlineMicroseconds: UInt64.max / 4)
     )
 
