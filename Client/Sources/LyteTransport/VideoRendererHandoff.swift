@@ -221,7 +221,7 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
     public func stop(flushingRenderer: Bool = false) {
         guard !stopped.exchange(true, ordering: .relaxed) else { return }
         queue.async { [self] in
-            flushBarrier.reset()
+            flushBarrier.complete()
             expiryTimer?.cancel()
             expiryTimer = nil
             renderer.stopRequestingMediaData()
