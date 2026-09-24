@@ -39,6 +39,9 @@ public final class EyePipeline {
     private let renderNode: String
     private let qp: Int32
     private let bitrateBitsPerSecond: Int64
+    /// The rate control in force, carried across a chroma reopen.
+    private var rateBitsPerSecond: Int64
+    private var hrdBufferBits: Int64?
     private var nv12Targets: [VASurfaceID: NV12Target] = [:]
     private var ayuvTargets: [VASurfaceID: AyuvTarget] = [:]
     private var scanout: ImportedTexture?
@@ -47,19 +50,23 @@ public final class EyePipeline {
 
     public init(
         width: Int32, height: Int32, renderNode: String, qp: Int32,
-        bitrateBitsPerSecond: Int64, chroma444: Bool = false
+        bitrateBitsPerSecond: Int64, hrdBufferBits: Int64? = nil,
+        chroma444: Bool = false
     ) throws {
         self.width = width
         self.height = height
         self.renderNode = renderNode
         self.qp = qp
         self.bitrateBitsPerSecond = bitrateBitsPerSecond
+        self.rateBitsPerSecond = bitrateBitsPerSecond
+        self.hrdBufferBits = hrdBufferBits
         self.chroma444 = chroma444
         gl = try EyeGL(renderNode: renderNode)
         encoder = try EyeVaapiEncoder(
             width: width, height: height, fps: 60, qp: qp,
             renderNode: renderNode,
             bitrateBitsPerSecond: bitrateBitsPerSecond,
+            hrdBufferBits: hrdBufferBits,
             chroma444: chroma444)
     }
 
@@ -181,8 +188,13 @@ public final class EyePipeline {
     }
 
     /// Rate directives apply with the next frame's RC misc buffer.
-    public func setRateBitsPerSecond(_ bitsPerSecond: Int64) {
-        encoder.setRateBitsPerSecond(bitsPerSecond)
+    public func setRateControl(
+        bitsPerSecond: Int64, hrdBufferBits: Int64? = nil
+    ) {
+        rateBitsPerSecond = bitsPerSecond
+        self.hrdBufferBits = hrdBufferBits
+        encoder.setRateControl(
+            bitsPerSecond: bitsPerSecond, hrdBufferBits: hrdBufferBits)
     }
 
     /// Reopens the encoder in the other chroma posture. Every GPU target
@@ -196,7 +208,12 @@ public final class EyePipeline {
             width: width, height: height, fps: 60, qp: qp,
             renderNode: renderNode,
             bitrateBitsPerSecond: bitrateBitsPerSecond,
+            hrdBufferBits: hrdBufferBits,
             chroma444: chroma444)
+        if rateBitsPerSecond != bitrateBitsPerSecond {
+            encoder.setRateControl(
+                bitsPerSecond: rateBitsPerSecond, hrdBufferBits: hrdBufferBits)
+        }
         self.chroma444 = chroma444
     }
 

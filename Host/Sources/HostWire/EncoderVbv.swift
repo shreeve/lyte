@@ -592,3 +592,21 @@ public struct EncoderReconfigureBooks: Equatable, Sendable {
         return parts.isEmpty ? "none" : parts.joined(separator: ", ")
     }
 }
+
+/// The HRD (VBV) buffer a native encoder runs for a rate cap. Four frames
+/// of the cap is the window iHD's VBR needs for stable inter-frame
+/// quality; it is capped at the policy's VBV, which carries the
+/// one-FEC-group frame ceiling (the HS-25 guard). Under HRD conformance
+/// no frame exceeds the buffer, so an IDR at the rate ceiling comes out
+/// protectable instead of being dropped and re-demanded.
+public enum EncoderHrd {
+    public static let framesOfCap = 4
+
+    public static func bufferBits(
+        capBitsPerSecond: Int, fps: Int, vbvBits: Int?
+    ) -> Int {
+        let window = capBitsPerSecond * framesOfCap / max(fps, 1)
+        guard let vbvBits, vbvBits > 0 else { return window }
+        return min(window, vbvBits)
+    }
+}

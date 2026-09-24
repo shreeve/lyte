@@ -466,6 +466,7 @@ static func run(arguments: [String]) throws {
     // client must hold), so no frames are encoded for nobody and the
     // first encoded frame is the session's first IDR.
     var wire: SessionWire?
+    var openingVbvBits: Int?
     var advertiser: AvahiAdvertiser?
     var pairingService: PairingResponderService?
     var clipboardLeaf: MutterClipboardLeaf?
@@ -691,8 +692,9 @@ static func run(arguments: [String]) throws {
         // average, VBV at the unprotectable-frame guard's ceiling
         // (HS-25: a squeeze→clean RESTORE returns to the guarded
         // posture and can never re-open the >255-shard hole).
+        let guardBits = w.worstCaseProtectableFrameCeiling * 8
+        openingVbvBits = guardBits
         if opts.vbvReconfigure {
-            let guardBits = w.worstCaseProtectableFrameCeiling * 8
             let rateBits = Int(opts.wireRateMbps * 1_000_000)
             // The native seat applies rate moves without a reset BY
             // CONSTRUCTION (no libavcodec, no hidden NVENC reset), so
@@ -840,7 +842,8 @@ static func run(arguments: [String]) throws {
         config: .init(
             seconds: opts.seconds,
             bitrateBitsPerSecond: wire != nil
-                ? Int64(opts.wireRateMbps * 1_000_000) : 0),
+                ? Int64(opts.wireRateMbps * 1_000_000) : 0,
+            vbvBits: openingVbvBits),
         wire: wire, file: file)
     leg.run()
 

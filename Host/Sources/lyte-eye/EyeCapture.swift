@@ -32,7 +32,7 @@ func runCapture(_ rawArgs: [String]) -> Never {
         case "--qp": qp = Int32(it.next() ?? "") ?? qp
         case "--native": break  // the only seat now; kept for scripts
         // Live-rate probe: VBR at this cap, then HALVED at the
-        // midpoint via setRateBitsPerSecond — the gate is 1 IDR.
+        // midpoint via setRateControl — the gate is 1 IDR.
         case "--bitrate-mbps":
             bitrateMbps = Int64(it.next() ?? "") ?? bitrateMbps
         // The Rext probe: 444 encodes Main 4:4:4 on AYUV surfaces.
@@ -139,7 +139,7 @@ func runNativeCapture(
         if bitrateBitsPerSecond > 0, !rateMoved,
            t - t0 > seconds / 2 {
             rateMoved = true
-            pipeline.setRateBitsPerSecond(bitrateBitsPerSecond / 2)
+            pipeline.setRateControl(bitsPerSecond: bitrateBitsPerSecond / 2)
             print("  live-rate: \(bitrateBitsPerSecond / 1_000_000) → "
                 + "\(bitrateBitsPerSecond / 2_000_000) Mbps at midpoint "
                 + "(no reset, no IDR expected)")

@@ -18,10 +18,10 @@
 // quirk the slice pen mirrors).
 //
 // Rate control: CQP (qp) or VBR (bitrateBitsPerSecond > 0 — target
-// 70% of cap, the E1 envelope). setRateBitsPerSecond() re-sends the
-// RC misc buffer with the NEXT frame — the live directive lever
-// libavcodec's wrapper never had (rc at open() only), un-deferring
-// the estimator's rate moves.
+// 70% of cap). setRateControl() re-sends the RC and HRD misc buffers
+// with the NEXT frame: a live rate move with no reset and no IDR. The
+// HRD buffer is four frames of the cap unless the caller bounds it
+// (the one-FEC-group frame ceiling, HostWire.EncoderHrd).
 
 #if os(Linux)
 
@@ -62,10 +62,12 @@ public final class EyeVaapiEncoder {
     private var codedBuffer = VABufferID(VA_INVALID_ID)
     private let recipe: HevcHeaderRecipe
     private let bitrateBitsPerSecond: Int64
-    private var pendingRate: Int64?
-    /// The rate the driver currently holds — a directive's move must
-    /// survive later IDR re-sends (which rebuild the RC/HRD buffers).
+    private var pendingRate: (bitsPerSecond: Int64, hrdBufferBits: Int64?)?
+    /// The rate and HRD buffer the driver currently holds — a directive's
+    /// move must survive later IDR re-sends (which rebuild the RC/HRD
+    /// buffers).
     private var currentRate: Int64 = 0
+    private var currentHrdBufferBits: Int64?
     private var frameIndex: Int64 = 0
     private var poc: UInt32 = 0
     private var previousRecon = VASurfaceID(VA_INVALID_ID)
@@ -111,6 +113,7 @@ public final class EyeVaapiEncoder {
         width: Int32, height: Int32, fps: Int32, qp: Int32,
         renderNode: String = "/dev/dri/renderD128",
         bitrateBitsPerSecond: Int64 = 0,
+        hrdBufferBits: Int64? = nil,
         inputSurfaceCount: Int = 8,
         chroma444: Bool = false
     ) throws {
@@ -121,6 +124,7 @@ public final class EyeVaapiEncoder {
         self.chroma444 = chroma444
         self.bitrateBitsPerSecond = bitrateBitsPerSecond
         self.currentRate = bitrateBitsPerSecond
+        self.currentHrdBufferBits = hrdBufferBits
         // The BRC dialect (pinned to ffmpeg's on this driver): under
         // rate control the PPS baseline is QP 30 and per-CU QP deltas
         // are declared at 8x8 granularity (depth = the SPS's
@@ -287,9 +291,13 @@ public final class EyeVaapiEncoder {
     }
 
     /// E6b's lever: takes effect with the NEXT frame's RC misc
-    /// buffer — no reset, no IDR, no reopen.
-    public func setRateBitsPerSecond(_ bitsPerSecond: Int64) {
-        pendingRate = bitsPerSecond
+    /// buffer — no reset, no IDR, no reopen. `hrdBufferBits` is the HRD
+    /// (VBV) buffer to run (HostWire.EncoderHrd); nil keeps the
+    /// four-frame window.
+    public func setRateControl(
+        bitsPerSecond: Int64, hrdBufferBits: Int64? = nil
+    ) {
+        pendingRate = (bitsPerSecond, hrdBufferBits)
     }
 
     // MARK: Surface export (the E1 raw-offset parse, verbatim — the
@@ -411,10 +419,11 @@ public final class EyeVaapiEncoder {
                 buffers.append(try makeFrameRateBuffer())
             }
         } else if let rate = pendingRate, bitrateBitsPerSecond > 0 {
-            currentRate = rate
+            currentRate = rate.bitsPerSecond
+            currentHrdBufferBits = rate.hrdBufferBits
             buffers.append(try makeRateControlBuffer(
-                capBitsPerSecond: rate))
-            buffers.append(try makeHRDBuffer(capBitsPerSecond: rate))
+                capBitsPerSecond: currentRate))
+            buffers.append(try makeHRDBuffer(capBitsPerSecond: currentRate))
             pendingRate = nil
         }
 
@@ -632,7 +641,7 @@ public final class EyeVaapiEncoder {
     /// driver's VBR math degenerates and inter-frame quality collapses
     /// (the yellow-smear artifact — caught by eyeball, not by decode).
     private func vbvBufferBits(capBitsPerSecond: Int64) -> Int64 {
-        capBitsPerSecond * 4 / Int64(fps)
+        currentHrdBufferBits ?? capBitsPerSecond * 4 / Int64(fps)
     }
 
     private func makeRateControlBuffer(

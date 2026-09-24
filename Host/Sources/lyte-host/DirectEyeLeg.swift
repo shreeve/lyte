@@ -31,6 +31,9 @@ final class DirectEyeLeg {
         var pollUs: UInt32 = 1000
         /// Wire rate → the encoder's VBR envelope (0 = CQP).
         var bitrateBitsPerSecond: Int64 = 0
+        /// The opening VBV (bits): the one-FEC-group frame ceiling the
+        /// encoder's HRD buffer must not exceed. Nil = no guard (file mode).
+        var vbvBits: Int?
     }
 
     private let config: Config
@@ -65,6 +68,8 @@ final class DirectEyeLeg {
     /// model fed and the wire warm; the full-rate idle floor (and
     /// ratchet refinement) remain the portal's until post-E5 work.
     static let keepaliveSeconds = 1.0
+    /// The screen beat and the encoder's frame rate.
+    static let fps = 60
     /// The cursor plane's poll period: one 60 Hz beat.
     static let cursorPollMicroseconds: UInt64 = 16_667
     private var lastDeliveryWallSeconds = 0.0
@@ -178,7 +183,12 @@ final class DirectEyeLeg {
             pipeline = try EyePipeline(
                 width: width, height: height,
                 renderNode: config.renderNode, qp: config.qp,
-                bitrateBitsPerSecond: config.bitrateBitsPerSecond)
+                bitrateBitsPerSecond: config.bitrateBitsPerSecond,
+                hrdBufferBits: config.bitrateBitsPerSecond > 0
+                    ? Int64(EncoderHrd.bufferBits(
+                        capBitsPerSecond: Int(config.bitrateBitsPerSecond),
+                        fps: Self.fps, vbvBits: config.vbvBits))
+                    : nil)
         } catch {
             lastError = "direct: init failed: \(error)"
             return
@@ -378,8 +388,11 @@ final class DirectEyeLeg {
             // Rate directives apply live: the cap becomes the VBR
             // envelope on the next frame's RC misc buffer.
             if let directive = snapshot?.directive {
-                pipeline.setRateBitsPerSecond(
-                    Int64(directive.maxBitsPerSecond))
+                pipeline.setRateControl(
+                    bitsPerSecond: Int64(directive.maxBitsPerSecond),
+                    hrdBufferBits: Int64(EncoderHrd.bufferBits(
+                        capBitsPerSecond: directive.maxBitsPerSecond,
+                        fps: Self.fps, vbvBits: directive.vbvBits)))
                 directivesApplied += 1
                 if directivesApplied == 1 {
                     print("direct: rate directive "
