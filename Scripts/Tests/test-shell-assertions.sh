@@ -1,13 +1,13 @@
 #!/bin/bash
-# Forbidden-token scan: no shell script states a check as a bare `[[ … ]]`,
-# `(( … ))` or `! cmd` command. macOS /bin/bash 3.2 ignores `set -e` when
-# the first two fail, and no bash exits when `! cmd` fails, so such a check
-# never fails anything, alone or as any part of an `&&` list
-# (`cmd && [[ … ]]`, `[[ a ]] && [[ b ]]`). A check is guarded when an `||`
-# follows it in its list (`[[ … ]] || fail "…"`, Scripts/lib/assert.sh) or
-# the list ends in continue, break, return, exit or fail
-# (`[[ -z "$x" ]] && continue`), or when it is the condition of an
-# if/elif/while/until. Every script must also parse.
+# Forbidden-token scan: no shell script states an assertion as a bare
+# `[[ … ]]`, `(( … ))` or `! cmd`. macOS /bin/bash 3.2 ignores `set -e` when
+# the first two fail, and no bash exits when `! cmd` fails, so a check that
+# ends a statement's `&&`/`||` list (`[[ … ]]` alone, `cmd && [[ … ]]`,
+# `[[ a ]] && [[ b ]]`) never fails anything. Guard it
+# (`[[ … ]] || fail "…"`, Scripts/lib/assert.sh) or make it the condition of
+# an if/elif/while/until. A check followed by `&& cmd` is a conditional
+# (`[[ -z "$x" ]] && continue`) and is left alone. Every script must also
+# parse.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -23,23 +23,14 @@ bare_checks() {
             return command ~ /^(\[\[|\(\(|![[:space:]])/
         }
         # check_list FROM TO: the commands el[FROM..TO] joined by op[].
-        function check_list(from, to,    i, j, guarded, text) {
+        # A check anywhere else in a list is a condition, not an assertion.
+        function check_list(from, to,    j, text) {
             sub(/^(then|do|else)[[:space:]]+/, "", el[from])
             if (el[from] ~ /^(if|elif|while|until)([[:space:]]|$)/) return
-            for (i = from; i <= to; i++) {
-                if (!is_check(el[i])) continue
-                guarded = (to > i \
-                    && el[to] ~ /^(continue|break|return|exit|fail)([[:space:]]|$)/)
-                for (j = i; j < to && !guarded; j++) {
-                    if (op[j] == "||") guarded = 1
-                }
-                if (!guarded) {
-                    text = el[from]
-                    for (j = from; j < to; j++) text = text " " op[j] " " el[j + 1]
-                    printf "%s:%d: %s\n", FILENAME, first, text
-                    return
-                }
-            }
+            if (!is_check(el[to])) return
+            text = el[from]
+            for (j = from; j < to; j++) text = text " " op[j] " " el[j + 1]
+            printf "%s:%d: %s\n", FILENAME, first, text
         }
         function trim(text) {
             sub(/^[[:space:]]+/, "", text)
@@ -148,7 +139,6 @@ sed 's/^#//' > "$fixture/bare.sh" <<'EOF'
 #true && [[ 1 == 2 ]]
 #cd x && (( count > 1 ))
 #make || [[ -f a ]]
-#[[ -f a ]] && echo found
 #[[ -f a ]] || fail "a"; [[ -f b ]]
 #echo "x; y" && ! grep -q a b
 EOF
@@ -174,11 +164,14 @@ sed 's/^#//' > "$fixture/guarded.sh" <<'EOF'
 #until (( n > 3 )); do n=$((n + 1)); done
 #[[ "$a" == "]]" ]] || fail "brackets"
 #case "$a" in x) echo x ;; esac
+#[[ -f a ]] && echo found
+#    [[ -f "$previous_file" ]] && id="$(head -1 "$previous_file")"
+#! grep -q a b && echo absent
 EOF
 bare_count="$(bare_checks "$fixture/bare.sh" | wc -l | tr -d ' ')"
-[[ "$bare_count" -eq 15 ]] || {
+[[ "$bare_count" -eq 14 ]] || {
     bare_checks "$fixture/bare.sh" >&2
-    fail "scanner found $bare_count of 15 bare checks"
+    fail "scanner found $bare_count of 14 bare checks"
 }
 guarded="$(bare_checks "$fixture/guarded.sh")"
 [[ -z "$guarded" ]] || fail "scanner flagged guarded checks: $guarded"
