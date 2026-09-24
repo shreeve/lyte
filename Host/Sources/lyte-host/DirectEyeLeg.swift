@@ -53,6 +53,8 @@ final class DirectEyeLeg {
     /// model fed and the wire warm; the full-rate idle floor (and
     /// ratchet refinement) remain the portal's until post-E5 work.
     static let keepaliveSeconds = 1.0
+    /// The cursor plane's poll period: one 60 Hz beat.
+    static let cursorPollMicroseconds: UInt64 = 16_667
     private var lastDeliveryWallSeconds = 0.0
     private(set) var keepalivesSent = 0
     /// The video quiet ladder (postures design): engaged only under
@@ -242,7 +244,9 @@ final class DirectEyeLeg {
         // Recovery and quiet-desktop traffic do not depend on a fresh pixel
         // observation. This is deliberately serviced from the 1 ms shell
         // loop while screen reads stay on their independent 60 Hz grid.
-        func serveRetainedFrameIfNeeded() throws -> Bool {
+        func serveRetainedFrameIfNeeded(
+            _ snapshot: SessionWire.LegSnapshot?
+        ) throws -> Bool {
             if staticIdrWanted {
                 let served: Void? = try pipeline.encodeRetained(forceIDR: true) {
                     bytes, keyframe in
@@ -262,11 +266,11 @@ final class DirectEyeLeg {
             }
 
             var keepaliveInterval = Self.keepaliveSeconds
-            if let wire {
-                let inputSeconds = Double(wire.lastInputActivityNS) / 1e9
+            if let wire, let snapshot {
+                let inputSeconds = Double(snapshot.lastInputActivityNS) / 1e9
                 let idle = SystemMonotonicClock.nowSeconds
                     - max(lastActivityWallSeconds, inputSeconds)
-                if wire.videoQuietPostureAgreed() {
+                if snapshot.videoQuietPostureAgreed {
                     let verdict = quietPacer.assess(idleSeconds: idle)
                     keepaliveInterval = verdict.keepaliveSeconds
                     if let announce = verdict.announce {
@@ -296,9 +300,9 @@ final class DirectEyeLeg {
 
         /// Between observations: a retained frame may be owed, otherwise
         /// sleep one poll. False ends the leg (the error is recorded).
-        func idle() -> Bool {
+        func idle(_ snapshot: SessionWire.LegSnapshot?) -> Bool {
             do {
-                if try serveRetainedFrameIfNeeded() { return true }
+                if try serveRetainedFrameIfNeeded(snapshot) { return true }
             } catch {
                 lastError = "direct: retained frame: \(error)"
                 return false
@@ -307,8 +311,12 @@ final class DirectEyeLeg {
             return true
         }
 
+        var lastCursorPollUs: UInt64 = 0
         while SystemMonotonicClock.nowSeconds - t0 < config.seconds {
-            if wire?.sessionEnded == true { break }
+            // One session-lock round trip per poll: end, agreement,
+            // directive, and IDR demand together.
+            let snapshot = wire?.takeLegSnapshot()
+            if snapshot?.ended == true { break }
             // HS-18: an interrupted run (SIGINT/SIGTERM) exits through
             // the same door as a completed one, so the audio-routing
             // restore and the typed teardown both happen.
@@ -316,9 +324,15 @@ final class DirectEyeLeg {
                 print("session: termination signal — closing cleanly")
                 break
             }
+            // The cursor plane is read on the screen's own 60 Hz grid, not
+            // every 1 ms poll.
             let cursorStart = SystemMonotonicClock.nowMicroseconds
-            pollCursor(cursorWatcher)
-            lastStages.cursorUs = SystemMonotonicClock.nowMicroseconds - cursorStart
+            if cursorStart &- lastCursorPollUs >= Self.cursorPollMicroseconds {
+                lastCursorPollUs = cursorStart
+                pollCursor(cursorWatcher)
+                lastStages.cursorUs =
+                    SystemMonotonicClock.nowMicroseconds - cursorStart
+            }
 
             // V-4: the agreed chroma is connect-time truth that
             // lands AFTER the leg opened its encoder (the declaration
@@ -330,7 +344,7 @@ final class DirectEyeLeg {
             // when the desktop is static.
             if !pipeline.chroma444,
                ChromaPosture.from(
-                   agreedChromaModes: wire?.agreedChromaModes
+                   agreedChromaModes: snapshot?.agreedChromaModes
                ) == .yuv444 {
                 do {
                     try pipeline.reopen(chroma444: true)
@@ -348,7 +362,7 @@ final class DirectEyeLeg {
 
             // Rate directives apply live: the cap becomes the VBR
             // envelope on the next frame's RC misc buffer.
-            if let directive = wire?.takeEncoderRateDirective() {
+            if let directive = snapshot?.directive {
                 pipeline.setRateBitsPerSecond(
                     Int64(directive.maxBitsPerSecond))
                 directivesApplied += 1
@@ -367,7 +381,7 @@ final class DirectEyeLeg {
             // the IDR, stamped with its ORIGINAL capture time (recovery
             // re-encodes are quality/dependency events, not network-late
             // frames).
-            let demand = wire?.takeForcedIdrDemand() ?? []
+            let demand = snapshot?.demand ?? []
             if !demand.isEmpty {
                 pendingCauses += demand.names
                 staticIdrWanted = true
@@ -377,7 +391,7 @@ final class DirectEyeLeg {
             guard case .sample(let skippedBeats) = samplingCadence.poll(
                 nowMicroseconds: observationClock)
             else {
-                if idle() { continue } else { return }
+                if idle(snapshot) { continue } else { return }
             }
             observations += 1
             skippedObservationBeats += skippedBeats
@@ -390,7 +404,7 @@ final class DirectEyeLeg {
                 }
             }
             guard let observation = screen.observe() else {
-                if idle() { continue } else { return }
+                if idle(snapshot) { continue } else { return }
             }
             if observation.identityChanged { framebufferTransitions += 1 }
 
@@ -427,7 +441,7 @@ final class DirectEyeLeg {
                 SystemMonotonicClock.nowMicroseconds - fingerprintStart
             maxStages.formMax(lastStages)
             guard pixelsChanged else {
-                if idle() { continue } else { return }
+                if idle(snapshot) { continue } else { return }
             }
             changedObservations += 1
             lastActivityWallSeconds = SystemMonotonicClock.nowSeconds

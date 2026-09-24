@@ -375,16 +375,44 @@ final class SessionWire {
     /// sendFrame used to do to the capture loop.
     private var drainFailed = false
 
-    /// True once nothing more can usefully happen: the peer's socket is
-    /// closed, or the lifecycle machine reached `closed` (teardown either
-    /// way, or the 30 s liveness timeout). The capture loop quits on it.
-    var sessionEnded: Bool {
+    /// Everything the capture loop consults per poll, taken with one
+    /// session-lock acquisition (the agreed flags and the input stamp come
+    /// from the narrow config lock). Taking it consumes the pending IDR
+    /// demand and rate directive.
+    struct LegSnapshot {
+        /// Nothing more can usefully happen: the peer's socket is closed,
+        /// the lifecycle reached `closed` (teardown or the 30 s liveness
+        /// timeout), or the drain thread failed. The capture loop quits.
+        var ended: Bool
+        var agreedChromaModes: [UInt64]?
+        var videoQuietPostureAgreed: Bool
+        /// Monotonic ns of the last client input (the video posture's wake).
+        var lastInputActivityNS: UInt64
+        /// A rate-control move the encoder must apply before its next frame.
+        var directive: EncoderRateDirective?
+        /// A forced IDR owed on the next encode, with its causes.
+        var demand: FreshKeyframeDemand
+    }
+
+    func takeLegSnapshot() -> LegSnapshot {
+        let (posture, inputNS) = withConfigLock {
+            (_agreedPosture, _lastInputActivityNS)
+        }
         lock.lock()
         defer { lock.unlock() }
-        if peerGone || session?.lifecycleState == .closed { return true }
-        drainCondition.lock()
-        defer { drainCondition.unlock() }
-        return drainFailed
+        var ended = peerGone || session?.lifecycleState == .closed
+        if !ended {
+            drainCondition.lock()
+            ended = drainFailed
+            drainCondition.unlock()
+        }
+        return LegSnapshot(
+            ended: ended,
+            agreedChromaModes: posture.chromaModes,
+            videoQuietPostureAgreed: posture.videoQuiet,
+            lastInputActivityNS: inputNS,
+            directive: takeEncoderRateDirectiveLocked(),
+            demand: session?.takeFreshKeyframeDemand() ?? [])
     }
 
     var counters: VideoChannelCounters { session.videoCounters }
@@ -795,16 +823,6 @@ final class SessionWire {
             || payload.first == CtrlMessageType.retryHandshake1
     }
 
-    /// The encoder-loop poll (HS-12 promotion, a client 0x10, or the
-    /// lifecycle machine's WAKE/RECOVERY demand): consult before each
-    /// encode; a non-empty demand forces the next frame to IDR, and
-    /// carries WHY (the IDR books' cause tags).
-    func takeForcedIdrDemand() -> FreshKeyframeDemand {
-        lock.lock()
-        defer { lock.unlock() }
-        return session?.takeFreshKeyframeDemand() ?? []
-    }
-
     /// HS-20: arm the encoder-VBV policy once the encoder's opening
     /// rate-control posture is known (main calls this right after the
     /// session comes up; the policy's baseline mirrors the native
@@ -815,13 +833,10 @@ final class SessionWire {
         vbvPolicy = EncoderVbvPolicy(config: config)
     }
 
-    /// HS-20: the encoder-loop's second poll (with takeForcedIdr, once
-    /// per encode): the estimator's LIVE frameByteCeiling into the
-    /// policy; a non-nil directive must reach the encoder leaf before
-    /// this frame is sent.
-    func takeEncoderRateDirective() -> EncoderRateDirective? {
-        lock.lock()
-        defer { lock.unlock() }
+    /// Requires `lock`. The estimator's LIVE frameByteCeiling into the
+    /// VBV policy; a non-nil directive must reach the encoder before the
+    /// next frame is sent.
+    private func takeEncoderRateDirectiveLocked() -> EncoderRateDirective? {
         guard let vbvPolicy, let session, session.phase == .established
         else { return nil }
         guard let directive = vbvPolicy.note(
@@ -1349,12 +1364,6 @@ final class SessionWire {
         withConfigLock { _agreedPosture.audioQuiet }
     }
 
-    /// Video posture: whether THIS session agreed key 16. The video
-    /// leg asks per poll before ever backing off its keepalive.
-    func videoQuietPostureAgreed() -> Bool {
-        withConfigLock { _agreedPosture.videoQuiet }
-    }
-
     /// Video posture: one 0x26 announcement onto the reliable stream
     /// (a no-op at the session layer unless key 16 was agreed).
     func sendVideoPostureState(quiet: Bool, keepaliveSeconds: UInt8) {
@@ -1368,11 +1377,10 @@ final class SessionWire {
 
     /// The wake-on-input half of the video posture: the drain thread
     /// stamps every injected input event; the video leg reads the
-    /// stamp each poll — an input packet IS the wake, zero added
-    /// latency (postures design). Monotonic ns, atomic via configLock
-    /// (cold: one store per input event, one load per poll).
+    /// stamp each poll (LegSnapshot) — an input packet IS the wake, zero
+    /// added latency. Monotonic ns under configLock.
     private var _lastInputActivityNS: UInt64 = 0
-    var lastInputActivityNS: UInt64 {
+    private var lastInputActivityNS: UInt64 {
         get { withConfigLock { _lastInputActivityNS } }
         set { withConfigLock { _lastInputActivityNS = newValue } }
     }
@@ -1437,7 +1445,7 @@ final class SessionWire {
     /// Wakes the sender thread: bytes were enqueued (or leftovers were
     /// observed) and the pacer needs pumping at its own wake instants.
     /// Never call while holding `lock` — the lock order is
-    /// `lock` → `drainCondition` (sessionEnded) and must stay acyclic.
+    /// `lock` → `drainCondition` (takeLegSnapshot) and must stay acyclic.
     private func signalDrain() {
         drainCondition.lock()
         drainWork = true
