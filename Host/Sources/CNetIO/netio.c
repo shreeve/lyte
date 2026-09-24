@@ -169,6 +169,29 @@ int lyte_netio_enable_tx_timestamps(lyte_netio *n, char *err, size_t errlen)
     return 0;
 }
 
+int lyte_netio_errno_class(int err)
+{
+    switch (err) {
+    case EAGAIN:
+#if EWOULDBLOCK != EAGAIN
+    case EWOULDBLOCK:
+#endif
+        return 0;
+    case ENOBUFS:
+        return LYTE_NETIO_NO_BUFFER;
+    case ECONNREFUSED:
+        return LYTE_NETIO_PEER_GONE;
+    case EHOSTUNREACH:
+    case EHOSTDOWN:
+    case ENETUNREACH:
+    case ENETDOWN:
+    case EPERM:
+        return LYTE_NETIO_TRANSIENT;
+    default:
+        return -1;
+    }
+}
+
 int lyte_netio_send_batch(lyte_netio *n, const lyte_netio_pkt *pkts, int count,
                           uint32_t *first_pkt_id, char *err, size_t errlen)
 {
@@ -206,14 +229,10 @@ int lyte_netio_send_batch(lyte_netio *n, const lyte_netio_pkt *pkts, int count,
 
     int sent = sendmmsg(n->fd, msgs, (unsigned int)count, 0);
     if (sent < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK)
-            return 0;
-        if (errno == ENOBUFS)
-            return LYTE_NETIO_NO_BUFFER;
-        if (errno == ECONNREFUSED)
-            return LYTE_NETIO_PEER_GONE;
-        sys_err(err, errlen, "sendmmsg failed");
-        return -1;
+        int class = lyte_netio_errno_class(errno);
+        if (class == -1 || class == LYTE_NETIO_TRANSIENT)
+            sys_err(err, errlen, "sendmmsg failed");
+        return class;
     }
     if (first_pkt_id)
         *first_pkt_id = n->sent_since_arm;
@@ -256,12 +275,10 @@ int lyte_netio_send_to(lyte_netio *n, const lyte_netio_pkt *pkt,
 
     ssize_t sent = sendmsg(n->fd, &msg, 0);
     if (sent < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK)
-            return 0;
-        if (errno == ECONNREFUSED)
-            return LYTE_NETIO_PEER_GONE;
-        sys_err(err, errlen, "sendmsg(to) failed");
-        return -1;
+        int class = lyte_netio_errno_class(errno);
+        if (class == -1 || class == LYTE_NETIO_TRANSIENT)
+            sys_err(err, errlen, "sendmsg(to) failed");
+        return class;
     }
     /* The kernel's OPT_ID counter ticks for this send too — keep the
        local mirror aligned so batch pkt_ids stay matchable. */
@@ -301,12 +318,13 @@ int lyte_netio_recv_batch(lyte_netio *n, lyte_netio_slot *slots, int count,
 
     int got = recvmmsg(n->fd, msgs, (unsigned int)count, 0, NULL);
     if (got < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK)
-            return 0;
-        if (errno == ECONNREFUSED)
-            return LYTE_NETIO_PEER_GONE;
-        sys_err(err, errlen, "recvmmsg failed");
-        return -1;
+        int class = lyte_netio_errno_class(errno);
+        /* ENOBUFS has no receive meaning; keep it fatal-and-loud. */
+        if (class == LYTE_NETIO_NO_BUFFER)
+            class = -1;
+        if (class == -1 || class == LYTE_NETIO_TRANSIENT)
+            sys_err(err, errlen, "recvmmsg failed");
+        return class;
     }
 
     for (int i = 0; i < got; i++) {

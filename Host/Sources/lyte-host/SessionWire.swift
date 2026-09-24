@@ -1644,6 +1644,11 @@ final class SessionWire {
                 notePeerGone()
                 return
             }
+            if got == LYTE_NETIO_TRANSIENT {
+                // A consumed ICMP soft error: loss, not session death.
+                receiveTransientErrors += 1
+                return
+            }
             if got < 0 {
                 throw HostError("recv failed: \(errString(recvError))")
             }
@@ -2096,6 +2101,7 @@ final class SessionWire {
         case 0: .wouldBlock
         case LYTE_NETIO_NO_BUFFER: .noBuffer
         case LYTE_NETIO_PEER_GONE: .peerGone
+        case LYTE_NETIO_TRANSIENT: .transient
         case let accepted where accepted > 0: .accepted(Int(accepted))
         default: .failed(errString(sendError))
         }

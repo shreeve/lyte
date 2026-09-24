@@ -63,3 +63,22 @@ final class SocketLaneLinuxTests: XCTestCase {
         XCTAssertEqual(sourcePorts, [sharedPort, sharedPort])
     }
 }
+
+final class NetioErrnoClassTests: XCTestCase {
+    /// Soft ICMP-driven errors are loss, not session death (B7).
+    func testSoftNetworkErrorsAreTransient() {
+        for code in [EHOSTUNREACH, EHOSTDOWN, ENETUNREACH, ENETDOWN, EPERM] {
+            XCTAssertEqual(lyte_netio_errno_class(code), LYTE_NETIO_TRANSIENT,
+                           "errno \(code)")
+        }
+    }
+
+    func testRetryablePeerGoneAndFatalErrorsKeepTheirMeaning() {
+        XCTAssertEqual(lyte_netio_errno_class(EAGAIN), 0)
+        XCTAssertEqual(lyte_netio_errno_class(EWOULDBLOCK), 0)
+        XCTAssertEqual(lyte_netio_errno_class(ENOBUFS), LYTE_NETIO_NO_BUFFER)
+        XCTAssertEqual(lyte_netio_errno_class(ECONNREFUSED), LYTE_NETIO_PEER_GONE)
+        XCTAssertEqual(lyte_netio_errno_class(EBADF), -1)
+        XCTAssertEqual(lyte_netio_errno_class(EINVAL), -1)
+    }
+}
