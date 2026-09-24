@@ -185,16 +185,6 @@ public struct ClientClipboardSession: Sendable {
         ))
     }
 
-    /// The eager-digest form of `shareLocalImage(_:sha256:rng:agreed:)`.
-    public mutating func shareLocalImage(
-        _ data: [UInt8],
-        sha256: [UInt8],
-        rng: inout some RandomNumberGenerator,
-        agreed: Capabilities?
-    ) -> ClientClipboardSessionDecision {
-        shareLocalImage(data, sha256: { sha256 }, rng: &rng, agreed: agreed)
-    }
-
     private func imageConsentRefusal(
         agreed: Capabilities?
     ) -> ClientClipboardSessionDecision? {

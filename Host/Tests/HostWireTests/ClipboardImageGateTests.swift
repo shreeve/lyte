@@ -94,7 +94,7 @@ final class ClipboardImageGateTests: XCTestCase {
             let message = try BulkMessage.decode(bytes)
             if channel.claims(message) {
                 let events = channel.ingest(
-                    message, book: &book, sha256: Sha256.digest
+                    message, book: &book, hasher: { Sha256() }
                 )
                 try absorbChannelEvents(events, nowMicros: nowMicros)
                 return
@@ -119,7 +119,7 @@ final class ClipboardImageGateTests: XCTestCase {
             _ data: [UInt8], nowMicros: UInt64
         ) throws {
             let events = channel.shareLocalImage(
-                data, sha256: Sha256.digest(data),
+                data, sha256: { Sha256.digest(data) },
                 book: &book, rng: &imageRng
             )
             try absorbChannelEvents(events, nowMicros: nowMicros)
@@ -302,6 +302,70 @@ final class ClipboardImageGateTests: XCTestCase {
             (\(clientImage.count) B, 3 chunks); host image → client \
             byte-exact (\(hostImage.count) B); both echoes suppressed
             """)
+    }
+
+    // MARK: Leg 2b — a refused host copy is never hashed
+
+    func testHostCopyIsJudgedByTheDigestFreeGatesBeforeAnyHash() throws {
+        let (host, clientValue) = try establish(
+            hostCapabilities: imagesTier,
+            clientCapabilities: imagesTier
+        )
+        var client = clientValue
+        let session = host.session
+        var t: UInt64 = 1_000
+        try host.settle(&client, t: &t)
+        let noHash: () -> [UInt8] = {
+            XCTFail("a refused image must never be hashed")
+            return []
+        }
+
+        // Empty and over-ceiling copies settle without a digest.
+        XCTAssertEqual(
+            session.prejudgeHostClipboardImage(byteCount: 0, now: t * 1_000),
+            [.clipboardImageSuppressed(.emptyImage)])
+        let over = ClipboardImageWire.maxImageByteCount + 1
+        XCTAssertEqual(
+            session.prejudgeHostClipboardImage(byteCount: over, now: t * 1_000),
+            [.clipboardImageSuppressed(.overBudget(over))])
+
+        // A fitting copy leaves only the digest-keyed book: hash, then
+        // judge again under the lock.
+        let image = makePayload(count: 70_000, seed: 0xD16E)
+        XCTAssertNil(session.prejudgeHostClipboardImage(
+            byteCount: image.count, now: t * 1_000))
+        var hashes = 0
+        let started = session.noteHostClipboardImageChanged(
+            image, sha256: { hashes += 1; return Sha256.digest(image) },
+            now: t * 1_000, hostMicroseconds: t)
+        XCTAssertEqual(hashes, 1)
+        XCTAssertTrue(started.contains(
+            .clipboardImageShareStarted(byteCount: image.count)))
+
+        // While that share is in flight the lane is busy: the next copy
+        // is refused before its digest, in both entry points.
+        let next = makePayload(count: 1_000, seed: 0xB5)
+        XCTAssertEqual(
+            session.prejudgeHostClipboardImage(
+                byteCount: next.count, now: t * 1_000),
+            [.clipboardImageSuppressed(.sendBusy)])
+        XCTAssertEqual(
+            session.noteHostClipboardImageChanged(
+                next, sha256: noHash, now: t * 1_000, hostMicroseconds: t),
+            [.clipboardImageSuppressed(.sendBusy)])
+
+        // A session whose image gate is shut says nothing at all.
+        let (textOnly, textClientValue) = try establish(
+            hostCapabilities: imagesTier,
+            clientCapabilities: .wireDefault.declaringClipboardText()
+        )
+        var textClient = textClientValue
+        var t2: UInt64 = 1_000
+        try textOnly.settle(&textClient, t: &t2)
+        XCTAssertEqual(
+            textOnly.session.prejudgeHostClipboardImage(
+                byteCount: image.count, now: t2 * 1_000),
+            [])
     }
 
     // MARK: Leg 3 — rule 3: ungated 0x22 drops loud; the lanes'

@@ -88,7 +88,7 @@ public struct AudioDepacketizerStats: Equatable, Sendable {
     public init() {}
 }
 
-public final class AudioDepacketizer {
+public struct AudioDepacketizer: Sendable {
     /// Groups kept in flight behind the newest — 8 groups of 4 packets
     /// = 160 ms, comfortably past any jitter the buffer would absorb.
     public let horizonGroups: Int
@@ -132,7 +132,7 @@ public final class AudioDepacketizer {
     /// Feeds one accepted chan-1 datagram. Returns the packets it made
     /// available NOW: the shard's own packet when it is a fresh data
     /// shard, plus any packets a completed recovery rebuilt.
-    public func ingest(envelope: Envelope, payload: [UInt8]) -> [AudioPacket] {
+    public mutating func ingest(envelope: Envelope, payload: [UInt8]) -> [AudioPacket] {
         stats.datagramsIngested += 1
 
         guard let field = try? FecField.decode(envelope.fec),
@@ -218,7 +218,7 @@ public final class AudioDepacketizer {
     /// Runs the RS decode the moment k distinct shards exist and data
     /// packets are still missing. Rebuilt packets stamp as
     /// firstTs + index × 5 ms (the framer's derivation rule).
-    private func recoverIfPossible(
+    private mutating func recoverIfPossible(
         _ group: inout Group, groupId: UInt32
     ) -> [AudioPacket] {
         let missing = group.missingDataIndices
@@ -253,7 +253,7 @@ public final class AudioDepacketizer {
 
     /// Drops groups older than the horizon behind the newest, counting
     /// the honest losses (missing data the wire never yielded).
-    private func evictBeyondHorizon() {
+    private mutating func evictBeyondHorizon() {
         guard let newest = newestGroupId else { return }
         for (id, group) in groups {
             guard Int32(bitPattern: newest &- id) > horizonPackets else { continue }

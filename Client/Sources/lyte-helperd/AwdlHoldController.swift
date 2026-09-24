@@ -38,6 +38,9 @@ final class AwdlHoldController: @unchecked Sendable {
     private var holds: [Owner: Int] = [:]
     private var retired: Set<Owner> = []
     private var holding = false
+    /// Set by the SIGTERM restore: the process is exiting, so no stream
+    /// may take awdl0 down again.
+    private var shuttingDown = false
     private var backstop: DispatchSourceTimer?
     private var routeWatcher: DispatchSourceRead?
     private var idleExit: DispatchSourceTimer?
@@ -60,7 +63,7 @@ final class AwdlHoldController: @unchecked Sendable {
 
     func streamBegan(_ owner: Owner) {
         queue.async { [self] in
-            guard !retired.contains(owner) else { return }
+            guard !shuttingDown, !retired.contains(owner) else { return }
             holds[owner, default: 0] += 1
             idleExit?.cancel()
             idleExit = nil
@@ -88,9 +91,11 @@ final class AwdlHoldController: @unchecked Sendable {
     }
 
     /// SIGTERM (launchd stop, unregister, shutdown): restore awdl0 before
-    /// the process goes. Blocks until restored.
+    /// the process goes, and refuse every later stream start. Blocks until
+    /// restored.
     func restoreForShutdown() {
         queue.sync {
+            shuttingDown = true
             holds.removeAll()
             if holding { stopHolding() }
         }

@@ -1,4 +1,5 @@
 import SwiftUI
+import LyteClientCore
 import LyteTransport
 import LyteUI
 

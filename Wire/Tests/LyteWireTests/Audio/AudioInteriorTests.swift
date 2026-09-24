@@ -21,7 +21,7 @@ final class AudioInteriorTests: XCTestCase {
     // MARK: Leg 1 — the layout, pinned as hand-built bytes
 
     func testFramerLayoutPinnedAgainstHandBuiltBytes() throws {
-        let framer = AudioFramer(config: AudioFramerConfig())
+        var framer = AudioFramer(config: AudioFramerConfig())
         let packets = (0..<4).map { opusPacket($0, byteCount: 12) }
 
         var emitted: [(envelope: Envelope, payload: [UInt8])] = []
@@ -99,7 +99,7 @@ final class AudioInteriorTests: XCTestCase {
         XCTAssertEqual(patterns.count, 15)
 
         for lost in patterns {
-            let framer = AudioFramer(config: AudioFramerConfig())
+            var framer = AudioFramer(config: AudioFramerConfig())
             var datagrams: [(envelope: Envelope, payload: [UInt8])] = []
             for (n, packet) in packets.enumerated() {
                 datagrams += try framer.ingest(
@@ -107,7 +107,7 @@ final class AudioInteriorTests: XCTestCase {
                     captureTimestampMicroseconds: UInt64(n) * 5_000
                 )
             }
-            let depacketizer = AudioDepacketizer()
+            var depacketizer = AudioDepacketizer()
             var received: [UInt32: AudioPacket] = [:]
             for (index, datagram) in datagrams.enumerated()
             where !lost.contains(index) {
@@ -129,14 +129,14 @@ final class AudioInteriorTests: XCTestCase {
         }
 
         // Three losses refuse honestly: only the arrived packet emits.
-        let framer = AudioFramer(config: AudioFramerConfig())
+        var framer = AudioFramer(config: AudioFramerConfig())
         var datagrams: [(envelope: Envelope, payload: [UInt8])] = []
         for (n, packet) in packets.enumerated() {
             datagrams += try framer.ingest(
                 packet: packet, captureTimestampMicroseconds: UInt64(n) * 5_000
             )
         }
-        let depacketizer = AudioDepacketizer()
+        var depacketizer = AudioDepacketizer()
         var emitted = 0
         for index in [0, 4, 5] {
             emitted += depacketizer.ingest(
@@ -151,7 +151,7 @@ final class AudioInteriorTests: XCTestCase {
 
     func testHostileShardsCountNeverTrap() throws {
         // The depacketizer counts hostility, never traps, never emits.
-        let depacketizer = AudioDepacketizer()
+        var depacketizer = AudioDepacketizer()
         let geometry = try FecGeometry(
             dataShards: 4, parityShards: 2, groupByteCount: 320
         )
@@ -199,8 +199,8 @@ final class AudioInteriorTests: XCTestCase {
     /// the new size starts a fresh group: the receiver still gets every
     /// packet, the new groups FEC-protected.
     func testSizeChangeAbandonsTheOpenGroup() throws {
-        let framer = AudioFramer(config: AudioFramerConfig())
-        let depacketizer = AudioDepacketizer()
+        var framer = AudioFramer(config: AudioFramerConfig())
+        var depacketizer = AudioDepacketizer()
         var delivered: [UInt32] = []
         func feed(_ n: Int, byteCount: Int, dropping dropped: Set<Int> = []) throws {
             let datagrams = try framer.ingest(
@@ -246,14 +246,14 @@ final class AudioInteriorTests: XCTestCase {
         // Group 0 via the real framer: 3 of 4 data shards arrive, so the
         // group waits on parity for its recovery.
         let packets = (0..<4).map { opusPacket($0) }
-        let framer = AudioFramer(config: AudioFramerConfig())
+        var framer = AudioFramer(config: AudioFramerConfig())
         var datagrams: [(envelope: Envelope, payload: [UInt8])] = []
         for (n, packet) in packets.enumerated() {
             datagrams += try framer.ingest(
                 packet: packet, captureTimestampMicroseconds: UInt64(n) * 5_000
             )
         }
-        let depacketizer = AudioDepacketizer()
+        var depacketizer = AudioDepacketizer()
         for i in [0, 1, 2] {
             _ = depacketizer.ingest(
                 envelope: datagrams[i].envelope, payload: datagrams[i].payload

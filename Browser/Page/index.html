@@ -371,8 +371,8 @@
         `PIN prefilled from control-peer.json`;
       connectBtn.addEventListener("click", formRun);
       rerunBtn.addEventListener("click", harnessRun);
-      // The harness auto-runs once. lyte-control-peer serves one session,
-      // so a second run needs a fresh peer (restart serve.sh).
+      // The harness auto-runs once; serve.sh keeps lyte-control-peer
+      // serving sessions until it stops.
       await harnessRun();
     } catch (error) {
       setOutcome(false, String(error?.stack || error));

@@ -14,6 +14,7 @@
 // receive thread's wakeup jitter is noise the adaptation window absorbs.
 
 import Foundation
+import LyteClientCore
 import LyteCore
 import LyteWire
 
@@ -62,7 +63,7 @@ public struct AudioPullDecision: Sendable {
 
 public final class AudioReceiver: @unchecked Sendable {
     private let lock = NSLock()
-    private let depacketizer: AudioDepacketizer
+    private var depacketizer: AudioDepacketizer
     private let buffer: AudioJitterBuffer
 
     private var captureToFeed = Histogram<UInt64>(

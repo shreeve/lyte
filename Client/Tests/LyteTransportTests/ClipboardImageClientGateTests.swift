@@ -166,7 +166,7 @@ final class ClipboardImageClientGateTests: XCTestCase {
             let message = try BulkMessage.decode(bytes)
             if channel.claims(message) {
                 let events = channel.ingest(
-                    message, book: &book, sha256: Sha256.digest
+                    message, book: &book, hasher: { Sha256() }
                 )
                 try absorbChannelEvents(events, nowMicros: nowMicros)
                 return
@@ -194,7 +194,7 @@ final class ClipboardImageClientGateTests: XCTestCase {
         func shareImage(_ data: [UInt8], nowMicros: UInt64) throws {
             try absorbChannelEvents(
                 channel.shareLocalImage(
-                    data, sha256: Sha256.digest(data),
+                    data, sha256: { Sha256.digest(data) },
                     book: &book, rng: &imageRng
                 ),
                 nowMicros: nowMicros

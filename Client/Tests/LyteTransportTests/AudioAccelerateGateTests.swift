@@ -1,4 +1,5 @@
 import XCTest
+import LyteClientCore
 import LyteTransport
 import LyteWire
 import LyteWireTestKit

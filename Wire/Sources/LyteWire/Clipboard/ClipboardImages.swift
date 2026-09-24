@@ -328,8 +328,7 @@ public struct ClipboardImageChannel: Sendable {
     private var receiveBuffer: [UInt8] = []
     /// The incoming image's hasher and the chunks it has not absorbed
     /// yet because an earlier one is still missing; `absorbedChunks`
-    /// counts the contiguous prefix already fed. Nil when the caller
-    /// hashes the whole blob at the finish line instead.
+    /// counts the contiguous prefix already fed. Nil outside a transfer.
     private var receiveHasher: (any ClipboardImageHasher)?
     private var absorbedChunks: UInt64 = 0
     private var storedAhead: Set<UInt64> = []
@@ -443,16 +442,6 @@ public struct ClipboardImageChannel: Sendable {
         return events
     }
 
-    /// The eager-digest form of `shareLocalImage(_:sha256:book:rng:)`.
-    public mutating func shareLocalImage(
-        _ data: [UInt8],
-        sha256: [UInt8],
-        book: inout ClipboardSyncBook,
-        rng: inout some RandomNumberGenerator
-    ) -> [ClipboardImageEvent] {
-        shareLocalImage(data, sha256: { sha256 }, book: &book, rng: &rng)
-    }
-
     // MARK: The receive lane
 
     /// One decoded 0x22 marker, already past the caller's negotiation
@@ -521,28 +510,6 @@ public struct ClipboardImageChannel: Sendable {
         book: inout ClipboardSyncBook,
         hasher makeHasher: () -> any ClipboardImageHasher
     ) -> [ClipboardImageEvent] {
-        withoutActuallyEscaping(makeHasher) { makeHasher in
-            ingest(message, book: &book, digest: .incremental(makeHasher))
-        }
-    }
-
-    /// The whole-blob form: `sha256` digests the assembled image at the
-    /// receive lane's finish line.
-    public mutating func ingest(
-        _ message: BulkMessage,
-        book: inout ClipboardSyncBook,
-        sha256: ([UInt8]) -> [UInt8]
-    ) -> [ClipboardImageEvent] {
-        withoutActuallyEscaping(sha256) { sha256 in
-            ingest(message, book: &book, digest: .wholeBlob(sha256))
-        }
-    }
-
-    private mutating func ingest(
-        _ message: BulkMessage,
-        book: inout ClipboardSyncBook,
-        digest sha256: ReceiveDigest
-    ) -> [ClipboardImageEvent] {
         let id = message.transferId
         if let engine = sendEngine, engine.offer.transferId == id {
             let actions = sendEngine!.ingest(message)
@@ -568,12 +535,12 @@ public struct ClipboardImageChannel: Sendable {
                 }
                 return events
             }
-            return admitOffer(offer, mime: intent.mime, sha256: sha256,
-                              book: &book)
+            return admitOffer(offer, mime: intent.mime,
+                              makeHasher: makeHasher, book: &book)
         }
         if receiveEngine?.offer?.transferId == id {
             let actions = receiveEngine!.ingest(message)
-            return pumpReceive(actions, sha256: sha256, book: &book)
+            return pumpReceive(actions, makeHasher: makeHasher, book: &book)
         }
         // A refused id's trailing messages (the offer racing our
         // abort) — swallowed, the lane already spoke. The offer is
@@ -641,7 +608,7 @@ public struct ClipboardImageChannel: Sendable {
 
     private mutating func admitOffer(
         _ offer: BulkOffer, mime: String,
-        sha256: ReceiveDigest,
+        makeHasher: () -> any ClipboardImageHasher,
         book: inout ClipboardSyncBook
     ) -> [ClipboardImageEvent] {
         pendingIntent = nil
@@ -663,11 +630,7 @@ public struct ClipboardImageChannel: Sendable {
         )
         absorbedChunks = 0
         storedAhead = []
-        if case .incremental(let makeHasher) = sha256 {
-            receiveHasher = makeHasher()
-        } else {
-            receiveHasher = nil
-        }
+        receiveHasher = makeHasher()
         var engine = BulkReceiveEngine()
         var actions = engine.ingest(.offer(offer))
         // The marker's admission WAS the consent verdict — the offer
@@ -677,12 +640,12 @@ public struct ClipboardImageChannel: Sendable {
             actions = (try? engine.accept()) ?? []
         }
         receiveEngine = engine
-        return pumpReceive(actions, sha256: sha256, book: &book)
+        return pumpReceive(actions, makeHasher: makeHasher, book: &book)
     }
 
     private mutating func pumpReceive(
         _ actions: [BulkReceiveEngine.Action],
-        sha256: ReceiveDigest,
+        makeHasher: () -> any ClipboardImageHasher,
         book: inout ClipboardSyncBook
     ) -> [ClipboardImageEvent] {
         var events: [ClipboardImageEvent] = []
@@ -707,7 +670,7 @@ public struct ClipboardImageChannel: Sendable {
                 )) ?? []
                 queue.append(contentsOf: more)
             case .verify:
-                let digest = finishReceiveDigest(sha256)
+                let digest = finishReceiveDigest(makeHasher)
                 let more = (try? receiveEngine!.verificationResult(
                     digest: digest
                 )) ?? []
@@ -755,25 +718,20 @@ public struct ClipboardImageChannel: Sendable {
         }
     }
 
-    /// The assembled image's digest: the incremental hasher's (every
-    /// chunk is stored by now, so the prefix is the whole blob), or the
-    /// whole-blob closure's. A lane admitted under the whole-blob form
-    /// but verified under the incremental one hashes the blob once here.
+    /// The assembled image's digest: every chunk is stored by now, so
+    /// the admitted hasher's prefix is the whole blob.
     private mutating func finishReceiveDigest(
-        _ sha256: ReceiveDigest
+        _ makeHasher: () -> any ClipboardImageHasher
     ) -> [UInt8] {
         if var hasher = receiveHasher {
             receiveHasher = nil
             return hasher.finish()
         }
-        switch sha256 {
-        case .wholeBlob(let digest):
-            return digest(receiveBuffer)
-        case .incremental(let makeHasher):
-            var hasher = makeHasher()
-            hasher.absorb(receiveBuffer[...])
-            return hasher.finish()
-        }
+        // Unreachable: admission always installs the hasher. Kept total
+        // rather than trapping on a lane-state bug.
+        var hasher = makeHasher()
+        hasher.absorb(receiveBuffer[...])
+        return hasher.finish()
     }
 
     private mutating func resetReceiveBuffer() {
@@ -783,11 +741,6 @@ public struct ClipboardImageChannel: Sendable {
         storedAhead = []
     }
 
-    /// How the receive lane digests an assembled image.
-    private enum ReceiveDigest {
-        case incremental(() -> any ClipboardImageHasher)
-        case wholeBlob(([UInt8]) -> [UInt8])
-    }
 
     /// The refused set is bounded: entries retire when their offer
     /// trails through `ingest`, and a hostile flood of markers is capped

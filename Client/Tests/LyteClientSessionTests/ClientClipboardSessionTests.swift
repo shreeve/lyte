@@ -104,18 +104,18 @@ final class ClientClipboardSessionTests: XCTestCase {
 
         XCTAssertEqual(
             session.shareLocalImage(
-                data, sha256: digest, rng: &rng, agreed: images
+                data, sha256: { digest }, rng: &rng, agreed: images
             ).shareOutcome,
             .sharingDisabled)
         session.setImageSharing(true)
         XCTAssertEqual(
             session.shareLocalImage(
-                data, sha256: digest, rng: &rng, agreed: text
+                data, sha256: { digest }, rng: &rng, agreed: text
             ).shareOutcome,
             .notNegotiated)
 
         let admitted = session.shareLocalImage(
-            data, sha256: digest, rng: &rng, agreed: images)
+            data, sha256: { digest }, rng: &rng, agreed: images)
         XCTAssertEqual(admitted.shareOutcome, .shared)
         XCTAssertGreaterThanOrEqual(admitted.outboundBulk.count, 2)
         XCTAssertEqual(
@@ -131,7 +131,7 @@ final class ClientClipboardSessionTests: XCTestCase {
         XCTAssertEqual(
             session.shareLocalImage(
                 [UInt8](repeating: 1, count: 17),
-                sha256: digest,
+                sha256: { digest },
                 rng: &secondRng,
                 agreed: images
             ).shareOutcome,
@@ -145,7 +145,7 @@ final class ClientClipboardSessionTests: XCTestCase {
         XCTAssertEqual(
             fresh.shareLocalImage(
                 [UInt8](repeating: 1, count: 17),
-                sha256: [UInt8](repeating: 2, count: 32),
+                sha256: { [UInt8](repeating: 2, count: 32) },
                 rng: &secondRng,
                 agreed: images
             ).shareOutcome,
@@ -175,7 +175,7 @@ final class ClientClipboardSessionTests: XCTestCase {
         XCTAssertEqual(
             session.shareLocalImage(
                 [UInt8](repeating: 4, count: 12),
-                sha256: [UInt8](repeating: 9, count: 32),
+                sha256: { [UInt8](repeating: 9, count: 32) },
                 rng: &rng, agreed: images
             ).shareOutcome,
             .shared)

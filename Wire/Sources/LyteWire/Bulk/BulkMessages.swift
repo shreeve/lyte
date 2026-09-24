@@ -307,34 +307,14 @@ public struct BulkOffer: Hashable, Sendable {
     public static func decode(
         _ payload: ArraySlice<UInt8>
     ) throws -> BulkOffer {
-        let base = try checkType(payload, type: CtrlMessageType.bulkOffer)
-        guard payload.endIndex - base >= 53 else {
-            throw BulkMessageError.truncatedMessage
-        }
-        let transferId: UInt64 = wireReadLE(payload, at: base)
-        let totalByteCount: UInt64 = wireReadLE(payload, at: base + 8)
-        let chunkByteCount: UInt32 = wireReadLE(payload, at: base + 16)
-        let sha256 = Array(payload[(base + 20)..<(base + 52)])
-        let nameLen = Int(payload[base + 52])
-        var cursor = base + 53
-        guard cursor + nameLen <= payload.endIndex else {
-            throw BulkMessageError.truncatedMessage
-        }
-        let name = try decodeUtf8(payload[cursor..<cursor + nameLen])
-        cursor += nameLen
-        guard cursor < payload.endIndex else {
-            throw BulkMessageError.truncatedMessage
-        }
-        let mimeLen = Int(payload[cursor])
-        cursor += 1
-        guard cursor + mimeLen <= payload.endIndex else {
-            throw BulkMessageError.truncatedMessage
-        }
-        let mimeHint = try decodeUtf8(payload[cursor..<cursor + mimeLen])
-        cursor += mimeLen
-        guard cursor == payload.endIndex else {
-            throw BulkMessageError.trailingBytes
-        }
+        var reader = try bulkReader(payload, type: CtrlMessageType.bulkOffer)
+        let transferId = try reader.u64()
+        let totalByteCount = try reader.u64()
+        let chunkByteCount = try reader.u32()
+        let sha256 = Array(try reader.bytes(BulkWire.sha256ByteCount))
+        let name = try decodeUtf8(try reader.bytes(Int(try reader.u8())))
+        let mimeHint = try decodeUtf8(try reader.bytes(Int(try reader.u8())))
+        try requireEnd(reader)
         return try BulkOffer(
             transferId: transferId,
             totalByteCount: totalByteCount,
@@ -450,13 +430,10 @@ public struct BulkChunk: Hashable, Sendable {
     public static func decode(
         _ payload: ArraySlice<UInt8>
     ) throws -> BulkChunk {
-        let base = try checkType(payload, type: CtrlMessageType.bulkChunk)
-        guard payload.endIndex - base >= 16 else {
-            throw BulkMessageError.truncatedMessage
-        }
-        let transferId: UInt64 = wireReadLE(payload, at: base)
-        let chunkIndex: UInt64 = wireReadLE(payload, at: base + 8)
-        let data = Array(payload[(base + 16)...])
+        var reader = try bulkReader(payload, type: CtrlMessageType.bulkChunk)
+        let transferId = try reader.u64()
+        let chunkIndex = try reader.u64()
+        let data = Array(reader.rest())
         return try BulkChunk(
             transferId: transferId, chunkIndex: chunkIndex, data: data
         )
@@ -540,18 +517,12 @@ public struct BulkComplete: Hashable, Sendable {
     public static func decode(
         _ payload: ArraySlice<UInt8>
     ) throws -> BulkComplete {
-        let base = try checkType(
+        var reader = try bulkReader(
             payload, type: CtrlMessageType.bulkComplete
         )
-        guard payload.endIndex - base >= 8 else {
-            throw BulkMessageError.truncatedMessage
-        }
-        guard payload.endIndex - base == 8 else {
-            throw BulkMessageError.trailingBytes
-        }
-        return try BulkComplete(
-            transferId: wireReadLE(payload, at: base)
-        )
+        let transferId = try reader.u64()
+        try requireEnd(reader)
+        return try BulkComplete(transferId: transferId)
     }
 
     public static func decode(_ payload: [UInt8]) throws -> BulkComplete {
@@ -611,20 +582,14 @@ public struct BulkAbort: Hashable, Sendable {
     public static func decode(
         _ payload: ArraySlice<UInt8>
     ) throws -> BulkAbort {
-        let base = try checkType(payload, type: CtrlMessageType.bulkAbort)
-        guard payload.endIndex - base >= 9 else {
-            throw BulkMessageError.truncatedMessage
-        }
-        guard payload.endIndex - base == 9 else {
-            throw BulkMessageError.trailingBytes
-        }
-        let raw = payload[base + 8]
+        var reader = try bulkReader(payload, type: CtrlMessageType.bulkAbort)
+        let transferId = try reader.u64()
+        let raw = try reader.u8()
+        try requireEnd(reader)
         guard let reason = BulkAbortReason(rawValue: raw) else {
             throw BulkMessageError.unknownAbortReason(raw)
         }
-        return try BulkAbort(
-            transferId: wireReadLE(payload, at: base), reason: reason
-        )
+        return try BulkAbort(transferId: transferId, reason: reason)
     }
 
     public static func decode(_ payload: [UInt8]) throws -> BulkAbort {
@@ -740,17 +705,21 @@ public enum BulkMessageError: Error, Hashable, Sendable {
 
 // MARK: - Shared layout helpers
 
-/// Checks the type byte and returns the index of the first body byte.
-private func checkType(
+/// A reader past the type byte, which must be `type`.
+private func bulkReader(
     _ payload: ArraySlice<UInt8>, type: UInt8
-) throws -> Int {
-    guard let first = payload.first else {
-        throw BulkMessageError.truncatedMessage
-    }
+) throws -> WireReader {
+    var reader = WireReader(
+        payload, truncated: BulkMessageError.truncatedMessage)
+    let first = try reader.u8()
     guard first == type else {
         throw BulkMessageError.unexpectedType(first)
     }
-    return payload.startIndex + 1
+    return reader
+}
+
+private func requireEnd(_ reader: WireReader) throws {
+    guard reader.isAtEnd else { throw BulkMessageError.trailingBytes }
 }
 
 private func decodeUtf8(_ bytes: ArraySlice<UInt8>) throws -> String {
@@ -777,27 +746,18 @@ private func encodeCreditAndMap(
 private func decodeCreditAndMap(
     _ payload: ArraySlice<UInt8>, type: UInt8
 ) throws -> (UInt64, UInt64, BulkChunkMap) {
-    let base = try checkType(payload, type: type)
-    guard payload.endIndex - base >= 26 else {
-        throw BulkMessageError.truncatedMessage
-    }
-    let transferId: UInt64 = wireReadLE(payload, at: base)
-    let creditTotal: UInt64 = wireReadLE(payload, at: base + 8)
-    let contiguousCount: UInt64 = wireReadLE(payload, at: base + 16)
-    let bitmapLen = Int(wireReadLE(payload, at: base + 24) as UInt16)
+    var reader = try bulkReader(payload, type: type)
+    let transferId = try reader.u64()
+    let creditTotal = try reader.u64()
+    let contiguousCount = try reader.u64()
+    let bitmapLen = Int(try reader.u16())
     guard bitmapLen <= BulkWire.maxBitmapByteCount else {
         throw BulkMessageError.bitmapOverBudget(bitmapLen)
     }
-    let bitmapStart = base + 26
-    guard bitmapStart + bitmapLen <= payload.endIndex else {
-        throw BulkMessageError.truncatedMessage
-    }
-    guard bitmapStart + bitmapLen == payload.endIndex else {
-        throw BulkMessageError.trailingBytes
-    }
+    let bitmap = Array(try reader.bytes(bitmapLen))
+    try requireEnd(reader)
     let map = try BulkChunkMap(
-        contiguousCount: contiguousCount,
-        bitmap: Array(payload[bitmapStart..<bitmapStart + bitmapLen])
+        contiguousCount: contiguousCount, bitmap: bitmap
     )
     return (transferId, creditTotal, map)
 }

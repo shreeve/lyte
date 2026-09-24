@@ -333,19 +333,16 @@ public enum ArqFrame: Hashable, Sendable {
             throw ArqFrameError.emptyPayload
         }
         var frames: [ArqFrame] = []
-        var cursor = payload.startIndex
-        while cursor < payload.endIndex {
-            switch payload[cursor] {
+        var reader = WireReader(
+            payload, truncated: ArqFrameError.truncatedFrame)
+        while let type = reader.remaining.first {
+            switch type {
             case CtrlMessageType.arqSegment:
-                let (segment, next) = try decodeSegment(payload, at: cursor)
-                frames.append(.segment(segment))
-                cursor = next
+                frames.append(.segment(try decodeSegment(&reader)))
             case CtrlMessageType.arqAck:
-                let (ack, next) = try decodeAck(payload, at: cursor)
-                frames.append(.ack(ack))
-                cursor = next
+                frames.append(.ack(try decodeAck(&reader)))
             default:
-                throw ArqFrameError.unknownFrameType(payload[cursor])
+                throw ArqFrameError.unknownFrameType(type)
             }
         }
         return frames
@@ -355,73 +352,58 @@ public enum ArqFrame: Hashable, Sendable {
         try decodeAll(payload[...])
     }
 
+    /// `type ‖ flags ‖ group u16 ‖ seq u16 ‖ bodyLen u16 ‖ body`.
     private static func decodeSegment(
-        _ payload: ArraySlice<UInt8>, at start: Int
-    ) throws -> (ArqSegment, Int) {
-        guard start + ArqBounds.segmentHeaderByteCount <= payload.endIndex else {
-            throw ArqFrameError.truncatedFrame
-        }
-        let flags = payload[start + 1]
-        let group: UInt16 = wireReadLE(payload, at: start + 2)
-        let seq: UInt16 = wireReadLE(payload, at: start + 4)
-        let bodyLen = Int(wireReadLE(payload, at: start + 6) as UInt16)
+        _ reader: inout WireReader
+    ) throws -> ArqSegment {
+        _ = try reader.u8()
+        let flags = try reader.u8()
+        let group = try reader.u16()
+        let seq = try reader.u16()
+        let bodyLen = Int(try reader.u16())
         guard bodyLen >= 1 else {
             throw ArqFrameError.zeroLengthSegmentBody
         }
-        let bodyStart = start + ArqBounds.segmentHeaderByteCount
-        guard bodyStart + bodyLen <= payload.endIndex else {
-            throw ArqFrameError.truncatedFrame
-        }
-        let segment = try ArqSegment(
+        return try ArqSegment(
             group: ArqGroupId(rawValue: group),
             seq: ArqSegmentSeq(rawValue: seq),
             endOfMessage: flags & ArqSegment.endOfMessageFlag != 0,
-            body: Array(payload[bodyStart..<bodyStart + bodyLen])
+            body: Array(try reader.bytes(bodyLen))
         )
-        return (segment, bodyStart + bodyLen)
     }
 
+    /// `type ‖ reserved ‖ blockCount`, then per block
+    /// `chan ‖ group u16 ‖ cumulative u16 ‖ bitmapLen ‖ bitmap`.
     private static func decodeAck(
-        _ payload: ArraySlice<UInt8>, at start: Int
-    ) throws -> (ArqAck, Int) {
-        guard start + ArqBounds.ackHeaderByteCount <= payload.endIndex else {
-            throw ArqFrameError.truncatedFrame
-        }
-        let blockCount = Int(payload[start + 2])
+        _ reader: inout WireReader
+    ) throws -> ArqAck {
+        _ = try reader.u8()
+        _ = try reader.u8()
+        let blockCount = Int(try reader.u8())
         guard blockCount >= 1 else {
             throw ArqFrameError.zeroAckBlocks
         }
         guard blockCount <= ArqBounds.maxAckBlocks else {
             throw ArqFrameError.tooManyAckBlocks(blockCount)
         }
-        var cursor = start + ArqBounds.ackHeaderByteCount
         var blocks: [ArqAck.Block] = []
         blocks.reserveCapacity(blockCount)
         for _ in 0..<blockCount {
-            guard cursor + ArqBounds.ackBlockFixedByteCount <= payload.endIndex else {
-                throw ArqFrameError.truncatedFrame
-            }
-            let channel = ChannelId(rawValue: payload[cursor])
-            let group: UInt16 = wireReadLE(payload, at: cursor + 1)
-            let cumulative: UInt16 = wireReadLE(payload, at: cursor + 3)
-            let bitmapLen = Int(payload[cursor + 5])
-            cursor += ArqBounds.ackBlockFixedByteCount
+            let channel = ChannelId(rawValue: try reader.u8())
+            let group = try reader.u16()
+            let cumulative = try reader.u16()
+            let bitmapLen = Int(try reader.u8())
             guard bitmapLen <= ArqBounds.maxAckBitmapByteCount else {
                 throw ArqFrameError.ackBitmapTooLong(bitmapLen)
             }
-            guard cursor + bitmapLen <= payload.endIndex else {
-                throw ArqFrameError.truncatedFrame
-            }
-            let block = try ArqAck.Block(
+            blocks.append(try ArqAck.Block(
                 channel: channel,
                 group: ArqGroupId(rawValue: group),
                 cumulative: ArqSegmentSeq(rawValue: cumulative),
-                receivedBitmap: Array(payload[cursor..<cursor + bitmapLen])
-            )
-            blocks.append(block)
-            cursor += bitmapLen
+                receivedBitmap: Array(try reader.bytes(bitmapLen))
+            ))
         }
-        return (try ArqAck(blocks: blocks), cursor)
+        return try ArqAck(blocks: blocks)
     }
 }
 

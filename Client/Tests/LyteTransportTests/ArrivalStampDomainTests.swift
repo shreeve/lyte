@@ -9,6 +9,10 @@ import XCTest
 /// The endpoint's arrival stamp is a kernel monotonic stamp in the
 /// SystemMonotonicClock domain — never wall-clock time.
 final class ArrivalStampDomainTests: XCTestCase {
+    /// Short enough that stop()'s join costs milliseconds, not the
+    /// 100 ms production default.
+    private static let receiveTimeout: Duration = .milliseconds(5)
+
     private final class Stamps: @unchecked Sendable {
         private let lock = NSLock()
         private var stored: [(arrival: UInt64, handled: UInt64)] = []
@@ -24,6 +28,7 @@ final class ArrivalStampDomainTests: XCTestCase {
         let endpoint = UdpReceiveEndpoint(
             port: 0, bindAddress: "127.0.0.1",
             crypto: PassthroughTransportCrypto(),
+            receiveTimeout: Self.receiveTimeout,
             onDatagram: { _, arrival in stamps.append(arrival) })
         try endpoint.start()
         defer { endpoint.stop() }

@@ -24,6 +24,7 @@
 // audio datagram re-arms it at 350 ms, and an announced audio quiet
 // relaxes it back until audio resumes.
 
+import LyteClientCore
 import LyteIO
 import LyteCore
 import LyteClientSession

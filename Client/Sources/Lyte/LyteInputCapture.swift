@@ -178,7 +178,8 @@ final class LyteInputCapture {
             return execute(forwarding.button(
                 MacEvdevKeyMap.evdevButton(
                     forMacButtonNumber: event.buttonNumber),
-                pressed: pressed, onVideo: onVideo), event)
+                pressed: pressed, onVideo: onVideo,
+                commandHeld: event.modifierFlags.contains(.command)), event)
         default:
             break
         }

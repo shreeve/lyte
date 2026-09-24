@@ -287,17 +287,15 @@ public struct FeedbackReport: Hashable, Sendable {
     /// ignored and unknown TLV types decode successfully. Never traps on
     /// hostile bytes.
     public static func decode(_ payload: ArraySlice<UInt8>) throws -> FeedbackReport {
-        guard payload.count >= FeedbackBounds.fixedHeaderByteCount else {
-            throw FeedbackError.truncatedReport
-        }
-        let base = payload.startIndex
-        let pathId = payload[base]
-        let flags = payload[base + 1]
-        let clientTimestamp: UInt64 = wireReadLE(payload, at: base + 2)
-        let dispersionBase: UInt64 = wireReadLE(payload, at: base + 10)
-        let channelCount = Int(payload[base + 18])
-        let sampleCount = Int(payload[base + 19])
-        let nackCount = Int(payload[base + 20])
+        var reader = WireReader(
+            payload, truncated: FeedbackError.truncatedReport)
+        let pathId = try reader.u8()
+        let flags = try reader.u8()
+        let clientTimestamp = try reader.u64()
+        let dispersionBase = try reader.u64()
+        let channelCount = Int(try reader.u8())
+        let sampleCount = Int(try reader.u8())
+        let nackCount = Int(try reader.u8())
 
         guard channelCount <= FeedbackBounds.maxChannelBlocks else {
             throw FeedbackError.tooManyChannelBlocks(channelCount)
@@ -314,61 +312,43 @@ public struct FeedbackReport: Hashable, Sendable {
             }
         }
 
-        var cursor = base + FeedbackBounds.fixedHeaderByteCount
-
         var channels = [ChannelStats]()
         channels.reserveCapacity(channelCount)
         for _ in 0..<channelCount {
-            guard cursor + FeedbackBounds.channelBlockByteCount <= payload.endIndex else {
-                throw FeedbackError.truncatedReport
-            }
             channels.append(
                 ChannelStats(
-                    channel: ChannelId(rawValue: payload[cursor]),
-                    highestSeq: ChannelSeq(rawValue: wireReadLE(payload, at: cursor + 1)),
-                    received: wireReadLE(payload, at: cursor + 3),
-                    missing: wireReadLE(payload, at: cursor + 7),
-                    duplicates: wireReadLE(payload, at: cursor + 11)
+                    channel: ChannelId(rawValue: try reader.u8()),
+                    highestSeq: ChannelSeq(rawValue: try reader.u16()),
+                    received: try reader.u32(),
+                    missing: try reader.u32(),
+                    duplicates: try reader.u32()
                 )
             )
-            cursor += FeedbackBounds.channelBlockByteCount
         }
 
         var samples = [Dispersion.Sample]()
         samples.reserveCapacity(sampleCount)
         for _ in 0..<sampleCount {
-            guard cursor + FeedbackBounds.dispersionSampleByteCount <= payload.endIndex else {
-                throw FeedbackError.truncatedReport
-            }
             samples.append(
                 Dispersion.Sample(
-                    channel: ChannelId(rawValue: payload[cursor]),
-                    seq: ChannelSeq(rawValue: wireReadLE(payload, at: cursor + 1)),
-                    arrivalDeltaMicroseconds: wireReadLE24(payload, at: cursor + 3)
+                    channel: ChannelId(rawValue: try reader.u8()),
+                    seq: ChannelSeq(rawValue: try reader.u16()),
+                    arrivalDeltaMicroseconds: try reader.u24()
                 )
             )
-            cursor += FeedbackBounds.dispersionSampleByteCount
         }
 
         var nacks = [NackEntry]()
         nacks.reserveCapacity(nackCount)
         for _ in 0..<nackCount {
-            guard cursor + 5 <= payload.endIndex else {
-                throw FeedbackError.truncatedReport
-            }
-            let frame = FrameNumber(rawValue: wireReadLE(payload, at: cursor))
-            let bitmapByteCount = Int(payload[cursor + 4])
-            cursor += 5
+            let frame = FrameNumber(rawValue: try reader.u32())
+            let bitmapByteCount = Int(try reader.u8())
             guard bitmapByteCount >= 1,
                   bitmapByteCount <= FeedbackBounds.maxNackBitmapByteCount
             else {
                 throw FeedbackError.nackBitmapByteCountOutOfRange(bitmapByteCount)
             }
-            guard cursor + bitmapByteCount <= payload.endIndex else {
-                throw FeedbackError.truncatedReport
-            }
-            let bitmap = payload[cursor..<cursor + bitmapByteCount]
-            cursor += bitmapByteCount
+            let bitmap = try reader.bytes(bitmapByteCount)
             guard bitmap.last! != 0 else {
                 throw FeedbackError.nonCanonicalNackBitmap
             }
@@ -383,14 +363,10 @@ public struct FeedbackReport: Hashable, Sendable {
 
         var extensions = [WireExtension]()
         if flags & extensionsFlag != 0 {
-            var reader = WireReader(
-                payload[cursor...], truncated: FeedbackError.truncatedReport
-            )
             extensions = try WireExtension.readBlock(from: &reader)
-            cursor = reader.remaining.startIndex
         }
 
-        guard cursor == payload.endIndex else {
+        guard reader.isAtEnd else {
             throw FeedbackError.trailingBytes
         }
 

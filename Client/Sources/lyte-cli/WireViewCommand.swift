@@ -2,6 +2,7 @@ import AppKit
 import ArgumentParser
 @preconcurrency import AVFoundation
 import Foundation
+import LyteClientCore
 import LyteCore
 import LyteIO
 import LyteClientSession

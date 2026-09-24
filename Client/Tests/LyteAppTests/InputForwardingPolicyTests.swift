@@ -42,10 +42,10 @@ final class InputForwardingPolicyTests: XCTestCase {
 
     func testButtonReleasedOverAnOverlayStillReleasesOnTheHost() {
         var policy = InputForwardingPolicy()
-        XCTAssertEqual(policy.button(buttonLeft, pressed: true, onVideo: true).sends,
+        XCTAssertEqual(policy.button(buttonLeft, pressed: true, onVideo: true, commandHeld: false).sends,
                        [.pointerButton(button: buttonLeft, pressed: true)])
         // The drag ends over the control strip (it reveals at the edge).
-        let release = policy.button(buttonLeft, pressed: false, onVideo: false)
+        let release = policy.button(buttonLeft, pressed: false, onVideo: false, commandHeld: false)
         XCTAssertEqual(release.sends,
                        [.pointerButton(button: buttonLeft, pressed: false)])
         XCTAssertTrue(release.consumed)
@@ -54,11 +54,11 @@ final class InputForwardingPolicyTests: XCTestCase {
 
     func testOverlayClicksStayWithAppKitInBothDirections() {
         var policy = InputForwardingPolicy()
-        XCTAssertEqual(policy.button(buttonLeft, pressed: true, onVideo: false),
+        XCTAssertEqual(policy.button(buttonLeft, pressed: true, onVideo: false, commandHeld: false),
                        .passThrough)
         // Pressed on the strip, released over the video: AppKit saw the
         // press, so it owns the release.
-        XCTAssertEqual(policy.button(buttonLeft, pressed: false, onVideo: true),
+        XCTAssertEqual(policy.button(buttonLeft, pressed: false, onVideo: true, commandHeld: false),
                        .passThrough)
     }
 
@@ -107,7 +107,7 @@ final class InputForwardingPolicyTests: XCTestCase {
     func testSuperClickFlushesCommandBeforeTheButton() {
         var policy = InputForwardingPolicy()
         _ = policy.modifier(leftMeta, pressed: true)
-        XCTAssertEqual(policy.button(buttonLeft, pressed: true, onVideo: true).sends,
+        XCTAssertEqual(policy.button(buttonLeft, pressed: true, onVideo: true, commandHeld: true).sends,
                        [down(leftMeta), .pointerButton(button: buttonLeft, pressed: true)])
     }
 
@@ -115,6 +115,57 @@ final class InputForwardingPolicyTests: XCTestCase {
         var policy = InputForwardingPolicy()
         XCTAssertEqual(policy.modifier(leftShift, pressed: true).sends, [down(leftShift)])
         XCTAssertEqual(policy.modifier(leftShift, pressed: false).sends, [up(leftShift)])
+    }
+
+    // MARK: - A ⌘ release AppKit never delivered
+
+    // Menu tracking and title-bar drags consume events before the local
+    // monitor, so a ⌘ release can go missing. Each event's own flags say
+    // whether ⌘ is really down.
+
+    func testSwallowedCommandReleaseNeverRidesTheNextKey() {
+        var policy = InputForwardingPolicy()
+        _ = policy.modifier(leftMeta, pressed: true)
+        XCTAssertEqual(policy.keyDown(keyS, isRepeat: false, commandHeld: false,
+                                      isLocalShortcut: false).sends, [down(keyS)])
+        XCTAssertEqual(policy.keyUp(keyS, commandHeld: false).sends, [up(keyS)])
+        XCTAssertTrue(policy.heldKeys.isEmpty)
+        XCTAssertTrue(policy.pendingCommandKeys.isEmpty)
+    }
+
+    func testSwallowedCommandReleaseNeverRidesTheNextClick() {
+        var policy = InputForwardingPolicy()
+        _ = policy.modifier(leftMeta, pressed: true)
+        XCTAssertEqual(
+            policy.button(buttonLeft, pressed: true, onVideo: true,
+                          commandHeld: false).sends,
+            [.pointerButton(button: buttonLeft, pressed: true)])
+        XCTAssertTrue(policy.pendingCommandKeys.isEmpty)
+    }
+
+    func testForwardedCommandWithASwallowedReleaseIsReleasedByTheNextKey() {
+        var policy = InputForwardingPolicy()
+        _ = policy.modifier(leftMeta, pressed: true)
+        _ = policy.keyDown(keyRight, isRepeat: false, commandHeld: true,
+                           isLocalShortcut: false)
+        _ = policy.keyUp(keyRight, commandHeld: true)
+        XCTAssertEqual(policy.keyDown(keyS, isRepeat: false, commandHeld: false,
+                                      isLocalShortcut: false).sends,
+                       [up(leftMeta), down(keyS)])
+        XCTAssertEqual(policy.heldKeys, [keyS])
+    }
+
+    func testCommandTapReleasesAForwardedCommandWhoseReleaseWasSwallowed() {
+        var policy = InputForwardingPolicy()
+        _ = policy.modifier(leftMeta, pressed: true)
+        _ = policy.keyDown(keyRight, isRepeat: false, commandHeld: true,
+                           isLocalShortcut: false)
+        _ = policy.keyUp(keyRight, commandHeld: true)
+        // ⌘↑ lost; the user taps ⌘ again.
+        XCTAssertEqual(policy.modifier(leftMeta, pressed: true), .swallow)
+        XCTAssertEqual(policy.modifier(leftMeta, pressed: false).sends, [up(leftMeta)])
+        XCTAssertTrue(policy.heldKeys.isEmpty)
+        XCTAssertTrue(policy.pendingCommandKeys.isEmpty)
     }
 
     // MARK: - Repeats, unmapped keys, focus loss
@@ -136,7 +187,7 @@ final class InputForwardingPolicyTests: XCTestCase {
         var policy = InputForwardingPolicy()
         _ = policy.keyDown(keyS, isRepeat: false, commandHeld: false,
                            isLocalShortcut: false)
-        _ = policy.button(buttonLeft, pressed: true, onVideo: true)
+        _ = policy.button(buttonLeft, pressed: true, onVideo: true, commandHeld: false)
         _ = policy.modifier(leftMeta, pressed: true)
         XCTAssertEqual(policy.releaseAll(),
                        [up(keyS), .pointerButton(button: buttonLeft, pressed: false)])

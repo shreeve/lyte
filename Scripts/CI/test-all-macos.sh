@@ -137,6 +137,13 @@ echo "==> WebAssembly legs"
     fi
 )
 
+echo "==> browser page tests"
+if command -v node >/dev/null; then
+    node --test Browser/Tests/Page/page.test.mjs
+else
+    echo "    SKIPPED: node not installed"
+fi
+
 echo "==> benchmark safety tests"
 Scripts/Tests/test-benchmark-safety.sh
 Scripts/Tests/test-host-release-posture.sh

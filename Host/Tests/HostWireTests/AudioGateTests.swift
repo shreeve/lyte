@@ -59,7 +59,7 @@ final class AudioGateTests: XCTestCase {
     // MARK: Leg 1 — the layout, pinned as hand-built bytes
 
     func testFramerLayoutPinnedAgainstHandBuiltBytes() throws {
-        let framer = AudioFramer(config: AudioFramerConfig())
+        var framer = AudioFramer(config: AudioFramerConfig())
         let packets = (0..<4).map { opusPacket($0, byteCount: 12) }
 
         var emitted: [(envelope: Envelope, payload: [UInt8])] = []
@@ -139,7 +139,7 @@ final class AudioGateTests: XCTestCase {
     func testConnectionIdTlvRidesEveryAudioDatagram() throws {
         var rng = SplitMix64(seed: 0xA15)
         let connId = ConnectionId.random(using: &rng)
-        let framer = AudioFramer(
+        var framer = AudioFramer(
             config: AudioFramerConfig(connectionId: connId)
         )
         var emitted: [(envelope: Envelope, payload: [UInt8])] = []
@@ -166,7 +166,7 @@ final class AudioGateTests: XCTestCase {
     // MARK: Leg 2 — FEC geometry and recovery
 
     func testGroupSurvivesAnyTwoLossesAndRefusesThree() throws {
-        let framer = AudioFramer(config: AudioFramerConfig())
+        var framer = AudioFramer(config: AudioFramerConfig())
         let packets = (0..<4).map { opusPacket($0) }
         var shards: [[UInt8]] = []
         for (n, packet) in packets.enumerated() {
@@ -213,7 +213,7 @@ final class AudioGateTests: XCTestCase {
     // MARK: Leg 3 — contract enforcement
 
     func testSizeChangeMidGroupAbandonsTheGroupAndReopensAtTheNewSize() throws {
-        let framer = AudioFramer(config: AudioFramerConfig())
+        var framer = AudioFramer(config: AudioFramerConfig())
         _ = try framer.ingest(
             packet: opusPacket(0, byteCount: 80),
             captureTimestampMicroseconds: 0
@@ -255,7 +255,7 @@ final class AudioGateTests: XCTestCase {
     }
 
     func testEmptyAndOversizedPacketsRefused() {
-        let framer = AudioFramer(config: AudioFramerConfig())
+        var framer = AudioFramer(config: AudioFramerConfig())
         XCTAssertThrowsError(try framer.ingest(
             packet: [], captureTimestampMicroseconds: 0
         )) {

@@ -1,4 +1,5 @@
 import Foundation
+import LyteClientCore
 import LyteTransport
 import LyteUI
 import LyteWire
@@ -9,6 +10,8 @@ import UniformTypeIdentifiers
 /// each control it gates exists exactly while its flag holds. Reset
 /// whenever the session goes away.
 struct NegotiatedFeatures: Equatable {
+    /// The session's agreement has arrived; the flags below are its verdict.
+    var agreed = false
     /// Key 9: the host-speaker mute control.
     var hostAudioRouting = false
     /// Key 14 (mode 0x04): the wire audio-off control.
@@ -26,6 +29,7 @@ struct NegotiatedFeatures: Equatable {
 
 extension NegotiatedFeatures {
     init(_ agreed: Capabilities) {
+        self.agreed = true
         hostAudioRouting = agreed.hostAudioRouting
         audioStreamOff = agreed.audioStreamOff
         clipboardText = agreed.clipboardText
@@ -271,8 +275,20 @@ extension ConnectionModel {
         bulkCoordinator?.cancelAll()
     }
 
+    /// The pill's line for a chan-8 message the session refused to queue.
+    nonisolated static func bulkSendRefusalNotice(_ error: any Error) -> String {
+        switch error {
+        case ArqSendError.queueFull:
+            return "File transfer stalled — the send queue is full"
+        case BulkChannelError.notNegotiated:
+            return "File transfer stopped — the host no longer accepts files"
+        default:
+            return "File transfer stalled — send refused (\(error))"
+        }
+    }
+
     /// Transient verdict line under the pill; fades after a beat.
-    private func showBulkNotice(_ text: String) {
+    func showBulkNotice(_ text: String) {
         bulkNotice = text
         bulkNoticeTask?.cancel()
         bulkNoticeTask = Task { @MainActor [weak self] in
@@ -295,12 +311,21 @@ extension ConnectionModel {
 /// often `schedule()` is called from any thread: one hop is pending at a
 /// time, and it reads the latest state when it runs.
 final class CoalescedMainActorHop: Sendable {
+    /// Waits out one interval; injected so tests run in virtual time.
+    typealias Sleep = @Sendable (Duration) async -> Void
+
     private let pending = Mutex(false)
     private let interval: Duration
+    private let sleep: Sleep
     private let body: @MainActor @Sendable () -> Void
 
-    init(interval: Duration, body: @escaping @MainActor @Sendable () -> Void) {
+    init(
+        interval: Duration,
+        sleep: @escaping Sleep = { try? await Task.sleep(for: $0) },
+        body: @escaping @MainActor @Sendable () -> Void
+    ) {
         self.interval = interval
+        self.sleep = sleep
         self.body = body
     }
 
@@ -311,7 +336,7 @@ final class CoalescedMainActorHop: Sendable {
         }
         guard !alreadyPending else { return }
         Task { @MainActor [self] in
-            try? await Task.sleep(for: interval)
+            await sleep(interval)
             pending.withLock { $0 = false }
             body()
         }

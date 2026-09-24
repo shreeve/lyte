@@ -278,6 +278,11 @@ final class ConnectionModel {
             shareClipboardImages: pinned.shareClipboard == true
                 && pinned.shareClipboardImages == true,
             chroma: chromaTier)
+        // Seeded before the dial: the host's first status and the
+        // agreement can land before `startSession` returns.
+        hostAudioPosture = nil
+        clipboardSharing = sessionConfig.core.shareClipboard
+        clipboardImageSharing = sessionConfig.core.shareClipboardImages
 
         // The respawn-gap patience: a paired host that answered discovery
         // moments ago but is SILENT now is almost always restarting — its
@@ -360,13 +365,10 @@ final class ConnectionModel {
                 }
             }
         }
-        hostAudioPosture = nil
-        clipboardSharing = sessionConfig.core.shareClipboard
-        clipboardImageSharing = sessionConfig.core.shareClipboardImages
-        attach(lyte, address: dialAddress)
         // The pinned lookup above guarantees a pkh in practice; the
         // address fallback keeps the key total.
         prepareBulkCoordinator(hostKey: host.publicKeyHash ?? host.address)
+        attach(lyte, address: dialAddress)
         if let pkh = host.publicKeyHash {
             startRoamingMachinery(
                 publicKeyHash: pkh, address: dialAddress, port: dialPort)
@@ -405,7 +407,10 @@ final class ConnectionModel {
                 }
             })
         videoRendererHandoff = handoff
+        // A new epoch starts unagreed: an orphaned dial's agreement
+        // never carries over.
         sessionEpoch += 1
+        negotiated = .none
         let epoch = sessionEpoch
         let session = LyteUdpSession(
             crypto: crypto,
@@ -433,7 +438,9 @@ final class ConnectionModel {
 
     /// A started session becomes the window's — the one attach path for
     /// the first connect and every roaming re-dial. The capability
-    /// agreement drives the rest.
+    /// agreement drives the rest; the core receives before
+    /// `startSession` returns, so an agreement that arrived first is
+    /// applied here.
     func attach(_ lyte: LyteUdpSession, address: String) {
         lyteSession = lyte
         hostAddress = address
@@ -441,6 +448,29 @@ final class ConnectionModel {
         // One watcher per session, started only once key 10 agrees AND
         // sharing is on (updatePasteboardWatcher).
         pasteboardSync = makePasteboardSync(for: lyte)
+        if negotiated.agreed { startAgreedFeatures(on: lyte) }
+    }
+
+    /// The attached session's agreed features: the clipboard watcher and
+    /// the coordinator's chan-8 leg. A transfer the last session
+    /// interrupted re-offers its SAME id here.
+    private func startAgreedFeatures(on session: LyteUdpSession) {
+        updatePasteboardWatcher()
+        bulkCoordinator?.sessionReady(
+            negotiated: negotiated.bulkTransfer,
+            send: { [weak self, weak session] bytes in
+                // A refused message never reaches chan 8's reliable
+                // stream, so the transfer cannot finish on this
+                // session: say so instead of stalling silently.
+                do {
+                    try session?.core?.sendBulkMessage(bytes)
+                } catch {
+                    let notice = Self.bulkSendRefusalNotice(error)
+                    Task { @MainActor [weak self] in
+                        self?.showBulkNotice(notice)
+                    }
+                }
+            })
     }
 
     /// Roaming-preserving teardown: the wire session goes away; the
@@ -533,17 +563,8 @@ final class ConnectionModel {
         switch event {
         case .capabilitiesAgreed(let agreed):
             negotiated = NegotiatedFeatures(agreed)
-            updatePasteboardWatcher()
-            // Attach the coordinator's chan-8 leg. A transfer the last
-            // session interrupted re-offers its SAME id here.
-            let session = lyteSession
-            bulkCoordinator?.sessionReady(
-                negotiated: agreed.bulkTransfer,
-                send: { [weak session] bytes in
-                    // A refused send is a teardown race — the ARQ state is
-                    // dying with the session; resume covers.
-                    try? session?.core?.sendBulkMessage(bytes)
-                })
+            // Before attach, `attach` starts them.
+            if let lyte = lyteSession { startAgreedFeatures(on: lyte) }
         case .bulkMessageReceived(let message):
             bulkCoordinator?.ingest(message)
         case .hostAudioRoutingStatus(let mode):

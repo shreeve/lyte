@@ -41,6 +41,14 @@ export function domButtonToEvdev(button) {
   return [272, 274, 273, 275, 276][button] ?? null;
 }
 
+// `PointerEvent.buttons` bits → Linux BTN_* (left, right, middle, side, extra).
+const BUTTON_BITS = [[1, 272], [2, 273], [4, 274], [8, 275], [16, 276]];
+
+// KEY_LEFTMETA / KEY_RIGHTMETA. Meta never reaches the host: its chords
+// are the browser's and the OS's, and a lone Super tap would toggle
+// GNOME's Activities (the native client's rule for a local ⌘).
+const META_KEYCODES = new Set([125, 126]);
+
 /** Canvas CSS pixels → host stream pixels (aspect-fit letterbox). */
 export function mapPointerToHost(canvas, clientX, clientY, hostW, hostH) {
   const rect = canvas.getBoundingClientRect();
@@ -78,28 +86,36 @@ export function installCanvasInput(canvas, { sendInput, hostSize }) {
     return mapPointerToHost(canvas, event.clientX, event.clientY, width, height);
   };
 
+  // Pointer Events fire pointerdown for the first button pressed and
+  // pointerup for the last released; every chorded edge in between arrives
+  // as a pointermove. Each event's `buttons` mask is the truth, so the
+  // host's held buttons follow it — presses only while a press that began
+  // on the canvas is still down.
+  const syncButtons = (event, allowPress) => {
+    for (const [bit, button] of BUTTON_BITS) {
+      const down = (event.buttons & bit) !== 0;
+      if (down === heldButtons.has(button) || (down && !allowPress)) continue;
+      event.preventDefault();
+      send("pointerButton", button, down);
+      if (down) heldButtons.add(button);
+      else heldButtons.delete(button);
+    }
+  };
   const onMove = (event) => {
     const mapped = toHost(event);
     if (mapped) send("pointerMotionAbsolute", mapped.x, mapped.y);
+    syncButtons(event, heldButtons.size > 0);
   };
   const onDown = (event) => {
-    const button = domButtonToEvdev(event.button);
-    if (button == null) return;
+    if (domButtonToEvdev(event.button) == null) return;
     event.preventDefault();
     canvas.focus();
     canvas.setPointerCapture?.(event.pointerId);
     const mapped = toHost(event);
     if (mapped) send("pointerMotionAbsolute", mapped.x, mapped.y);
-    send("pointerButton", button, true);
-    heldButtons.add(button);
+    syncButtons(event, true);
   };
-  const onUp = (event) => {
-    const button = domButtonToEvdev(event.button);
-    if (button == null || !heldButtons.has(button)) return;
-    event.preventDefault();
-    send("pointerButton", button, false);
-    heldButtons.delete(button);
-  };
+  const onUp = (event) => syncButtons(event, false);
   const onWheel = (event) => {
     event.preventDefault();
     const scale =
@@ -109,18 +125,22 @@ export function installCanvasInput(canvas, { sendInput, hostSize }) {
     axisTimer = setTimeout(() => send("pointerAxis", 0, 0, true), AXIS_FINISH_AFTER_MS);
   };
   const onKey = (event) => {
-    // Browser/OS chords stay local.
-    if (event.metaKey || event.ctrlKey) return;
     const keycode = evdevKeyForCode(event.code);
     if (keycode == null) return;
+    if (event.type === "keyup") {
+      // A release of anything the host holds crosses every gate.
+      if (!heldKeys.has(keycode)) return;
+      event.preventDefault();
+      send("keyKeycode", keycode, false);
+      heldKeys.delete(keycode);
+      return;
+    }
+    if (event.metaKey || META_KEYCODES.has(keycode)) return;
     event.preventDefault();
-    const pressed = event.type === "keydown";
     // The wire has no repeat value: a stream of downs is a wedged key.
-    if (pressed && event.repeat) return;
-    if (!pressed && !heldKeys.has(keycode)) return;
-    send("keyKeycode", keycode, pressed);
-    if (pressed) heldKeys.add(keycode);
-    else heldKeys.delete(keycode);
+    if (event.repeat) return;
+    send("keyKeycode", keycode, true);
+    heldKeys.add(keycode);
   };
   const releaseAll = () => {
     for (const keycode of heldKeys) send("keyKeycode", keycode, false);

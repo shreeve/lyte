@@ -4,6 +4,7 @@
 // Thread-safe: the endpoint's receive thread writes, anyone may snapshot.
 
 import Foundation
+import LyteClientCore
 import LyteWire
 
 /// What became of one datagram fed to the demux.

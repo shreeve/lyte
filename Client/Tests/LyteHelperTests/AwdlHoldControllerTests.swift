@@ -91,6 +91,21 @@ final class AwdlHoldControllerTests: XCTestCase {
         XCTAssertEqual(recorder.states, [false, true], "restore is idempotent")
     }
 
+    /// SIGTERM restores, then the process exits; a stream start queued
+    /// behind the restore must not take awdl0 down with nobody left to
+    /// bring it back.
+    func testStreamStartAfterShutdownRestoreIsRefused() {
+        let recorder = Recorder()
+        let controller = makeController(recorder)
+        let app = controller.makeOwner()
+        controller.streamBegan(app)
+        controller.restoreForShutdown()
+        controller.streamBegan(app)
+        controller.streamBegan(controller.makeOwner())
+        XCTAssertEqual(controller.outstandingHolds, 0)
+        XCTAssertEqual(recorder.states, [false, true])
+    }
+
     func testIdleExitFiresOnlyWhenNothingHolds() {
         let recorder = Recorder()
         let controller = makeController(recorder, idleExitDelay: .milliseconds(20))

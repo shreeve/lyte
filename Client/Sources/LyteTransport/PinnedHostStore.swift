@@ -14,6 +14,7 @@
 // ends' trust stores are deliberately independent.
 
 import Foundation
+import LyteClientCore
 import LyteCore
 import LyteWire
 
