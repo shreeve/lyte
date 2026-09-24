@@ -1,3 +1,4 @@
+import HostSession
 import HostWire
 import LyteClientBrowserCore
 import LyteCore
@@ -26,5 +27,35 @@ final class BrowserMediaPathTests: XCTestCase {
             host.session.counters.feedbackReportsParsed, 40,
             "2 s of 40 ms cadence")
         XCTAssertEqual(client.currentStatus, .ready)
+    }
+
+    /// A tagged datagram from a new tuple draws the host's PathChallenge;
+    /// the browser's echo is what promotes the tuple.
+    func testPathChallengeIsAnsweredAndTheHostPromotesTheNewTuple() throws {
+        let host = BrowserHostPeer(lifecycle: SessionMachineConfig())
+        let (client, readyNotes) = try host.readyClient()
+        var notes = readyNotes
+        let roamed = FourTuple(
+            localAddress: "127.0.0.1", localPort: 41_234,
+            remoteAddress: "192.168.7.40", remotePort: 52_310)
+
+        host.clientTuple = roamed
+        host.deliver(
+            client.sendInput(
+                body: .keyKeycode(keycode: 30, pressed: true),
+                nowMicros: host.nowMicros),
+            notes: &notes)
+        XCTAssertTrue(host.events.contains {
+            if case .path(.sendChallenge(on: roamed, _)) = $0 { return true }
+            return false
+        }, "an authenticated tagged datagram from a new tuple is probed")
+        host.run(client, notes: &notes, beats: 20) { _ in false }
+
+        XCTAssertEqual(host.session.validator.primary.tuple, roamed)
+        XCTAssertTrue(host.events.contains {
+            if case .path(.freshKeyframeNeeded) = $0 { return true }
+            return false
+        }, "video restarts from an IDR on the new path")
+        XCTAssertEqual(client.counters.pathChallengesAnswered, 1)
     }
 }

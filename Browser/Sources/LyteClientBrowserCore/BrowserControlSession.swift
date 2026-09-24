@@ -59,6 +59,9 @@ public final class BrowserControlSession {
         /// Message-1 transmissions, the first included.
         public var message1Transmissions: UInt64 = 0
         public var retryChallengesAnswered: UInt64 = 0
+        public var pathChallengesAnswered: UInt64 = 0
+        /// 0x23 refusals: the host will not repair a NACKed frame.
+        public var repairRefusals: UInt64 = 0
         public var idrRequestsSent: UInt64 = 0
         /// Input events dropped because the reliable queue was full.
         public var inputsRefused: UInt64 = 0
@@ -499,20 +502,36 @@ public final class BrowserControlSession {
             }
             outbound += try pollArq(nowMicros: nowMicros)
             return step(outbound: outbound)
-        case CtrlMessageType.clockBeacon:
-            guard let beacon = try? ClockBeacon.decode(plaintext) else {
-                counters.malformedControl += 1
-                return step(outbound: [])
-            }
+        default:
+            return step(outbound: try exemptControl(plaintext, nowMicros: nowMicros))
+        }
+    }
+
+    /// ARQ-exempt CTRL, classified by the shared client vocabulary: a
+    /// beacon is echoed, a path challenge answered at once on the path it
+    /// probed, a repair refusal escalates to an IDR. Unknown types are
+    /// skipped; malformed words count and drop.
+    private func exemptControl(
+        _ payload: [UInt8], nowMicros: UInt64
+    ) throws -> [[UInt8]] {
+        let now = ClientTimestamp(microseconds: nowMicros)
+        switch ClientExemptControl(payload: payload) {
+        case .clockBeacon(let beacon):
             let (echo, _) = echoBook.answer(
                 beacon, receivedAt: now, sendingAt: now)
-            return step(outbound: [
-                try sealCtrl(plaintext: echo.encode(), nowMicros: nowMicros),
-            ])
-        default:
-            // Other ARQ-exempt CTRL (path, repair refusal, …) is not consumed
-            // by the browser shell.
-            return step(outbound: [])
+            return [try sealCtrl(plaintext: echo.encode(), nowMicros: nowMicros)]
+        case .pathChallenge(let response):
+            counters.pathChallengesAnswered += 1
+            return [try sealCtrl(plaintext: response.encode(), nowMicros: nowMicros)]
+        case .repairRefused(let refusal):
+            counters.repairRefusals += 1
+            note("nack: frame \(refusal.frame.rawValue) repair refused (\(refusal.reason))")
+            return []
+        case .malformed:
+            counters.malformedControl += 1
+            return []
+        case .unclaimed:
+            return []
         }
     }
 

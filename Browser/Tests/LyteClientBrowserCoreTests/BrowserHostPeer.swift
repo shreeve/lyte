@@ -24,6 +24,8 @@ final class BrowserHostPeer {
     private(set) var events: [SessionEvent] = []
     /// Host virtual time in microseconds.
     private(set) var hostMicros: UInt64 = BrowserHostPeer.startMicros
+    /// The source tuple client datagrams arrive from; changing it roams.
+    var clientTuple: FourTuple
 
     init(
         lifecycle: SessionMachineConfig = SessionMachineConfig(
@@ -33,6 +35,11 @@ final class BrowserHostPeer {
         capabilities: Capabilities = .wireDefault.declaringClipboardText(),
         clientSkewPartsPerMillion: Int64 = 0
     ) {
+        let tuple = FourTuple(
+            localAddress: "127.0.0.1", localPort: 41_234,
+            remoteAddress: "127.0.0.1", remotePort: 50_000
+        )
+        self.clientTuple = tuple
         self.clientSkewPartsPerMillion = clientSkewPartsPerMillion
         self.pairing = PairingResponderService(
             pin: Array(Self.pin.utf8),
@@ -45,10 +52,7 @@ final class BrowserHostPeer {
                 capabilities: capabilities,
                 lifecycle: lifecycle
             ),
-            tuple: FourTuple(
-                localAddress: "127.0.0.1", localPort: 41_234,
-                remoteAddress: "127.0.0.1", remotePort: 50_000
-            ),
+            tuple: tuple,
             now: Self.startMicros * 1_000,
             rng: SystemRandomNumberGenerator()
         )
@@ -82,7 +86,10 @@ final class BrowserHostPeer {
 
     /// One client datagram arrives at the host.
     func receive(_ datagram: [UInt8]) {
-        handle(harness.receive(datagram, at: hostMicros))
+        handle(session.receive(
+            datagram, from: clientTuple,
+            now: hostMicros * 1_000, hostMicroseconds: hostMicros))
+        session.pump(now: hostMicros * 1_000)
     }
 
     private func handle(_ produced: [SessionEvent]) {
