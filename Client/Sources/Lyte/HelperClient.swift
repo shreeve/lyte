@@ -135,22 +135,25 @@ final class HelperClient {
             let c = NSXPCConnection(machServiceName: LyteHelper.machServiceName,
                                     options: .privileged)
             c.remoteObjectInterface = NSXPCInterface(with: LyteHelperCommands.self)
-            c.invalidationHandler = { [weak self] in
-                Task { @MainActor in
-                    self?.connection = nil
-                    self?.engaged = false
-                }
+            // Both handlers hop to the MainActor later; by then the
+            // watchdog may have minted a newer connection, which a stale
+            // handler must not clear.
+            c.invalidationHandler = { [weak self, weak c] in
+                Task { @MainActor in self?.forget(c) }
             }
             c.interruptionHandler = { [weak self, weak c] in
                 c?.invalidate()
-                Task { @MainActor in
-                    self?.connection = nil
-                    self?.engaged = false
-                }
+                Task { @MainActor in self?.forget(c) }
             }
             c.resume()
             connection = c
         }
         return connection?.remoteObjectProxy as? LyteHelperCommands
+    }
+
+    private func forget(_ dead: NSXPCConnection?) {
+        guard let dead, connection === dead else { return }
+        connection = nil
+        engaged = false
     }
 }

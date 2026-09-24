@@ -114,7 +114,7 @@ let package = Package(
         ),
         .testTarget(
             name: "LyteHelperSecurityTests",
-            dependencies: ["LyteHelperSecurity"]
+            dependencies: ["LyteHelperSecurity", "lyte-helperd"]
         ),
         .testTarget(
             name: "LyteClientCoreTests",
