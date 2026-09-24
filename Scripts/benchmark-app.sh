@@ -8,12 +8,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-# The benchmark's own diagnostic bundle. The owner's everyday
-# .build/Lyte.app is never rebuilt or launched here, so it never obeys the
-# diagnostic environment; both share the bundle identity, so the benchmark
-# still refuses to run while any Lyte process is up.
-APP="$ROOT/.build/Lyte-diagnostic.app"
-REBUILD="LYTE_APP_DESTINATION=.build/Lyte-diagnostic.app Scripts/make-app.sh --diagnostics release"
+# The one physical Lyte.app: a second copy with the same bundle identity
+# breaks macOS Local Network privacy. A benchmark that builds turns it into
+# a diagnostic build for the run and restores the plain build at exit.
+APP="$ROOT/.build/Lyte.app"
+MAKE_APP="${LYTE_MAKE_APP:-$ROOT/Scripts/make-app.sh}"
+REBUILD="Scripts/benchmark-app.sh without --no-build (it restores the plain app at exit)"
 APP_EXECUTABLE="$APP/Contents/MacOS/Lyte"
 ANALYZER="$ROOT/Scripts/analyze-app-benchmark.py"
 source "$ROOT/Scripts/lib/benchmark-process.sh"
@@ -97,6 +97,60 @@ refuse_if_lyte_is_running() {
   }
 }
 
+bundle_is_diagnostic() {
+  local value
+  value="$(plutil -extract LyteDiagnosticEntryPoints raw \
+    -o - "$1/Contents/Info.plist" 2>/dev/null || true)"
+  [[ "$value" == true ]] || return 1
+}
+
+# Set once this process starts the diagnostic build: from then on every exit
+# — success, failure or signal — restores the plain everyday bundle, after
+# the app-artifact lock is released and the benchmark app has exited. A
+# `--no-build` run (every leg of `all`) built nothing and restores nothing.
+RESTORE_PLAIN_APP=0
+restore_plain_app() {
+  (( RESTORE_PLAIN_APP )) || return 0
+  RESTORE_PLAIN_APP=0
+  exec 9>&-
+  local waited=0
+  while lyte_benchmark_app_pids >/dev/null 2>&1 && (( waited < 100 )); do
+    sleep 0.1
+    waited=$(( waited + 1 ))
+  done
+  bundle_is_diagnostic "$APP" || return 0
+  # A subprocess that inherited the lock descriptor (a tool the signal just
+  # killed) can hold it a moment longer; wait for it, boundedly.
+  (
+    exec 8>"${LYTE_APP_LOCK_FILE:-$ROOT/.build/.lyte-app-artifact.lock}"
+    "${LYTE_LOCKF:-lockf}" -s -t 10 8
+  ) || true
+  echo "==> restoring the everyday app: Scripts/make-app.sh release" >&2
+  if (cd "$ROOT" && env -u LYTE_APP_DESTINATION "$MAKE_APP" release); then
+    return 0
+  fi
+  cat >&2 <<EOF
+WARNING: ============================================================
+WARNING: .build/Lyte.app is STILL A DIAGNOSTIC BUILD. It obeys the
+WARNING: autoconnect and benchmark environment. Restore the everyday
+WARNING: app before using it, from $ROOT:
+WARNING:
+WARNING:     Scripts/make-app.sh release
+WARNING: ============================================================
+EOF
+}
+
+handle_early_signal() {
+  trap - EXIT
+  trap '' INT TERM
+  restore_plain_app
+  exit "$1"
+}
+
+trap restore_plain_app EXIT
+trap 'handle_early_signal 130' INT
+trap 'handle_early_signal 143' TERM
+
 # Precedes directory creation, builds, remote work, and service restart;
 # each leg re-checks for an app launched during preflight.
 refuse_if_lyte_is_running
@@ -104,17 +158,16 @@ mkdir -p "$OUT_DIR"
 OUT_DIR="$(cd "$OUT_DIR" && pwd -P)"
 if (( ! NO_BUILD )); then
   mkdir -p "$ROOT/.build"
-  LYTE_APP_DESTINATION="$APP" "$ROOT/Scripts/make-app.sh" --diagnostics release
+  RESTORE_PLAIN_APP=1
+  (cd "$ROOT" && env -u LYTE_APP_DESTINATION "$MAKE_APP" --diagnostics release)
 fi
 [[ -x "$APP/Contents/MacOS/Lyte" ]] || {
-  echo "missing signed diagnostic app $APP: run $REBUILD" >&2
+  echo "missing signed app $APP: run $REBUILD" >&2
   exit 1
 }
 # The app obeys the benchmark environment only when its signed Info.plist
 # enables the diagnostic entry points; any other bundle would never start.
-diagnostic_entry_points="$(plutil -extract LyteDiagnosticEntryPoints raw \
-  -o - "$APP/Contents/Info.plist" 2>/dev/null || true)"
-[[ "$diagnostic_entry_points" == true ]] || {
+bundle_is_diagnostic "$APP" || {
   echo "benchmark refused: $APP is not a diagnostic build" >&2
   echo "rebuild it with $REBUILD" >&2
   exit 1
@@ -385,10 +438,11 @@ handle_signal() {
   trap - EXIT
   trap '' INT TERM
   cleanup
+  restore_plain_app
   exit "$status"
 }
 
-trap cleanup EXIT
+trap 'cleanup; restore_plain_app' EXIT
 trap 'handle_signal 130' INT
 trap 'handle_signal 143' TERM
 

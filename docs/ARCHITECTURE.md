@@ -181,7 +181,7 @@ browser path proves today.
 | Client core | `LyteUdpSessionCore` lock | ARQ, control decisions and books; callbacks run outside it, except that state and mode edges are delivered in decision order under a separate edge lock |
 | Client video | `sampleQueue`, then the handoff's delivery queue | Sample build off the receive thread; renderer enqueue off the main thread |
 | Client audio | pump timer thread + render callback | The render callback only reads the lock-free ring |
-| Client UI | `@MainActor` | `ConnectionModel` and views |
+| Client UI | `@MainActor` | `ConnectionModel` and views; while any stream runs the app holds one latency-critical activity with idle display sleep disabled (`StreamActivity`) |
 | Sans-IO targets | caller | Single-threaded values; time and randomness are injected |
 
 ## Where concepts live

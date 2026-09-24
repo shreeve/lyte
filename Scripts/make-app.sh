@@ -11,8 +11,9 @@ ROOT="$PWD"
 # usage: Scripts/make-app.sh [--diagnostics] [debug|release]
 # The app's diagnostic entry points (autoconnect, the benchmark driver) obey
 # the environment only in a bundle whose signed Info.plist enables them.
-# Only the explicit flag builds one — never an inherited environment — and
-# never at the everyday .build/Lyte.app.
+# Only the explicit flag builds one, never an inherited environment.
+# benchmark-app.sh builds one at the everyday .build/Lyte.app (one physical
+# copy per bundle identity) and restores the plain build when it exits.
 DIAGNOSTICS=0
 CONFIG=release
 for argument in "$@"; do
@@ -71,11 +72,6 @@ case "$APP" in
     ;;
   *) PUBLISHING_LIVE=0 ;;
 esac
-if [ "$DIAGNOSTICS" -eq 1 ] && [ "$PUBLISHING_LIVE" -eq 1 ]; then
-  echo "error: a diagnostic bundle is never published at $LIVE_APP" >&2
-  echo "       set LYTE_APP_DESTINATION (benchmark-app.sh uses .build/Lyte-diagnostic.app)" >&2
-  exit 1
-fi
 
 [ "$PUBLISHING_LIVE" -eq 0 ] \
   || lyte_require_app_quiescent "live app publication"

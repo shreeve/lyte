@@ -257,15 +257,20 @@ run, and read the safety rules in [OPERATIONS.md](OPERATIONS.md#safety)
 first.
 
 `Scripts/benchmark-app.sh [--no-build] [--seconds N] [--out DIR]
-static|motion|quality-static|handshake-only|all` builds a diagnostic
-`Lyte.app` (`LYTE_APP_DIAGNOSTICS=1 Scripts/make-app.sh release`; with
-`--no-build` it refuses a bundle whose Info.plist lacks
-`LyteDiagnosticEntryPoints`; only such a bundle obeys the benchmark and
-witness environment below), launches it against the standing host, drives
+static|motion|quality-static|handshake-only|all` turns the one
+`.build/Lyte.app` into a diagnostic build (`Scripts/make-app.sh
+--diagnostics release`; only a bundle whose Info.plist carries
+`LyteDiagnosticEntryPoints` obeys the benchmark and witness environment
+below), launches it against the standing host, drives
 `Scripts/motion-presenter.py` on pup's glass for motion legs, and judges the
-run with `Scripts/analyze-app-benchmark.py`. `all` runs each leg in its own
-process. It takes the app-artifact lock and refuses to run while the
-owner's interactive app is open.
+run with `Scripts/analyze-app-benchmark.py`. On every exit — success,
+failure or interrupt — the process that built the diagnostic bundle
+restores the plain one with `Scripts/make-app.sh release`, and prints a
+WARNING with that command if the restore fails. `all` builds once and runs
+each leg in its own `--no-build` process. `--no-build` builds and restores
+nothing, and refuses a bundle without the diagnostic entry points. The
+benchmark takes the app-artifact lock and refuses to run while the owner's
+interactive app is open.
 
 `Scripts/benchmark-netem.sh moderate` shapes one host→client flow with
 `Scripts/netem/port-netem.sh` (20 ms delay, 10 ms jitter, 1 % loss) around
