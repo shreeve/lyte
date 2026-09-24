@@ -59,8 +59,11 @@
 //       dwell cannot sustain it and a real squeeze does within ~1 s.
 //     - NACKs for frames still queued in our own pacer are the client's
 //       completion presumption expiring mid-drain, not path evidence:
-//       the session passes them as `recusedNackFrames`. Host-side skips
-//       never consume a seq or frame number, so they never read as gaps.
+//       the session passes them as `recusedNackFrames`. Host-side drops
+//       never read as path loss: the pacer drops before a chan-2 seq is
+//       assigned, and a released datagram the socket seam drops (shed,
+//       purged, unsendable) is credited through `noteHostDroppedVideo`
+//       against the client's next `missing` counts.
 //   • RECOVERY VERDICTS — while the machine is in RECOVERY each report
 //     closes windows of ≥25 ms; a window is clean iff it saw no fresh
 //     loss and no overuse. Silence is the silence detector's job.
@@ -501,6 +504,11 @@ public final class RateEstimator {
     private var lossWindow: [LossSample] = []
     /// Previous report's cumulative ledgers, per channel raw value.
     private var previousChannelTotals: [UInt8: (received: UInt32, missing: UInt32)] = [:]
+    /// Released chan-2 datagrams the host itself never sent, oldest
+    /// first: each cancels one video `missing` in a later report. A credit
+    /// the client has not matched within `lossWindowNS` expires, so it can
+    /// never mask later path loss.
+    private var hostDroppedVideoCredits = Deque<(at: UInt64, count: Int)>()
 
     // MARK: Post-FEC (NACK) state
 
@@ -588,6 +596,14 @@ public final class RateEstimator {
         srttMicroseconds = srttMicroseconds.map {
             $0 + (microseconds - $0) / 8
         } ?? microseconds
+    }
+
+    /// Chan-2 datagrams that took a seq but never left the host (the
+    /// socket seam shed, purged or could not send them). The client counts
+    /// their seqs as missing; that is our loss, not the path's.
+    public func noteHostDroppedVideo(count: Int, now: UInt64) {
+        guard count > 0 else { return }
+        hostDroppedVideoCredits.append((at: now, count: count))
     }
 
     // MARK: - Feedback side
@@ -798,6 +814,10 @@ public final class RateEstimator {
         recentHonestDeliveries.removeAll {
             now &- $0.at > config.honestVoteWindowNS
         }
+        while let credit = hostDroppedVideoCredits.first,
+              now > credit.at, now - credit.at > config.lossWindowNS {
+            hostDroppedVideoCredits.removeFirst()
+        }
     }
 
     /// Differences the report's cumulative ledgers against the previous
@@ -815,11 +835,13 @@ public final class RateEstimator {
             // A first report (or counter regression from a client
             // restart) contributes nothing this window.
             if previous != nil, dMissing < 1 << 31, dReceived < 1 << 31 {
-                newMissing += Int(dMissing)
-                newReceived += Int(dReceived)
+                var missing = Int(dMissing)
                 if stats.channel == .videoActive {
-                    videoAttempted += Int(dMissing) + Int(dReceived)
+                    missing -= redeemHostDropCredits(upTo: missing)
+                    videoAttempted += missing + Int(dReceived)
                 }
+                newMissing += missing
+                newReceived += Int(dReceived)
             }
             previousChannelTotals[stats.channel.rawValue] =
                 (stats.received, stats.missing)
@@ -831,6 +853,22 @@ public final class RateEstimator {
             ))
         }
         return (newMissing, newReceived)
+    }
+
+    /// Cancels up to `missing` video gaps against host-drop credits,
+    /// oldest first; returns how many it cancelled.
+    private func redeemHostDropCredits(upTo missing: Int) -> Int {
+        var redeemed = 0
+        while redeemed < missing, let credit = hostDroppedVideoCredits.first {
+            let take = min(credit.count, missing - redeemed)
+            redeemed += take
+            if take == credit.count {
+                hostDroppedVideoCredits.removeFirst()
+            } else {
+                hostDroppedVideoCredits[0].count -= take
+            }
+        }
+        return redeemed
     }
 
     /// Counts the report's NACK section into the post-FEC window:

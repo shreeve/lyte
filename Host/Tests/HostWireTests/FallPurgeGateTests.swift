@@ -254,6 +254,108 @@ final class FallPurgeGateTests: XCTestCase {
         XCTAssertFalse(session.takeFreshKeyframeRequest())
     }
 
+    // MARK: Socket-seam drops are the host's loss, not the path's
+
+    func testHostDropCreditsCancelMissingOnlyInsideTheLossWindow() {
+        let estimator = RateEstimator(
+            config: RateEstimatorConfig(ceilingBitsPerSecond: 20_000_000),
+            now: 0)
+        func report(received: UInt32, missing: UInt32, at now: UInt64)
+            -> RateEstimatorVerdict {
+            estimator.ingest(
+                FeedbackReport(
+                    clientTimestamp: ClientTimestamp(microseconds: now / 1_000),
+                    channels: [FeedbackReport.ChannelStats(
+                        channel: .videoActive,
+                        highestSeq: ChannelSeq(rawValue: 0),
+                        received: received, missing: missing, duplicates: 0)]),
+                now: now, inRecovery: false)
+        }
+        _ = report(received: 100, missing: 0, at: 25_000_000)
+        estimator.noteHostDroppedVideo(count: 20, now: 30_000_000)
+        XCTAssertEqual(
+            report(received: 180, missing: 20, at: 50_000_000).lossFraction, 0,
+            "twenty seqs the host shed are not twenty losses")
+
+        // An unmatched credit lapses with the loss window.
+        estimator.noteHostDroppedVideo(count: 20, now: 60_000_000)
+        XCTAssertGreaterThan(
+            report(received: 260, missing: 40, at: 1_200_000_000).lossFraction,
+            0.1)
+    }
+
+    func testSocketSeamDropsNeverDriveALossFall() throws {
+        var outbox: [VideoChannelDatagram] = []
+        let tuple = FourTuple(
+            localAddress: "10.0.0.1", localPort: 41000,
+            remoteAddress: "10.0.0.2", remotePort: 42000)
+        let session = Session(
+            config: SessionConfig(
+                crypto: .testPassthrough,
+                rateBitsPerSecond: 2_000_000,
+                beaconIntervalNS: 1 << 62,
+                estimator: RateEstimatorConfig(
+                    ceilingBitsPerSecond: 2_000_000,
+                    floorBitsPerSecond: 500_000)
+            ),
+            clientTuple: tuple,
+            now: 0,
+            rng: SplitMix64(seed: 0xD20B),
+            sendAccounting: .socketConfirmed
+        ) { outbox.append($0) }
+
+        var received: UInt32 = 100
+        var missing: UInt32 = 0
+        func feedback(at tMicros: UInt64) -> [SessionEvent] {
+            let body = try! FeedbackReport(
+                clientTimestamp: ClientTimestamp(microseconds: tMicros),
+                channels: [FeedbackReport.ChannelStats(
+                    channel: .videoActive,
+                    highestSeq: ChannelSeq(rawValue: 0),
+                    received: received, missing: missing, duplicates: 0)]
+            ).encode()
+            return session.receive(
+                try! Envelope(
+                    channel: .feedback,
+                    seq: ChannelSeq(rawValue: UInt16(tMicros / 25_000)),
+                    frame: FrameNumber(rawValue: 0),
+                    timestamp: tMicros, fec: 0
+                ).encode(payload: body),
+                from: tuple, now: tMicros * 1_000, hostMicroseconds: tMicros)
+        }
+        _ = feedback(at: 25_000)
+
+        // Every 25 ms a 10 KB frame joins a growing backlog; whatever the
+        // pacer releases, the socket seam sheds, and the client reports
+        // each shed seq missing beside four times as many received.
+        var t: UInt64 = 25_000
+        var shed = 0
+        for _ in 0..<40 {
+            t += 25_000
+            _ = try session.ingestVideoFrame(
+                [0, 0, 0, 1, 0x02, 0x01]
+                    + [UInt8](repeating: 0x42, count: 10_000),
+                captureTimestampMicroseconds: t, isKeyframe: false,
+                now: t * 1_000)
+            for ms: UInt64 in 0..<25 { session.pump(now: (t + ms * 1_000) * 1_000) }
+            let released = outbox.filter { $0.pacerClass == .freshVideo }
+            outbox.removeAll()
+            released.forEach(session.discardPendingDatagram)
+            shed += released.count
+            missing += UInt32(released.count)
+            received += UInt32(4 * released.count)
+            for event in feedback(at: t + 25_000) {
+                if case .rateChanged(_, .loss) = event {
+                    XCTFail("host-shed seqs read as path loss")
+                }
+            }
+        }
+        XCTAssertGreaterThan(shed, 100)
+        XCTAssertGreaterThan(session.queuedVideoBytes, 20_000,
+                             "a standing backlog: a real loss would fall")
+        XCTAssertEqual(session.estimatorStats.lossDownshifts, 0)
+    }
+
     func testQueueBudgetDefaultsAndImpairedClamp() {
         let defaults = SessionConfig(
             crypto: .testPassthrough, rateBitsPerSecond: 20_000_000

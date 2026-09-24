@@ -2306,12 +2306,17 @@ public final class Session {
     }
 
     /// Removes one socket-pending datagram without presenting it as path
-    /// evidence. Used when fall repricing purges the executable's unsent
-    /// EAGAIN outbox alongside the core pacer queue.
+    /// evidence: a fall purge of the executable's unsent outbox, a kernel
+    /// pressure shed, or a send the socket refused. A chan-2 datagram
+    /// already holds its seq, so the estimator is told the client's
+    /// ledger will count it missing through no fault of the path.
     public func discardPendingDatagram(_ datagram: VideoChannelDatagram) {
         guard sendAccounting == .socketConfirmed,
-              datagram.destination == nil else { return }
-        socketPending.remove(datagram)
+              datagram.destination == nil,
+              socketPending.remove(datagram) != nil else { return }
+        if datagram.pacerClass.sessionChannel == .videoActive {
+            estimator.noteHostDroppedVideo(count: 1, now: pumpNowNS)
+        }
     }
 
     public func noteKernelPressureFreshVideoShed(
