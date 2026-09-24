@@ -346,6 +346,83 @@ final class InputPathGateTests: XCTestCase {
         XCTAssertEqual(stats.hostReceiveToInject.p50, 250)
     }
 
+    /// The capture instant stamps the event and the latency books; the
+    /// send instant alone drives the reliable endpoint.
+    func testCaptureInstantStampsTheEventWhileSendInstantDrivesTheArq()
+        throws
+    {
+        var sendInstants: [UInt64] = []
+        var sent: [[UInt8]] = []
+        let sender = InputSender(clockModel: HostClockModel()) {
+            message, now in
+            sent.append(message)
+            sendInstants.append(now.microseconds)
+        }
+        let seq = try sender.send(
+            .keyKeycode(keycode: 30, pressed: true),
+            captured: ClientTimestamp(microseconds: 1_000_000),
+            now: ClientTimestamp(microseconds: 1_040_000))
+        XCTAssertEqual(sendInstants, [1_040_000])
+        XCTAssertEqual(try InputEvent.decode(sent[0]).clientMicroseconds,
+                       1_000_000)
+
+        var envelope = Envelope(
+            channel: .videoActive,
+            seq: ChannelSeq(rawValue: 0),
+            frame: FrameNumber(rawValue: 4),
+            timestamp: 0,
+            fec: 0)
+        envelope.extensions.append(LastInputSeqTlv.wireExtension(seq: seq))
+        sender.noteVideoShard(envelope: envelope)
+        sender.noteFrameDelivered(
+            frame: FrameNumber(rawValue: 4),
+            now: ClientTimestamp(microseconds: 1_100_000))
+        XCTAssertEqual(sender.snapshotStats().inputToPhoton.p50, 100_000,
+                       "latency books measure from capture, not send")
+    }
+
+    /// Concurrent callers get unique seqs, enqueued in ascending order.
+    func testConcurrentSendsNeverShareOrReorderASeq() throws {
+        let enqueued = UInt32Pile()
+        let sender = InputSender(clockModel: HostClockModel()) {
+            message, _ in
+            let event = try InputEvent.decode(message)
+            usleep(20)
+            enqueued.append(event.seq)
+        }
+        let returned = UInt32Pile()
+        DispatchQueue.concurrentPerform(iterations: 8) { _ in
+            for _ in 0..<50 {
+                if let seq = try? sender.send(
+                    .keyKeycode(keycode: 30, pressed: true),
+                    now: ClientTimestamp(microseconds: 1)) {
+                    returned.append(seq)
+                }
+            }
+        }
+        XCTAssertEqual(enqueued.all, Array(0..<400))
+        XCTAssertEqual(Set(returned.all).count, 400)
+    }
+
+    /// The core's queued-capture entry drives ARQ at its own clock: the
+    /// datagram carrying the event is stamped with the send instant.
+    func testQueuedCaptureRidesTheSessionClockOnTheWire() throws {
+        let host = HostInputStandIn()
+        let harness = try Harness(host: host)
+        try harness.core.open(now: ClientTimestamp(microseconds: 1_000))
+        let before = harness.outbound.count
+        harness.clock.value = 5_000_000
+        _ = try harness.core.sendInput(
+            .keyKeycode(keycode: 30, pressed: true),
+            captured: ClientTimestamp(microseconds: 4_000_000))
+        let fresh = harness.outbound.all[before...]
+        XCTAssertFalse(fresh.isEmpty)
+        for datagram in fresh {
+            XCTAssertEqual(
+                try Envelope.decode(datagram).envelope.timestamp, 5_000_000)
+        }
+    }
+
     func testOrderedInputSenderPreservesOrderAndStopsQueuedWork() {
         let delivered = UInt32Pile()
         let sender = OrderedInputSender { body, _ in

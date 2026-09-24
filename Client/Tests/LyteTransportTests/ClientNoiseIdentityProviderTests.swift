@@ -87,4 +87,20 @@ final class ClientNoiseIdentityProviderTests: XCTestCase {
             lock.unlock()
         }
     }
+
+    /// A lost first-mint race re-reads the winner's key under the SAME
+    /// authentication-UI policy: automatic roaming never raises UI.
+    func testDuplicateItemReloadKeepsTheCallersUIPolicy() throws {
+        let winner = NoiseKeyPair.generate()
+        var loads: [Bool] = []
+        let identity = try ClientNoiseIdentity.loadOrCreate(
+            allowAuthenticationUI: false,
+            load: { allowUI in
+                loads.append(allowUI)
+                return loads.count == 1 ? nil : winner
+            },
+            add: { _ in errSecDuplicateItem })
+        XCTAssertEqual(identity.privateKey, winner.privateKey)
+        XCTAssertEqual(loads, [false, false])
+    }
 }

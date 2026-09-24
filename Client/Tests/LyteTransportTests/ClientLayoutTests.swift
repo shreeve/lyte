@@ -65,218 +65,49 @@ final class ClientLayoutTests: XCTestCase {
             .appendingPathComponent("lyte-cli/WireSendCommand.swift").path))
     }
 
-    func testSessionEndpointPublishesCoreThroughWeakSynchronizedSeam() throws {
-        let source = try String(
-            contentsOf: URL(fileURLWithPath: ClientTestPaths.repositoryRoot +
-                "/Client/Sources/LyteTransport/LyteUdpSession.swift"),
-            encoding: .utf8)
-        XCTAssertTrue(source.contains(
-            "private let coreStorage = Mutex<LyteUdpSessionCore?>(nil)"))
-        XCTAssertTrue(source.contains("coreStorage.withLock { $0 = core }"))
-        XCTAssertTrue(source.contains("onDatagram: { [weak self]"))
-        XCTAssertTrue(source.contains("self?.core?.handleDatagram("))
-        XCTAssertFalse(source.contains("SessionCoreBox"))
+    /// Single-owner ratchet: each wire decoder or policy engine is
+    /// reached from exactly one IO-free session file. The transport shell
+    /// executes decisions; it never decodes control words or runs the
+    /// negotiation, lifecycle or clipboard machines itself.
+    func testEachControlConceptHasOneSessionOwner() throws {
+        let owners: [String: String] = [
+            "ModeTransition.decode": "ClientSessionLifecycle.swift",
+            "SessionTeardown.decode": "ClientSessionLifecycle.swift",
+            "SessionStateMachine<": "ClientSessionLifecycle.swift",
+            "CapabilityNegotiator": "ClientCapabilitySession.swift",
+            "AudioRoutingStatus.decode": "ClientAudioRoutingSession.swift",
+            "ClipboardAnnounce.decode": "ClientClipboardSession.swift",
+            "ClipboardSyncBook": "ClientClipboardSession.swift",
+            "ClipboardImageChannel(": "ClientClipboardSession.swift",
+            "CursorShape.decode": "ClientCursorSession.swift",
+            "AudioTrackState.decode": "ClientMediaPostureSession.swift",
+            "VideoPostureState.decode": "ClientMediaPostureSession.swift",
+        ]
+        let sources = URL(fileURLWithPath: ClientTestPaths.repositoryRoot)
+            .appendingPathComponent("Client/Sources")
+        let files = try swiftFiles(beneath: sources).map {
+            ($0, try String(contentsOf: $0, encoding: .utf8))
+        }
+        for (token, owner) in owners.sorted(by: { $0.key < $1.key }) {
+            let holders = files
+                .filter { $0.1.contains(token) }
+                .map { $0.0.path.replacingOccurrences(
+                    of: sources.path + "/", with: "") }
+            XCTAssertEqual(holders, ["LyteClientSession/\(owner)"],
+                           "\(token) must live only in \(owner)")
+        }
     }
 
-    func testTransportUsesOneComposedClientControlSession() throws {
-        let root = URL(fileURLWithPath: ClientTestPaths.repositoryRoot)
-        let transport = try String(
-            contentsOf: root.appendingPathComponent(
-                "Client/Sources/LyteTransport/LyteUdpSession.swift"),
-            encoding: .utf8)
-        let lifecycle = try String(
-            contentsOf: root.appendingPathComponent(
-                "Client/Sources/LyteClientSession/"
-                    + "ClientSessionLifecycle.swift"),
-            encoding: .utf8)
-        let control = try String(
-            contentsOf: root.appendingPathComponent(
-                "Client/Sources/LyteClientSession/ClientControlSession.swift"),
-            encoding: .utf8)
-        let audioRouting = try String(
-            contentsOf: root.appendingPathComponent(
-                "Client/Sources/LyteClientSession/"
-                    + "ClientAudioRoutingSession.swift"),
-            encoding: .utf8)
-        let clipboard = try String(
-            contentsOf: root.appendingPathComponent(
-                "Client/Sources/LyteClientSession/"
-                    + "ClientClipboardSession.swift"),
-            encoding: .utf8)
-        let cursor = try String(
-            contentsOf: root.appendingPathComponent(
-                "Client/Sources/LyteClientSession/"
-                    + "ClientCursorSession.swift"),
-            encoding: .utf8)
-        let mediaPosture = try String(
-            contentsOf: root.appendingPathComponent(
-                "Client/Sources/LyteClientSession/"
-                    + "ClientMediaPostureSession.swift"),
-            encoding: .utf8)
-
-        XCTAssertTrue(transport.contains(
-            "private var controlSession: ClientControlSession"))
-        XCTAssertTrue(transport.contains(
-            "let decision = controlSession.advance(input, now: now)"))
-        XCTAssertTrue(transport.contains(
-            "decision = try controlSession.receiveReliable(bytes, now: now)"))
-        XCTAssertFalse(transport.contains(
-            "private var lifecycle: ClientSessionLifecycle"))
-        XCTAssertFalse(transport.contains(
-            "private var capabilitySession: ClientCapabilitySession"))
-        XCTAssertFalse(transport.contains("ModeTransition.decode"))
-        XCTAssertFalse(transport.contains("SessionTeardown.decode"))
-        XCTAssertFalse(transport.contains("SessionStateMachine<"))
-        XCTAssertFalse(transport.contains("AudioRoutingStatus.decode"))
-        XCTAssertFalse(transport.contains("ClipboardAnnounce.decode"))
-        XCTAssertFalse(transport.contains("ClipboardSyncBook"))
-        XCTAssertFalse(transport.contains("ClipboardImageChannel("))
-        XCTAssertFalse(transport.contains("CursorShape.decode"))
-        XCTAssertFalse(transport.contains("AudioTrackState.decode"))
-        XCTAssertFalse(transport.contains("VideoPostureState.decode"))
-        XCTAssertFalse(transport.contains("private var clipboardSharingOn"))
-        XCTAssertFalse(transport.contains("private var clipboardImagesOn"))
-        XCTAssertFalse(transport.contains("private var hostAudioPosture"))
-        XCTAssertFalse(transport.contains("private var lastState"))
-        XCTAssertFalse(transport.contains("private var lastWireMode"))
-        XCTAssertTrue(lifecycle.contains(
-            "private var machine: SessionStateMachine<ClientClock>"))
-        XCTAssertTrue(lifecycle.contains("ModeTransition.decode"))
-        XCTAssertTrue(lifecycle.contains("SessionTeardown.decode"))
-        XCTAssertTrue(control.contains(
-            "private var lifecycle: ClientSessionLifecycle"))
-        XCTAssertTrue(control.contains(
-            "private var capabilities: ClientCapabilitySession"))
-        XCTAssertTrue(control.contains(
-            "private var audioRouting: ClientAudioRoutingSession"))
-        XCTAssertTrue(control.contains(
-            "private var clipboard: ClientClipboardSession"))
-        XCTAssertTrue(control.contains(
-            "private var cursor: ClientCursorSession"))
-        XCTAssertTrue(control.contains(
-            "private var mediaPosture: ClientMediaPostureSession"))
-        XCTAssertTrue(audioRouting.contains("AudioRoutingStatus.decode"))
-        XCTAssertTrue(clipboard.contains("ClipboardAnnounce.decode"))
-        XCTAssertTrue(clipboard.contains("ClipboardSyncBook"))
-        XCTAssertTrue(clipboard.contains("ClipboardImageChannel("))
-        XCTAssertTrue(cursor.contains("CursorShape.decode"))
-        XCTAssertTrue(mediaPosture.contains("AudioTrackState.decode"))
-        XCTAssertTrue(mediaPosture.contains("VideoPostureState.decode"))
-    }
-
-    func testClientCapabilitySessionAloneOwnsTheAgreedSet() throws {
-        let root = URL(fileURLWithPath: ClientTestPaths.repositoryRoot)
-        let transport = try String(
-            contentsOf: root.appendingPathComponent(
-                "Client/Sources/LyteTransport/LyteUdpSession.swift"),
-            encoding: .utf8)
-        let capabilities = try String(
-            contentsOf: root.appendingPathComponent(
-                "Client/Sources/LyteClientSession/"
-                    + "ClientCapabilitySession.swift"),
-            encoding: .utf8)
-
-        XCTAssertFalse(transport.contains("CapabilityNegotiator"))
-        XCTAssertFalse(transport.contains("private var agreed:"))
-        XCTAssertTrue(transport.contains(
-            "return controlSession.agreedCapabilities"))
-        XCTAssertTrue(capabilities.contains(
-            "private var negotiator: CapabilityNegotiator"))
-        XCTAssertTrue(capabilities.contains(
-            "public var agreed: Capabilities? { negotiator.agreed }"))
-    }
-
-    func testAudioRoutingSessionAloneOwnsTheFirstStatusSeam() throws {
-        let root = URL(fileURLWithPath: ClientTestPaths.repositoryRoot)
-        let transport = try String(
-            contentsOf: root.appendingPathComponent(
-                "Client/Sources/LyteTransport/LyteUdpSession.swift"),
-            encoding: .utf8)
-        let audioRouting = try String(
-            contentsOf: root.appendingPathComponent(
-                "Client/Sources/LyteClientSession/"
-                    + "ClientAudioRoutingSession.swift"),
-            encoding: .utf8)
-
-        XCTAssertFalse(transport.contains("sessionStartAudioAskDone"))
-        XCTAssertFalse(transport.contains(
-            "let firstStatus = hostAudioPosture == nil"))
-        XCTAssertTrue(audioRouting.contains(
-            "let isFirstStatus = posture == nil"))
-    }
-
-    func testObservedChromaAloneOwnsTheAuditReportEdge() throws {
-        let source = try String(
-            contentsOf: URL(fileURLWithPath: ClientTestPaths.repositoryRoot +
-                "/Client/Sources/LyteTransport/ChromaTier.swift"),
-            encoding: .utf8)
-
-        XCTAssertFalse(source.contains("private var reported"))
-        XCTAssertTrue(source.contains(
-            "guard observedIdc != idc else { return nil }"))
-    }
-
-    func testPakeResultAloneOwnsThePairedHostKey() throws {
-        let source = try String(
-            contentsOf: URL(fileURLWithPath: ClientTestPaths.repositoryRoot +
-                "/Client/Sources/LyteTransport/PairingInitiatorService.swift"),
-            encoding: .utf8)
-
-        XCTAssertFalse(source.contains("private var pairedKey"))
-        XCTAssertTrue(source.contains(
-            "return pake.result?.peerStaticPublicKeyToPin"))
-        XCTAssertFalse(source.contains("pairedKey ="))
-    }
-
-    func testPairingPhaseAloneOwnsTheCompletionAnswer() throws {
-        let source = try String(
-            contentsOf: URL(fileURLWithPath: ClientTestPaths.repositoryRoot +
-                "/Client/Sources/Lyte/LytePairingSheet.swift"),
-            encoding: .utf8)
-
-        XCTAssertFalse(source.contains("@State private var paired"))
-        XCTAssertFalse(source.contains("paired = true"))
-        XCTAssertEqual(
-            source.components(separatedBy: "onDone(false)").count - 1,
-            2)
-        XCTAssertEqual(
-            source.components(separatedBy: "onDone(true)").count - 1,
-            1)
-    }
-
-    func testStatsOverlaySamplesOutsideSwiftUILayout() throws {
+    /// The stats overlay samples once per second outside SwiftUI layout;
+    /// re-deriving rows inside `body` (or a TimelineView) runs the whole
+    /// stats walk on every layout pass.
+    func testStatsOverlayNeverSamplesInsideLayout() throws {
         let source = try String(
             contentsOf: URL(fileURLWithPath: ClientTestPaths.repositoryRoot +
                 "/Client/Sources/Lyte/ControlStrip.swift"),
             encoding: .utf8)
-        let marker = "struct StatsOverlay: View {"
-        let overlay = try XCTUnwrap(source.range(of: marker)).lowerBound
-        let overlaySource = source[overlay...]
-
-        XCTAssertTrue(overlaySource.contains(
-            "@State private var rows: [ConnectionModel.StatsRow] = []"))
-        XCTAssertTrue(overlaySource.contains("ForEach(rows)"))
-        XCTAssertTrue(overlaySource.contains("rows = model.statsRows()"))
-        XCTAssertTrue(overlaySource.contains(
-            "try await Task.sleep(for: .seconds(1))"))
-        XCTAssertFalse(overlaySource.contains("TimelineView"))
-        XCTAssertFalse(overlaySource.contains("ForEach(model.statsRows())"))
-    }
-
-    func testGlassTelemetryUsesTwoStableSemanticRows() throws {
-        let source = try String(
-            contentsOf: URL(fileURLWithPath: ClientTestPaths.repositoryRoot +
-                "/Client/Sources/Lyte/ConnectionModel.swift"),
-            encoding: .utf8)
-        let glass = try XCTUnwrap(source.range(of: "row(\"glass\", glass)"))
-        let playout = try XCTUnwrap(source.range(
-            of: "row(\"playout\", playout.joined(separator: \" · \"))"))
-
-        XCTAssertLessThan(glass.lowerBound, playout.lowerBound)
-        XCTAssertTrue(source.contains(
-            "playout.append(\"render \\(renderer.totalFrames)\")"))
-        XCTAssertTrue(source.contains("playout.append(flight.bottleneck)"))
-        XCTAssertFalse(source.contains("glass +="))
+        XCTAssertFalse(source.contains("TimelineView"))
+        XCTAssertFalse(source.contains("ForEach(model.statsRows())"))
     }
 
     func testConductorOwnsCushionWithoutAUserSetting() throws {

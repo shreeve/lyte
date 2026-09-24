@@ -750,6 +750,28 @@ final class ReliableCtrlGateTests: XCTestCase {
         )
     }
 
+    /// The one-shot allocator skips 0 (the ordered stream's id) at the
+    /// wrap: 0xFFFF is followed by 1, the peer receives both, and later
+    /// one-shots keep flowing.
+    func testOneShotGroupAllocatorWrapsPastZero() throws {
+        let harness = try Harness()
+        let host = harness.host
+        harness.absorb(try host.beaconDatagram(hostMicros: 100), tMicros: 200)
+        harness.reliable.testingSeedNextOneShotGroup(0xFFFE)
+        var groups: [ArqGroupId] = []
+        for index in 0..<4 {
+            groups.append(try harness.reliable.sendOneShot(
+                [CtrlMessageType.idleFrame, UInt8(index)],
+                now: ClientTimestamp(microseconds: 1_000_000)))
+        }
+        XCTAssertEqual(groups.map(\.rawValue), [0xFFFE, 0xFFFF, 1, 2])
+        for datagram in harness.outbound.all {
+            try host.absorb(datagram, nowMicros: 1_000_000)
+        }
+        XCTAssertEqual(
+            host.received.map(\.group.rawValue), [0xFFFE, 0xFFFF, 1, 2])
+    }
+
     /// Before the first host datagram there is no conn-id to echo; the
     /// budget is reserved anyway, and the tag appears the moment the
     /// TLV is learned.
