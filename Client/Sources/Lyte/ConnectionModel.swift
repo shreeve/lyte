@@ -660,258 +660,28 @@ final class ConnectionModel {
 
     /// 1_734_567 → "1.73M"; 41_200 → "41.2k"; small counts stay exact.
     /// Only ever used for denominators — deficits always print exact.
-    nonisolated private static func compactCount(_ n: UInt64) -> String {
-        switch n {
-        case ..<10_000: return "\(n)"
-        case ..<1_000_000: return String(format: "%.1fk", Double(n) / 1e3)
-        default: return String(format: "%.2fM", Double(n) / 1e6)
+    /// The overlay's rows: the shared SessionStatsFormatter over the
+    /// session's books plus what only the window knows (capture, the
+    /// radio watchdog, the delivery gauges, the flight recorder, bulk
+    /// progress). Sampled once per second while the overlay is visible.
+    func statsRows() -> [SessionStatsRow] {
+        guard let session = lyteSession, let core = session.core else {
+            return []
         }
-    }
-
-    /// The network row's loss clause. `lost` is the demux's per-channel
-    /// `seqMissing` sum, which is already net of late (reordered) fills.
-    nonisolated static func lossSummary(lost: UInt64, received: UInt64) -> String {
-        let expected = received + lost
-        guard lost > 0 else {
-            return "lost 0 of \(compactCount(expected)) host packets"
-        }
-        let percent = String(
-            format: "%.3f", 100 * Double(lost) / Double(max(1, expected)))
-        return "lost \(lost) of \(compactCount(expected)) host packets (\(percent)%)"
-    }
-
-    /// A compact snapshot of the session's existing books — the same
-    /// counters wire-view prints, shaped for the overlay. The overlay
-    /// explicitly samples this snapshot once per second while visible.
-    struct StatsRow: Identifiable {
-        var label: String
-        var value: String
-        var id: String { label }
-    }
-
-    func statsRows() -> [StatsRow] {
-        guard let session = lyteSession,
-              let endpoint = session.endpoint,
-              let core = session.core else { return [] }
-        var rows: [StatsRow] = []
-        func row(_ label: String, _ value: String) {
-            rows.append(StatsRow(label: label, value: value))
-        }
-
-        // Row order: session state heads the block, then user input and
-        // the network, then audio and video ADJACENT (the two media rows
-        // read together). Conditional rows follow.
-        //
-        // The net line: loss deficit-first (a success-count brags; the
-        // deficit is the signal, and a percent must never round a real
-        // loss into looking clean), then the clock model's honest RTT.
-        let totals = endpoint.demux.snapshotTotals()
-        let lost = endpoint.demux.snapshotChannels()
-            .reduce(UInt64(0)) { $0 + $1.stats.seqMissing }
-        var wire = Self.lossSummary(lost: lost, received: totals.datagrams)
-        // roundtrip min + jitter, spelled out — "±" falsely implies a
-        // symmetric spread; the stat is the floor plus upward spread
-        // (p90 − min), which is what "jitter" means to every reader.
-        // Window: the last 10 beacons ≈ 10 s at 1 Hz — the shortest
-        // window that still feeds the p90 enough samples.
-        let rtts = core.clockModel.recentSamples(10)
-            .map(\.rttMicroseconds).sorted()
-        if let minRtt = rtts.first {
-            let p90 = rtts[min(rtts.count - 1, (rtts.count * 9) / 10)]
-            wire += String(
-                format: " · roundtrip min %.1f ms · jitter %.1f ms",
-                Double(minRtt) / 1000,
-                Double(p90 - minRtt) / 1000)
-        }
-        if totals.unsealFailures > 0 {
-            wire += ", \(totals.unsealFailures) unseal-failed"
-        }
-        // Caps-as-alarm: nominal states are lowercase so a HEALTHY
-        // overlay contains zero uppercase — the glance test is "any caps
-        // anywhere?". Only alarms (FROZEN, NOT CAPTURED, AWDL LOOSE)
-        // shout.
-        var mode = core.wireMode == .active ? "active" : "idle"
-        if core.isFrozen { mode += " — FROZEN" }
-        // Codec and chroma are fixed at announce (changing tiers means a
-        // reconnect), so they are session state like the postures beside
-        // them, not live metrics.
-        if let chroma = core.streamChromaDescription {
-            mode += " · hevc \(chroma)"
-        }
-        if negotiated.hostAudioRouting {
-            switch hostAudioPosture {
-            case .hostMuted: mode += " · host audio muted"
-            case .hostAudible: mode += " · host audio audible"
-            case .streamOff: mode += " · audio stream off"
-            case nil: mode += " · host audio pending"
-            }
-        }
-        if negotiated.clipboardText {
-            mode += clipboardSharing
-                ? " · clipboard shared" : " · clipboard private"
-        }
-        // Capture is a session STATE (who owns the keyboard/mouse now),
-        // so it lives here with its siblings, not on the input line.
-        mode += lyteInputCapture != nil
-            ? " · keys+mouse captured" : " · keys+mouse NOT CAPTURED"
-        // The radio watchdog's verdict, caps-alarm grammar: appears
-        // ONLY when streams are live, awdl0 stayed up through a
-        // re-engage, and jitter is therefore about to say why.
-        if AgentState.shared.radioAlarm { mode += " · AWDL LOOSE" }
-        row("session", mode)
-
-        // Unconditional: "0 events sent to host" is the datum that tells
-        // a client-capture failure from a host-side one. (The transport
-        // line carries a "user:" prefix; the ledger moves it into the
-        // label column.)
-        let userLine = core.input.snapshotStats().overlayLine()
-        row("user", userLine.hasPrefix("user:")
-            ? String(userLine.dropFirst(5))
-                .trimmingCharacters(in: .whitespaces)
-            : userLine)
-
-        // Outbound then inbound — the directions read as a pair — then
-        // the inbound media lines they frame.
-        row("network", wire)
-
-        let audio = core.audio.snapshotStats()
-        if audio.depacketizer.datagramsIngested > 0 {
-            var parts: [String] = []
-            // Buffer depth in ms, not packets (exact: 5 ms hard-CBR
-            // packets) — "15/40 ms of cushion" needs no decoder ring.
-            let depth = audio.bufferDepthPackets.percentiles([0.50, 0.99])
-            if let p50 = depth[0], let p99 = depth[1] {
-                parts.append("buffer p50/p99 \(p50 * 5)/\(p99 * 5) ms")
-            }
-            // Each concealment papered over one missing-audio gap — a
-            // potential tiny audible artifact; the count IS the story.
-            parts.append("gaps concealed \(audio.jitter.plcInvocations)")
-            if audio.depacketizer.packetsRebuilt > 0 {
-                parts.append("repaired \(audio.depacketizer.packetsRebuilt)")
-            }
-            row("audio", parts.joined(separator: " · "))
-        }
-
-        // The quality line — what the receive side can say about
-        // incoming video from its own books (frame cadence, bitrate,
-        // frame-size percentiles over ~5 s). Host QP/encoder posture
-        // are host-log truth; this is the client-side half.
         let nowMicroseconds = SystemMonotonicClock.nowMicroseconds
-        let delivery = videoDeliveryBooks.snapshot(
+        var context = SessionStatsContext()
+        context.inputCaptured = lyteInputCapture != nil
+        context.radioLoose = AgentState.shared.radioAlarm
+        context.decodedFps = videoInMeter.rate(
+            count: core.pipeline.snapshotStats().framesDecoded,
             nowMicroseconds: nowMicroseconds)
-        let pipelineStats = core.pipeline.snapshotStats()
-        if let q = pipelineStats.quality {
-            // in = frames fully assembled off the wire (reorder/FEC
-            // healed); out = frames handed to the renderer. The
-            // slash-pair is honest because BOTH ride the same 3 s
-            // meter window (RateMeter) — a widening split is a
-            // glass-side stall, not a network one. Mbps leads and
-            // stands bare (self-naming).
-            var video = String(format: "%.1f Mbps",
-                               Double(q.bitsPerSecond) / 1e6)
-            let inFps = videoInMeter.rate(
-                count: pipelineStats.framesDecoded,
-                nowMicroseconds: nowMicroseconds)
-            switch (inFps, delivery.outFps) {
-            case (let inRate?, let out?):
-                video += String(format: " · in/out %.0f/%.0f fps",
-                                inRate, out)
-            case (let inRate?, nil):
-                video += String(format: " · in %.0f fps", inRate)
-            default:
-                break
-            }
-            video += String(
-                format: " · size p50/p95 %d/%d B",
-                q.frameBytesP50, q.frameBytesP95)
-            // The delivery hop (dispatch → renderer accepted, queue
-            // wait included): the resize-storm stall detector.
-            if let p50 = delivery.hopP50, let p99 = delivery.hopP99 {
-                video += String(
-                    format: " · deliver p50/p99 %.1f/%.1f ms", p50, p99)
-            }
-            row("video", video)
+        context.delivery = videoDeliveryBooks.snapshot(
+            nowMicroseconds: nowMicroseconds)
+        context.flight = videoFlightRecorder.snapshot()
+        if let progress = bulkStatus.progress, progress.totalByteCount > 0 {
+            context.bulkProgress = progress.fraction
         }
-        let flight = videoFlightRecorder.snapshot()
-        if flight.frames > 0 {
-            let glass = String(
-                format: "source/ready p99 %.1f/%.1f ms"
-                    + " · transit %.1f ms · sample %.1f ms"
-                    + " · queue/enqueue %.1f/%.1f ms",
-                flight.sourceGapP99Milliseconds ?? 0,
-                flight.readyGapP99Milliseconds ?? 0,
-                flight.transitStretchP99Milliseconds ?? 0,
-                Double(pipelineStats.sampleBuildMicroseconds.p99 ?? 0) / 1_000,
-                flight.queueWaitP99Milliseconds ?? 0,
-                flight.enqueueP99Milliseconds ?? 0)
-            row("glass", glass)
-
-            // The physical renderer and the Conductor describe one playout
-            // verdict, but they are distinct from the path timings above.
-            // Keeping them on their own stable row prevents the glass ledger
-            // from turning into one viewport-dependent wrapped sentence.
-            var playout: [String] = []
-            if let renderer = flight.rendererMetrics {
-                playout.append("render \(renderer.totalFrames)")
-                if let recent = flight.recentRendererMetrics {
-                    playout.append("drop total/recent "
-                        + "\(renderer.droppedFrames)/\(recent.droppedFrames)")
-                    playout.append("corrupt total/recent "
-                        + "\(renderer.corruptedFrames)"
-                        + "/\(recent.corruptedFrames)")
-                } else {
-                    playout.append("drop \(renderer.droppedFrames)")
-                    playout.append("corrupt \(renderer.corruptedFrames)")
-                }
-                playout.append(String(
-                    format: "delay %.1f ms",
-                    renderer.accumulatedDelayMilliseconds))
-            }
-            // The Conductor's score-to-glass cue and the portion left after
-            // this frame's measured path time. These are deliberately named
-            // separately: the cue is not all reserve.
-            if let cue = flight.cueMilliseconds {
-                playout.append(String(format: "cue %.0f ms", cue))
-            }
-            if let reserve = flight.reserveMilliseconds {
-                playout.append(String(format: "reserve %.0f ms", reserve))
-            }
-            playout.append(flight.bottleneck)
-            row("playout", playout.joined(separator: " · "))
-        }
-
-        let clipboard = core.snapshotCounters()
-        let clipboardActivity = clipboard.clipboardSharesSent
-            + clipboard.clipboardAnnouncesReceived
-            + clipboard.clipboardLoopSuppressed
-        if negotiated.clipboardText, clipboardActivity > 0 {
-            row("clipboard", "\(clipboard.clipboardSharesSent) sent"
-                + " · \(clipboard.clipboardAnnouncesReceived) recv"
-                + " · \(clipboard.clipboardLoopSuppressed) suppressed")
-        }
-
-        // P-1: the image lane's books, while it has any.
-        let images = core.clipboardImageCounters
-        let imageActivity = images.sharesStarted + images.imagesApplied
-            + images.sharesSuppressed + images.receivesRefused
-        if negotiated.clipboardImages, imageActivity > 0 {
-            row("clip images", "\(images.sharesCompleted)"
-                + "/\(images.sharesStarted) sent"
-                + " · \(images.imagesApplied) applied"
-                + " · \(images.sharesSuppressed) suppressed")
-        }
-
-        // F-4: the bulk channel's books, while it has any.
-        if clipboard.bulkMessagesSent + clipboard.bulkMessagesReceived > 0 {
-            var line = "\(clipboard.bulkMessagesSent) sent"
-                + " · \(clipboard.bulkMessagesReceived) recv"
-            if let progress = bulkStatus.progress,
-               progress.totalByteCount > 0 {
-                line += String(format: " · %.0f%%", progress.fraction * 100)
-            }
-            row("bulk", line)
-        }
-        return rows
+        return SessionStatsFormatter.rows(session: session, context: context)
     }
 
     func diagnosticBenchmarkSample(

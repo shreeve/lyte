@@ -205,11 +205,12 @@ struct WireView: AsyncParsableCommand {
         let clockModel = HostClockModel()
         let recorder = VideoFlightRecorder(
             nowMicroseconds: { SystemMonotonicClock.nowMicroseconds })
+        let deliveryBooks = VideoDeliveryBooks()
         let handoff = VideoRendererHandoff(
             renderer: displayLayer.sampleBufferRenderer,
             queue: DispatchQueue(label: "lyte.video.delivery", qos: .userInteractive),
             clockModel: clockModel,
-            books: VideoDeliveryBooks(),
+            books: deliveryBooks,
             recorder: recorder)
         let session = LyteUdpSession(
             crypto: crypto,
@@ -375,6 +376,8 @@ struct WireView: AsyncParsableCommand {
         // don't actually decode — enqueue counts alone can't lie-detect.
         let printer = WireViewStatsPrinter(
             session: session,
+            recorder: recorder,
+            deliveryBooks: deliveryBooks,
             rendererState: { handoff.rendererStateDescription })
 
         let ticker = DispatchSource.makeTimerSource(queue: .global())
@@ -436,19 +439,26 @@ struct WireView: AsyncParsableCommand {
     }
 }
 
-/// The session's books for a human reading a terminal: demux totals,
-/// render, quality, session state, the return path, repair, the reliable
-/// sublayer, the clock model, audio, and input — one tick per second with
-/// new arrivals (prefixed `…`), a full summary at exit. Nothing parses
-/// this output; the app's overlay has its own, terser rows.
+/// The session's books for a human reading a terminal: demux totals, then
+/// the overlay's rows (SessionStatsFormatter, the same text the app shows),
+/// then the engineering books behind them — the wire, render, control
+/// counters, the return path, repair, the reliable sublayer, the clock
+/// model, audio and input detail. One tick per second with new arrivals
+/// (prefixed `…`), a full summary at exit. Nothing parses this output.
 final class WireViewStatsPrinter: Sendable {
     private let session: LyteUdpSession
+    private let recorder: VideoFlightRecorder
+    private let deliveryBooks: VideoDeliveryBooks
     private let rendererState: @Sendable () -> String
     private let lastCount = LockedCell<UInt64>(0)
 
     init(session: LyteUdpSession,
+         recorder: VideoFlightRecorder,
+         deliveryBooks: VideoDeliveryBooks,
          rendererState: @escaping @Sendable () -> String) {
         self.session = session
+        self.recorder = recorder
+        self.deliveryBooks = deliveryBooks
         self.rendererState = rendererState
     }
 
@@ -474,6 +484,13 @@ final class WireViewStatsPrinter: Sendable {
         if totals.reservedDropped > 0 { line += ", \(totals.reservedDropped) reserved-dropped" }
         if totals.unsealFailures > 0 { line += ", \(totals.unsealFailures) unseal-failed" }
         print(line)
+        var context = SessionStatsContext()
+        context.delivery = deliveryBooks.snapshot(
+            nowMicroseconds: SystemMonotonicClock.nowMicroseconds)
+        context.flight = recorder.snapshot()
+        for row in SessionStatsFormatter.rows(session: session, context: context) {
+            print("\(prefix)   \(row.label): \(row.value)")
+        }
         if let video = endpoint.demux.stats(forChannel: core.pipeline.channel.rawValue) {
             print("\(prefix)   wire: \(video.datagrams) dg, \(video.payloadBytes) B, " +
                   "\(video.seqMissing) missing, \(video.seqDuplicates) dup")
@@ -499,96 +516,48 @@ final class WireViewStatsPrinter: Sendable {
         render += " | layer \(rendererState())"
         print(render)
 
-        // The quality line: the receive-side derivation of the
-        // host's per-second `quality:` books — frame cadence, video
-        // bitrate, frame-size percentiles over the last ~5 s. Host QP
-        // and the encoder's reconfigured posture stay host-log truth
-        // (no wire vocabulary carries them; read the two side by side).
-        if let q = s.quality {
-            print("\(prefix)   quality: " +
-                  String(format: "%.0f fps, %.1f Mbps",
-                         q.framesPerSecond,
-                         Double(q.bitsPerSecond) / 1e6) +
-                  ", frame p50 \(q.frameBytesP50) B / p95 " +
-                  "\(q.frameBytesP95) B / max \(q.frameBytesMax) B")
-        }
-
-        // The session line: the machine's verdicts.
+        // The control books behind the session row's state.
         let counters = core.snapshotCounters()
-        var sess = "\(prefix)   session: mode \(core.wireMode == .active ? "ACTIVE" : "IDLE")"
-        sess += core.isFrozen ? ", PILL (frozen)" : ""
-        if core.state == .closed { sess += ", CLOSED" }
-        sess += ", caps \(core.agreedCapabilities != nil ? "agreed" : "pending")"
-        // What the wire actually carries (SPS-parsed off IDRs) —
-        // the live leg's negotiated-posture evidence.
-        if let chroma = core.streamChromaDescription {
-            sess += ", stream chroma \(chroma)"
-        }
-        // The host-speaker posture — key 9 + the 0x19-confirmed
-        // truth (never optimistic; "pending" between agreement and the
-        // host's first status).
-        if core.hostAudioRoutingNegotiated {
-            switch core.hostAudioRoutingPosture {
-            case .hostMuted: sess += ", host-audio MUTED"
-            case .hostAudible: sess += ", host-audio audible"
-            case .streamOff: sess += ", audio stream OFF"
-            case nil: sess += ", host-audio pending"
+        var control: [String] = [
+            "caps \(core.agreedCapabilities != nil ? "agreed" : "pending")",
+        ]
+        if core.state == .closed { control.append("CLOSED") }
+        if core.agreedCapabilities != nil {
+            if !core.hostAudioRoutingNegotiated {
+                control.append("host-audio unnegotiated")
             }
-        } else if core.agreedCapabilities != nil {
-            sess += ", host-audio unnegotiated"
+            if !core.clipboardNegotiated {
+                control.append("clipboard unnegotiated")
+            }
         }
         if counters.modeTransitionsReceived > 0 {
-            sess += ", \(counters.modeTransitionsReceived) mode msgs"
+            control.append("\(counters.modeTransitionsReceived) mode msgs")
         }
         if counters.idleFramesReceived > 0 {
-            sess += ", \(counters.idleFramesReceived) idle frames"
+            control.append("\(counters.idleFramesReceived) idle frames")
         }
         if counters.unknownReliableTypes > 0 {
-            sess += ", \(counters.unknownReliableTypes) unknown-reliable"
+            control.append("\(counters.unknownReliableTypes) unknown-reliable")
         }
         if counters.malformedReliableMessages > 0 {
-            sess += ", \(counters.malformedReliableMessages) malformed-reliable"
+            control.append(
+                "\(counters.malformedReliableMessages) malformed-reliable")
         }
         if counters.audioRoutingRequestsSent
             + counters.audioRoutingStatusesReceived > 0 {
-            sess += ", routing \(counters.audioRoutingRequestsSent) asks/"
-                + "\(counters.audioRoutingStatusesReceived) statuses"
+            control.append("routing \(counters.audioRoutingRequestsSent) asks/"
+                + "\(counters.audioRoutingStatusesReceived) statuses")
         }
         if counters.audioRoutingDropsLoud > 0 {
-            sess += ", \(counters.audioRoutingDropsLoud) routing-drops"
+            control.append("\(counters.audioRoutingDropsLoud) routing-drops")
         }
-        // The clipboard state + books (byte counts and verdicts
-        // only — payloads never print).
-        if core.clipboardNegotiated {
-            sess += ", clipboard \(core.clipboardSharingEnabled ? "ON" : "off")"
-            if counters.clipboardSharesSent
-                + counters.clipboardAnnouncesReceived > 0 {
-                sess += " (\(counters.clipboardSharesSent) sent/"
-                    + "\(counters.clipboardAnnouncesReceived) recv)"
-            }
-            if counters.clipboardLoopSuppressed > 0 {
-                sess += ", \(counters.clipboardLoopSuppressed) clip-suppressed"
-            }
-            if counters.clipboardIgnoredDisabled > 0 {
-                sess += ", \(counters.clipboardIgnoredDisabled) clip-ignored"
-            }
-        } else if core.agreedCapabilities != nil {
-            sess += ", clipboard unnegotiated"
+        if counters.clipboardIgnoredDisabled > 0 {
+            control.append("\(counters.clipboardIgnoredDisabled) clip-ignored")
         }
         if counters.clipboardDropsLoud > 0 {
-            sess += ", \(counters.clipboardDropsLoud) clip-drops"
+            control.append("\(counters.clipboardDropsLoud) clip-drops")
         }
-        // The image lane's books, while it has any.
-        let images = core.clipboardImageCounters
-        let imageActivity = images.sharesStarted + images.imagesApplied
-            + images.sharesSuppressed + images.receivesRefused
-        if imageActivity > 0 {
-            sess += ", clipImages \(images.sharesCompleted)/"
-                + "\(images.sharesStarted) sent"
-                + " \(images.imagesApplied) applied"
-                + " \(images.sharesSuppressed) suppressed"
-        }
-        print(sess)
+        print("\(prefix)   control: " + control.joined(separator: ", "))
 
         // The return leg: what went back to the host.
         let fb = core.feedback.snapshotStats()
@@ -682,7 +651,7 @@ final class WireViewStatsPrinter: Sendable {
         if audio.depacketizer.datagramsIngested > 0 {
             let d = audio.depacketizer
             let j = audio.jitter
-            var line = "\(prefix)   audio: \(d.datagramsIngested) dg → " +
+            var line = "\(prefix)   audio books: \(d.datagramsIngested) dg → " +
                        "\(d.packetsEmitted) pkts"
             if d.packetsRebuilt > 0 {
                 line += " (\(d.packetsRebuilt) rebuilt/" +
@@ -691,15 +660,10 @@ final class WireViewStatsPrinter: Sendable {
             if d.packetsUnrecoverable > 0 {
                 line += ", \(d.packetsUnrecoverable) fec-impossible"
             }
-            line += ", plc \(j.plcInvocations)"
             if j.latePacketsDropped > 0 { line += ", \(j.latePacketsDropped) late" }
             if j.recenterEvents > 0 {
                 line += ", \(j.recenterEvents) recenter" +
                         "(-\(j.packetsDroppedInRecenter) pkts)"
-            }
-            if let p50 = audio.bufferDepthPackets.p50,
-               let p99 = audio.bufferDepthPackets.p99 {
-                line += ", depth p50/p99 \(p50)/\(p99) pkts"
             }
             line += " (target \(j.targetPackets))"
             line += String(format: ", jitter σ %.0f µs",

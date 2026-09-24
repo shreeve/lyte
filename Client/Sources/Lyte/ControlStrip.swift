@@ -721,7 +721,7 @@ struct DropHintOverlay: View {
 /// flowing, audio depth/PLC — re-read once a second while visible.
 struct StatsOverlay: View {
     let model: ConnectionModel
-    @State private var rows: [ConnectionModel.StatsRow] = []
+    @State private var rows: [SessionStatsRow] = []
 
     var body: some View {
         // The two-column ledger (owner steal from YouTube's
