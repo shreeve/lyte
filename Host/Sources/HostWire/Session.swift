@@ -400,6 +400,8 @@ public enum SessionDropReason: Equatable, Sendable {
     case unhandledChannel(UInt8)
     case handshakeFailed(String)
     case duplicateConnectionIdTlv
+    /// A conn-id TLV naming some other session, refused before the AEAD.
+    case foreignConnectionId
     /// A message 1 beyond the HandshakeGate budget, dropped unread before
     /// any Noise state was allocated.
     case handshakeThrottled
@@ -905,6 +907,7 @@ public final class Session {
             (envelope, plaintext) = try Envelope.openDatagram(datagram) {
                 envelope, wirePayload, aad in
                 claimed = try admitHeader(envelope)
+                try admitEstablishedHeader(envelope, claimed: claimed)
                 do {
                     return try unsealPayload(
                         wirePayload, aad: aad, envelope: envelope
@@ -1031,6 +1034,24 @@ public final class Session {
             return try ConnectionId.decode(extensions: envelope.extensions)
         } catch {
             throw InboundRefusal(.duplicateConnectionIdTlv)
+        }
+    }
+
+    /// Channels an established session reads. Anything else, and a
+    /// conn-id TLV naming another session, is refused before the AEAD is
+    /// paid: a forged datagram there could only cost an open (and feed
+    /// the transport's resync search) without carrying anything we act on.
+    private static let readChannels: Set<ChannelId> =
+        [.ctrl, .feedback, .bulkTransfer]
+
+    private func admitEstablishedHeader(
+        _ envelope: Envelope, claimed: ConnectionId?
+    ) throws {
+        guard Self.readChannels.contains(envelope.channel) else {
+            throw InboundRefusal(.unhandledChannel(envelope.channel.rawValue))
+        }
+        guard claimed == nil || claimed == connectionId else {
+            throw InboundRefusal(.foreignConnectionId)
         }
     }
 
@@ -2634,15 +2655,35 @@ public final class Session {
 
     /// Clock advance with no datagram — the loop's timer wake: due
     /// beacons, ARQ retransmits, lifecycle timers, validator expiries.
+    /// Until the initiator proves key possession the beacon cadence and
+    /// ARQ retransmits stay parked: message 1 carries no freshness, so an
+    /// unconfirmed session may be answering a spoofed source, and it
+    /// sends that source nothing beyond its one answer (and verbatim
+    /// message 2 resends to the asking tuple).
     public func advance(now: UInt64, hostMicroseconds: UInt64) -> [SessionEvent] {
         var events = process(
             validator.advance(now: now),
             now: now, hostMicroseconds: hostMicroseconds
         )
         guard phase == .established else { return events }
+        if isPeerConfirmed {
+            events += serviceConfirmedTimers(
+                now: now, hostMicroseconds: hostMicroseconds)
+        }
+        if lifecycleLane.shouldService(at: now) {
+            events += runLifecycle(
+                nil, now: now, hostMicroseconds: hostMicroseconds
+            )
+        }
+        return events
+    }
+
+    private func serviceConfirmedTimers(
+        now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
         // Passthrough mode establishes without a handshake, so the
         // declaration leaves on the first wake (a no-op once declared).
-        events += declareCapabilities(
+        var events = declareCapabilities(
             now: now, hostMicroseconds: hostMicroseconds
         )
         if let beacon = beaconClock.takeDueBeacon(
@@ -2661,11 +2702,6 @@ public final class Session {
         if let due = bulkArqLane?.nextDeadlineNanoseconds, now >= due {
             events += serviceArqLane(
                 .bulk, now: now, hostMicroseconds: hostMicroseconds
-            )
-        }
-        if lifecycleLane.shouldService(at: now) {
-            events += runLifecycle(
-                nil, now: now, hostMicroseconds: hostMicroseconds
             )
         }
         return events
@@ -2746,15 +2782,17 @@ public final class Session {
         now: UInt64, upThrough highestClass: PacerClass = .bulk
     ) -> UInt64? {
         var wake = channel.nextWake(now: now, upThrough: highestClass)
-        for candidate in [
-            beaconClock.nextDeadlineNanoseconds,
-            ctrlArqLane.nextDeadlineNanoseconds,
-            bulkArqLane?.nextDeadlineNanoseconds,
-            lifecycleLane.nextDeadlineNanoseconds, validator.nextDeadline,
-        ] {
-            guard let candidate else { continue }
+        func fold(_ candidate: UInt64?) {
+            guard let candidate else { return }
             wake = wake.map { min($0, candidate) } ?? candidate
         }
+        if isPeerConfirmed {
+            fold(beaconClock.nextDeadlineNanoseconds)
+            fold(ctrlArqLane.nextDeadlineNanoseconds)
+            fold(bulkArqLane?.nextDeadlineNanoseconds)
+        }
+        fold(lifecycleLane.nextDeadlineNanoseconds)
+        fold(validator.nextDeadline)
         return wake
     }
 
