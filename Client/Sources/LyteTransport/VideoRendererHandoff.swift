@@ -80,7 +80,7 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
     private let stopped = Atomic<Bool>(false)
 
     // Queue-confined.
-    private var policy = BoundedRendererHandoff<Pending>()
+    private var policy: BoundedRendererHandoff<Pending>
     /// Submission instants of the policy's entries, oldest first: entries
     /// only ever leave the policy from the front or all at once, so
     /// trimming this to `policy.count` from the front keeps it exact.
@@ -100,8 +100,11 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
         books: VideoDeliveryBooks,
         recorder: VideoFlightRecorder,
         onDimensionsChanged: @escaping @Sendable (Int32, Int32) -> Void = { _, _ in },
-        playoutConfig: VideoBeatConductor.Config = .init()
+        playoutConfig: VideoBeatConductor.Config = .init(),
+        queuedFrameDeadlineMicroseconds: UInt64 = 50_000
     ) {
+        self.policy = BoundedRendererHandoff(config: .init(
+            deadlineMicroseconds: queuedFrameDeadlineMicroseconds))
         self.renderer = renderer
         self.queue = queue
         self.clockModel = clockModel
@@ -284,7 +287,10 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
         if pending.unit.isIDR {
             kind = accepted
                 ? "handoffIrapAcceptedPendingEnqueue" : "handoffIrapRejected"
-        } else if policy.awaitingRandomAccess {
+        } else if policy.awaitingRandomAccess, !policy.randomAccessPending {
+            // Before the episode's IRAP arrives nothing else may queue;
+            // once it is pending, its inter frames legitimately queue
+            // behind it.
             kind = accepted
                 ? "invariantViolationNonIrapAcceptedDuringRecovery"
                 : "handoffRejectedNonIrap"

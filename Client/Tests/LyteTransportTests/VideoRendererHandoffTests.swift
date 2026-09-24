@@ -109,14 +109,38 @@ final class VideoRendererHandoffTests: XCTestCase {
         XCTAssertEqual(rig.peer.recoveryRequests.count, 1, "one episode, one ask")
     }
 
-    func testAStaleQueuedEntryExpiresIntoRecovery() throws {
+    func testInterFramesQueuedBehindThePendingIrapAreNotViolations() throws {
         let rig = Rig()
+        rig.renderer.ready = false
+        rig.renderer.holdRecoveryFlush = true
+        try rig.submit(frame: 1, idr: true, bytes: corpus[0])
+        for frame in 2...5 {
+            try rig.submit(frame: UInt32(frame), idr: false, bytes: corpus[frame - 1])
+        }
+        try rig.submit(frame: 6, idr: true, bytes: corpus[0])
+        try rig.submit(frame: 7, idr: false, bytes: corpus[1])
+        rig.barrier()
+
+        let kinds = rig.recorder.snapshot().recoveryLifecycle.map(\.kind)
+        XCTAssertTrue(kinds.contains("handoffIrapAcceptedPendingEnqueue"))
+        XCTAssertFalse(kinds.contains("invariantViolationNonIrapAcceptedDuringRecovery"),
+                       "an inter frame behind the pending IRAP is the episode's own chain")
+
+        rig.renderer.completeRecoveryFlush()
+        rig.renderer.ready = true
+        rig.renderer.becomeReady()
+        rig.barrier()
+        XCTAssertEqual(rig.renderer.enqueuedFrames(), [6, 7])
+    }
+
+    func testAStaleQueuedEntryExpiresIntoRecovery() throws {
+        let rig = Rig(deadlineMicroseconds: 50_000)
         rig.renderer.ready = false
         try rig.submit(frame: 1, idr: true, bytes: corpus[0])
         rig.barrier()
         XCTAssertEqual(rig.peer.recoveryRequests.count, 0)
 
-        // The deadline is 50 ms; one re-armed timer fires it.
+        // One re-armed timer fires the 50 ms deadline.
         let deadline = Date().addingTimeInterval(2)
         while rig.peer.recoveryRequests.isEmpty, Date() < deadline {
             Thread.sleep(forTimeInterval: 0.01)
@@ -202,7 +226,9 @@ private final class Rig {
     let handoff: VideoRendererHandoff
     private let factory = VideoRenderFactory()
 
-    init() {
+    /// The default queued-frame deadline is 50 ms; the rig waits far longer
+    /// so a loaded test machine never expires entries mid-script.
+    init(deadlineMicroseconds: UInt64 = 10_000_000) {
         let dimensions = dimensions
         handoff = VideoRendererHandoff(
             renderer: renderer,
@@ -212,7 +238,8 @@ private final class Rig {
             recorder: recorder,
             onDimensionsChanged: { width, height in
                 dimensions.mutate { $0.append("\(width)x\(height)") }
-            })
+            },
+            queuedFrameDeadlineMicroseconds: deadlineMicroseconds)
         handoff.bind(peer)
     }
 
