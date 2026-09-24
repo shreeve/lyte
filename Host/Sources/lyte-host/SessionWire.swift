@@ -1391,6 +1391,17 @@ final class SessionWire {
         for event in events { onPairingEvent(event) }
     }
 
+    /// The session is over: a pairing run it carried can never confirm,
+    /// so the PIN burns now if that was its last guess. Call once, after
+    /// `shutdown`.
+    func endPairing() {
+        guard let pairing else { return }
+        lock.lock()
+        let events = pairing.sessionEnded().events
+        lock.unlock()
+        for event in events { onPairingEvent(event) }
+    }
+
     /// One 0x18 answered: flip the leaf, then report the posture that
     /// actually runs (a failed flip reports its fallback).
     private func applyAudioRouting(_ mode: HostAudioRoutingMode) {
@@ -1787,10 +1798,10 @@ final class SessionWire {
             // Pairing binds to this session's transcript and statics; a
             // re-handshake rebinds but never refills the guess budget.
             if let pairing, let hash = session.handshakeHash {
-                pairing.sessionEstablished(
+                pendingPairingEvents += pairing.sessionEstablished(
                     clientStaticPublicKey: remote,
                     noiseHandshakeHash: hash
-                )
+                ).events
             }
         case .beaconSent:
             break // 1 Hz; the final stats line carries the count

@@ -926,6 +926,7 @@ static func serveSession(
     // resumes from the gap.
     bulkShell?.teardown()
 
+    w.endPairing()
     let evidence = printLegSummary(leg)
     printSessionBooks(
         wire: w, leg: leg, audio: finalAudio, host: host,
