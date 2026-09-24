@@ -10,6 +10,10 @@ import LyteWireTestKit
 // the counters, gap tracking, and reject behavior the CL-1 gate names.
 
 final class LoopbackEndpointTests: XCTestCase {
+    /// Short enough that stop()'s join costs milliseconds, not the
+    /// 100 ms production default.
+    private static let receiveTimeout: Duration = .milliseconds(5)
+
 
     func testNoiseEndpointFailsLoudlyWhenNoHostAnswers() throws {
         // A dead loopback port: the handshake must retry, then refuse the
@@ -19,7 +23,8 @@ final class LoopbackEndpointTests: XCTestCase {
             hostStaticPublicKey: NoiseKeyPair.generate().publicKey,
             attempts: 2, attemptTimeoutMilliseconds: 40)
         let endpoint = UdpReceiveEndpoint(
-            port: 0, bindAddress: "127.0.0.1", crypto: crypto)
+            port: 0, bindAddress: "127.0.0.1", crypto: crypto,
+            receiveTimeout: Self.receiveTimeout)
         XCTAssertThrowsError(try endpoint.start()) { error in
             guard case TransportCryptoError.handshakeFailed(let message) = error else {
                 return XCTFail("expected handshakeFailed, got \(error)")
@@ -31,7 +36,8 @@ final class LoopbackEndpointTests: XCTestCase {
 
     func testInsecureTransportOpensImmediately() throws {
         let endpoint = UdpReceiveEndpoint(
-            port: 0, bindAddress: "127.0.0.1", crypto: PassthroughTransportCrypto())
+            port: 0, bindAddress: "127.0.0.1", crypto: PassthroughTransportCrypto(),
+            receiveTimeout: Self.receiveTimeout)
         try endpoint.start()
         defer { endpoint.stop() }
         XCTAssertNotEqual(endpoint.boundPort, 0, "port 0 bind must learn the real port")
@@ -39,7 +45,8 @@ final class LoopbackEndpointTests: XCTestCase {
 
     func testLiveDatagramsCountedGapsTrackedRejectsRejected() throws {
         let endpoint = UdpReceiveEndpoint(
-            port: 0, bindAddress: "127.0.0.1", crypto: PassthroughTransportCrypto())
+            port: 0, bindAddress: "127.0.0.1", crypto: PassthroughTransportCrypto(),
+            receiveTimeout: Self.receiveTimeout)
         try endpoint.start()
         defer { endpoint.stop() }
 
@@ -132,6 +139,7 @@ final class LoopbackEndpointTests: XCTestCase {
         let endpoint = UdpReceiveEndpoint(
             port: 0, bindAddress: "127.0.0.1",
             crypto: PassthroughTransportCrypto(),
+            receiveTimeout: Self.receiveTimeout,
             onDatagram: { outcome, _ in
                 if case .accepted(_, let payload) = outcome {
                     delivered.append(payload)
@@ -156,7 +164,8 @@ final class LoopbackEndpointTests: XCTestCase {
 
     func testSendToPeerReachesTheDatagramSource() throws {
         let endpoint = UdpReceiveEndpoint(
-            port: 0, bindAddress: "127.0.0.1", crypto: PassthroughTransportCrypto())
+            port: 0, bindAddress: "127.0.0.1", crypto: PassthroughTransportCrypto(),
+            receiveTimeout: Self.receiveTimeout)
         try endpoint.start()
         defer { endpoint.stop() }
 
@@ -186,7 +195,8 @@ final class LoopbackEndpointTests: XCTestCase {
     func testUnauthenticatedDatagramCannotRetargetPeer() throws {
         let endpoint = UdpReceiveEndpoint(
             port: 0, bindAddress: "127.0.0.1",
-            crypto: RejectingTestCrypto())
+            crypto: RejectingTestCrypto(),
+            receiveTimeout: Self.receiveTimeout)
         try endpoint.start()
         defer { endpoint.stop() }
 

@@ -5,8 +5,8 @@
 // network loss; SO_NET_SERVICE_TYPE VI to discourage Wi-Fi RX power-save;
 // SO_TIMESTAMP_MONOTONIC kernel arrival stamps (mach ticks, converted to
 // the SystemMonotonicClock domain) so gap measurements blame the radio
-// rather than thread stalls; a 100 ms SO_RCVTIMEO so stop() unblocks the
-// loop; ECONNREFUSED tolerance; and the protected CS6 lane (0xC0), since
+// rather than thread stalls; a receive timeout (SO_RCVTIMEO, 100 ms by
+// default) so stop() unblocks the loop; ECONNREFUSED tolerance; and the protected CS6 lane (0xC0), since
 // everything the client originates is control, input or feedback.
 //
 // The return leg: `sendToPeer` fires client→host datagrams (feedback,
@@ -68,15 +68,21 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
     /// Arrivals stamped by the kernel rather than the fallback reading.
     let kernelStampedArrivals = Atomic<UInt64>(0)
 
+    private let receiveTimeout: Duration
+
     /// The actual bound port — differs from the request when it was 0.
     public private(set) var boundPort: UInt16 = 0
 
+    /// `receiveTimeout` bounds each blocking receive, and so how long
+    /// `stop()` waits for the receive thread to notice.
     public init(
         port: UInt16,
         bindAddress: String = "0.0.0.0",
         crypto: TransportCrypto,
+        receiveTimeout: Duration = .milliseconds(100),
         onDatagram: (@Sendable (IngestOutcome, _ arrivalMicroseconds: UInt64) -> Void)? = nil
     ) {
+        self.receiveTimeout = receiveTimeout
         self.requestedPort = port
         self.bindAddress = bindAddress
         self.crypto = crypto
@@ -150,8 +156,13 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
         _ = setsockopt(fd, SOL_SOCKET, SO_TIMESTAMP_MONOTONIC, &tsOn,
                        socklen_t(MemoryLayout<Int32>.size))
 
-        // 100 ms receive timeout so stop() can interrupt the loop.
-        var tv = timeval(tv_sec: 0, tv_usec: 100_000)
+        // The receive timeout lets stop() interrupt the loop. A zero
+        // SO_RCVTIMEO means "block forever", so it floors at 1 µs.
+        let (seconds, attoseconds) = receiveTimeout.components
+        let micros = max(1, seconds * 1_000_000 + attoseconds / 1_000_000_000_000)
+        var tv = timeval(
+            tv_sec: Int(micros / 1_000_000),
+            tv_usec: Int32(micros % 1_000_000))
         _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
         // The client sends control/input/feedback, never fresh video:
@@ -225,8 +236,8 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
         // thread may be inside recvmsg on this fd, and closing first
         // frees the fd number while that syscall is in flight — a
         // roaming re-dial can then bind a fresh socket onto the same
-        // number and the old loop steals its datagrams. The 100 ms
-        // SO_RCVTIMEO bounds the join; the 1 s deadline is the wedge
+        // number and the old loop steals its datagrams. The receive
+        // timeout bounds the join; the 1 s deadline is the wedge
         // backstop, after which close() proceeds as the forcing move.
         if Thread.current !== receiveThread {
             receiveExit.lock()
