@@ -81,10 +81,10 @@ public struct Envelope: Hashable, Sendable {
         out.reserveCapacity(total)
         out.append(channel.rawValue)
         out.append(extensions.isEmpty ? 0 : Self.extensionsFlag)
-        appendLE(seq.rawValue, to: &out)
-        appendLE(frame.rawValue, to: &out)
-        appendLE(timestamp, to: &out)
-        appendLE(fec, to: &out)
+        wireAppendLE(seq.rawValue, to: &out)
+        wireAppendLE(frame.rawValue, to: &out)
+        wireAppendLE(timestamp, to: &out)
+        wireAppendLE(fec, to: &out)
         if !extensions.isEmpty {
             out.append(UInt8(extensions.count))
             for ext in extensions {
@@ -135,37 +135,25 @@ public struct Envelope: Hashable, Sendable {
         let base = datagram.startIndex
         let channel = ChannelId(rawValue: datagram[base])
         let flags = datagram[base + 1]
-        let seq = ChannelSeq(rawValue: readLE(datagram, at: base + 2))
-        let frame = FrameNumber(rawValue: readLE(datagram, at: base + 4))
-        let timestamp: UInt64 = readLE(datagram, at: base + 8)
-        let fec: UInt64 = readLE(datagram, at: base + 16)
+        let seq = ChannelSeq(rawValue: wireReadLE(datagram, at: base + 2))
+        let frame = FrameNumber(rawValue: wireReadLE(datagram, at: base + 4))
+        let timestamp: UInt64 = wireReadLE(datagram, at: base + 8)
+        let fec: UInt64 = wireReadLE(datagram, at: base + 16)
 
-        var cursor = base + WireBudget.envelopeByteCount
+        var reader = WireReader(
+            datagram[(base + WireBudget.envelopeByteCount)...],
+            truncated: WireError.truncatedExtensions
+        )
         var extensions: [WireExtension] = []
         if flags & extensionsFlag != 0 {
-            guard cursor < datagram.endIndex else {
-                throw WireError.truncatedExtensions
-            }
-            let count = Int(datagram[cursor])
-            cursor += 1
+            let count = Int(try reader.u8())
             extensions.reserveCapacity(count)
             for _ in 0..<count {
-                guard cursor + 2 <= datagram.endIndex else {
-                    throw WireError.truncatedExtensions
-                }
-                let type = datagram[cursor]
-                let length = Int(datagram[cursor + 1])
-                cursor += 2
-                guard cursor + length <= datagram.endIndex else {
-                    throw WireError.truncatedExtensions
-                }
-                extensions.append(
-                    try WireExtension(
-                        type: type,
-                        value: Array(datagram[cursor..<cursor + length])
-                    )
-                )
-                cursor += length
+                let type = try reader.u8()
+                let length = Int(try reader.u8())
+                extensions.append(try WireExtension(
+                    type: type, value: Array(try reader.bytes(length))
+                ))
             }
         }
 
@@ -177,7 +165,7 @@ public struct Envelope: Hashable, Sendable {
             fec: fec,
             extensions: extensions
         )
-        return (envelope, datagram[cursor...])
+        return (envelope, reader.rest())
     }
 
     public static func decode(
@@ -185,33 +173,4 @@ public struct Envelope: Hashable, Sendable {
     ) throws -> (envelope: Envelope, payload: ArraySlice<UInt8>) {
         try decode(datagram[...])
     }
-}
-
-// MARK: - Little-endian primitives
-
-private func appendLE(_ value: UInt16, to out: inout [UInt8]) {
-    out.append(UInt8(truncatingIfNeeded: value))
-    out.append(UInt8(truncatingIfNeeded: value >> 8))
-}
-
-private func appendLE(_ value: UInt32, to out: inout [UInt8]) {
-    for shift in stride(from: 0, to: 32, by: 8) {
-        out.append(UInt8(truncatingIfNeeded: value >> shift))
-    }
-}
-
-private func appendLE(_ value: UInt64, to out: inout [UInt8]) {
-    for shift in stride(from: 0, to: 64, by: 8) {
-        out.append(UInt8(truncatingIfNeeded: value >> shift))
-    }
-}
-
-private func readLE<T: FixedWidthInteger & UnsignedInteger>(
-    _ bytes: ArraySlice<UInt8>, at index: Int
-) -> T {
-    var value: T = 0
-    for i in 0..<(T.bitWidth / 8) {
-        value |= T(bytes[index + i]) << (8 * i)
-    }
-    return value
 }

@@ -70,13 +70,9 @@ public struct ConnectionId: Hashable, Sendable {
     public static func decode(
         extensions: [WireExtension]
     ) throws -> ConnectionId? {
-        let matches = extensions.filter {
-            $0.type == WireExtension.ReservedType.connectionId
-        }
-        guard let match = matches.first else { return nil }
-        guard matches.count == 1 else {
-            throw ConnectionIdError.duplicateTlv
-        }
-        return try ConnectionId(bytes: match.value)
+        try WireExtension.uniqueValue(
+            ofType: WireExtension.ReservedType.connectionId, in: extensions,
+            duplicate: ConnectionIdError.duplicateTlv
+        ).map(ConnectionId.init(bytes:))
     }
 }
