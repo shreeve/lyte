@@ -934,14 +934,14 @@ public final class RateEstimator {
     }
 
     /// NACKed shards over video datagrams attempted, both windowed.
-    /// NACKs with no attempt evidence yet still read as full loss —
-    /// the fraction saturates at 1 rather than dividing by zero.
+    /// With no attempt evidence the fraction is unknown and reads 0: a
+    /// NACK alone is no denominator. It saturates at 1.
     private func currentPostFecLossFraction() -> Double {
         let nacked = postFecWindow.reduce(0) { $0 + $1.shardCount }
         guard nacked > 0 else { return 0 }
         let attempted = lossWindow.reduce(0) { $0 + $1.videoAttempted }
-        guard attempted > nacked else { return 1 }
-        return Double(nacked) / Double(attempted)
+        guard attempted > 0 else { return 0 }
+        return min(Double(nacked) / Double(attempted), 1)
     }
 
     private struct MatchedSample {

@@ -1938,6 +1938,28 @@ final class RateEstimatorGateTests: XCTestCase {
     /// completion presumption expiring mid-drain — the deep-floor
     /// starvation seam) feed neither the post-FEC fractions nor the
     /// regime ladder. The same storm unrecused still bites.
+    /// The session's first report carries no attempt evidence (its ledger
+    /// only seeds the differencing), so a NACK in it — a lost opening-IDR
+    /// shard — is no denominator: it once read as 100 % post-FEC loss, an
+    /// instant ×0.85 fall and a latched lossy regime.
+    func testAFirstReportNackIsNotTotalPostFecLoss() throws {
+        let estimator = makeEstimator()
+        let samples = train(
+            estimator, seqStart: 0, count: 20, sendStartNS: Self.ms,
+            sendSpacingNS: 100_000, bottleneckBitsPerSecond: 20_000_000)
+        let verdict = estimator.ingest(
+            report(
+                samples: Array(samples.dropFirst()), clientMicros: 30_000,
+                channels: lossLedger(received: 19, missing: 1),
+                nacks: [try FeedbackReport.NackEntry(
+                    frame: FrameNumber(rawValue: 0), missingShards: [0])]),
+            now: 30 * Self.ms, inRecovery: false)
+        XCTAssertEqual(verdict.postFecLossFraction, 0)
+        XCTAssertNil(verdict.newRateBitsPerSecond)
+        XCTAssertNil(verdict.fecRegime)
+        XCTAssertEqual(estimator.fecRegime, .clean)
+    }
+
     func testRecusedNackShardsAreNotPathEvidence() throws {
         let estimator = makeEstimator()
         let driver = EstimatorDriver(self, estimator)
