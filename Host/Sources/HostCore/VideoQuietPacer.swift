@@ -1,23 +1,16 @@
-// VideoQuietPacer — the postures design's video quiet/wake axis
-// (docs/decisions/20260802-013946-postures-design.md), sans-IO: the caller
-// supplies "seconds since the last damage or client input" and gets
-// back the keepalive interval now in force plus, exactly once per
-// step, the announcement to send. The ladder: 1 s while active
-// (idle < 30 s), then 2 → 4 → 8 → 16 → 30 s, one rung per further
-// 30 s of stillness. A wake (idle collapsing back under the
-// threshold — fresh damage or an input packet) steps straight back
-// to 1 s and announces active once.
-//
-// Pure function of idle time plus one word of memory (the interval
-// last announced) — no clocks, no wire, no thread opinions.
+// The video quiet/wake axis, sans-IO: the caller supplies seconds since
+// the last damage or client input and gets back the keepalive interval
+// in force plus, exactly once per step, the announcement to send. The
+// ladder: 1 s while active (idle < 30 s), then 2 → 4 → 8 → 16 → 30 s,
+// one rung per further 30 s of stillness. A wake steps straight back to
+// 1 s and announces active once.
 
 public struct VideoQuietPacerConfig: Sendable {
-    /// Stillness before the first backoff rung — the doc's ~30 s.
+    /// Stillness before the first backoff rung.
     public var quietAfterSeconds: Double
     /// Seconds of further stillness per additional rung.
     public var rungSeconds: Double
-    /// The deepest interval (the doc's ceiling; beacon-only "zero"
-    /// is a future posture, not an interval).
+    /// The deepest interval.
     public var maxIntervalSeconds: UInt8
 
     public init(

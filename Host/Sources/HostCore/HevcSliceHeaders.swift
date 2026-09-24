@@ -1,16 +1,10 @@
-// E6b: the slice-segment-header pen (§7.3.6.1) — the second and last
-// thing libavcodec writes on the VAAPI path that the native encoder
-// must write itself (iHD consumes VPS/SPS/PPS and slice headers as
-// app-packed bytes; slice DATA is the engine's).
+// The slice-segment-header pen (§7.3.6.1). iHD consumes parameter sets
+// and slice headers as app-packed bytes; slice data is the engine's.
 //
-// SCOPE: the iHD/Arc dialect the parameter-set pen fixed, plus the
-// driver's GPB quirk mirrored from vaapi_encode_h265.c (p_to_gpb):
-// every inter frame is a B slice whose two lists both point at the
-// previous frame — slice_type 0, collocated_from_l0 = 1,
-// mvd_l1_zero = 0, no override, merge cand 5, SAO on, and the
-// slice-level loop-filter-across flag OFF (the zero-init ffmpeg
-// never touches). Oracle-pinned in HevcParameterSetTests against a
-// real capture's IDR and TRAIL_R headers, decoded bit-by-bit.
+// Scope: the parameter-set pen's dialect plus the driver's GPB quirk
+// (vaapi_encode_h265.c p_to_gpb): every inter frame is a B slice whose
+// two lists both point at the previous frame. Oracle-pinned in
+// HevcParameterSetTests.
 
 import LyteCore
 
@@ -32,10 +26,9 @@ public enum HevcSliceHeader {
         return HevcBitWriter.nal(type: 19, rbsp: w.rbsp)
     }
 
-    /// A GPB inter frame (NAL type 1, TRAIL_R): B slice, both lists
-    /// = the previous frame (the iHD p_to_gpb dialect). `pocLsb` is
-    /// the picture order count's low 12 bits (log2_max_poc_lsb = 12,
-    /// the SPS's law); IDR resets it to 0 and each frame adds one.
+    /// A GPB inter frame (NAL type 1, TRAIL_R): B slice, both lists =
+    /// the previous frame. `pocLsb` is the POC's low 12 bits (the SPS's
+    /// log2_max_poc_lsb); IDR resets it to 0 and each frame adds one.
     public static func trailGPB(
         pocLsb: UInt32, qpDelta: Int32
     ) -> [UInt8] {

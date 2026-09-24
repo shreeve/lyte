@@ -1,15 +1,12 @@
 import LyteCore
 
-// Host-only policy adapter: the shared vocabulary owns every byte, while the
-// host scheduler owns the exhaustive mapping from its PacerClass role type.
+// The host's exhaustive PacerClass → WireTos mapping.
 //
-// videoTail is the NACK-repair class. A repair is deadline traffic: it must
-// arrive inside the freeze budget or sending it was pointless. Putting it on
-// video's CS5 lane let a DSCP-aware bottleneck starve exactly the datagrams
-// meant to heal that squeezed lane, so repairs join control/audio on CS6. The
-// pacer's strict priority still holds videoTail below fresh video at our own
-// NIC; this mark protects the bounded repair trickle only at queues we do not
-// own. Bulk takes CS1 so patient files yield to all session deadlines.
+// videoTail (NACK repair) is deadline traffic, so it joins control/audio
+// on CS6: on video's CS5 lane a DSCP-aware bottleneck would starve the
+// repairs meant to heal that lane. The pacer still holds videoTail below
+// fresh video at our own NIC. Bulk takes CS1 so files yield to all
+// session deadlines.
 public extension WireTos {
     static func byte(for pacerClass: PacerClass) -> UInt8 {
         switch pacerClass {

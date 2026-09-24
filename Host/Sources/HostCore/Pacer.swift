@@ -1,44 +1,22 @@
-// Strict-priority token-bucket send pacer (HS-6). Pure logic in the
-// sans-IO style: no threads, no sockets, no clock — every entry point
-// takes `now` as monotonic nanoseconds and the caller owns scheduling.
-// Tokens are opaque byte counts with a class tag and metadata; the pacer
-// never sees payloads, envelopes, or Wire types.
+// Strict-priority token-bucket send pacer. Sans-IO: every entry point
+// takes `now` (monotonic ns) and the caller owns scheduling. Tokens are
+// opaque byte counts with a class tag; the pacer never sees payloads.
 //
-// Invariants (protocol overview §4 rulings 1–2, resiliency §3, timing §4):
-// - Batch quantum: no emitted batch exceeds `quantumNS` (default 1 ms) of
-//   wire time at the configured rate. Enforced by capping bucket burst
-//   capacity at one quantum of bytes.
-// - Strict priority: control > audio > freshVideo > videoTail >
-//   refinement > telemetry. A lower class never sends while a higher
-//   class has a queued token. FIFO within a class; `urgent` tokens jump
-//   only their own class's queue (IDR-on-demand), never a higher class.
-// - Latency exemption (HS-31): a NEGATIVE bucket balance is only ever
-//   the overrun of an oversize lower-class emission (see nextBatch) —
-//   at a 500 kbps floor one ~1230 B video datagram is ~19 ms of
-//   deficit, and audio must not wait it out (audio-continuity §4.1's
-//   5 ms ± 2 ms bound). Latency classes (control, audio) emit alone
-//   through a negative balance and CHARGE the shared bucket, so video
-//   repays their bytes too: the wire total still honors the configured
-//   rate, and the exemption's volume is structurally capped by strict
-//   priority (~320 kbps of audio incl. RS 4+2). Video classes never
-//   borrow it.
-// - Rate is an injected parameter (the HS-16 seam): `setRate` mid-stream
-//   re-caps the bucket and stretches subsequent batches; the pacer never
-//   estimates anything.
-// - The frame drain bound min(2×frameInterval, 25 ms) is upstream's job
-//   via frameByteCeiling; this pacer makes it measurable (per-frame
-//   metadata + telemetry) and true for conforming input.
+// - No emitted batch exceeds `quantumNS` of wire time: burst capacity is
+//   one quantum of bytes.
+// - A lower class never sends while a higher class has a queued token.
+//   FIFO within a class; `urgent` jumps only its own class's queue.
+// - A negative balance is only ever an oversize lower-class overrun.
+//   Control and audio emit alone through it and charge the bucket, so
+//   the wire total still honors the rate; video never borrows it.
+// - Rate is injected (`setRate`); the pacer never estimates anything.
 
 import LyteCore
 
-/// Send classes in strict priority order. Lower raw value = higher
-/// priority (drains first). The order is the protocol overview's unified
-/// ruling: CTRL/input > audio > fresh video > video tail + NACK
-/// retransmits > ratchet refinement > telemetry > bulk. The bulk rung is
-/// the W10/F-2 ruling (design record 20260728-053300 §1, mirrored as
-/// `WirePriority.bulk`): STRICTLY below telemetry, because the 25–50 ms
-/// feedback reports price the path for every media class and a 100 MB
-/// file is infinitely patient where a stale report mis-prices audio.
+/// Send classes in strict priority order; lower raw value drains first.
+/// Bulk sits strictly below telemetry (mirrors `WirePriority.bulk`):
+/// feedback reports price the path for every media class, and a file
+/// transfer can always wait.
 public enum PacerClass: Int, CaseIterable, Comparable, Sendable {
     case control = 0
     case audio = 1
@@ -125,13 +103,10 @@ public struct PacerTelemetry: Sendable {
 }
 
 public final class Pacer {
-    /// Bits per second the wire is paced at. The owner supplies it at
-    /// construction and re-prices it through `setRate` (0.8 × the
-    /// estimated bottleneck rate, capped at the negotiated session rate).
+    /// Bits per second the wire is paced at; re-priced through `setRate`.
     public private(set) var rateBitsPerSecond: Int
 
-    /// Batch quantum in nanoseconds (1 ms per the overview ruling;
-    /// resiliency owns the number, so it stays a parameter).
+    /// Batch quantum in nanoseconds.
     public let quantumNS: UInt64
 
     public private(set) var telemetry = PacerTelemetry()
@@ -143,18 +118,13 @@ public final class Pacer {
     private var bytesPerNS: Double
     private var lastRefillAt: UInt64
 
-    // One FIFO pair per class; urgent tokens drain before normal ones
-    // within the same class. Deque storage reclaims consumed slots, so a
-    // queue that is topped up before it ever drains stays bounded by its
-    // live depth, and a drained queue keeps its capacity for the next burst.
+    // One FIFO pair per class; urgent drains before normal. Deque storage
+    // reclaims consumed slots, so a queue stays bounded by its live depth.
     private struct ClassQueue {
         var urgent = Deque<PacerToken>()
         var normal = Deque<PacerToken>()
-        /// Running total of un-popped bytes, kept by push/pop. The two
-        /// hot gates that read it — the per-feedback-report backlog
-        /// input (20–40 Hz) and the per-capture-frame backpressure
-        /// check (60 Hz) — fire fastest exactly when the queue is
-        /// deepest (a rate fall), so the read must not walk the queue.
+        /// Running total of un-popped bytes, kept by push/pop so hot
+        /// backlog reads never walk the queue.
         var bytesQueued = 0
 
         var isEmpty: Bool { urgent.isEmpty && normal.isEmpty }
@@ -202,16 +172,13 @@ public final class Pacer {
         self.quantumNS = quantumNS
         self.bytesPerNS = Double(rateBitsPerSecond) / 8e9
         self.burstBytes = Double(quantumNS) * bytesPerNS
-        // Start full: an isolated send after quiet goes immediately at
-        // full quantum rate (timing §4 "aperiodicity is free").
+        // Start full: an isolated send after quiet goes immediately.
         self.tokens = burstBytes
         self.lastRefillAt = now
     }
 
-    /// The HS-16 seam: apply a new PacerPolicy rate mid-stream. Credit
-    /// accrued at the old rate up to `now` is honored first; the burst
-    /// cap immediately re-sizes so the ≤1-quantum batch bound holds at
-    /// the new rate.
+    /// Applies a new rate mid-stream. Credit accrued at the old rate up to
+    /// `now` is honored first; the burst cap re-sizes immediately.
     public func setRate(bitsPerSecond: Int, now: UInt64) {
         precondition(bitsPerSecond > 0, "pacer rate must be positive")
         refill(now: now)
@@ -222,9 +189,7 @@ public final class Pacer {
     }
 
     /// Queues one send unit. `urgent` jumps the FIFO of `priorityClass`
-    /// only (a forced IDR preempts queued non-urgent video between
-    /// quanta); it never crosses class boundaries, so audio and control
-    /// still go first.
+    /// only; it never crosses class boundaries.
     public func enqueue(_ priorityClass: PacerClass, bytes: Int,
                         frameID: UInt32? = nil, urgent: Bool = false,
                         tag: UInt64 = 0, now: UInt64) {
@@ -271,23 +236,16 @@ public final class Pacer {
                 outBytes += t.bytes
                 continue
             }
-            // A token larger than the burst cap can never fit a full
-            // bucket: emit it alone once the bucket is full, driving the
-            // balance negative so the overrun is paid back before the
-            // next batch. Conforming callers keep datagrams under one
-            // quantum of bytes and never hit this.
+            // A token larger than the burst cap never fits: emit it alone
+            // once the bucket is full, driving the balance negative.
             if out.isEmpty, Double(head.bytes) > burstBytes,
                tokens >= burstBytes - 1e-3 {
                 let t = queues[head.priorityClass.rawValue].pop()!
                 out.append(t)
                 outBytes += t.bytes
             }
-            // The latency exemption (HS-31): a negative balance is a
-            // lower-class overrun being repaid — control and audio
-            // emit alone through it (charging the bucket, so the
-            // repayment grows by exactly their bytes) instead of
-            // waiting out a deficit video incurred. Video and below
-            // never take this path.
+            // Latency exemption: control and audio emit alone through a
+            // negative balance, charging the bucket.
             else if out.isEmpty, head.priorityClass <= .audio,
                     tokens < 0 {
                 let t = queues[head.priorityClass.rawValue].pop()!
@@ -318,20 +276,15 @@ public final class Pacer {
                           emittedAt: now)
     }
 
-    /// The earliest time a call to `nextBatch(upThrough:)` can emit, or
-    /// nil when nothing it may release is queued. The caller's event loop
-    /// sleeps until this; a caller that is holding lower classes back
-    /// (a full socket) passes the same bound so their readiness does not
-    /// wake it.
+    /// The earliest time `nextBatch(upThrough:)` can emit, or nil when
+    /// nothing it may release is queued.
     public func nextWake(
         now: UInt64, upThrough highestAllowedClass: PacerClass = .bulk
     ) -> UInt64? {
         refill(now: now)
         guard let head = highestHead(),
               head.priorityClass <= highestAllowedClass else { return nil }
-        // The latency exemption's wake half: a queued control/audio
-        // token emits through a negative balance NOW (nextBatch's
-        // exempt clause) — the loop must not sleep out the deficit.
+        // Latency exemption: control/audio emit through a deficit now.
         if head.priorityClass <= .audio, tokens < 0 { return now }
         let need = min(Double(head.bytes), burstBytes)
         if tokens + 1e-3 >= need { return now }
@@ -339,20 +292,16 @@ public final class Pacer {
         return now + UInt64((deficit / bytesPerNS).rounded(.up))
     }
 
-    /// The fall-repricing purge's pacer half: remove every queued token
-    /// of `priorityClass`, returned so the caller can settle its own
-    /// books (datagram store, per-frame censuses). The bucket balance
-    /// is untouched — dropped bytes were never emitted, so nothing is
-    /// owed or refunded; other classes keep their place.
+    /// Removes and returns every queued token of `priorityClass`. The
+    /// bucket balance is untouched: dropped bytes were never emitted.
     public func dropClass(_ priorityClass: PacerClass) -> [PacerToken] {
         let dropped = queues[priorityClass.rawValue].queued
         queues[priorityClass.rawValue] = ClassQueue()
         return dropped
     }
 
-    /// Drops queued work that can no longer be useful. This is intended
-    /// for deadline-bearing tail traffic (repairs), not fresh media or
-    /// latency classes. Relative order of every surviving token is kept.
+    /// Drops queued tokens enqueued before `cutoff` (deadline-bearing
+    /// tail traffic). Surviving tokens keep their order.
     public func dropExpired(
         _ priorityClass: PacerClass, olderThan cutoff: UInt64
     ) -> [PacerToken] {
@@ -365,8 +314,7 @@ public final class Pacer {
             + queues[c.rawValue].normal.retainedCapacity
     }
 
-    /// Runs once per token inside `nextBatch`: reads each class queue in
-    /// place rather than copying it out of the array.
+    /// Reads each class queue in place rather than copying it out.
     private func highestHead() -> PacerToken? {
         for index in queues.indices where !queues[index].isEmpty {
             return queues[index].head

@@ -7,7 +7,7 @@ import LyteWire
 public enum HostOpus {
     public static let sampleRate: Int = AudioWire.sampleRate
     public static let channels: Int = AudioWire.channels
-    /// Frames (samples per channel) per packet — `AudioWire.samplesPerPacket`.
+    /// Frames (samples per channel) per packet.
     public static let framesPerPacket: Int = AudioWire.samplesPerPacket
     /// Interleaved samples per packet: frames × channels.
     public static let samplesPerPacket = framesPerPacket * channels

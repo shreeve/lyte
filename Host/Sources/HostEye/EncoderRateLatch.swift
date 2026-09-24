@@ -1,10 +1,8 @@
-// EncoderRateLatch: which rate-control posture the next frame's RC and
-// HRD buffers carry. A directive (`request`) takes effect on the next
-// frame, whatever its type; an IDR re-sends the posture in force
-// regardless (its sequence rebuild resets the driver's RC state). A fall
-// purge delivers a tightening directive together with the recovery IDR,
-// so the IDR — the largest frame, at the worst moment — must already be
-// sized to the new cap and HRD buffer.
+// Which rate-control posture the next frame's RC and HRD buffers carry.
+// A directive (`request`) takes effect on the next frame, whatever its
+// type, so a recovery IDR arriving with a tightening directive is already
+// sized to the new cap. An IDR re-sends the posture in force regardless
+// (its sequence rebuild resets the driver's RC state).
 
 struct EncoderRateLatch {
     struct Posture: Equatable {

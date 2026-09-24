@@ -1,9 +1,7 @@
-// AdvertisementSchedule: when the host's mDNS record must be filed with
-// the Avahi daemon again, and when to try. The record lives as long as
-// the daemon's entry group, and the listening service now outlives many
-// of those: avahi-daemon restarts (a package upgrade, a network
-// reconfiguration), and a name collision on the LAN withdraws the group.
-// Sans-IO: the shell reports what the daemon said and asks what is due.
+// When the host's mDNS record must be filed with the Avahi daemon again.
+// The record lives only as long as the daemon's entry group, which a
+// daemon restart or a LAN name collision withdraws. Sans-IO: the shell
+// reports what the daemon said and asks what is due.
 
 /// Avahi's EntryGroup states (avahi-common/defs.h), and what each means
 /// for a record the host filed.
@@ -59,10 +57,9 @@ public struct AdvertisementSchedule: Sendable {
         delayNS = Self.firstRetryNS
     }
 
-    /// A filing failed, or a filed record was lost (the daemon went away,
-    /// the group was reset, failed or collided): try again after the
+    /// A filing failed or a filed record was lost: try again after the
     /// current back-off, which doubles up to `maxRetryNS` until a record
-    /// is established again — a flapping daemon is not hammered.
+    /// is established again.
     public mutating func retry(nowNS: UInt64) {
         dueAtNS = nowNS + delayNS
         delayNS = min(delayNS * 2, Self.maxRetryNS)
