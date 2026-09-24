@@ -182,7 +182,7 @@ struct StreamContainer: View {
                 // notice either way).
                 if dropTargeted {
                     DropHintOverlay(
-                        accepting: model.bulkNegotiated,
+                        accepting: model.negotiated.bulkTransfer,
                         hostName: model.hostName ?? "the host")
                 }
             }
@@ -345,7 +345,7 @@ struct ControlStrip: View {
             // survived intersection (against a legacy host there is
             // nothing to show). Renders the 0x19-confirmed posture,
             // never the ask: the icon flips when the host says it did.
-            if model.hostAudioNegotiated {
+            if model.negotiated.hostAudioRouting {
                 let hostLabel = model.hostName ?? "the host"
                 stripButton(
                     active: model.hostMuted,
@@ -369,7 +369,7 @@ struct ControlStrip: View {
             // packets — while the host's own speakers keep playing.
             // The waveform glyph wears the WIRE caption: this is
             // neither machine's speakers, it's the stream itself.
-            if model.audioStreamOffNegotiated {
+            if model.negotiated.audioStreamOff {
                 stripButton(
                     active: model.hostAudioOff,
                     help: model.hostAudioPosture == nil
@@ -405,7 +405,7 @@ struct ControlStrip: View {
             // Share Clipboard — EXISTS only when capability key 10
             // survived intersection (CL-15). Renders the live consent
             // state; while off, nothing leaves and nothing lands.
-            if model.clipboardNegotiated {
+            if model.negotiated.clipboardText {
                 stripButton(
                     systemImage: model.clipboardSharing
                         ? "doc.on.clipboard.fill" : "doc.on.clipboard",
@@ -423,7 +423,7 @@ struct ControlStrip: View {
             // consent rides ON TOP of text sharing: the tier is
             // Off / Text only / Text + images, so the button is
             // meaningful only while the clipboard toggle is on.
-            if model.clipboardImagesNegotiated {
+            if model.negotiated.clipboardImages {
                 stripButton(
                     systemImage: model.clipboardImageSharing
                         ? "photo.fill.on.rectangle.fill"

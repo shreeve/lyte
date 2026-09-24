@@ -211,6 +211,8 @@ final class LifecycleHarness: @unchecked Sendable {
     private var heldIdentity: CheckedContinuation<Void, Never>?
     private var _streamsBegan = 0
     private var _streamsEnded = 0
+    private var _pinLoads = 0
+    private var _pinSaves = 0
 
     init() {
         let key = (0..<32).map { UInt8($0 &* 7 &+ 3) }
@@ -224,6 +226,9 @@ final class LifecycleHarness: @unchecked Sendable {
     var started: [LyteUdpSession] { locked { _started } }
     var streamsBegan: Int { locked { _streamsBegan } }
     var streamsEnded: Int { locked { _streamsEnded } }
+    var pinLoads: Int { locked { _pinLoads } }
+    var pinSaves: Int { locked { _pinSaves } }
+    var savedPins: PinnedHostStore { locked { pins } }
     var identityWaiting: Bool { locked { heldIdentity != nil } }
 
     func wasEnded(_ session: LyteUdpSession) -> Bool {
@@ -255,8 +260,8 @@ final class LifecycleHarness: @unchecked Sendable {
 
     var services: ConnectionServices {
         ConnectionServices(
-            loadPins: { [self] in locked { pins } },
-            savePins: { [self] store in locked { pins = store } },
+            loadPins: { [self] in locked { _pinLoads += 1; return pins } },
+            savePins: { [self] store in locked { _pinSaves += 1; pins = store } },
             identity: { [self] _ in
                 let hold = locked { () -> Bool in
                     identityCalls += 1

@@ -39,7 +39,7 @@ struct LyteCommands: Commands {
                 set: { connection?.setHostMuted($0) }
             ))
             .keyboardShortcut("h", modifiers: [.command, .shift])
-            .disabled(connection?.hostAudioNegotiated != true
+            .disabled(connection?.negotiated.hostAudioRouting != true
                 || connection?.hostAudioPosture == nil)
 
             // The per-host session-start default (CL-13; opt-out
@@ -65,7 +65,7 @@ struct LyteCommands: Commands {
                 set: { connection?.setClipboardSharing($0) }
             ))
             .keyboardShortcut("c", modifiers: [.command, .shift])
-            .disabled(connection?.clipboardNegotiated != true)
+            .disabled(connection?.negotiated.clipboardText != true)
 
             // The images rung (P-1): the tier's third step, gated on
             // keys 10∧12 — disabled against a text-only host. Images
@@ -74,7 +74,7 @@ struct LyteCommands: Commands {
                 get: { connection?.clipboardImageSharing ?? false },
                 set: { connection?.setClipboardImageSharing($0) }
             ))
-            .disabled(connection?.clipboardImagesNegotiated != true)
+            .disabled(connection?.negotiated.clipboardImages != true)
 
             // The per-host consent defaults (CL-15 text, P-1 images):
             // applied at the NEXT connect to this host.
