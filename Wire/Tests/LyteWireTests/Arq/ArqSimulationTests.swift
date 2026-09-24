@@ -75,7 +75,8 @@ final class ArqSimulationTests: XCTestCase {
         let initialSeq: UInt16 = rng.int(in: 0..<4) == 0
             ? 0xFFF0 &+ UInt16.random(in: 0...31, using: &rng)
             : 0
-        let bodyCeiling = [16, 64, 256].randomElement(using: &rng)!
+        let bodyCeilings = [16, 64, 256]
+        let bodyCeiling = bodyCeilings[rng.int(in: bodyCeilings.indices)]
         let config = ArqConfig(
             maxSegmentBodyByteCount: bodyCeiling,
             // This gate promises reliable convergence throughout its
