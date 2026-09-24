@@ -133,7 +133,7 @@ public struct AudioFramerCounters: Equatable, Sendable {
     public init() {}
 }
 
-public final class AudioFramer {
+public struct AudioFramer: Sendable {
     public let config: AudioFramerConfig
     public private(set) var counters = AudioFramerCounters()
 
@@ -164,7 +164,7 @@ public final class AudioFramer {
     /// over-budget packet. `captureTimestampMicroseconds` is the
     /// packet's first sample's PipeWire graph-clock stamp; it rides the
     /// envelope timestamp verbatim.
-    public func ingest(
+    public mutating func ingest(
         packet: [UInt8],
         captureTimestampMicroseconds: UInt64
     ) throws -> [(envelope: Envelope, payload: [UInt8])] {
@@ -220,7 +220,7 @@ public final class AudioFramer {
     /// never assume group alignment). Returns false when no group was
     /// open.
     @discardableResult
-    public func abandonOpenGroup() -> Bool {
+    public mutating func abandonOpenGroup() -> Bool {
         guard !groupPackets.isEmpty else { return false }
         groupPackets.removeAll(keepingCapacity: true)
         counters.groupsAbandoned += 1
@@ -229,7 +229,7 @@ public final class AudioFramer {
 
     /// The group is full: parity shards ride out right behind the
     /// fourth data shard, stamped with the group's first capture µs.
-    private func completeGroup(
+    private mutating func completeGroup(
         geometry: FecGeometry
     ) throws -> [(envelope: Envelope, payload: [UInt8])] {
         defer {
@@ -263,7 +263,7 @@ public final class AudioFramer {
         return out
     }
 
-    private func makeEnvelope(
+    private mutating func makeEnvelope(
         shardIndex: Int,
         geometry: FecGeometry,
         timestamp: UInt64
