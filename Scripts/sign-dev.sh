@@ -1,15 +1,20 @@
 #!/bin/sh
-# Sign Lyte with a stable identity. Prefer an Apple Development certificate:
-# macOS Local Network privacy explicitly relies on Apple-issued signing for
-# reliable app tracking. Contributors without one fall back to the dedicated
+# Sign Lyte with a stable identity: an Apple Development certificate
+# (Local Network privacy relies on Apple-issued signing), else the
 # self-signed "Lyte Dev" identity, which still preserves Keychain ACLs.
 #
 # Usage: Scripts/sign-dev.sh <binary-or-.app> [<binary-or-.app> ...]
 #
-# One-time setup lives in Scripts/setup-dev-signing.sh (creates the identity in
-# a dedicated ~/Library/Keychains/lyte-signing keychain). Identity-bearing
-# binaries fail closed when it is absent: an ad-hoc fallback silently destroys
-# the Keychain ACL invariant and guarantees another authorization prompt.
+# One-time setup: Scripts/setup-dev-signing.sh. Identity-bearing binaries
+# fail closed without an identity: ad-hoc signing breaks the Keychain ACL
+# and guarantees another authorization prompt.
+#
+# Every target is signed with the hardened runtime and no entitlements: the
+# helper trusts the app's designated requirement and lyte-cli holds the
+# pairing key, so a same-user process must not inject (DYLD_*, task-port
+# attach). The binaries link only system libraries and use no JIT, so no
+# exception is needed. Consequence: debuggers cannot attach; debug the
+# unsigned SwiftPM binary or a copy re-signed with `codesign --force --sign -`.
 set -e
 
 if [ "$#" -eq 0 ]; then
@@ -104,14 +109,15 @@ for target in "$@"; do
         *.app) ident="dev.shreeve.lyte" ;;
         *)     ident="dev.shreeve.$(basename "$target")" ;;
     esac
-    codesign --force --sign "$IDENT_HASH" --identifier "$ident" --timestamp=none "$target"
+    codesign --force --sign "$IDENT_HASH" --identifier "$ident" \
+        --options runtime --timestamp=none "$target"
     codesign --verify --strict "$target"
     signature_details="$(codesign -d --verbose=4 "$target" 2>&1)"
     actual_ident="$(printf '%s\n' "$signature_details" \
         | awk -F= '/^Identifier=/{print $2; exit}')"
     requirement="$(codesign -d -r- "$target" 2>&1)"
     stable_requirement=false
-    if ! printf '%s\n' "$requirement" | rg -Fq "identifier \"$ident\""; then
+    if ! printf '%s\n' "$requirement" | grep -Fq "identifier \"$ident\""; then
         stable_requirement=false
     elif [ "$IDENTITY_KIND" = apple ]; then
         actual_team="$(printf '%s\n' "$signature_details" \
@@ -121,17 +127,23 @@ for target in "$@"; do
         fi
         if [ -n "$actual_team" ] \
             && { [ -z "$SELECTED_TEAM" ] || [ "$SELECTED_TEAM" = "$actual_team" ]; } \
-            && printf '%s\n' "$requirement" | rg -Fq 'anchor apple generic' \
-            && printf '%s\n' "$requirement" | rg -Fq \
+            && printf '%s\n' "$requirement" | grep -Fq 'anchor apple generic' \
+            && printf '%s\n' "$requirement" | grep -Fq \
                 "certificate leaf[subject.CN] = \"$IDENTITY\""
         then
             SELECTED_TEAM="$actual_team"
             stable_requirement=true
         fi
-    elif printf '%s\n' "$requirement" | rg -Fq \
+    elif printf '%s\n' "$requirement" | grep -Fq \
         "certificate root = H\"$(printf '%s' "$IDENT_HASH" | tr '[:upper:]' '[:lower:]')\""
     then
         stable_requirement=true
+    fi
+    if ! printf '%s\n' "$signature_details" \
+        | grep -Eq '^CodeDirectory .*flags=0x[[:xdigit:]]+\([^)]*runtime'
+    then
+        echo "error: $target is not signed with the hardened runtime" >&2
+        exit 1
     fi
     if [ "$actual_ident" != "$ident" ] \
         || [ "$stable_requirement" != true ]; then

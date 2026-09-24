@@ -185,7 +185,7 @@
   <div class="shell">
     <header class="brand">
       <h1>Lyte</h1>
-      <div class="tag">browser client · B-6 interaction shell</div>
+      <div class="tag">browser client · proof harness</div>
     </header>
 
     <div class="layout">
@@ -226,182 +226,157 @@
   </div>
 
   <script type="module">
-    import {
-      loadSidecarMeta,
-      runWebTransportCarrierProof,
-    } from "./webtransport-carrier.js";
-    import {
-      loadControlPeerMeta,
-      runConductorVideoProof,
-    } from "./conductor-video.js";
+    import { loadControlPeerMeta, loadSidecarMeta } from "./lyte-io.js";
+    import { runWebTransportCarrierProof } from "./webtransport-carrier.js";
+    import { runSessionProof } from "./session-proof.js";
     import { installCanvasInput } from "./interaction.js";
 
-    const status = document.getElementById("status");
-    const log = document.getElementById("log");
-    const metaEl = document.getElementById("meta");
-    const sessionLine = document.getElementById("session-line");
-    const rerun = document.getElementById("rerun");
-    const connectBtn = document.getElementById("connect");
-    const canvas = document.getElementById("frame-canvas");
-    const pinInput = document.getElementById("pin");
-    const hostKeyInput = document.getElementById("host-key");
-    const sidecarUrlInput = document.getElementById("sidecar-url");
+    const $ = (id) => document.getElementById(id);
+    const status = $("status");
+    const log = $("log");
+    const metaEl = $("meta");
+    const sessionLine = $("session-line");
+    const connectBtn = $("connect");
+    const rerunBtn = $("rerun");
+    const canvas = $("frame-canvas");
+    const pinInput = $("pin");
+    const hostKeyInput = $("host-key");
+    const sidecarUrlInput = $("sidecar-url");
+    // The smoke gate runs headless: audio renders offline there.
+    const smoke = new URLSearchParams(location.search).has("smoke");
 
-    let disposeInput = null;
     let harnessSidecar = null;
     let harnessPeer = null;
+    let running = false;
+    let activePump = null;
+    let activeSink = null;
+
+    // DOM input reaches the live session's carrier; nothing is sent
+    // before a session is ready (WASM refuses it softly).
+    installCanvasInput(canvas, {
+      sendInput: (kind, now, ...args) => {
+        const bridge = globalThis.lyteBrowser;
+        if (!activePump || !bridge) return;
+        activePump.send(bridge.controlSendInput(kind, now, ...args));
+      },
+      hostSize: () => activeSink?.frameSize || { width: 2048, height: 1280 },
+    });
 
     function setOutcome(passed, lines, extraMeta) {
       status.textContent = passed ? "PASS" : "FAIL";
       status.className = passed ? "pass" : "fail";
       log.textContent = lines;
       if (extraMeta) metaEl.textContent = extraMeta;
-      globalThis.lyteB6Passed = passed;
-      globalThis.lyteB5Passed = passed;
-      globalThis.lyteB4Passed = passed;
+      globalThis.lyteSessionPassed = passed;
     }
 
-    function paintSession(peer, sidecar, video) {
+    function paintSession(peer, sidecar, clientKey) {
       const st = globalThis.lyteBrowser?.interactionStats?.() || {};
       sessionLine.textContent =
         `peer ${peer.bindHost}:${peer.listenPort}\n` +
         `shape ${sidecar.shape}\n` +
-        `client ${video?.clientStaticPublicKeyHex || "?"}\n` +
+        `client ${clientKey || "?"}\n` +
         `input ${st.inputsSent || 0} sent / ${st.inputEchoes || 0} echoes\n` +
         `clipboard ${st.clipboardSent || 0}→${st.clipboardReceived || 0}\n` +
         `audio ${st.audioAssembled || 0} Opus packets`;
     }
 
-    async function runAll(opts = {}) {
-      globalThis.lyteB6Passed = undefined;
-      globalThis.lyteB5Passed = undefined;
-      globalThis.lyteB4Passed = undefined;
-      if (disposeInput) {
-        disposeInput();
-        disposeInput = null;
-      }
-
-      const b1 = globalThis.lyteBrowser?.runFrozenContracts?.();
-      if (!b1?.passed) {
-        setOutcome(
-          false,
-          (b1?.lines || "lyteBrowser bridge missing") +
-            "\nFAIL  wt-carrier — skipped (B-1 contracts not green)"
-        );
-        return;
-      }
-
-      let lines = b1.lines;
-      status.textContent = "WT…";
-      status.className = "pending";
-      log.textContent = lines + "\n\nDialing WebTransport sidecar…";
-
+    async function runAll({ sidecar, peer, hostStaticPublicKeyHex, pin }) {
+      if (running) return;
+      running = true;
+      connectBtn.disabled = true;
+      rerunBtn.disabled = true;
+      globalThis.lyteSessionPassed = undefined;
       try {
-        const sidecar =
-          opts.sidecar ||
-          harnessSidecar ||
-          (await loadSidecarMeta("./wt-sidecar.json"));
-        const peer =
-          opts.peer ||
-          harnessPeer ||
-          (await loadControlPeerMeta("./control-peer.json"));
-
-        pinInput.value = peer.pin || pinInput.value;
-        hostKeyInput.value =
-          peer.hostStaticPublicKeyHex || hostKeyInput.value;
-        sidecarUrlInput.value = sidecar.url || sidecarUrlInput.value;
-
-        const peerMode =
-          sidecar.shape === "webtransport-datagram-to-udp-peer";
-        let measuredCeiling = null;
-        let reportedMax = null;
-
-        if (peerMode) {
-          lines =
-            lines +
-            "\nSKIP  wt-carrier/* — sidecar in --udp-peer mode " +
-            "(B-2 echo bar landed; running B-3…B-6)";
+        const contracts = globalThis.lyteBrowser?.runFrozenContracts?.();
+        if (!contracts?.passed) {
+          setOutcome(false, (contracts?.lines || "lyteBrowser bridge missing") +
+            "\nFAIL  session — skipped (frozen contracts not green)");
+          return;
+        }
+        let lines = contracts.lines;
+        status.textContent = "SESSION…";
+        status.className = "pending";
+        let carrierMeta = "";
+        if (sidecar.shape === "webtransport-datagram-to-udp-peer") {
+          lines += "\nSKIP  wt-carrier/* — sidecar relays to a peer (echo proofs need echo mode)";
         } else {
           const wt = await runWebTransportCarrierProof(sidecar);
-          lines = lines + "\n" + wt.lines;
-          measuredCeiling = wt.measuredCeiling;
-          reportedMax = wt.reportedMaxDatagramSize;
+          lines += "\n" + wt.lines;
+          carrierMeta = `measuredCeiling=${wt.measuredCeiling} B reportedMax=${wt.reportedMaxDatagramSize}\n`;
           if (!wt.passed) {
             setOutcome(false, lines, `adapter=${wt.adapter} url=${wt.url}`);
             return;
           }
         }
-
-        status.textContent = "SESSION…";
-        log.textContent =
-          lines + "\n\nControl + Conductor video + interaction organs…";
-        disposeInput = installCanvasInput(canvas, {
-          hostWidth: 2048,
-          hostHeight: 1280,
-          onSend: () => {
-            paintSession(peer, sidecar, {});
+        log.textContent = lines + "\n\nControl + Conductor video + interaction organs…";
+        const proof = await runSessionProof({
+          sidecar,
+          hostStaticPublicKeyHex,
+          pin,
+          canvas,
+          offlineAudio: smoke,
+          onOpen: (pump, sink) => {
+            activePump = pump;
+            activeSink = sink;
           },
         });
-
-        const video = await runConductorVideoProof({
-          sidecar,
-          hostStaticPublicKeyHex:
-            hostKeyInput.value.trim() || peer.hostStaticPublicKeyHex,
-          pin: pinInput.value.trim() || peer.pin,
-          canvas,
-        });
-        lines = lines + "\n" + video.lines;
-        globalThis.lyteB3Passed = !!(
-          video.lines.includes("PASS  control-session/noise-pair-caps") &&
-          video.lines.includes("PASS  control-session/teardown")
-        );
-        paintSession(peer, sidecar, video);
-        const meta =
+        paintSession(peer, sidecar, proof.clientStaticPublicKeyHex);
+        setOutcome(
+          proof.passed,
+          lines + "\n" + proof.lines,
           `adapter=${sidecar.adapter} url=${sidecar.url} shape=${sidecar.shape}\n` +
-          `controlPeer=${peer.bindHost}:${peer.listenPort} ` +
-          `clientStatic=${video.clientStaticPublicKeyHex || "?"}\n` +
-          (measuredCeiling != null
-            ? `measuredCeiling=${measuredCeiling} B reportedMax=${reportedMax}\n`
-            : "") +
-          (video.meta || "");
-        setOutcome(video.passed, lines, meta);
+            `controlPeer=${peer.bindHost}:${peer.listenPort}\n` + carrierMeta + proof.meta
+        );
       } catch (error) {
-        lines =
-          lines +
-          "\nFAIL  browser-proof — " +
-          String(error?.message || error);
-        setOutcome(false, lines);
+        setOutcome(false, `FAIL  browser-proof — ${error?.message || error}`);
+      } finally {
+        activePump = null;
+        activeSink = null;
+        running = false;
+        connectBtn.disabled = false;
+        rerunBtn.disabled = false;
       }
+    }
+
+    /** Connect uses what the form says; Re-run uses the harness values. */
+    function formRun() {
+      return runAll({
+        sidecar: { ...harnessSidecar, url: sidecarUrlInput.value.trim() || harnessSidecar.url },
+        peer: harnessPeer,
+        hostStaticPublicKeyHex: hostKeyInput.value.trim(),
+        pin: pinInput.value.trim(),
+      });
+    }
+
+    function harnessRun() {
+      return runAll({
+        sidecar: harnessSidecar,
+        peer: harnessPeer,
+        hostStaticPublicKeyHex: harnessPeer.hostStaticPublicKeyHex,
+        pin: harnessPeer.pin,
+      });
     }
 
     try {
       const { init } = await import("./index.js");
       await init();
-      globalThis.lyteB1Passed = !!globalThis.lyteB1Passed;
-
-      harnessSidecar = await loadSidecarMeta("./wt-sidecar.json");
-      harnessPeer = await loadControlPeerMeta("./control-peer.json");
+      harnessSidecar = await loadSidecarMeta();
+      harnessPeer = await loadControlPeerMeta();
       pinInput.value = harnessPeer.pin || "";
       hostKeyInput.value = harnessPeer.hostStaticPublicKeyHex || "";
       sidecarUrlInput.value = harnessSidecar.url || "";
       sessionLine.textContent =
         `Harness ready — peer ${harnessPeer.bindHost}:${harnessPeer.listenPort}\n` +
         `PIN prefilled from control-peer.json`;
-      connectBtn.disabled = false;
-      rerun.disabled = false;
-
-      // Auto-run for smoke / serve harness (product UI still visible).
-      await runAll({ sidecar: harnessSidecar, peer: harnessPeer });
-
-      connectBtn.addEventListener("click", () => runAll());
-      rerun.addEventListener("click", () => runAll());
+      connectBtn.addEventListener("click", formRun);
+      rerunBtn.addEventListener("click", harnessRun);
+      // The harness auto-runs once; serve.sh keeps lyte-control-peer
+      // serving sessions until it stops.
+      await harnessRun();
     } catch (error) {
       setOutcome(false, String(error?.stack || error));
-      globalThis.lyteB1Passed = false;
-      globalThis.lyteB3Passed = false;
-      globalThis.lyteB4Passed = false;
-      globalThis.lyteB5Passed = false;
-      globalThis.lyteB6Passed = false;
+      globalThis.lyteContractsPassed = globalThis.lyteContractsPassed ?? false;
       sessionLine.textContent = "Failed to load harness meta or WASM.";
     }
   </script>

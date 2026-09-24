@@ -11,31 +11,12 @@ import LyteWireTestKit
 
 final class CapabilityVectorFileTests: XCTestCase {
 
-    private static let vectorsPath =
-        packageRoot + "/Vectors/capabilities-v1.json"
-
-    private static let packageRoot = WireTestPaths.packageRoot
-
     private func loadFile() throws -> CapabilityVectorFile {
-        try CapabilityVectorFile.load(from: Self.vectorsPath)
+        try CapabilityVectorFile.loadCommitted()
     }
 
     func testFileIdentity() throws {
-        let file = try loadFile()
-        XCTAssertEqual(file.format, CapabilityVectorFile.expectedFormat)
-        XCTAssertEqual(file.formatVersion, 1)
-        XCTAssertEqual(file.wireVersion, Int(WireVersion.major))
-        XCTAssertFalse(file.cborVectors.isEmpty)
-        XCTAssertFalse(file.setVectors.isEmpty)
-        XCTAssertFalse(file.intersectVectors.isEmpty)
-        XCTAssertFalse(file.messageVectors.isEmpty)
-        let names = file.cborVectors.map(\.name)
-            + file.setVectors.map(\.name)
-            + file.intersectVectors.map(\.name)
-            + file.messageVectors.map(\.name)
-        XCTAssertEqual(
-            Set(names).count, names.count, "vector names must be unique"
-        )
+        XCTAssertEqual(try loadFile().identityProblems, [])
     }
 
     func testCborVectors() throws {
@@ -58,7 +39,7 @@ final class CapabilityVectorFileTests: XCTestCase {
                         return XCTFail("\(vector.name): foreign error")
                     }
                     XCTAssertEqual(
-                        cborErrorName(error), vector.error, vector.name
+                        vectorErrorName(error), vector.error, vector.name
                     )
                 }
             }
@@ -97,7 +78,7 @@ final class CapabilityVectorFileTests: XCTestCase {
                         return XCTFail("\(vector.name): foreign error")
                     }
                     XCTAssertEqual(
-                        capabilityErrorName(error), vector.error,
+                        vectorErrorName(error), vector.error,
                         vector.name
                     )
                 }
@@ -168,7 +149,7 @@ final class CapabilityVectorFileTests: XCTestCase {
                         return XCTFail("\(vector.name): foreign error")
                     }
                     XCTAssertEqual(
-                        capabilityMessageErrorName(error), vector.error,
+                        vectorErrorName(error), vector.error,
                         vector.name
                     )
                 }

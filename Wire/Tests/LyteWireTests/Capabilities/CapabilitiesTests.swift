@@ -271,6 +271,44 @@ final class CapabilitiesTests: XCTestCase {
         XCTAssertEqual(b.intersecting(a).unknownEntries, [shared])
     }
 
+    /// Flag declarations land in canonical key order whatever order the
+    /// shells declare them in, so sets built differently but meaning the
+    /// same compare equal — and intersection is commutative as a value,
+    /// not only as encoded bytes.
+    func testFlagDeclarationOrderIsCanonical() throws {
+        let a = Capabilities.wireDefault
+            .declaringCursorShape()
+            .declaringClipboardText()
+            .declaringBulkTransfer()
+        let b = Capabilities.wireDefault
+            .declaringBulkTransfer()
+            .declaringCursorShape()
+            .declaringClipboardText()
+        XCTAssertEqual(a, b)
+        XCTAssertEqual(
+            a.unknownEntries.map(\.key),
+            [CapabilityKey.clipboardText, CapabilityKey.bulkTransfer,
+             CapabilityKey.cursorShape].map { CborValue.unsigned($0) }
+        )
+        let c = Capabilities.wireDefault
+            .declaringCursorShape()
+            .declaringBulkTransfer()
+        XCTAssertEqual(a.intersecting(c), c.intersecting(a))
+        XCTAssertEqual(try Capabilities.decodeCbor(a.encodeCbor()), a)
+
+        // Declaring over a foreign `false` replaces it rather than
+        // producing a duplicate key the encoder would refuse.
+        var refused = Capabilities.wireDefault
+        refused.unknownEntries = [CborMapEntry(
+            key: .unsigned(CapabilityKey.cursorShape), value: .bool(false)
+        )]
+        XCTAssertFalse(refused.cursorShape)
+        let declared = refused.declaringCursorShape()
+        XCTAssertTrue(declared.cursorShape)
+        XCTAssertEqual(declared.unknownEntries.count, 1)
+        XCTAssertNoThrow(try declared.encodeCbor())
+    }
+
     func testIntersectAlgebraProperties() {
         var rng = SplitMix64(seed: 0x57C0_DE03)
         for iteration in 0..<500 {

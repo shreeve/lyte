@@ -1,39 +1,25 @@
-// The sans-IO capability negotiation machine (W7) — HS-8's and CL-7's
-// explicitly deferred third item. One machine, two roles, mirroring the
-// SessionStateMachine pattern: the shell owns carriage (declarations
-// and updates ride the sealed ARQ ordered stream; ordering and
-// exactly-once delivery are the ARQ's guarantees, assumed here), this
-// type owns judgment — what to send, what an inbound message means,
-// and what the session may now do.
+// The sans-IO capability negotiation machine. The shell owns carriage
+// (the sealed ARQ ordered stream guarantees order and exactly-once); this
+// type owns judgment — what to send, what an inbound message means, and
+// what the session may now do.
 //
-// Exchange shape: `start()` yields the local declaration to send (the
-// first post-establishment word on the CTRL stream); `receive` of the
-// peer's declaration computes agreed = local ∩ remote and either
-// settles the session or fails it (no common video codec / chroma mode
-// = no session — a typed failure the shell turns into a teardown).
-// There is no accept round: the intersection is the agreement, and
-// both ends compute it identically from the same two declarations.
+// `start()` yields the local declaration; `receive` of the peer's
+// declaration computes agreed = local ∩ remote and settles the session,
+// or fails it when no video codec or chroma mode is common.
 //
-// Renegotiation (v1): host→client only — the host owns pacing and
-// geometry, so the media sender proposes (`.host` role; the client
-// answers). One proposal outstanding at a time; the ordered stream
-// makes proposal/answer pairing positional, and the ack's echoed
-// parameters re-verify it byte-wise anyway. Only registry keys marked
-// renegotiable may move (v1: maxDatagramBytes), only within
-// [1152, agreed ceiling] — an out-of-bounds or fixed-key proposal is
-// answered with a rejected ack carrying the proposal verbatim, never
-// a teardown: a broken proposal wastes a round trip, an accepted one
-// changes `operativeMaxDatagramBytes` on both ends (applied at the
-// next IDR boundary; that timing is shell business).
+// Renegotiation is host→client only, one proposal outstanding at a time.
+// Only renegotiable keys may move, within [1152, agreed ceiling]; a bad
+// proposal draws a rejected ack echoing it, never a teardown. An accepted
+// one moves `operativeMaxDatagramBytes` on both ends (applied by the
+// shell at the next IDR boundary).
 //
-// Everything protocol-violating (a second declaration, an update from
-// the non-proposer, an ack with nothing outstanding, an ack echoing
-// the wrong bytes, any capability message before establishment's
-// declaration) throws — the shell treats a throw as a peer protocol
-// violation, same doctrine as the codecs.
+// Protocol violations (a second declaration, an update from the
+// non-proposer, an ack with nothing outstanding or echoing the wrong
+// bytes, a capability message before the declaration) throw; the shell
+// treats a throw as a peer protocol violation.
 
 /// Which end this machine negotiates for. The role decides who may
-/// propose renegotiation (v1: the host), nothing else — declarations
+/// propose renegotiation (the host), nothing else — declarations
 /// are symmetric.
 public enum CapabilityRole: Sendable {
     case host
@@ -46,7 +32,7 @@ public enum CapabilityEvent: Hashable, Sendable {
     /// `operativeMaxDatagramBytes` starts at the 1152 B default
     /// regardless of the agreed ceiling.
     case agreed(Capabilities)
-    /// A peer update was answered — send this ack. `accepted` says
+    /// A peer update was answered — send this ack. Its `status` says
     /// which way; on accept the negotiator has already moved its
     /// operative value.
     case answerUpdate(CapabilityUpdateAck)
@@ -67,7 +53,7 @@ public enum CapabilityNegotiationError: Error, Hashable, Sendable {
     case duplicateDeclaration
     /// A capability message arrived before the exchange settled.
     case notEstablished
-    /// An update arrived at the proposing end (v1: the host), or a
+    /// An update arrived at the proposing end (the host), or a
     /// local propose was attempted at the answering end.
     case wrongRoleForUpdate
     /// An ack arrived with no proposal outstanding.
@@ -136,7 +122,7 @@ public struct CapabilityNegotiator: Sendable {
 
     // MARK: - Renegotiation
 
-    /// Builds a geometry-raise proposal (the DPLPMTUD seam). Host
+    /// Builds a geometry-raise proposal. Host
     /// role only, one outstanding at a time, value validated against
     /// the agreed ceiling before it costs a round trip.
     public mutating func proposeMaxDatagramBytes(
@@ -163,7 +149,7 @@ public struct CapabilityNegotiator: Sendable {
         return CapabilityUpdate(parameters: parameters)
     }
 
-    /// A peer update (client role only in v1). Judges the proposal and
+    /// A peer update (client role only). Judges the proposal and
     /// returns the ack to send; acceptance moves the operative value.
     /// A bad proposal draws a rejected ack, not a throw — only
     /// role/state violations are protocol errors.

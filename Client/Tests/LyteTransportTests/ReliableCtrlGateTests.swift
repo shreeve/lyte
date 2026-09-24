@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import LyteClientTestKit
 import LyteWire
 import LyteWireTestKit
 @testable import LyteTransport
@@ -30,16 +31,11 @@ final class ReliableCtrlGateTests: XCTestCase {
     /// The host role, sans-IO: Noise responder, seal/unseal, a
     /// host-clock ArqEndpoint, conn-id tagging, carrier-sized packing, and
     /// the bookkeeping the gate asserts against.
-    private final class HostStandIn: NoiseHandshakeIO {
-        let staticKeys = NoiseKeyPair.generate()
-        let connectionId: ConnectionId
-        var transport: NoiseTransport?
-        var ctrlSeq: UInt16 = 0
-        var arq: ArqEndpoint<HostClock>
+    private final class HostStandIn: ScriptedHost {
+        var peer: SealedCtrlPeer<HostClock>
+        var handshakeOutbox: [[UInt8]] = []
         var beaconSeq: UInt32 = 0
-        private var handshakeOutbox: [[UInt8]] = []
 
-        var received: [(group: ArqGroupId, bytes: [UInt8])] = []
         var oneShotAcks: [ArqGroupId] = []
         var arqIgnored = 0
         /// Byte-identical network duplicates die at the transport's
@@ -51,68 +47,28 @@ final class ReliableCtrlGateTests: XCTestCase {
         /// every-packet tagging evidence.
         var clientConnIdTags = 0
 
+        var progressMark: Int { peer.received.count }
+        var connectionId: ConnectionId { peer.connectionId! }
+        var arq: ArqEndpoint<HostClock> {
+            get { peer.arq }
+            set { peer.arq = newValue }
+        }
+        var received: [(group: ArqGroupId, bytes: [UInt8])] {
+            peer.received
+        }
+
         init(arqConfig: ArqConfig = ArqConfig()) {
             var rng = SplitMix64(seed: 0xC10_7)
-            connectionId = ConnectionId.random(using: &rng)
-            var bounded = arqConfig
-            bounded.maxDatagramPayloadByteCount = min(
-                bounded.maxDatagramPayloadByteCount,
-                WireBudget.maxConnectionIdTaggedPlaintextByteCount
-            )
-            arq = ArqEndpoint(channel: .ctrl, config: bounded)
-        }
-
-        // NoiseHandshakeIO — the client's pre-thread handshake window,
-        // answered in-process (fault injection starts after; retry
-        // under handshake loss is NoiseClientTests' subject).
-
-        func sendToHost(_ datagram: [UInt8]) throws {
-            guard let (envelope, payload) = try? Envelope.decode(datagram[...]),
-                  envelope.channel == .ctrl,
-                  payload.first == CtrlMessageType.noiseHandshake1
-            else { return }
-            var responder = try NoiseSession(
-                role: .responder, staticKeys: staticKeys)
-            _ = try responder.readMessage1(payload.dropFirst())
-            let message2 = try responder.writeMessage2()
-            transport = try responder.makeTransport()
-            // Message 2 rides bare (pre-transport) but conn-id-tagged,
-            // exactly as the real Session's sendCtrl builds it.
-            let carriage = Envelope(
-                channel: .ctrl,
-                seq: ChannelSeq(rawValue: ctrlSeq),
-                frame: FrameNumber(rawValue: 0),
-                timestamp: 0,
-                fec: 0,
-                extensions: [connectionId.wireExtension]
-            )
-            ctrlSeq &+= 1
-            handshakeOutbox.append(try carriage.encode(
-                payload: [CtrlMessageType.noiseHandshake2] + message2))
-        }
-
-        func receiveDatagram(timeoutMilliseconds: Int) throws -> [UInt8]? {
-            handshakeOutbox.isEmpty ? nil : handshakeOutbox.removeFirst()
+            peer = SealedCtrlPeer(
+                connectionId: ConnectionId.random(using: &rng),
+                arqConfig: arqConfig)
         }
 
         // The established send path: conn-id-tagged envelope, header
         // bytes as AAD, sealed under the transport.
 
         func sealedCtrl(body: [UInt8], hostMicros: UInt64) throws -> [UInt8] {
-            let envelope = Envelope(
-                channel: .ctrl,
-                seq: ChannelSeq(rawValue: ctrlSeq),
-                frame: FrameNumber(rawValue: 0),
-                timestamp: hostMicros,
-                fec: 0,
-                extensions: [connectionId.wireExtension]
-            )
-            ctrlSeq &+= 1
-            let header = try envelope.encode(payload: [])
-            let payload = try transport!.seal(
-                plaintext: body[...], aad: header[...], envelope: envelope
-            )
-            let datagram = try envelope.encode(payload: payload)
+            let datagram = try peer.datagram(body: body, timestamp: hostMicros)
             XCTAssertLessThanOrEqual(
                 datagram.count, WireBudget.maxDatagramByteCount,
                 "host datagram over the 1152 B budget"
@@ -137,19 +93,10 @@ final class ReliableCtrlGateTests: XCTestCase {
         /// recorded, everything else surfaced loud.
         func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
             XCTAssertLessThanOrEqual(bytes.count, WireBudget.maxDatagramByteCount)
-            let (envelope, payload) = try Envelope.decode(bytes)
-            let aad = bytes[bytes.startIndex..<payload.startIndex]
-            let plaintext: [UInt8]
-            do {
-                plaintext = try transport!.unseal(
-                    wirePayload: payload, aad: aad, envelope: envelope
-                )
-            } catch NoiseError.replayedSequence, NoiseError.staleSequence {
+            switch try peer.absorb(bytes, nowMicros: nowMicros) {
+            case .duplicate:
                 replayDrops += 1
-                return
-            }
-            switch plaintext.first {
-            case CtrlMessageType.arqSegment, CtrlMessageType.arqAck:
+            case .reliable(let envelope, let plaintext, let events):
                 XCTAssertLessThanOrEqual(
                     plaintext.count,
                     WireBudget.maxConnectionIdTaggedPlaintextByteCount,
@@ -164,37 +111,41 @@ final class ReliableCtrlGateTests: XCTestCase {
                                    "the client must echo the session's conn-id")
                     clientConnIdTags += 1
                 }
-                for event in arq.ingest(
-                    payload: plaintext,
-                    now: HostTimestamp(microseconds: nowMicros)
-                ) {
+                for event in events {
                     switch event {
-                    case .message(let group, let bytes):
-                        received.append((group, bytes))
+                    case .message:
+                        break // in `received`
                     case .oneShotAcknowledged(let group):
                         oneShotAcks.append(group)
                     case .ignored:
                         arqIgnored += 1
                     }
                 }
-            case CtrlMessageType.idrRequest:
-                idrSeen = true
-            case CtrlMessageType.beaconEcho:
-                echoesSeen += 1
-            default:
-                XCTFail("unexpected client CTRL type \(plaintext.first ?? 0)")
+            case .plain(_, let plaintext):
+                switch plaintext.first {
+                case CtrlMessageType.idrRequest:
+                    idrSeen = true
+                case CtrlMessageType.beaconEcho:
+                    echoesSeen += 1
+                default:
+                    XCTFail("unexpected client CTRL type \(plaintext.first ?? 0)")
+                }
+            case .handshakeCompleted, .unopened:
+                break
             }
         }
 
         /// Drains the host endpoint's carrier-sized output into sealed
         /// CTRL datagrams. ArqEndpoint owns the only packing pass.
         func pollOut(nowMicros: UInt64) throws -> [[UInt8]] {
-            let (payloads, _) = arq.poll(
-                now: HostTimestamp(microseconds: nowMicros)
-            )
-            return try payloads.map {
-                try sealedCtrl(body: $0, hostMicros: nowMicros)
+            let datagrams = try peer.pollOut(nowMicros: nowMicros)
+            for datagram in datagrams {
+                XCTAssertLessThanOrEqual(
+                    datagram.count, WireBudget.maxDatagramByteCount,
+                    "host datagram over the 1152 B budget"
+                )
             }
+            return datagrams
         }
     }
 
@@ -211,7 +162,7 @@ final class ReliableCtrlGateTests: XCTestCase {
         let reliable: ReliableCtrlEndpoint
         /// Everything the client transmitted, in order (the SimNet
         /// forwarding cursor reads from here).
-        let outbound: LockedDatagrams
+        let outbound: LockedBytePile
         private let capturedEvents: LockedEvents
 
         var beaconSeqsSeen: [UInt32] = []
@@ -224,7 +175,7 @@ final class ReliableCtrlGateTests: XCTestCase {
                 hostStaticPublicKey: host.staticKeys.publicKey,
                 attempts: 2, attemptTimeoutMilliseconds: 200)
             try crypto.performHandshake(io: host)
-            let outbound = LockedDatagrams()
+            let outbound = LockedBytePile()
             let sender = TransportSender(crypto: crypto, transmit: {
                 outbound.append($0)
                 return true
@@ -286,14 +237,6 @@ final class ReliableCtrlGateTests: XCTestCase {
                 return nil
             }
         }
-    }
-
-    private final class LockedDatagrams: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [[UInt8]] = []
-        func append(_ d: [UInt8]) { lock.lock(); stored.append(d); lock.unlock() }
-        var all: [[UInt8]] { lock.lock(); defer { lock.unlock() }; return stored }
-        var count: Int { lock.lock(); defer { lock.unlock() }; return stored.count }
     }
 
     private final class LockedEvents: @unchecked Sendable {
@@ -509,16 +452,18 @@ final class ReliableCtrlGateTests: XCTestCase {
         XCTAssertTrue(host.idrSeen,
                       "the exempt IDR request must land mid-storm")
 
-        print("CL-7 gate: \(clientStream.count)+\(clientOneShotMessages.count) client and "
-            + "\(hostStream.count)+\(hostOneShots.count) host messages "
-            + "exactly-once in-order through 5% loss / 2% dup / 4 ms jitter "
-            + "(\(net.lostCount) lost, \(net.duplicatedCount) duplicated of "
-            + "\(net.sentCount) datagrams; \(stats.datagramsSent) client ARQ "
-            + "datagrams, \(host.clientConnIdTags) conn-id-tagged; converged at "
-            + "\(converged.map(String.init) ?? "-") µs virtual; "
-            + "\(harness.beaconSeqsSeen.count) beacons through the peek, "
-            + "none retransmitted; \(harness.replayDrops)+\(host.replayDrops) "
-            + "replay drops)")
+        let convergedText = converged.map(String.init) ?? "-"
+        print("""
+            CL-7 gate: \(clientStream.count)+\(clientOneShotMessages.count) \
+            client and \(hostStream.count)+\(hostOneShots.count) host \
+            messages exactly-once in-order through 5% loss / 2% dup / 4 ms \
+            jitter (\(net.lostCount) lost, \(net.duplicatedCount) duplicated \
+            of \(net.sentCount) datagrams; \(stats.datagramsSent) client ARQ \
+            datagrams, \(host.clientConnIdTags) conn-id-tagged; converged at \
+            \(convergedText) µs virtual; \(harness.beaconSeqsSeen.count) \
+            beacons through the peek, none retransmitted; \
+            \(harness.replayDrops)+\(host.replayDrops) replay drops)
+            """)
     }
 
     // MARK: PTO wake clears armed-deadline book before service
@@ -746,6 +691,29 @@ final class ReliableCtrlGateTests: XCTestCase {
             harness.outbound.count - cursor, 2,
             "the client carrier must not widen a caller's smaller ceiling"
         )
+    }
+
+    /// One-shot groups come from ArqEndpoint's allocator (its own tests
+    /// pin the wrap past 0): ids ascend from 1, a refused send consumes
+    /// none, and the peer receives every group.
+    func testOneShotGroupsComeFromTheArqAllocator() throws {
+        let harness = try Harness()
+        let host = harness.host
+        harness.absorb(try host.beaconDatagram(hostMicros: 100), tMicros: 200)
+        let now = ClientTimestamp(microseconds: 1_000_000)
+        var groups: [ArqGroupId] = []
+        groups.append(try harness.reliable.sendOneShot(
+            [CtrlMessageType.idleFrame, 0], now: now))
+        XCTAssertThrowsError(try harness.reliable.sendOneShot([], now: now))
+        for index in 1..<3 {
+            groups.append(try harness.reliable.sendOneShot(
+                [CtrlMessageType.idleFrame, UInt8(index)], now: now))
+        }
+        XCTAssertEqual(groups.map(\.rawValue), [1, 2, 3])
+        for datagram in harness.outbound.all {
+            try host.absorb(datagram, nowMicros: 1_000_000)
+        }
+        XCTAssertEqual(host.received.map(\.group.rawValue), [1, 2, 3])
     }
 
     /// Before the first host datagram there is no conn-id to echo; the

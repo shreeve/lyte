@@ -1,20 +1,23 @@
 // The clipboard-codec vector-file model and loader:
-// `Wire/Vectors/clipboard-v1.json` — the CL-15 clipboard-text codecs
-// (ClipboardSet 0x1A, ClipboardAnnounce 0x1B) and the key-10 capability
-// spine, born in the registry rather than promoted. Same doctrine as
-// the other loaders: TestKit may import Foundation, LyteWire may not.
+// `Wire/Vectors/clipboard-v1.json` — ClipboardSet 0x1A, ClipboardAnnounce
+// 0x1B, and the key-10 capability.
 
 import Foundation
 import LyteWire
 
 /// One vector file: `Wire/Vectors/clipboard-v1.json`.
-public struct ClipboardVectorFile: Codable, Sendable {
+public struct ClipboardVectorFile: FrozenVectorFile {
     public var format: String
     public var formatVersion: Int
     public var wireVersion: Int
     public var vectors: [ClipboardVector]
 
     public static let expectedFormat = "lyte-wire-clipboard-vectors"
+    public static let fileName = "clipboard-v1.json"
+
+    public var vectorNameGroups: [[String]] {
+        [vectors.map(\.name)]
+    }
 
     public init(
         format: String,
@@ -28,21 +31,13 @@ public struct ClipboardVectorFile: Codable, Sendable {
         self.vectors = vectors
     }
 
-    public static func load(from path: String) throws -> ClipboardVectorFile {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(ClipboardVectorFile.self, from: data)
-    }
 }
 
-/// One clipboard vector. `codec` names the codec under test; kinds
-/// match the control file (`roundtrip` encodes the typed fields to
-/// exactly `messageHex` and decodes back; `decodeReject` throws
-/// `error`, a `ClipboardMessageError` case name). Text rides as
-/// `textUtf8Hex` — hex of the UTF-8 bytes, so the file is
-/// encoding-unambiguous and auditable by eye. For `capabilitySet`,
-/// `messageHex` is a declaration's CBOR map: decode must answer
-/// exactly `clipboardText` through the key-10 accessor and re-encode
-/// byte-exactly (the key-9 precedent).
+/// One clipboard vector. `codec` names the codec under test; kinds match
+/// the control file (`error` is a `ClipboardMessageError` case name). Text
+/// rides as `textUtf8Hex`. For `capabilitySet`, `messageHex` is a
+/// declaration's CBOR map: decode must answer exactly `clipboardText`
+/// through the key-10 accessor and re-encode byte-exactly.
 public struct ClipboardVector: Codable, Sendable {
     public var name: String
     public var description: String
@@ -85,19 +80,5 @@ public struct ClipboardVector: Codable, Sendable {
         self.textUtf8Hex = textUtf8Hex
         self.clipboardText = clipboardText
         self.error = error
-    }
-}
-
-/// Stable names for `ClipboardMessageError` cases, as they appear in
-/// vectors.
-public func clipboardMessageErrorName(
-    _ error: ClipboardMessageError
-) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .unexpectedType: return "unexpectedType"
-    case .emptyText: return "emptyText"
-    case .textOverBudget: return "textOverBudget"
-    case .invalidUtf8: return "invalidUtf8"
     }
 }

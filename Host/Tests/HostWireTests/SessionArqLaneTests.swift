@@ -14,41 +14,6 @@ final class SessionArqLaneTests: XCTestCase {
         )
     }
 
-    func testSessionKeepsExactlyTwoNamedLaneSlotsAndOneServiceLoop() throws {
-        var components = #filePath.split(
-            separator: "/", omittingEmptySubsequences: false
-        )
-        components.removeLast(3)
-        let packageRoot = components.joined(separator: "/")
-        let session = try String(contentsOfFile:
-            packageRoot + "/Sources/HostWire/Session.swift",
-            encoding: .utf8
-        )
-
-        XCTAssertTrue(session.contains(
-            "private var ctrlArqLane: SessionArqLane"
-        ))
-        XCTAssertTrue(session.contains(
-            "private var bulkArqLane: SessionArqLane?"
-        ))
-        for retired in [
-            "private var arq:", "nextArqWakeNS", "nextBulkArqWakeNS",
-            "ctrlSeq", "bulkSeq", "private func serviceBulkArq(",
-            "private func serviceArq(",
-        ] {
-            XCTAssertFalse(session.contains(retired), retired)
-        }
-        XCTAssertEqual(
-            session.components(separatedBy: "private func serviceArqLane(")
-                .count - 1,
-            1
-        )
-        XCTAssertTrue(session.contains(
-            "sequence: ctrlArqLane.pendingEnvelopeSequence"
-        ))
-        XCTAssertTrue(session.contains("ctrlArqLane.commitEnvelopeSent()"))
-    }
-
     func testSendPollPtoAndAckClearTheExactNanosecondDeadline() throws {
         var sender = SessionArqLane(channel: .ctrl, config: config)
         var receiver = SessionArqLane(channel: .ctrl, config: config)
@@ -81,9 +46,9 @@ final class SessionArqLaneTests: XCTestCase {
     {
         var control = SessionArqLane(channel: .ctrl, config: config)
         var bulk = SessionArqLane(channel: .bulkTransfer, config: config)
-        try control.sendOneShot(
-            [0x11], group: ArqGroupId(rawValue: 7), now: 0
-        )
+        let group = try control.sendOneShot([0x11], now: 0)
+        XCTAssertEqual(group, ArqGroupId(rawValue: 1),
+                       "the endpoint allocates one-shot groups from 1")
         try bulk.send([0x22], now: 5_000_000)
 
         let controlPayload = try XCTUnwrap(control.poll(now: 0).first)
@@ -96,7 +61,7 @@ final class SessionArqLaneTests: XCTestCase {
         guard case .segment(let controlSegment) = controlFrames[0],
               case .segment(let bulkSegment) = bulkFrames[0]
         else { return XCTFail("both polls must emit segments") }
-        XCTAssertEqual(controlSegment.group, ArqGroupId(rawValue: 7))
+        XCTAssertEqual(controlSegment.group, group)
         XCTAssertEqual(bulkSegment.group, .orderedStream)
 
         XCTAssertEqual(control.pendingEnvelopeSequence.rawValue, 0)

@@ -1,19 +1,14 @@
 #!/usr/bin/env node
-// lyte-wt-sidecar — same-box WebTransport ↔ UDP opaque datagram relay.
-//
-// Browser Chrome speaks WebTransport datagrams; this process relays opaque
-// bytes onto a UDP peer and back. It never parses Lyte envelopes or Noise —
-// ciphertext-only by construction. Does not bind standing host UDP 41151.
-//
-// Modes:
-//   • echo (default, B-2): loopback UDP echo for carrier proofs
-//   • --udp-peer host:port (B-3): forward to a real Lyte host / control peer
-//
-// Writes JSON metadata (url, cert hash, measured ports) to --meta-out so the
-// proof page can dial with serverCertificateHashes.
+// lyte-wt-sidecar — same-box WebTransport ↔ UDP opaque datagram relay. It
+// never parses Lyte envelopes or Noise, and never binds the standing host
+// UDP 41151. Modes: echo (default, loopback UDP echo for carrier proofs) or
+// --udp-peer host:port (forward to a Lyte host / control peer). Each
+// WebTransport session gets its own UDP socket. Writes JSON metadata (url,
+// cert hash, ports) to --meta-out for serverCertificateHashes dialing.
 
 import { createHash } from "node:crypto";
 import { createSocket } from "node:dgram";
+import { lookup } from "node:dns/promises";
 import {
   mkdirSync,
   mkdtempSync,
@@ -148,70 +143,86 @@ function listenUdp(host) {
   });
 }
 
-async function relaySession(session, relay, destination) {
+// Datagrams waiting for the WebTransport writer. Past the bound the oldest
+// are dropped: a relay must not become an opaque browser-side buffer.
+const MAX_PENDING_WT_WRITES = 4096;
+// Consecutive failed writes to one datagram before it is given up.
+const MAX_WRITE_RETRIES = 500;
+
+/**
+ * One WebTransport session ↔ its own UDP socket, so each session has its own
+ * 4-tuple toward the peer and hears only the peer's replies to it.
+ */
+async function relaySession(session, host, destination) {
   await session.ready;
+  const relay = await listenUdp(host);
+  try {
+    // Absorb paced FEC bursts while the WT write queue drains.
+    relay.setRecvBufferSize(4 * 1024 * 1024);
+  } catch {
+    /* best-effort */
+  }
   const writer = session.datagrams.writable.getWriter();
   const reader = session.datagrams.readable.getReader();
-
-  // Serialize WT writes. Fire-and-forget `.catch(() => {})` silently
-  // dropped FEC shards under burst (B-5 fecImpossible). Queue holds
-  // opaque datagrams until the WT writer accepts them.
-  // Never wipe the whole queue on a single write failure — that was
-  // truncating corpus replay after ~7 frames.
   const pending = [];
+  let open = true;
   let draining = false;
-  let writeFailures = 0;
   let udpIn = 0;
   let wtOut = 0;
+  let dropped = 0;
+  let writeFailures = 0;
+
+  // Writes are serialized: fire-and-forget writes lose datagrams under burst.
   const drainWrites = async () => {
     if (draining) return;
     draining = true;
+    let retries = 0;
     try {
-      while (pending.length > 0) {
-        const chunk = pending.shift();
+      while (open && pending.length > 0) {
         try {
-          await writer.write(chunk);
+          await writer.write(pending[0]);
+          pending.shift();
           wtOut += 1;
+          retries = 0;
         } catch (err) {
           writeFailures += 1;
-          // Put the chunk back and pause briefly; do not discard the queue.
-          pending.unshift(chunk);
+          retries += 1;
           if (writeFailures <= 3 || writeFailures % 50 === 0) {
             console.error(
               `wt-sidecar: write fail #${writeFailures} pending=${pending.length}`,
               err?.message || err
             );
           }
-          await new Promise((r) => setTimeout(r, 2));
-          if (writeFailures > 10_000) {
-            pending.length = 0;
-            break;
+          if (retries >= MAX_WRITE_RETRIES) {
+            pending.shift();
+            dropped += 1;
+            retries = 0;
           }
+          await new Promise((r) => setTimeout(r, 2));
         }
       }
     } finally {
       draining = false;
-      if (pending.length > 0) void drainWrites();
     }
   };
 
-  const onUdp = (msg, rinfo) => {
-    // One WT session ↔ one UDP peer port. Opaque bytes only.
-    if (rinfo.port !== destination.port) return;
+  relay.on("message", (msg, rinfo) => {
+    if (rinfo.port !== destination.port || rinfo.address !== destination.address) return;
     udpIn += 1;
+    if (pending.length >= MAX_PENDING_WT_WRITES) {
+      pending.shift();
+      dropped += 1;
+    }
     pending.push(new Uint8Array(msg));
     void drainWrites();
-  };
-  relay.on("message", onUdp);
-  const logSessionStats = () => {
-    console.error(
-      `wt-sidecar: session end udpIn=${udpIn} wtOut=${wtOut} ` +
-        `pending=${pending.length} writeFailures=${writeFailures}`
-    );
-  };
-  if (session.closed && typeof session.closed.finally === "function") {
-    session.closed.finally(logSessionStats).catch(() => {});
-  }
+  });
+
+  session.closed
+    ?.catch(() => {})
+    .finally(() => {
+      open = false;
+      pending.length = 0;
+    });
 
   try {
     for (;;) {
@@ -225,14 +236,19 @@ async function relaySession(session, relay, destination) {
       });
     }
   } catch {
-    // session closed / reset — fine for a proof sidecar
+    // Session closed or reset.
   } finally {
-    relay.off("message", onUdp);
+    open = false;
+    relay.close();
     try {
       writer.releaseLock();
     } catch {
-      /* ignore */
+      /* already released */
     }
+    console.error(
+      `wt-sidecar: session end udpIn=${udpIn} wtOut=${wtOut} dropped=${dropped} ` +
+        `writeFailures=${writeFailures}`
+    );
   }
 }
 
@@ -254,14 +270,8 @@ if (!peer) {
   peer = { host: args.host, port: echoPort };
 }
 
-const relaySock = await listenUdp(args.host);
-try {
-  // Absorb paced FEC bursts until the WT write queue drains (B-5).
-  relaySock.setRecvBufferSize(4 * 1024 * 1024);
-} catch {
-  /* best-effort */
-}
-const relayPort = relaySock.address().port;
+// Replies are matched on the peer's resolved address as well as its port.
+peer = { ...peer, address: (await lookup(peer.host, { family: 4 })).address };
 
 const server = new WebTransportServer({
   host: args.host,
@@ -282,7 +292,6 @@ const meta = {
   url: `https://${args.host}:${wtPort}${args.path}`,
   host: args.host,
   wtPort,
-  relayUdpPort: relayPort,
   echoUdpPort: echoPort,
   udpPeerHost: peer.host,
   udpPeerPort: peer.port,
@@ -307,7 +316,11 @@ void (async () => {
     const { value: session, done } = await reader.read();
     if (done) break;
     if (session) {
-      relaySession(session, relaySock, peer);
+      // One failed session (a bad handshake, a reset) must never take the
+      // relay down for everyone else.
+      relaySession(session, args.host, peer).catch((error) =>
+        console.error("wt-sidecar: session failed:", error?.message || error)
+      );
     }
   }
 })();
@@ -320,11 +333,6 @@ function shutdown() {
   }
   try {
     echoSock?.close();
-  } catch {
-    /* ignore */
-  }
-  try {
-    relaySock.close();
   } catch {
     /* ignore */
   }

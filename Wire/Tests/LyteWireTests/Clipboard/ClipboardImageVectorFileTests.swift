@@ -9,24 +9,12 @@ import LyteWireTestKit
 
 final class ClipboardImageVectorFileTests: XCTestCase {
 
-    private static let vectorsPath =
-        packageRoot + "/Vectors/clipboard-images-v1.json"
-
-    private static let packageRoot = WireTestPaths.packageRoot
-
     private func loadFile() throws -> ClipboardImageVectorFile {
-        try ClipboardImageVectorFile.load(from: Self.vectorsPath)
+        try ClipboardImageVectorFile.loadCommitted()
     }
 
     func testFileIdentity() throws {
-        let file = try loadFile()
-        XCTAssertEqual(file.format, ClipboardImageVectorFile.expectedFormat)
-        XCTAssertEqual(file.formatVersion, 1)
-        XCTAssertEqual(file.wireVersion, Int(WireVersion.major))
-        XCTAssertFalse(file.vectors.isEmpty)
-        let names = file.vectors.map(\.name)
-        XCTAssertEqual(Set(names).count, names.count,
-                       "vector names must be unique")
+        XCTAssertEqual(try loadFile().identityProblems, [])
     }
 
     /// The file's coverage discipline: the marker carries roundtrips
@@ -118,7 +106,7 @@ final class ClipboardImageVectorFileTests: XCTestCase {
                 guard let error = $0 as? ClipboardImageCargoError else {
                     return XCTFail("\(vector.name): foreign error \($0)")
                 }
-                XCTAssertEqual(clipboardImageCargoErrorName(error),
+                XCTAssertEqual(vectorErrorName(error),
                                vector.error, vector.name)
             }
         case .encodeReject:
@@ -134,7 +122,7 @@ final class ClipboardImageVectorFileTests: XCTestCase {
                 guard let error = $0 as? ClipboardImageCargoError else {
                     return XCTFail("\(vector.name): foreign error \($0)")
                 }
-                XCTAssertEqual(clipboardImageCargoErrorName(error),
+                XCTAssertEqual(vectorErrorName(error),
                                vector.error, vector.name)
             }
         }

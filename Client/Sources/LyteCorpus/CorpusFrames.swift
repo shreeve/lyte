@@ -1,28 +1,23 @@
-// CorpusFrames (H4 V-3): the §7 verification corpus as deterministic
-// pixel math — the image-quality pillar's test content, versioned
-// in-repo (docs/20260720-191701-lyte-protocol-image-quality.md §7):
+// CorpusFrames: the image-quality verification corpus as deterministic
+// pixel math (docs/history/20260720-191701-lyte-protocol-image-quality.md
+// §7):
 //
-//   (a) dense monospaced terminal text, white-on-black AND
+//   (a) dense monospaced terminal text, white-on-black and
 //       syntax-highlighted (saturated single-pixel strokes — the
 //       chroma worst case), at 100/125/200% zoom;
 //   (b) a 1-px checkerboard + single-pixel color gratings;
 //   (c) 16-step and 256-step gradients (the banding witness);
 //   (d) black/white/primary flat patches (range round-trip witness);
-//   (e) one photographic frame (procedural — natural statistics from
-//       seeded value noise, so the corpus stays code, not a binary).
+//   (e) one procedural photographic frame (seeded value noise).
 //
 // Every frame is a pure function of (width, height): no fonts, no
-// ffmpeg, no platform rasterizer — the same bytes on every machine,
-// forever. Glyphs are a hand-drawn 5×7 bitmap face embedded below;
-// zoom is nearest-neighbor dst→src mapping (fractional 125% produces
-// the uneven stroke widths real display scaling produces — that is
-// the point, and it stays deterministic). The corpus is FROZEN by
-// hash-pinned gate tests: a changed pin is a corpus-contract change
-// to discuss, not a drift to absorb.
+// platform rasterizer — the same bytes on every machine. Glyphs are an
+// embedded 5×7 bitmap face; zoom is nearest-neighbor (125% yields the
+// uneven stroke widths real display scaling does). Hash-pinned gate
+// tests freeze the corpus: a changed pin is a contract change.
 //
-// Pixel format: packed BGRX ("bgr0"), byte order B,G,R,0 — exactly
-// what the capture path hands the encoder and what lyte-encode-check
-// feeds the production C leaf.
+// Pixel format: packed BGRX, byte order B,G,R,0 — what the capture path
+// hands the encoder.
 
 import Foundation
 
@@ -68,7 +63,7 @@ public struct CorpusPatch: Codable, Equatable, Sendable {
 }
 
 /// A single-pixel grating (or checkerboard) region — the chroma
-/// torture. The gate is per-channel error ≤ ±2 codes over the region.
+/// torture, gated on per-channel error (`CorpusGates.gratingMaxCodes`).
 public struct CorpusGrating: Codable, Equatable, Sendable {
     public var name: String
     public var rect: CorpusRect
@@ -133,11 +128,11 @@ public struct CorpusManifest: Codable, Equatable, Sendable {
 // MARK: - The generator
 
 public enum CorpusFrames {
-    /// The reference-pair session geometry (V-1's probe posture).
+    /// The reference-pair session geometry.
     public static let defaultWidth = 2048
     public static let defaultHeight = 1280
-    /// Bump only with a wire-worthy discussion: the corpus is a frozen
-    /// measurement contract, not a fixture (Wire/Vectors doctrine).
+    /// Bump only deliberately: the corpus is a frozen measurement
+    /// contract, not a fixture.
     public static let corpusVersion = 1
 
     public struct GeneratedFrame: Sendable {

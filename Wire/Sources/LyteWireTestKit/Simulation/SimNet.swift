@@ -1,17 +1,10 @@
-// SimNet (W3): the seeded loss/reorder/duplication/delay injector the
-// core plan promised as a TestKit product, so the host and client test
-// suites can run the same network fault model as W-G4. Deterministic by
-// construction: one SplitMix64 drives every fault decision, time is the
-// caller's virtual clock, and delivery order falls out of the computed
-// arrival instants (reorder is what jitter DOES to a packet stream —
-// bounded displacement, exactly the G4 gate's model — rather than a
-// separate shuffling pass).
-//
-// The pipe is direction-symmetric and datagram-oriented. The caller
-// owns the event loop: `send` schedules arrivals, `nextArrivalTime`
-// tells the loop how far to advance the clock, `deliveries(upTo:)`
-// hands back everything due. Nothing here knows about envelopes or
-// ARQ — bytes in, bytes out.
+// SimNet: a seeded loss/reorder/duplication/delay injector for host and
+// client test suites. Deterministic: one SplitMix64 drives every fault
+// decision, time is the caller's virtual clock, and reorder emerges from
+// jittered arrival instants (bounded displacement). The caller owns the
+// event loop: `send` schedules arrivals, `nextArrivalTime` says how far to
+// advance, `deliveries(upTo:)` hands back everything due. Bytes in, bytes
+// out; nothing here knows about envelopes or ARQ.
 
 public struct SimNetConfig: Sendable {
     /// Probability a datagram never arrives (0…1).
@@ -25,7 +18,7 @@ public struct SimNetConfig: Sendable {
     /// from it.
     public var jitterMicroseconds: Int64
     /// Per-direction link capacity. Nil or zero means no serialization
-    /// delay, preserving SimNet's original behavior.
+    /// delay.
     public var bandwidthBitsPerSecond: UInt64?
     /// Bytes admitted to a direction's serializer, including the datagram
     /// currently in service. Nil means unbounded.
@@ -120,17 +113,10 @@ public struct SimNet: Sendable {
         self.phases = Self.sortedPhases(schedule)
     }
 
-    /// Replaces the fault profile mid-run (a netem-style phase change —
-    /// e.g. the recovery phase of a scripted scenario going lossless).
+    /// Replaces the fault profile mid-run (a netem-style phase change).
     public mutating func setConfig(_ config: SimNetConfig) {
         self.config = config
         phases = []
-    }
-
-    /// Installs absolute-time phases. The base `config` applies before the
-    /// first phase. Existing in-flight datagrams keep their scheduled times.
-    public mutating func setSchedule(_ schedule: [SimNetPhase]) {
-        phases = Self.sortedPhases(schedule)
     }
 
     /// Schedules one datagram from `source` at virtual instant `now`.
@@ -242,7 +228,7 @@ public struct SimNet: Sendable {
         }
         let lower = max(burst.minimumDatagrams, 1)
         let upper = max(burst.maximumDatagrams, lower)
-        let length = Int.random(in: lower...upper, using: &rng)
+        let length = rng.int(in: lower...upper)
         burstRemaining[direction] = length - 1
         return true
     }

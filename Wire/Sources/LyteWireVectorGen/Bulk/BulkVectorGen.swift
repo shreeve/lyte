@@ -1,18 +1,13 @@
-// Bulk-channel vector authoring (W10 / F-2 — design record
-// docs/20260728-053300-lyte-bulk-channel.md): the transfer sextet
-// 0x1C–0x21, the key-11 capability spine, and the worked
-// multi-session transfer traces. Run once, commit, freeze. The
-// circularity is broken by the hand-computed anchor bytes in
-// BulkCodecTests, which pin the same nominal messages; the transfer
-// traces are pinned self-consistent (no external oracle covers our
-// composition) and replay through the same TestKit harness the suite
-// uses.
+// Authors Vectors/bulk-v1.json: the transfer messages 0x1C–0x21, the
+// key-11 capability spine, and worked multi-session transfer traces.
+// Messages are anchored by BulkCodecTests' hand-computed bytes; the
+// traces are self-consistent pins replayed through the TestKit harness.
 
 import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-func makeBulkVectorFile() throws -> BulkVectorFile {
+public func makeBulkVectorFile() throws -> BulkVectorFile {
     BulkVectorFile(
         format: BulkVectorFile.expectedFormat,
         formatVersion: 1,

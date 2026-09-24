@@ -1,20 +1,23 @@
 // The cursor-codec vector-file model and loader:
-// `Wire/Vectors/cursor-v1.json` — the E3 cursor-shape codec
-// (CursorShape 0x24) and the key-13 capability spine, born in the
-// registry rather than promoted. Same doctrine as the other loaders:
-// TestKit may import Foundation, LyteWire may not.
+// `Wire/Vectors/cursor-v1.json` — CursorShape 0x24 and the key-13
+// capability.
 
 import Foundation
 import LyteWire
 
 /// One vector file: `Wire/Vectors/cursor-v1.json`.
-public struct CursorVectorFile: Codable, Sendable {
+public struct CursorVectorFile: FrozenVectorFile {
     public var format: String
     public var formatVersion: Int
     public var wireVersion: Int
     public var vectors: [CursorVector]
 
     public static let expectedFormat = "lyte-wire-cursor-vectors"
+    public static let fileName = "cursor-v1.json"
+
+    public var vectorNameGroups: [[String]] {
+        [vectors.map(\.name)]
+    }
 
     public init(
         format: String,
@@ -28,21 +31,14 @@ public struct CursorVectorFile: Codable, Sendable {
         self.vectors = vectors
     }
 
-    public static func load(from path: String) throws -> CursorVectorFile {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(CursorVectorFile.self, from: data)
-    }
 }
 
-/// One cursor vector. `codec` names the codec under test; kinds match
-/// the control file (`roundtrip` encodes the typed fields to exactly
-/// `messageHex` and decodes back; `decodeReject` throws `error`, a
-/// `CursorMessageError` case name). For `cursorShape` roundtrips the
-/// typed fields ride as `width`/`height`/`hotspotX`/`hotspotY` plus
-/// `pixelsHex` (hex of the BGRA bytes), so the file is auditable by
-/// eye. For `capabilitySet`, `messageHex` is a declaration's CBOR
-/// map: decode must answer exactly `cursorShape` through the key-13
-/// accessor and re-encode byte-exactly (the key-9…12 precedent).
+/// One cursor vector. `codec` names the codec under test; kinds match the
+/// control file (`error` is a `CursorMessageError` case name). `cursorShape`
+/// roundtrips carry `width`/`height`/`hotspotX`/`hotspotY` plus `pixelsHex`
+/// (BGRA). For `capabilitySet`, `messageHex` is a declaration's CBOR map:
+/// decode must answer exactly `cursorShape` through the key-13 accessor and
+/// re-encode byte-exactly.
 public struct CursorVector: Codable, Sendable {
     public var name: String
     public var description: String
@@ -95,20 +91,5 @@ public struct CursorVector: Codable, Sendable {
         self.pixelsHex = pixelsHex
         self.cursorShape = cursorShape
         self.error = error
-    }
-}
-
-/// Stable names for `CursorMessageError` cases, as they appear in
-/// vectors.
-public func cursorMessageErrorName(
-    _ error: CursorMessageError
-) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .unexpectedType: return "unexpectedType"
-    case .invalidDimensions: return "invalidDimensions"
-    case .imageOverBudget: return "imageOverBudget"
-    case .pixelCountMismatch: return "pixelCountMismatch"
-    case .hotspotOutsideImage: return "hotspotOutsideImage"
     }
 }

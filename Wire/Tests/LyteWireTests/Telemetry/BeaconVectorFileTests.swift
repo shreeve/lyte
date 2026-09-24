@@ -9,23 +9,12 @@ import LyteWireTestKit
 
 final class BeaconVectorFileTests: XCTestCase {
 
-    private static let vectorsPath = packageRoot + "/Vectors/beacon-v1.json"
-
-    private static let packageRoot = WireTestPaths.packageRoot
-
     private func loadFile() throws -> BeaconVectorFile {
-        try BeaconVectorFile.load(from: Self.vectorsPath)
+        try BeaconVectorFile.loadCommitted()
     }
 
     func testFileIdentity() throws {
-        let file = try loadFile()
-        XCTAssertEqual(file.format, BeaconVectorFile.expectedFormat)
-        XCTAssertEqual(file.formatVersion, 1)
-        XCTAssertEqual(file.wireVersion, Int(WireVersion.major))
-        XCTAssertFalse(file.beaconVectors.isEmpty)
-        XCTAssertFalse(file.feedbackVectors.isEmpty)
-        let names = file.beaconVectors.map(\.name) + file.feedbackVectors.map(\.name)
-        XCTAssertEqual(Set(names).count, names.count, "vector names must be unique")
+        XCTAssertEqual(try loadFile().identityProblems, [])
     }
 
     func testAllBeaconVectors() throws {
@@ -126,7 +115,7 @@ final class BeaconVectorFileTests: XCTestCase {
             guard let beaconError = error as? BeaconError else {
                 return XCTFail("\(vector.name): non-BeaconError \(error)")
             }
-            XCTAssertEqual(beaconErrorName(beaconError), expected, vector.name)
+            XCTAssertEqual(vectorErrorName(beaconError), expected, vector.name)
         }
     }
 
@@ -164,7 +153,7 @@ final class BeaconVectorFileTests: XCTestCase {
             guard let feedbackError = error as? FeedbackError else {
                 return XCTFail("\(vector.name): non-FeedbackError \(error)")
             }
-            XCTAssertEqual(feedbackErrorName(feedbackError), expected, vector.name)
+            XCTAssertEqual(vectorErrorName(feedbackError), expected, vector.name)
         }
     }
 
@@ -180,7 +169,7 @@ final class BeaconVectorFileTests: XCTestCase {
             guard let feedbackError = error as? FeedbackError else {
                 return XCTFail("\(vector.name): non-FeedbackError \(error)")
             }
-            XCTAssertEqual(feedbackErrorName(feedbackError), expected, vector.name)
+            XCTAssertEqual(vectorErrorName(feedbackError), expected, vector.name)
         }
     }
 }

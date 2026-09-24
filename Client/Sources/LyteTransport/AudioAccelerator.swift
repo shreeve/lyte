@@ -1,48 +1,27 @@
-// AudioAccelerator (CL-17): accelerate-only WSOLA time-scale
-// modification — the M7 receiver spec's §5.2 as written
-// (docs/20260720-145840-audio-continuity.md): when the playout pipe
-// holds more audio than the adaptive target, play slightly fast by
-// excising whole waveform periods under a crossfade, pitch preserved,
-// until the backlog drains. This replaces the jitter buffer's counted
-// content skip for everything short of a blackout — the standard
-// WebRTC NetEQ move, at leaf-library weight in pure Swift.
+// AudioAccelerator: accelerate-only WSOLA time-scale modification
+// (docs/decisions/20260720-145840-audio-continuity.md). When the playout
+// pipe holds more than the adaptive target, excise whole waveform periods
+// under a crossfade, pitch preserved, until the backlog drains.
 //
-// Shape (NetEQ's, mirrored): while the receiver's pull decision says
-// accelerate AND the rate bucket holds a full period, the pump's
-// decoded packets GATHER here (≤ 4 packets, 20 ms — held transiently,
-// counted in the depth the receiver judges) until one operation's
-// worth exists; the op finds the best period T in [2.5 ms, 10 ms] by
-// normalized autocorrelation on a mono mixdown, then overlap-adds
-// x[0..T) into x[T..2T) under a raised-cosine ramp — T frames vanish,
-// every sample outside the crossfade passes through untouched, and
-// the splice lands on the waveform's own self-similarity (a pure tone
-// stays a pure tone; C < threshold defers the cut rather than tearing
-// a transient; silence splices freely — cutting nothing is free).
-//
-// Rate discipline: a token bucket accrues maxRatePercent of every
-// input frame and each op spends its T — sustained speedup is bounded
-// at ≤5% of realtime (one banked period of instantaneous slack), so a
-// 60 ms backlog drains in ~1.2 s with no audible seam. Between ops the
-// path is exact passthrough with zero added latency.
-//
-// Sans-IO, single-threaded by contract: the pump owns it, tests drive
-// the identical object in virtual time.
+// While accelerating with a funded rate bucket, decoded packets gather here
+// (≤ 20 ms, counted as depth) until one op's worth exists; the op finds the
+// best period T in [2.5, 10] ms by normalized autocorrelation and
+// overlap-adds x[0..T) into x[T..2T) under a raised-cosine ramp. A token
+// bucket bounds sustained speedup at 5% of realtime; between ops the path
+// is exact passthrough. Single-threaded: the pump owns it.
 
 import Foundation
 import LyteWire
 
 public struct AudioAccelerateConfig: Sendable {
     public var channels = AudioWire.channels
-    /// Waveform-period search bounds, frames: 2.5–10 ms at 48 kHz —
-    /// pitch fundamentals ≥ 100 Hz; lower bass rides its harmonics'
-    /// self-similarity, exactly as NetEQ's bounded search does.
+    /// Waveform-period search bounds, frames: 2.5–10 ms at 48 kHz.
     public var minPeriodFrames = 120
     public var maxPeriodFrames = 480
     /// Sustained speedup bound, percent of realtime.
     public var maxRatePercent = 5
-    /// Minimum normalized cross-correlation to cut. Below it the op
-    /// defers (a transient is passing) — drain resumes one gather
-    /// later rather than tearing the waveform.
+    /// Minimum normalized cross-correlation to cut; below it the op
+    /// defers rather than tearing a transient.
     public var minCorrelation = 0.5
 
     public init() {}
@@ -59,7 +38,7 @@ public struct AudioAccelerateStats: Sendable {
     public var removalOps: UInt64 = 0
     /// Ops that found no self-similar period (transient) and deferred.
     public var opsDeferredLowCorrelation: UInt64 = 0
-    /// The counter the books quote: backlog drained, in milliseconds.
+    /// Backlog drained, in milliseconds.
     public var millisecondsDrained: UInt64 {
         framesRemoved * 1_000 / UInt64(AudioWire.sampleRate)
     }
@@ -74,9 +53,8 @@ public final class AudioAccelerator {
     /// Interleaved gather FIFO; `head` is a float index into it.
     private var fifo: [Float] = []
     private var head = 0
-    /// The rate bucket, frames. Starts full so the first engage acts
-    /// immediately; capped at one period so idle time can never bank
-    /// a burst beyond one instantaneous cut.
+    /// The rate bucket, frames. Starts full; capped at one period so idle
+    /// time never banks more than one cut.
     private var budgetFrames: Double
 
     public init(config: AudioAccelerateConfig = AudioAccelerateConfig()) {
@@ -84,14 +62,10 @@ public final class AudioAccelerator {
         self.budgetFrames = Double(config.maxPeriodFrames)
     }
 
-    /// Frames currently gathered (transient, ≤ gatherFrames) — the
-    /// pump counts these into the depth the receiver judges.
+    /// Frames currently gathered; the pump counts these as depth.
     public var pendingFrames: Int { (fifo.count - head) / config.channels }
 
-    /// One pump step: decoded PCM in, ring-ready PCM out. Not
-    /// accelerating (and nothing gathered): exact passthrough, zero
-    /// copies of latency. Accelerating with a funded bucket: gather,
-    /// cut, emit.
+    /// One pump step: decoded PCM in, ring-ready PCM out.
     public func process(_ pcm: [Float], accelerate: Bool) -> [Float] {
         let frames = pcm.count / config.channels
         stats.inputFrames += UInt64(frames)
@@ -99,8 +73,7 @@ public final class AudioAccelerator {
             budgetFrames + Double(frames) * Double(config.maxRatePercent) / 100,
             Double(config.maxPeriodFrames))
 
-        // Gather only when an op is actually affordable — an unfunded
-        // gather would hold audio for nothing.
+        // Gather only when an op is affordable.
         let gathering = accelerate
             && budgetFrames >= Double(config.maxPeriodFrames) - 0.5
         if pendingFrames == 0, !gathering {
@@ -114,8 +87,6 @@ public final class AudioAccelerator {
             if pendingFrames >= config.gatherFrames {
                 cutAndEmitAll(into: &out)
             }
-            // else: keep gathering — the ring's cushion covers the
-            // ≤20 ms hold, and the pump counts it as depth.
         } else {
             emitAll(into: &out)
         }
@@ -123,8 +94,7 @@ public final class AudioAccelerator {
         return out
     }
 
-    /// Hands back everything gathered (disengage, starvation, or the
-    /// pump's ring-nearly-dry override) — nothing is ever stranded.
+    /// Hands back everything gathered.
     public func flush() -> [Float] {
         var out: [Float] = []
         emitAll(into: &out)
@@ -152,9 +122,7 @@ public final class AudioAccelerator {
         head = 0
     }
 
-    /// One WSOLA op at the gather's head, then everything drains: find
-    /// the best period T, crossfade x[0..T) into x[T..2T) (T frames
-    /// vanish), pass the rest through byte-exact.
+    /// One WSOLA op at the gather's head; the rest passes through exactly.
     private func cutAndEmitAll(into out: inout [Float]) {
         let channels = config.channels
         let pending = pendingFrames
@@ -170,8 +138,7 @@ public final class AudioAccelerator {
 
         let period = best.period
         for frame in 0..<period {
-            // Raised-cosine ramp, endpoint-free: full-quality
-            // crossfade over the whole excised period.
+            // Endpoint-free raised-cosine ramp.
             let w = Float(0.5 * (1 - cos(Double.pi
                 * Double(frame + 1) / Double(period + 1))))
             let a = head + frame * channels
@@ -188,11 +155,9 @@ public final class AudioAccelerator {
         stats.removalOps += 1
     }
 
-    /// Normalized autocorrelation on a mono mixdown of the gathered
-    /// head: coarse stride-4 sweep, ±3 refine — the classic bounded
-    /// pitch search. Silence on both sides of a lag counts as
-    /// perfectly self-similar (cutting silence is free); one-sided
-    /// silence counts as zero (never splice sound into quiet).
+    /// Normalized autocorrelation on a mono mixdown: stride-4 sweep, ±3
+    /// refine. Two-sided silence counts as perfectly self-similar;
+    /// one-sided silence as zero (never splice sound into quiet).
     private func bestPeriod(upTo maxT: Int)
         -> (period: Int, correlation: Double)? {
         guard maxT >= config.minPeriodFrames else { return nil }

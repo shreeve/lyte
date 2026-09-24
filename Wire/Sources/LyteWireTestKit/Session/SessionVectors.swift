@@ -1,20 +1,23 @@
 // The session-codec vector-file model and loader:
-// `Wire/Vectors/session-v1.json` — the CTRL/TLV codecs that were pinned
-// end-side (HS-12's conn-id TLV + path pair, HS-7/CL-3's IDR request) and
-// promoted into LyteWire by the codec-unification slice. Same doctrine as
-// the other loaders: TestKit may import Foundation, LyteWire may not.
+// `Wire/Vectors/session-v1.json` — the conn-id TLV, the path pair, and the
+// IDR request.
 
 import Foundation
 import LyteWire
 
 /// One vector file: `Wire/Vectors/session-v1.json`.
-public struct SessionVectorFile: Codable, Sendable {
+public struct SessionVectorFile: FrozenVectorFile {
     public var format: String
     public var formatVersion: Int
     public var wireVersion: Int
     public var vectors: [SessionVector]
 
     public static let expectedFormat = "lyte-wire-session-vectors"
+    public static let fileName = "session-v1.json"
+
+    public var vectorNameGroups: [[String]] {
+        [vectors.map(\.name)]
+    }
 
     public init(
         format: String,
@@ -28,19 +31,13 @@ public struct SessionVectorFile: Codable, Sendable {
         self.vectors = vectors
     }
 
-    public static func load(from path: String) throws -> SessionVectorFile {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(SessionVectorFile.self, from: data)
-    }
 }
 
 /// One session-codec vector. `codec` names the codec under test; kinds
-/// match the envelope file (`roundtrip` encodes fields to exactly
-/// `messageHex` and decodes back; `decodeReject` throws `error`, a case
-/// name of the codec's error type). For `connectionIdTlv`, `messageHex`
-/// is a whole envelope datagram: decode must yield the conn-id whose
-/// bytes are `connectionIdHex` (roundtrip: re-encoding the decoded
-/// envelope + payload reproduces the datagram byte-exactly).
+/// match the envelope file (`error` is a case name of the codec's error
+/// type). For `connectionIdTlv`, `messageHex` is a whole envelope datagram:
+/// decode must yield the conn-id `connectionIdHex` and re-encode
+/// byte-exactly.
 public struct SessionVector: Codable, Sendable {
     public var name: String
     public var description: String
@@ -93,30 +90,5 @@ public struct SessionVector: Codable, Sendable {
         self.coalescedCount = coalescedCount
         self.connectionIdHex = connectionIdHex
         self.error = error
-    }
-}
-
-/// Stable names for `PathMessageError` cases, as they appear in vectors.
-public func pathMessageErrorName(_ error: PathMessageError) -> String {
-    switch error {
-    case .truncated: return "truncated"
-    case .unexpectedType: return "unexpectedType"
-    }
-}
-
-/// Stable names for `IdrRequestError` cases, as they appear in vectors.
-public func idrRequestErrorName(_ error: IdrRequestError) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .trailingBytes: return "trailingBytes"
-    case .unexpectedType: return "unexpectedType"
-    }
-}
-
-/// Stable names for `ConnectionIdError` cases, as they appear in vectors.
-public func connectionIdErrorName(_ error: ConnectionIdError) -> String {
-    switch error {
-    case .invalidValueLength: return "invalidValueLength"
-    case .duplicateTlv: return "duplicateTlv"
     }
 }

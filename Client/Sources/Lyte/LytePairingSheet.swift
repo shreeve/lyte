@@ -2,19 +2,13 @@ import SwiftUI
 import LyteTransport
 import LyteWire
 
-/// CL-6: the pairing sheet, off a discovered Lyte host row — pure
-/// SwiftUI per the plan's cross-cutting rule. The flow mirrors
-/// `wire-pair`: the host's console shows a static-key banner and a
-/// 6-digit PIN (`lyte-host --wire-listen PORT --pair`); the operator
-/// pastes the key (validated live against the TXT `pkh` this host
-/// advertises — the typo firewall) and types the PIN; CPace does the
-/// rest. On success the host static is pinned and reconnects are
-/// zero-UI Noise IK.
-///
-/// The key paste is a bootstrap-era surface: the advertisement carries
-/// only the identity HASH on purpose (HS-10), so first contact needs the
-/// key itself hand-carried once. A host already pinned under the same
-/// identity skips the paste (re-pair path).
+/// The pairing sheet, off a discovered Lyte host row; the flow mirrors
+/// `wire-pair`. The operator pastes the host's static key (validated
+/// live against the advertised TXT `pkh`) and types the PIN; CPace does
+/// the rest. On success the host static is pinned and reconnects are
+/// zero-UI Noise IK. The advertisement carries only the identity hash,
+/// so first contact needs the key hand-carried once; a host already
+/// pinned under the same identity skips the paste.
 struct LytePairingSheet: View {
     let host: DiscoveredLyteHost
     /// Called on dismiss; true when a pairing landed (the caller
@@ -31,13 +25,9 @@ struct LytePairingSheet: View {
     @State private var hostKeyHex = ""
     @State private var pin = ""
     @State private var phase: Phase = .form
-
     /// A pinned key matching this host's advertised identity — the
-    /// re-pair path needs no paste.
-    private var alreadyPinnedKey: [UInt8]? {
-        PinnedHostStore.load().host(publicKeyHash: host.publicKeyHash)?
-            .staticPublicKey
-    }
+    /// re-pair path needs no paste. Read once when the sheet appears.
+    @State private var alreadyPinnedKey: [UInt8]?
 
     /// The pasted key parsed, nil while malformed.
     private var pastedKey: [UInt8]? {
@@ -63,8 +53,7 @@ struct LytePairingSheet: View {
     }
 
     private var canPair: Bool {
-        effectiveHostKey != nil && pin.count == 6
-            && pin.allSatisfy(\.isNumber)
+        effectiveHostKey != nil && PairingPin.isValid(pin)
     }
 
     var body: some View {
@@ -113,6 +102,10 @@ struct LytePairingSheet: View {
         }
         .padding(28)
         .frame(minWidth: 460)
+        .onAppear {
+            alreadyPinnedKey = loadPinnedHosts()
+                .host(publicKeyHash: host.publicKeyHash)?.staticPublicKey
+        }
     }
 
     @ViewBuilder
@@ -207,35 +200,19 @@ struct LytePairingSheet: View {
             let outcome = await Task.detached {
                 LytePairing.run(config)
             }.value
-            switch outcome {
-            case .paired(let key):
-                var store = PinnedHostStore.load()
-                store.pin(
-                    staticPublicKey: key,
-                    name: target.name,
-                    address: target.address,
-                    port: target.port,
-                    pairedAt: ISO8601DateFormatter().string(from: Date()))
-                do {
-                    try store.save()
-                    phase = .paired
-                } catch {
-                    phase = .failed(
-                        "Paired, but saving the pin failed: \(error)")
-                }
-            case .pinMismatch:
-                phase = .failed("Wrong PIN — the host disagreed with this "
-                    + "entry. Three wrong guesses burn the PIN; restart "
-                    + "pairing on the host for a fresh one.")
-            case .hostRejected(let reason):
-                phase = .failed("The host rejected the pairing (\(reason)).")
-            case .invalidShare:
-                phase = .failed("The host's cryptographic share was invalid.")
-            case .timedOut:
-                phase = .failed("No answer — is the host running with "
-                    + "--pair? (A burned PIN also answers nothing.)")
-            case .failed(let message):
-                phase = .failed(message)
+            guard case .paired(let key) = outcome else {
+                phase = .failed(outcome.failureMessage ?? "Pairing failed.")
+                return
+            }
+            var store = loadPinnedHosts()
+            store.pinPaired(
+                staticPublicKey: key, name: target.name,
+                address: target.address, port: target.port)
+            do {
+                try store.save()
+                phase = .paired
+            } catch {
+                phase = .failed("Paired, but saving the pin failed: \(error)")
             }
         }
     }

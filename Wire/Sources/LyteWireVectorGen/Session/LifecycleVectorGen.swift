@@ -1,13 +1,11 @@
-// Lifecycle-message vector authoring (W4b): the mode transition 0x09
-// and the session teardown 0x0A. Run once, commit, freeze. The
-// circularity is broken by the hand-computed anchor bytes in
-// SessionLifecycleCodecTests, which pin the same nominal messages.
+// Authors Vectors/lifecycle-v1.json: the mode transition 0x09 and the
+// session teardown 0x0A. Anchored by SessionLifecycleCodecTests.
 
 import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-func makeLifecycleVectorFile() throws -> LifecycleVectorFile {
+public func makeLifecycleVectorFile() throws -> LifecycleVectorFile {
     var vectors: [LifecycleVector] = []
 
     // MARK: Round trips — every legal value of both codecs.

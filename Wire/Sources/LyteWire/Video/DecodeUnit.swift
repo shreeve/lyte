@@ -1,10 +1,5 @@
-// One fully reassembled video frame, ready for the decoder — what
-// VideoAssembler emits and client CL-2 feeds to the existing
-// VideoSampleFactory/render path (build plan §4.3). The GameStream-era
-// DecodeUnit's buffer-type chain, RTP timestamp, and Sunshine latency
-// fields are deliberately gone: LyteWire reproduces the packetized
-// Annex-B access unit byte-exact and lets VideoToolbox do its own NAL
-// bookkeeping.
+// One fully reassembled video frame, ready for the decoder: the packetized
+// Annex-B access unit, byte-exact.
 
 public struct DecodeUnit: Hashable, Sendable {
     /// The envelope `frame` field this unit was assembled from.

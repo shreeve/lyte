@@ -1,12 +1,12 @@
 #!/bin/sh
-# Assemble Lyte.app from the SwiftPM build (dev bundling until a notarized
-# release exists). A stable Apple Development signature preserves both
-# Local Network privacy identity and Keychain authorization; Lyte Dev is the
-# contributor fallback when an Apple-issued identity is unavailable.
+# Assemble Lyte.app from the SwiftPM build. A stable Apple Development
+# signature preserves Local Network privacy identity and Keychain
+# authorization; Lyte Dev is the contributor fallback.
 set -e
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 . "$ROOT/Scripts/AppArtifact/app-artifact.sh"
+. "$ROOT/Scripts/lib/source-fingerprint.sh"
 
 CONFIG="${1:-release}"
 LIVE_APP="$ROOT/.build/Lyte.app"
@@ -22,9 +22,8 @@ case "$APP" in
     ;;
 esac
 
-# Serialize before inspecting or changing any destination state. Requiring an
-# existing parent lets us canonicalize through symlinks and `..` without first
-# creating attacker- or caller-selected directories.
+# Serialize before touching any destination state. Requiring an existing
+# parent lets us canonicalize without creating caller-selected directories.
 lyte_acquire_app_artifact_lock
 if [ ! -d "$(dirname "$APP")" ]; then
   echo "error: app destination parent must already exist" >&2
@@ -128,18 +127,8 @@ Scripts/normalize-macos-rpaths.sh \
 
 # Exact source identity consumed by benchmark-app.sh. A signed bundle without
 # this matching fingerprint is not valid benchmark evidence.
-(
-  git ls-files --cached --others --exclude-standard -- \
-    Client/Package.swift Client/Package.resolved Client/Sources \
-    Common/Package.swift Common/Sources \
-    Wire/Package.swift Wire/Package.resolved Wire/Sources \
-    | LC_ALL=C sort \
-    | while IFS= read -r path; do
-        if [ -f "$path" ]; then
-          shasum -a 256 "$path"
-        fi
-      done
-) | shasum -a 256 | awk '{print $1}' \
+# shellcheck disable=SC2086  # the path list is space-separated by design
+lyte_source_fingerprint "$ROOT" $LYTE_CLIENT_SOURCE_PATHS \
   > "$STAGED_APP/Contents/Resources/client-source.sha256"
 date -u +%Y-%m-%dT%H:%M:%SZ \
   > "$STAGED_APP/Contents/Resources/build-utc.txt"
@@ -192,11 +181,10 @@ cat > "$STAGED_APP/Contents/Info.plist" <<EOF
 </plist>
 EOF
 
-# Validate and sign the complete staged bundle. sign-dev.sh fails closed when
-# the stable identity is unavailable; the previously published app is left
-# byte-for-byte untouched on any failure before publication.
+# Validate and sign the staged bundle; sign-dev.sh fails closed without the
+# stable identity, leaving the published app untouched.
 plutil -lint "$STAGED_APP/Contents/Info.plist" >/dev/null
-"$(dirname "$0")/sign-dev.sh" \
+"$ROOT/Scripts/sign-dev.sh" \
   "$STAGED_APP/Contents/MacOS/lyte-helperd" "$STAGED_APP"
 
 # Validate the exact staged artifact before the rename-swap can replace the
@@ -211,10 +199,9 @@ Scripts/Tests/test-hermetic-linkage.sh \
 [ "$PUBLISHING_LIVE" -eq 0 ] \
   || lyte_require_app_quiescent "live app publication"
 
-# macOS rename-swap publishes the complete signed directory in one filesystem
-# operation. The old app moves into the private stage and the EXIT trap removes
-# it. A first build has no destination yet, so ordinary rename is already
-# atomic.
+# macOS rename-swap publishes the signed directory in one filesystem
+# operation (the EXIT trap removes the old app); a first build's plain
+# rename is already atomic.
 python3 - "$STAGED_APP" "$APP" <<'PY'
 import ctypes
 import os

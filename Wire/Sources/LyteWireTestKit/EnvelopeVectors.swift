@@ -1,17 +1,15 @@
 // The envelope vector-file model and loader. Vector files under
-// Wire/Vectors/ are the frozen wire contract (master plan §4.12): the
-// client's CL-1 verifies against the same files this package's own tests
-// do, byte-exact, on both platforms. TestKit may import Foundation — only
-// LyteWire itself is Foundation-free.
+// Wire/Vectors/ are the frozen wire contract, verified byte-exact on every
+// platform. TestKit may import Foundation; LyteWire may not.
 
 import LyteCore
 import Foundation
 import LyteWire
 
 /// One vector file: `Wire/Vectors/envelope-v1.json`.
-public struct EnvelopeVectorFile: Codable, Sendable {
+public struct EnvelopeVectorFile: FrozenVectorFile {
     /// Always "lyte-wire-envelope-vectors"; guards against loading the
-    /// wrong artifact once W1/W2/W4a ship their own vector kinds.
+    /// wrong vector kind.
     public var format: String
     /// Version of the vector file format itself.
     public var formatVersion: Int
@@ -22,6 +20,11 @@ public struct EnvelopeVectorFile: Codable, Sendable {
     public var seqComparisons: [SeqComparison]
 
     public static let expectedFormat = "lyte-wire-envelope-vectors"
+    public static let fileName = "envelope-v1.json"
+
+    public var vectorNameGroups: [[String]] {
+        [vectors.map(\.name)]
+    }
 
     public init(
         format: String,
@@ -37,10 +40,6 @@ public struct EnvelopeVectorFile: Codable, Sendable {
         self.seqComparisons = seqComparisons
     }
 
-    public static func load(from path: String) throws -> EnvelopeVectorFile {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(EnvelopeVectorFile.self, from: data)
-    }
 }
 
 /// One test vector. `kind` selects which fields apply:
@@ -169,17 +168,4 @@ public struct SeqComparison: Codable, Sendable {
 
 public enum VectorFileError: Error, Equatable, Sendable {
     case malformedField(String)
-}
-
-/// Stable names for `WireError` cases, as they appear in vector files.
-public func wireErrorName(_ error: WireError) -> String {
-    switch error {
-    case .truncatedEnvelope: return "truncatedEnvelope"
-    case .truncatedExtensions: return "truncatedExtensions"
-    case .tooManyExtensions: return "tooManyExtensions"
-    case .extensionValueTooLong: return "extensionValueTooLong"
-    case .shardOverBudget: return "shardOverBudget"
-    case .payloadOverBudget: return "payloadOverBudget"
-    case .datagramOverBudget: return "datagramOverBudget"
-    }
 }

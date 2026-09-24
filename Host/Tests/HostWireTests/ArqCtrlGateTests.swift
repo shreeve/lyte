@@ -1,7 +1,8 @@
 import XCTest
 import HostCore
 import HostSession
-import HostWire
+@_spi(Testing) import HostWire
+import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
@@ -34,14 +35,8 @@ final class ArqCtrlGateTests: XCTestCase {
 
     /// The client role, sans-IO: Noise initiator, unseal, a client-clock
     /// ArqEndpoint, and the bookkeeping the gate asserts against.
-    private struct ArqClient {
-        var noise: NoiseSession
-        var transport: NoiseTransport?
-        var ctrlSeq: UInt16 = 0
-        var arq = ArqEndpoint<ClientClock>(channel: .ctrl)
-        let staticKeys: NoiseKeyPair
-
-        var received: [(group: ArqGroupId, bytes: [UInt8])] = []
+    private struct ArqClient: PeerBackedClient {
+        var peer: SealedCtrlPeer<ClientClock>
         var oneShotAcks: [ArqGroupId] = []
         var beaconSeqsSeen: [UInt32] = []
         var arqIgnored = 0
@@ -50,40 +45,7 @@ final class ArqCtrlGateTests: XCTestCase {
         var replayDrops = 0
 
         init(hostStaticPublicKey: [UInt8]) throws {
-            staticKeys = NoiseKeyPair.generate()
-            noise = try NoiseSession(
-                role: .initiator,
-                staticKeys: staticKeys,
-                remoteStaticPublicKey: hostStaticPublicKey
-            )
-        }
-
-        mutating func message1Datagram(clientMicros: UInt64) throws -> [UInt8] {
-            let message1 = try noise.writeMessage1()
-            return try ctrlDatagram(
-                body: [CtrlMessageType.noiseHandshake1] + message1,
-                sealed: false,
-                clientMicros: clientMicros
-            )
-        }
-
-        mutating func ctrlDatagram(
-            body: [UInt8], sealed: Bool, clientMicros: UInt64
-        ) throws -> [UInt8] {
-            let envelope = Envelope(
-                channel: .ctrl,
-                seq: ChannelSeq(rawValue: ctrlSeq),
-                frame: FrameNumber(rawValue: 0),
-                timestamp: clientMicros,
-                fec: 0
-            )
-            ctrlSeq &+= 1
-            guard sealed else { return try envelope.encode(payload: body) }
-            let header = try envelope.encode(payload: [])
-            let payload = try transport!.seal(
-                plaintext: body[...], aad: header[...], envelope: envelope
-            )
-            return try envelope.encode(payload: payload)
+            peer = try SealedCtrlPeer(initiatorTo: hostStaticPublicKey)
         }
 
         /// One host datagram: unseal (bare message 2 completes the
@@ -94,60 +56,33 @@ final class ArqCtrlGateTests: XCTestCase {
                 bytes.count, WireBudget.maxDatagramByteCount,
                 "host datagram over the 1152 B budget"
             )
-            let (envelope, payload) = try Envelope.decode(bytes)
-            XCTAssertEqual(envelope.channel, .ctrl)
-            if transport == nil {
-                XCTAssertEqual(payload.first, CtrlMessageType.noiseHandshake2)
-                _ = try noise.readMessage2(payload.dropFirst())
-                transport = try noise.makeTransport()
-                return
-            }
-            let aad = bytes[bytes.startIndex..<payload.startIndex]
-            let plaintext: [UInt8]
-            do {
-                plaintext = try transport!.unseal(
-                    wirePayload: payload, aad: aad, envelope: envelope
-                )
-            } catch NoiseError.replayedSequence, NoiseError.staleSequence {
+            XCTAssertEqual(try Envelope.decode(bytes).0.channel, .ctrl)
+            switch try peer.absorb(bytes, nowMicros: nowMicros) {
+            case .duplicate:
                 replayDrops += 1
-                return
-            }
-            switch plaintext.first {
-            case CtrlMessageType.arqSegment, CtrlMessageType.arqAck:
+            case .reliable(_, let plaintext, let events):
                 XCTAssertLessThanOrEqual(
                     plaintext.count,
                     WireBudget.maxConnectionIdTaggedPlaintextByteCount,
                     "ARQ payload over the session's TLV+tag-adjusted budget"
                 )
-                for event in arq.ingest(
-                    payload: plaintext,
-                    now: ClientTimestamp(microseconds: nowMicros)
-                ) {
+                for event in events {
                     switch event {
-                    case .message(let group, let bytes):
-                        received.append((group, bytes))
+                    case .message:
+                        break // in `received`
                     case .oneShotAcknowledged(let group):
                         oneShotAcks.append(group)
                     case .ignored:
                         arqIgnored += 1
                     }
                 }
-            case CtrlMessageType.clockBeacon:
+            case .plain(_, let plaintext)
+                where plaintext.first == CtrlMessageType.clockBeacon:
                 beaconSeqsSeen.append(try ClockBeacon.decode(plaintext).beaconSeq)
-            default:
+            case .plain(_, let plaintext):
                 XCTFail("unexpected host CTRL type \(plaintext.first ?? 0)")
-            }
-        }
-
-        /// Drains the client endpoint's due output into sealed CTRL
-        /// datagrams (no conn-id TLV client-side, so poll's bare-budget
-        /// packing already fits: 24 + 1112 + 16 = 1152 exactly).
-        mutating func pollOut(nowMicros: UInt64) throws -> [[UInt8]] {
-            let (payloads, _) = arq.poll(
-                now: ClientTimestamp(microseconds: nowMicros)
-            )
-            return try payloads.map {
-                try ctrlDatagram(body: $0, sealed: true, clientMicros: nowMicros)
+            case .handshakeCompleted, .unopened:
+                break
             }
         }
     }
@@ -324,10 +259,11 @@ final class ArqCtrlGateTests: XCTestCase {
             if !oneShotsSent, t >= 1_200_000 {
                 oneShotsSent = true
                 for (group, message) in hostOneShots.sorted(by: { $0.key < $1.key }) {
-                    try session.sendReliableOneShot(
-                        message, group: ArqGroupId(rawValue: group),
-                        now: t * 1_000, hostMicroseconds: t
+                    let allocated = try session.sendReliableOneShot(
+                        message, now: t * 1_000, hostMicroseconds: t
                     )
+                    XCTAssertEqual(allocated, ArqGroupId(rawValue: group),
+                                   "the endpoint allocates 1, 2, … in order")
                 }
                 for (group, message) in clientOneShots.sorted(by: { $0.key < $1.key }) {
                     try client.arq.sendOneShot(
@@ -449,14 +385,16 @@ final class ArqCtrlGateTests: XCTestCase {
             "the exempt IDR request must land mid-storm"
         )
 
-        print("HS-8 gate: \(hostStream.count)+\(hostOneShots.count) host and "
-            + "\(clientStream.count)+\(clientOneShots.count) client messages "
-            + "exactly-once in-order through 5% loss / 2% dup / 4 ms jitter "
-            + "(\(net.lostCount) lost, \(net.duplicatedCount) duplicated of "
-            + "\(net.sentCount) datagrams; \(session.counters.arqDatagramsSent) "
-            + "host ARQ datagrams; converged at \(converged.map(String.init) ?? "-") µs "
-            + "virtual; \(client.beaconSeqsSeen.count)/"
-            + "\(session.counters.beaconsSent) beacons, none retransmitted)")
+        print("""
+            HS-8 gate: \(hostStream.count)+\(hostOneShots.count) host and \
+            \(clientStream.count)+\(clientOneShots.count) client messages \
+            exactly-once in-order through 5% loss / 2% dup / 4 ms jitter \
+            (\(net.lostCount) lost, \(net.duplicatedCount) duplicated of \
+            \(net.sentCount) datagrams; \(session.counters.arqDatagramsSent) \
+            host ARQ datagrams; converged at \(converged.map(String.init) ?? "-") µs \
+            virtual; \(client.beaconSeqsSeen.count)/\
+            \(session.counters.beaconsSent) beacons, none retransmitted)
+            """)
     }
 
     // MARK: PTO retransmit rides the session's wake machinery
@@ -735,22 +673,52 @@ final class ArqCtrlGateTests: XCTestCase {
             XCTAssertEqual($0 as? ArqSendError, .emptyMessage)
         }
         XCTAssertThrowsError(try live.sendReliableOneShot(
-            [0x10], group: .orderedStream, now: 1_000, hostMicroseconds: 1
+            [], now: 1_000, hostMicroseconds: 1
         )) {
-            XCTAssertEqual($0 as? ArqSendError, .orderedStreamGroupId)
+            XCTAssertEqual($0 as? ArqSendError, .emptyMessage)
         }
-        try live.sendReliableOneShot(
-            [0x10], group: ArqGroupId(rawValue: 5),
-            now: 1_000, hostMicroseconds: 1
+        // The endpoint allocates one-shot groups, so a caller can no
+        // longer present an ordered-stream or non-ascending id.
+        XCTAssertEqual(
+            try live.sendReliableOneShot([0x10], now: 1_000, hostMicroseconds: 1),
+            ArqGroupId(rawValue: 1)
         )
-        XCTAssertThrowsError(try live.sendReliableOneShot(
-            [0x10], group: ArqGroupId(rawValue: 5),
-            now: 1_000, hostMicroseconds: 1
-        )) {
-            XCTAssertEqual(
-                $0 as? ArqSendError,
-                .oneShotGroupNotAscending(ArqGroupId(rawValue: 5))
-            )
+        XCTAssertEqual(
+            try live.sendReliableOneShot([0x10], now: 1_000, hostMicroseconds: 1),
+            ArqGroupId(rawValue: 2)
+        )
+    }
+
+    /// A peer that never acknowledges fills a group's segment bound: the
+    /// next send is refused as backpressure, counted, and the session
+    /// stays serviceable.
+    func testQueueFullIsCountedBackpressure() throws {
+        let session = Session(
+            config: SessionConfig(
+                crypto: .testPassthrough, rateBitsPerSecond: Self.rateBPS
+            ),
+            clientTuple: Self.tupleA,
+            now: 0,
+            rng: SplitMix64(seed: 0x51)
+        ) { _ in }
+        let message = [UInt8](repeating: 0x10, count: 262_144)
+        var refusal: (any Error)?
+        var queued = 0
+        for _ in 0..<1_000 {
+            do {
+                try session.sendReliable(message, now: 0, hostMicroseconds: 0)
+                queued += 1
+            } catch {
+                refusal = error
+                break
+            }
         }
+        XCTAssertEqual(refusal as? ArqSendError, .queueFull)
+        XCTAssertGreaterThan(queued, 100, "the bound is ~32k segments")
+        XCTAssertEqual(session.counters.ctrlQueueFullRefusals, 1)
+        XCTAssertEqual(session.counters.bulkQueueFullRefusals, 0)
+        XCTAssertNoThrow(try session.sendReliable(
+            [0x10], now: 0, hostMicroseconds: 0
+        ), "a message that fits the remaining bound still queues")
     }
 }

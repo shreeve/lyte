@@ -2,6 +2,7 @@ import XCTest
 import HostCore
 import HostSession
 import HostWire
+import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
@@ -20,10 +21,7 @@ import LyteWireTestKit
 //   • once an injection is reported, every subsequent video frame's
 //     shards carry the lastInputSeq TLV (0x03) — per-shard, like the
 //     conn-id — and the frame still reassembles byte-exact within the
-//     1152 B budget (geometry derives from the real TLV headroom);
-//   • an input event arriving in IDLE is the WAKE (W4b's pre-arm rule:
-//     mode=active on the reliable stream + next-damage-as-IDR armed) —
-//     the notePreArmInput seam HS-11 left unwired now has its caller.
+//     1152 B budget (geometry derives from the real TLV headroom).
 //
 // The far end is the SessionLifecycleGateTests discipline: a LyteWire
 // client build-up (NoiseSession initiator + ArqEndpoint<ClientClock>) —
@@ -99,8 +97,10 @@ final class InputGateTests: XCTestCase {
         ])
         XCTAssertEqual(try InputEcho.decode(echo.encode()), echo)
 
-        print("HS-13 gate (codec): 0x16 all five kinds + 0x17 pinned "
-            + "byte-exact against hand-built layouts")
+        print("""
+            HS-13 gate (codec): 0x16 all five kinds + 0x17 pinned \
+            byte-exact against hand-built layouts
+            """)
     }
 
     func testHostileInputBytesRejectAndNeverTrap() {
@@ -157,125 +157,41 @@ final class InputGateTests: XCTestCase {
         XCTAssertNil(try LastInputSeqTlv.decode(extensions: []))
     }
 
-    // MARK: The input-capable loopback client (the CL-9 shape)
+    // MARK: The input-capable loopback client
 
-    private struct InputClient {
-        var noise: NoiseSession
-        var transport: NoiseTransport?
-        var ctrlSeq: UInt16 = 0
-        var arq = ArqEndpoint<ClientClock>(channel: .ctrl)
-        let staticKeys: NoiseKeyPair
-
-        var received: [(group: ArqGroupId, bytes: [UInt8])] = []
+    private struct InputClient: PeerBackedClient {
+        var peer: SealedCtrlPeer<ClientClock>
         var echoTuples: [InputEchoTuple] = []
         var echoMessageTupleCounts: [Int] = []
         /// Unsealed video shards, for the lastInputSeq TLV legs.
         var videoShards: [(envelope: Envelope, plaintext: [UInt8])] = []
-
-        init(hostStaticPublicKey: [UInt8]) throws {
-            staticKeys = NoiseKeyPair.generate()
-            noise = try NoiseSession(
-                role: .initiator,
-                staticKeys: staticKeys,
-                remoteStaticPublicKey: hostStaticPublicKey
-            )
-        }
-
-        mutating func message1Datagram(clientMicros: UInt64) throws -> [UInt8] {
-            let message1 = try noise.writeMessage1()
-            return try ctrlDatagram(
-                body: [CtrlMessageType.noiseHandshake1] + message1,
-                sealed: false, clientMicros: clientMicros
-            )
-        }
-
-        mutating func ctrlDatagram(
-            body: [UInt8], sealed: Bool, clientMicros: UInt64
-        ) throws -> [UInt8] {
-            let envelope = Envelope(
-                channel: .ctrl,
-                seq: ChannelSeq(rawValue: ctrlSeq),
-                frame: FrameNumber(rawValue: 0),
-                timestamp: clientMicros,
-                fec: 0
-            )
-            ctrlSeq &+= 1
-            guard sealed else { return try envelope.encode(payload: body) }
-            let header = try envelope.encode(payload: [])
-            let payload = try transport!.seal(
-                plaintext: body[...], aad: header[...], envelope: envelope
-            )
-            return try envelope.encode(payload: payload)
-        }
 
         mutating func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
             XCTAssertLessThanOrEqual(
                 bytes.count, WireBudget.maxDatagramByteCount,
                 "host datagram over the 1152 B budget"
             )
-            let (envelope, payload) = try Envelope.decode(bytes)
-            if transport == nil {
-                XCTAssertEqual(envelope.channel, .ctrl)
-                XCTAssertEqual(payload.first, CtrlMessageType.noiseHandshake2)
-                _ = try noise.readMessage2(payload.dropFirst())
-                transport = try noise.makeTransport()
-                return
-            }
-            let aad = bytes[bytes.startIndex..<payload.startIndex]
-            let plaintext: [UInt8]
-            do {
-                plaintext = try transport!.unseal(
-                    wirePayload: payload, aad: aad, envelope: envelope
-                )
-            } catch NoiseError.replayedSequence, NoiseError.staleSequence {
-                return // network duplicate; routine
-            }
-            if envelope.channel == .videoActive {
-                videoShards.append((envelope, plaintext))
-                return
-            }
-            XCTAssertEqual(envelope.channel, .ctrl)
-            switch plaintext.first {
-            case CtrlMessageType.arqSegment, CtrlMessageType.arqAck:
-                for event in arq.ingest(
-                    payload: plaintext,
-                    now: ClientTimestamp(microseconds: nowMicros)
-                ) {
-                    guard case .message(let group, let bytes) = event else {
-                        continue
-                    }
-                    received.append((group, bytes))
-                    if bytes.first == CtrlMessageType.inputEcho {
-                        let echo = try InputEcho.decode(bytes)
-                        echoTuples += echo.tuples
-                        echoMessageTupleCounts.append(echo.tuples.count)
-                    }
+            switch try peer.absorb(bytes, nowMicros: nowMicros) {
+            case .reliable(_, _, let events):
+                for case .message(_, let bytes) in events
+                where bytes.first == CtrlMessageType.inputEcho {
+                    let echo = try InputEcho.decode(bytes)
+                    echoTuples += echo.tuples
+                    echoMessageTupleCounts.append(echo.tuples.count)
                 }
-            case CtrlMessageType.clockBeacon:
-                break // 1 Hz weather
-            default:
-                XCTFail("unexpected host CTRL type \(plaintext.first ?? 0)")
+            case .plain(let envelope, let plaintext):
+                if envelope.channel == .videoActive {
+                    videoShards.append((envelope, plaintext))
+                    return
+                }
+                XCTAssertEqual(envelope.channel, .ctrl)
+                if plaintext.first != CtrlMessageType.clockBeacon { // 1 Hz weather
+                    XCTFail("unexpected host CTRL type \(plaintext.first ?? 0)")
+                }
+            case .handshakeCompleted, .duplicate, .unopened:
+                break
             }
         }
-
-        mutating func pollOut(nowMicros: UInt64) throws -> [[UInt8]] {
-            let (payloads, _) = arq.poll(
-                now: ClientTimestamp(microseconds: nowMicros)
-            )
-            return try payloads.map {
-                try ctrlDatagram(body: $0, sealed: true, clientMicros: nowMicros)
-            }
-        }
-
-        mutating func take(type: UInt8) -> [[UInt8]] {
-            let hits = received.filter { $0.bytes.first == type }.map(\.bytes)
-            received.removeAll { $0.bytes.first == type }
-            return hits
-        }
-    }
-
-    private final class DatagramBox {
-        var datagrams: [VideoChannelDatagram] = []
     }
 
     /// Handshake + capability exchange, direct pipe (the lifecycle
@@ -284,93 +200,42 @@ final class InputGateTests: XCTestCase {
         clientCapabilities: Capabilities? = .wireDefault,
         lifecycle: SessionMachineConfig = SessionMachineConfig(),
         beaconIntervalNS: UInt64 = 1 << 62
-    ) throws -> (session: Session, client: InputClient, box: DatagramBox) {
-        let hostStatic = NoiseKeyPair.generate()
-        let box = DatagramBox()
-        let session = Session(
+    ) throws -> (host: HostSessionHarness, client: InputClient) {
+        let host = HostSessionHarness(
             config: SessionConfig(
-                crypto: .noise(hostStatic: hostStatic),
+                crypto: .noise(hostStatic: NoiseKeyPair.generate()),
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: beaconIntervalNS,
                 lifecycle: lifecycle
             ),
-            clientTuple: Self.tupleA,
-            now: 0,
-            rng: SplitMix64(seed: 0x1310),
-            send: { box.datagrams.append($0) }
+            tuple: Self.tupleA,
+            rng: SplitMix64(seed: 0x1310)
         )
-        var client = try InputClient(hostStaticPublicKey: hostStatic.publicKey)
-        _ = session.receive(
-            try client.message1Datagram(clientMicros: 500),
-            from: Self.tupleA, now: 0, hostMicroseconds: 0
-        )
-        XCTAssertEqual(session.phase, .established)
-        session.pump(now: 0)
-        if let clientCapabilities {
-            var negotiator = CapabilityNegotiator(
-                role: .client, local: clientCapabilities
-            )
-            try client.arq.send(
-                message: try XCTUnwrap(negotiator.start()).encode(),
-                now: ClientTimestamp(microseconds: 1_000)
-            )
-        }
-        return (session, client, box)
-    }
-
-    /// One direct exchange pass at virtual µs `t`. Returns fresh host
-    /// events; the caller owns reacting to them (that is the shell's
-    /// injection loop, simulated).
-    private func exchange(
-        _ session: Session, _ client: inout InputClient,
-        _ box: DatagramBox, forwarded: inout Int, t: UInt64
-    ) throws -> [SessionEvent] {
-        var events = session.advance(now: t * 1_000, hostMicroseconds: t)
-        session.pump(now: t * 1_000)
-        while forwarded < box.datagrams.count {
-            try client.absorb(box.datagrams[forwarded].bytes, nowMicros: t)
-            forwarded += 1
-        }
-        for datagram in try client.pollOut(nowMicros: t) {
-            events += session.receive(
-                datagram, from: Self.tupleA,
-                now: t * 1_000, hostMicroseconds: t
-            )
-            session.pump(now: t * 1_000)
-            while forwarded < box.datagrams.count {
-                try client.absorb(box.datagrams[forwarded].bytes, nowMicros: t)
-                forwarded += 1
-            }
-        }
-        return events
+        let client = InputClient(peer: try host.connectClient(
+            declaring: clientCapabilities, openChannels: nil
+        ))
+        XCTAssertEqual(host.session.phase, .established)
+        return (host, client)
     }
 
     /// Exchange passes 2 ms apart until both ends quiesce, injecting
     /// every delivered input event `injectDelayMicros` after receipt
     /// (the simulated shell).
     private func settle(
-        _ session: Session, _ client: inout InputClient,
-        _ box: DatagramBox, forwarded: inout Int, t: inout UInt64,
+        _ host: HostSessionHarness, _ client: inout InputClient,
+        t: inout UInt64,
         injectDelayMicros: UInt64 = 300,
         onEvent: (SessionEvent) -> Void = { _ in }
     ) throws {
-        var idle = 0
-        while idle < 3 {
-            t += 2_000
-            let before = (forwarded, client.received.count)
-            for event in try exchange(
-                session, &client, box, forwarded: &forwarded, t: t
-            ) {
-                if case .inputReceived(let input, let rx) = event {
-                    session.noteInputInjected(
-                        seq: input.seq,
-                        receivedAtMicroseconds: rx,
-                        injectedAtMicroseconds: rx + injectDelayMicros
-                    )
-                }
-                onEvent(event)
+        try host.settle(&client, t: &t) { event in
+            if case .inputReceived(let input, let rx) = event {
+                host.session.noteInputInjected(
+                    seq: input.seq,
+                    receivedAtMicroseconds: rx,
+                    injectedAtMicroseconds: rx + injectDelayMicros
+                )
             }
-            idle = (forwarded, client.received.count) == before ? idle + 1 : 0
+            onEvent(event)
         }
     }
 
@@ -384,12 +249,12 @@ final class InputGateTests: XCTestCase {
     // MARK: The storm — exactly once, in order, echoed, through W-G4 weather
 
     func testGateInputStormExactlyOnceInOrderWithEchoes() throws {
-        let (session, clientValue, box) = try establish()
+        let (host, clientValue) = try establish()
         var client = clientValue
-        var forwarded = 0
+        let session = host.session
         var t: UInt64 = 1_000
         // Drain the establishment exchange (declarations both ways).
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try settle(host, &client, t: &t)
         _ = client.take(type: CtrlMessageType.capabilityDeclaration)
 
         // The W-G4 fault model (input traffic is sparser than the HS-8
@@ -470,9 +335,9 @@ final class InputGateTests: XCTestCase {
 
             _ = session.advance(now: t * 1_000, hostMicroseconds: t)
             session.pump(now: t * 1_000)
-            while forwarded < box.datagrams.count {
-                net.send(from: 0, bytes: box.datagrams[forwarded].bytes, now: t)
-                forwarded += 1
+            while host.forwarded < host.sent.count {
+                net.send(from: 0, bytes: host.sent[host.forwarded].bytes, now: t)
+                host.forwarded += 1
             }
             for datagram in try client.pollOut(nowMicros: t) {
                 net.send(from: 1, bytes: datagram, now: t)
@@ -532,7 +397,7 @@ final class InputGateTests: XCTestCase {
             isKeyframe: false, now: t * 1_000
         )
         session.pump(now: t * 1_000 + 2_000_000)
-        for datagram in box.datagrams[forwarded...] {
+        for datagram in host.sent[host.forwarded...] {
             try client.absorb(datagram.bytes, nowMicros: t)
         }
         XCTAssertFalse(client.videoShards.isEmpty)
@@ -543,23 +408,25 @@ final class InputGateTests: XCTestCase {
             )
         }
 
-        print("HS-13 gate (storm): 40 events all kinds exactly-once "
-            + "IN ORDER through 5% loss / 5% dup / 4 ms jitter "
-            + "(\(net.lostCount) lost, \(net.duplicatedCount) duplicated of "
-            + "\(net.sentCount)); 40/40 echo tuples byte-faithful in "
-            + "\(client.echoMessageTupleCounts.count) messages; post-storm "
-            + "frame stamped lastInputSeq=39 on all "
-            + "\(client.videoShards.count) shards")
+        print("""
+            HS-13 gate (storm): 40 events all kinds exactly-once \
+            IN ORDER through 5% loss / 5% dup / 4 ms jitter \
+            (\(net.lostCount) lost, \(net.duplicatedCount) duplicated of \
+            \(net.sentCount)); 40/40 echo tuples byte-faithful in \
+            \(client.echoMessageTupleCounts.count) messages; post-storm \
+            frame stamped lastInputSeq=39 on all \
+            \(client.videoShards.count) shards
+            """)
     }
 
     // MARK: lastInputSeq stamping + geometry under the extra TLV
 
     func testGateLastInputSeqStampingAndGeometry() throws {
-        let (session, clientValue, box) = try establish()
+        let (host, clientValue) = try establish()
         var client = clientValue
-        var forwarded = 0
+        let session = host.session
         var t: UInt64 = 1_000
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try settle(host, &client, t: &t)
         _ = client.take(type: CtrlMessageType.capabilityDeclaration)
 
         // Pre-input: no TLV 0x03 anywhere. 1100 B fits ONE data shard
@@ -572,7 +439,7 @@ final class InputGateTests: XCTestCase {
             isKeyframe: false, now: t * 1_000
         )
         t += 30_000
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try settle(host, &client, t: &t)
         XCTAssertFalse(client.videoShards.isEmpty)
         for shard in client.videoShards {
             XCTAssertNil(
@@ -597,7 +464,7 @@ final class InputGateTests: XCTestCase {
             ).encode(),
             now: ClientTimestamp(microseconds: t)
         )
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try settle(host, &client, t: &t)
         XCTAssertEqual(session.lastInputSeq, 7)
 
         let stamped = syntheticFrame(byteCount: frameByteCount)
@@ -606,7 +473,7 @@ final class InputGateTests: XCTestCase {
             isKeyframe: false, now: t * 1_000
         )
         t += 30_000
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try settle(host, &client, t: &t)
 
         // Every shard: conn-id AND lastInputSeq TLVs, and the tighter
         // 1095 B plaintext ceiling (17 B TLV block) actually drove the
@@ -627,8 +494,10 @@ final class InputGateTests: XCTestCase {
         }
         XCTAssertGreaterThan(
             client.videoShards.count, bareShardCount,
-            "1100 B no longer fits one shard at the 1095 B stamped "
-                + "budget — geometry must derive from the real headroom"
+            """
+                1100 B no longer fits one shard at the 1095 B stamped \
+                budget — geometry must derive from the real headroom
+                """
         )
 
         // Byte-exact reassembly through the core's own assembler: the
@@ -648,76 +517,10 @@ final class InputGateTests: XCTestCase {
         XCTAssertEqual(units.map(\.annexB), [stamped],
                        "the stamped frame must reassemble byte-exact")
 
-        print("HS-13 gate (stamp): pre-input frames bare; post-injection "
-            + "frames carry TLV 0x03 = 7 on every shard, geometry at the "
-            + "1095 B TLV-adjusted budget, byte-exact through VideoAssembler")
-    }
-
-    // MARK: Input in IDLE is the WAKE (the notePreArmInput wiring)
-
-    func testGateInputWakesIdleSession() throws {
-        let (session, clientValue, box) = try establish()
-        var client = clientValue
-        var forwarded = 0
-        var t: UInt64 = 1_000
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
-        _ = client.take(type: CtrlMessageType.capabilityDeclaration)
-
-        // Reach IDLE the honest way: a frame, convergence, the one-shot
-        // ack (the HS-11 flip).
-        _ = try session.ingestVideoFrame(
-            syntheticFrame(byteCount: 900),
-            captureTimestampMicroseconds: 42, isKeyframe: false,
-            now: t * 1_000
-        )
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
-        _ = session.noteRatchetConverged(
-            finalFrame: syntheticFrame(byteCount: 700),
-            captureTimestampMicroseconds: 42,
-            now: t * 1_000, hostMicroseconds: t
-        )
-        session.pump(now: t * 1_000)
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
-        XCTAssertEqual(session.wireMode, .idle, "the ack flipped to IDLE")
-        _ = client.take(type: CtrlMessageType.modeTransition)
-        XCTAssertFalse(session.takeFreshKeyframeRequest())
-
-        // A keypress lands in IDLE: the pre-arm IS the WAKE — before
-        // any damage exists (W4b; the seam HS-11 left unwired).
-        var wakeEvents: [SessionEvent] = []
-        try client.arq.send(
-            message: InputEvent(
-                seq: 0, clientMicroseconds: 5,
-                body: .keyKeycode(keycode: 30, pressed: true)
-            ).encode(),
-            now: ClientTimestamp(microseconds: t)
-        )
-        try settle(session, &client, box, forwarded: &forwarded, t: &t) {
-            wakeEvents.append($0)
-        }
-
-        XCTAssertEqual(session.wireMode, .active, "input in IDLE wakes")
-        XCTAssertTrue(wakeEvents.contains(.modeTransitionSent(.active)))
-        XCTAssertTrue(wakeEvents.contains(where: {
-            if case .inputReceived(let event, _) = $0 {
-                return event.seq == 0
-            }
-            return false
-        }))
-        XCTAssertTrue(session.takeFreshKeyframeRequest(),
-                      "WAKE arms next-damage-as-IDR before the damage exists")
-        let modeMessages = client.take(type: CtrlMessageType.modeTransition)
-        XCTAssertEqual(
-            try modeMessages.map { try ModeTransition.decode($0).mode },
-            [.active],
-            "mode=active reaches the client on the reliable stream"
-        )
-        // The injection report was made by settle's shell; its echo
-        // arrived too.
-        XCTAssertEqual(client.echoTuples.map(\.seq), [0])
-
-        print("HS-13 gate (wake): keypress in IDLE → mode=active on the "
-            + "wire + IDR armed pre-damage + echo tuple delivered — "
-            + "notePreArmInput has its caller")
+        print("""
+            HS-13 gate (stamp): pre-input frames bare; post-injection \
+            frames carry TLV 0x03 = 7 on every shard, geometry at the \
+            1095 B TLV-adjusted budget, byte-exact through VideoAssembler
+            """)
     }
 }

@@ -1,12 +1,7 @@
-// CL-5: the browse surfaced. `lyte-cli wire-discover` lists every
-// `_lyte._udp` advertiser on the LAN with its resolved address, SRV
-// port, and TXT identity (v/pkh) — the scriptable gate evidence for the
-// HS-10 advertisement, and the operator's answer to "what Lyte hosts can
-// this Mac see". Pass --pinned-key (the same 64-hex static the wire-view
-// --host-key takes) and each row says whether its advertised identity
-// hash matches — recognition of an already-pinned host from the browse
-// list alone, before any packet flows. Manual host:port everywhere else
-// remains the always-working fallback; this command only observes.
+// `lyte-cli wire-discover`: lists every `_lyte._udp` advertiser on the
+// LAN with its resolved address, SRV port, and TXT identity (v/pkh).
+// With --pinned-key each row says whether its advertised identity hash
+// matches. Observation only.
 
 import ArgumentParser
 import Foundation

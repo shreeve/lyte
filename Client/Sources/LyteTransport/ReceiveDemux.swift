@@ -4,6 +4,7 @@
 // Thread-safe: the endpoint's receive thread writes, anyone may snapshot.
 
 import Foundation
+import LyteClientCore
 import LyteWire
 
 /// What became of one datagram fed to the demux.
@@ -23,6 +24,9 @@ public struct ChannelStats: Sendable {
     public var payloadBytes: UInt64 = 0
 
     public var seqHighest: UInt16?
+    /// Datagrams still missing: gaps detected minus the late arrivals
+    /// that filled them. Already net of `seqLateFilled` — subtracting
+    /// that again double-counts every reordered datagram.
     public var seqMissing: UInt64 = 0
     public var seqDuplicates: UInt64 = 0
     public var seqLateFilled: UInt64 = 0
@@ -32,8 +36,7 @@ public struct ChannelStats: Sendable {
     public var firstFrame: UInt32?
     public var lastFrame: UInt32?
     public var maxFrame: UInt32?
-    /// Consecutive-arrival frame-number changes — approximates frames seen
-    /// while shards of one frame arrive together (exact once CL-2 assembles).
+    /// Consecutive-arrival frame-number changes (approximates frames seen).
     public var frameTransitions: UInt64 = 0
 
     /// Sender-clock µs delta between the last two datagrams.
@@ -55,21 +58,18 @@ public struct DemuxTotals: Sendable {
     public var arrivalSamplesDropped: UInt64 = 0
 }
 
-/// One accepted datagram's arrival record — the raw material of the
-/// feedback report's dispersion section (resiliency §2.2: paced bursts are
-/// packet trains; per-packet arrival spacing is the host estimator's
-/// delivery-rate and queue-gradient sample).
+/// One accepted datagram's arrival record, for the feedback report's
+/// dispersion section.
 public struct ArrivalSample: Sendable {
     public var channel: UInt8
     public var seq: UInt16
-    /// Client arrival instant, kernel stamp when available (CL-1's craft).
+    /// SystemMonotonicClock µs; meaningful only as spacing.
     public var arrivalMicroseconds: UInt64
 }
 
 public final class ReceiveDemux: @unchecked Sendable {
-    /// Arrival samples retained between feedback drains. Sized for several
-    /// 25–50 ms windows of worst-case traffic (an ~100-shard IDR train plus
-    /// audio) so a late drain decimates rather than misses whole trains.
+    /// Arrival samples retained between feedback drains; sized for several
+    /// windows of worst-case traffic.
     public static let maxRetainedArrivalSamples = 512
 
     private let crypto: TransportCrypto
@@ -82,46 +82,56 @@ public final class ReceiveDemux: @unchecked Sendable {
         self.crypto = crypto
     }
 
-    /// Feeds one raw datagram. `arrivalMicroseconds` is the client-monotonic
-    /// arrival instant (kernel stamp when available).
+    /// Feeds one raw datagram. `arrivalMicroseconds` (SystemMonotonicClock)
+    /// feeds arrival spacing only. Decode and unseal run outside the lock;
+    /// the lock covers only the books.
     @discardableResult
     public func ingest(
         datagram: ArraySlice<UInt8>,
         arrivalMicroseconds: UInt64
     ) -> IngestOutcome {
+        let envelope: Envelope
+        let plaintext: [UInt8]
+        do {
+            // The reserved-channel check runs before any AEAD work.
+            (envelope, plaintext) = try Envelope.openDatagram(datagram) {
+                envelope, wirePayload, aad in
+                guard !envelope.channel.isReserved else {
+                    throw ReservedChannel(envelope: envelope)
+                }
+                do {
+                    return try crypto.unseal(
+                        wirePayload: wirePayload, aad: aad, envelope: envelope)
+                } catch {
+                    throw UnsealFailure(envelope: envelope, underlying: error)
+                }
+            }
+        } catch let reserved as ReservedChannel {
+            lock.lock()
+            totals.datagrams += 1
+            totals.reservedDropped += 1
+            lock.unlock()
+            return .reservedChannel(reserved.envelope.channel.rawValue)
+        } catch let failure as UnsealFailure {
+            lock.lock()
+            totals.datagrams += 1
+            totals.unsealFailures += 1
+            channels[failure.envelope.channel.rawValue, default: ChannelAccount()]
+                .stats.unsealFailures += 1
+            lock.unlock()
+            return .unsealFailed(failure.underlying)
+        } catch {
+            let wireError = error as? WireError ?? .truncatedEnvelope
+            lock.lock()
+            totals.datagrams += 1
+            totals.malformed += 1
+            lock.unlock()
+            return .malformed(wireError)
+        }
+
         lock.lock()
         defer { lock.unlock() }
         totals.datagrams += 1
-
-        let envelope: Envelope
-        let payload: ArraySlice<UInt8>
-        do {
-            (envelope, payload) = try Envelope.decode(datagram)
-        } catch let error as WireError {
-            totals.malformed += 1
-            return .malformed(error)
-        } catch {
-            totals.malformed += 1
-            return .malformed(.truncatedEnvelope)
-        }
-
-        guard !envelope.channel.isReserved else {
-            totals.reservedDropped += 1
-            return .reservedChannel(envelope.channel.rawValue)
-        }
-
-        // The header rides as AAD: exactly the received bytes ahead of the
-        // payload, fixed envelope + TLV block.
-        let aad = datagram[datagram.startIndex..<payload.startIndex]
-        let plaintext: [UInt8]
-        do {
-            plaintext = try crypto.unseal(wirePayload: payload, aad: aad, envelope: envelope)
-        } catch {
-            totals.unsealFailures += 1
-            channels[envelope.channel.rawValue, default: ChannelAccount()].stats.unsealFailures += 1
-            return .unsealFailed(error)
-        }
-
         totals.accepted += 1
         channels[envelope.channel.rawValue, default: ChannelAccount()]
             .record(envelope, payloadByteCount: plaintext.count,
@@ -132,15 +142,13 @@ public final class ReceiveDemux: @unchecked Sendable {
                 seq: envelope.seq.rawValue,
                 arrivalMicroseconds: arrivalMicroseconds))
         } else {
-            // The estimator weights trains, it does not need every packet
-            // (FeedbackBounds rationale) — drop the newest, count honestly.
+            // Drop the newest and count it.
             totals.arrivalSamplesDropped += 1
         }
         return .accepted(envelope: envelope, payload: plaintext)
     }
 
-    /// Removes and returns the arrival samples accumulated since the last
-    /// drain, in arrival order — the FeedbackSender's per-cadence pull.
+    /// Removes and returns the arrival samples since the last drain.
     public func drainArrivalSamples() -> [ArrivalSample] {
         lock.lock()
         defer { lock.unlock() }
@@ -168,6 +176,10 @@ public final class ReceiveDemux: @unchecked Sendable {
         return channels[channel]?.stats
     }
 }
+
+/// Sentinels that carry a refusal out of the `openDatagram` closure.
+private struct ReservedChannel: Error { var envelope: Envelope }
+private struct UnsealFailure: Error { var envelope: Envelope; var underlying: Error }
 
 /// One channel's live accounting: the gap tracker plus last-seen state the
 /// snapshot derives deltas from.

@@ -2,15 +2,11 @@
 # One-time setup: create the stable "Lyte Dev" self-signed code-signing
 # identity that Scripts/sign-dev.sh uses. Idempotent — safe to re-run.
 #
-# Why: macOS records a Keychain "Always Allow" grant against a binary's code
-# signature. Unsigned SwiftPM output has none, so its identity is a hash of its
-# bytes and every rebuild re-prompts. A stable signing cert gives every build
-# the same designated requirement, so one "Always Allow" for the Lyte pairing
-# key holds across all future rebuilds.
-#
-# The identity lives in a DEDICATED keychain (~/Library/Keychains/lyte-signing)
-# with a known password, so codesign can use the key non-interactively without
-# touching the login keychain's security posture.
+# macOS records a Keychain "Always Allow" grant against a binary's code
+# signature; a stable cert gives every rebuild the same designated
+# requirement, so one grant survives rebuilds. The identity lives in a
+# dedicated keychain (~/Library/Keychains/lyte-signing) with a known
+# password, so codesign uses it non-interactively.
 set -e
 
 DIR="$HOME/.config/lyte-signing"
@@ -50,9 +46,9 @@ case "$CURRENT" in
     *) security list-keychains -d user -s $CURRENT "$KC" ;;
 esac
 
-# Plain find-identity (not -v): a self-signed cert is untrusted for chain
-# validation so -v never lists it, but codesign uses it by hash regardless.
-if ! security find-identity "$KC" 2>/dev/null | rg -q "$CN"; then
+# Plain find-identity (not -v): -v hides the untrusted self-signed cert,
+# which codesign still uses by hash.
+if ! security find-identity "$KC" 2>/dev/null | grep -Fq "$CN"; then
     security import "$DIR/lyte-dev.p12" -k "$KC" -P "$PW" \
         -T /usr/bin/codesign >/dev/null 2>&1
 fi

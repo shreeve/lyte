@@ -1,33 +1,28 @@
-// The minimal deterministic CBOR codec (W7) beneath the capability
-// layer. This is NOT a general CBOR library: it implements exactly the
-// Lyte capability profile — a subset of RFC 8949 under the §4.2.1 core
-// deterministic encoding requirements — and rejects everything outside
-// it. Determinism is load-bearing: the capability declaration is a
-// frozen wire artifact both ends must produce byte-identically, and a
-// canonical form is what lets the vectors pin it.
+// The minimal deterministic CBOR codec beneath the capability layer. NOT
+// a general CBOR library: it implements exactly the Lyte capability
+// profile — a subset of RFC 8949 under the §4.2.1 core deterministic
+// encoding — and rejects everything outside it. The capability
+// declaration is a frozen wire artifact both ends must produce
+// byte-identically.
 //
 // Profile (accepted major types):
 //   0  unsigned integer
 //   1  negative integer (stored as the encoded argument n; value −1−n)
 //   2  byte string
-//   3  text string (valid UTF-8, enforced by byte-exact re-encode)
+//   3  text string (valid UTF-8)
 //   4  array
 //   5  map (keys strictly ascending in bytewise order of their
-//      encodings — sortedness and no-duplicates in one check)
+//      encodings; a repeated key rejects as duplicateMapKey, an
+//      out-of-order one as misorderedMapKeys)
 //   7  only false / true / null (0xF4 / 0xF5 / 0xF6)
 //
-// Excluded and rejected: indefinite lengths, tags (major 6), floats
-// and every other simple value. Future wire minors extend the
-// capability MAP with new keys, not the profile — an unknown key's
-// value must still be a profile item, which is what keeps "skip
-// unknown keys" implementable forever (transport pillar §3's
-// forward-compatibility contract).
+// Rejected: indefinite lengths, tags (major 6), floats and every other
+// simple value. Future minors extend the capability MAP, never the
+// profile, which keeps "skip unknown keys" implementable forever.
 //
-// Deterministic-encoding rules enforced on decode (and produced on
-// encode): shortest-form arguments, definite lengths only, map keys
-// strictly ascending bytewise. A non-canonical encoding REJECTS even
-// when it is well-formed CBOR — two ends that disagree about bytes are
-// a wire bug this layer refuses to paper over.
+// Decode enforces what encode produces: shortest-form arguments,
+// definite lengths, bytewise-ascending map keys. A non-canonical encoding
+// rejects even when it is well-formed CBOR.
 
 /// One CBOR data item within the Lyte capability profile.
 public indirect enum CborValue: Hashable, Sendable {
@@ -65,11 +60,11 @@ public enum CborError: Error, Hashable, Sendable {
     case unsupportedItem(UInt8)
     /// A well-formed argument that is not the shortest form.
     case nonCanonicalArgument
-    /// Map keys out of bytewise order or repeated.
+    /// Map keys out of bytewise order.
     case misorderedMapKeys
+    /// A map key repeated.
     case duplicateMapKey
-    /// Text bytes that are not valid UTF-8 (detected by byte-exact
-    /// re-encode of the decoded string).
+    /// Text bytes that are not valid UTF-8.
     case invalidUtf8
     case nestingTooDeep
 }
@@ -213,11 +208,7 @@ public enum Cbor {
             return .bytes(try take(bytes, cursor: &cursor, count: argument))
         case 3:
             let raw = try take(bytes, cursor: &cursor, count: argument)
-            let text = String(decoding: raw, as: UTF8.self)
-            // Invalid UTF-8 mangles into U+FFFD; byte-exact re-encode
-            // is the Foundation-free validity check AND the canonical
-            // round-trip guarantee in one.
-            guard Array(text.utf8) == raw else {
+            guard let text = String(validating: raw, as: UTF8.self) else {
                 throw CborError.invalidUtf8
             }
             return .text(text)

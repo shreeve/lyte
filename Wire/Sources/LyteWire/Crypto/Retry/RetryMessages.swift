@@ -1,32 +1,21 @@
-// The retry-cookie message pair (CTRL types 0x13/0x14) — the wire half
-// of the stateless msg1-flood defense (core plan §5; RetryCookie.swift
-// owns the mint/verify crypto). Both are bare pre-transport CTRL
-// datagrams like the handshake carriage 0x05/0x06: no session exists
-// yet, so nothing seals them, and they are ARQ-exempt by nature — a
-// lost challenge is answered by the client's own msg1 retransmit timer
-// drawing a fresh one.
+// The retry-cookie message pair (CTRL types 0x13/0x14), the wire half of
+// the stateless msg1-flood defense (RetryCookie.swift owns the crypto).
+// Both are bare pre-transport CTRL datagrams: nothing seals them, and a
+// lost challenge is answered by the client's own msg1 retransmit timer.
 //
-// Flow, host under flood: msg1 (0x05) arrives → host answers with a
-// RetryChallenge (0x13) carrying a cookie minted statelessly from
-// (source tuple, now, secret) and forgets the exchange entirely → the
-// honest client resubmits as a RetryHandshake1 (0x14) = the SAME msg1
-// verbatim (0443beb's rule) with the cookie echoed → host verifies the
-// cookie against the tuple the datagram actually came from and, only
-// then, spends the Noise crypto. A spoofer never sees the challenge; a
-// replayer is closed out by the cookie's lifetime window and its
-// binding to one exact msg1.
+// Flow: msg1 (0x05) → RetryChallenge (0x13) with a stateless cookie →
+// RetryHandshake1 (0x14) = the SAME msg1 verbatim plus the cookie → the
+// host verifies the cookie against the datagram's source tuple and only
+// then spends the Noise crypto.
 //
-// The cookie is OPAQUE to the client — echoed verbatim, never parsed —
-// so the codec carries it length-prefixed (1…255 bytes) and the host
-// may evolve the interior without touching this layout. RetryCookie's
-// v1 interior is 24 bytes; the vectors pin that size, the codec does
-// not.
+// The cookie is opaque to the client, so the codec carries it
+// length-prefixed (1…255 bytes) and the host may evolve its interior.
 //
 // Retry challenge (type 0x13), host→client, 2 + cookieLen bytes:
 //
 //   offset size field
 //   0      1    type       0x13
-//   1      1    cookieLen  1…255 (0 is the loud zero-fill bug)
+//   1      1    cookieLen  1…255 (0 rejects)
 //   2      …    cookie     opaque, echoed verbatim in the resubmission
 //
 // Retry handshake 1 (type 0x14), client→host, 2 + cookieLen + |msg1|:
@@ -57,7 +46,7 @@ public enum RetryMessageError: Error, Hashable, Sendable {
 
 /// The host's stateless answer to a msg1 it will not yet pay for
 /// (type 0x13).
-public struct RetryChallenge: Hashable, Sendable {
+public struct RetryChallenge: Hashable, Sendable, SliceDecodable {
     public var cookie: [UInt8]
 
     public init(cookie: [UInt8]) {
@@ -85,14 +74,10 @@ public struct RetryChallenge: Hashable, Sendable {
         }
         return RetryChallenge(cookie: cookie)
     }
-
-    public static func decode(_ payload: [UInt8]) throws -> RetryChallenge {
-        try decode(payload[...])
-    }
 }
 
 /// The client's msg1 resubmission carrying its cookie (type 0x14).
-public struct RetryHandshake1: Hashable, Sendable {
+public struct RetryHandshake1: Hashable, Sendable, SliceDecodable {
     public var cookie: [UInt8]
     /// The raw Noise IK message 1, byte-identical to the one the
     /// challenge answered — the client's retransmit rule makes that
@@ -136,10 +121,6 @@ public struct RetryHandshake1: Hashable, Sendable {
         return RetryHandshake1(
             cookie: cookie, message1: Array(remainder)
         )
-    }
-
-    public static func decode(_ payload: [UInt8]) throws -> RetryHandshake1 {
-        try decode(payload[...])
     }
 }
 

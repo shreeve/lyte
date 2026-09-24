@@ -2,6 +2,7 @@ import LyteCore
 import LyteClientTestKit
 import XCTest
 import Foundation
+import LyteClientSession
 import LyteTransport
 import LyteWire
 import LyteWireTestKit
@@ -219,17 +220,28 @@ final class FeedbackPathTests: XCTestCase {
                                      transmit: { capture.append($0) })
         let feedback = FeedbackSender(demux: demux, sender: sender,
                                       intervalMilliseconds: 25)
+        // The only test of the real DispatchSourceTimer (every other
+        // cadence test drives tick(now:)): wait for a few beats instead
+        // of a fixed sleep, then bound the count by the elapsed time —
+        // "never fires" and "fires faster than the 25 ms floor" both
+        // fail, scheduler judder does not.
+        let started = DispatchTime.now()
         feedback.start()
         defer { feedback.stop() }
-
-        // 500 ms at a 25 ms cadence is nominally 20 reports; assert a
-        // loose band that catches "never fires" and "fires per-ms" while
-        // tolerating CI scheduling judder.
-        Thread.sleep(forTimeInterval: 0.5)
+        let deadline = started + .seconds(5)
+        while feedback.snapshotStats().reportsSent < 3,
+              DispatchTime.now() < deadline {
+            usleep(1_000)
+        }
         feedback.stop()
+        let elapsedMilliseconds =
+            (DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds)
+            / 1_000_000
         let sent = feedback.snapshotStats().reportsSent
-        XCTAssertGreaterThanOrEqual(sent, 5, "cadence timer must actually fire")
-        XCTAssertLessThanOrEqual(sent, 25, "cadence must respect the 25 ms floor")
+        XCTAssertGreaterThanOrEqual(sent, 3, "cadence timer must actually fire")
+        XCTAssertLessThanOrEqual(
+            sent, elapsedMilliseconds / 25 + 1,
+            "cadence must respect the 25 ms floor")
 
         // Every datagram left on chan=3 with monotonically increasing seq.
         let datagrams = capture.datagrams
@@ -479,20 +491,21 @@ final class FeedbackPathTests: XCTestCase {
         XCTAssertEqual(sample.rttMicroseconds, example.rttMicroseconds)
     }
 
-    func testBeaconMirrorYieldsRetainedClockSamples() {
+    func testBeaconMirrorClosesSamplesIntoTheClockModel() {
         // Deterministic client clock, advancing per call.
         let clock = TickingClock(start: 1_253_500)
         let echoes = LockedEchoes()
+        let model = HostClockModel()
         let responder = BeaconEchoResponder(
             now: { clock.next() },
+            onClockSample: { model.ingest($0) },
             emit: { echoes.append($0) })
 
         // Beacon 0: no mirror yet. t1=1,000,000, t2=1,253,000, t3=1,253,500.
         let first = ClockBeacon(
             beaconSeq: 0, hostSend: HostTimestamp(microseconds: 1_000_000))
         responder.handleCtrlPayload(first.encode(), arrivalMicroseconds: 1_253_000)
-        XCTAssertTrue(responder.snapshotClockSamples().isEmpty,
-                      "no mirror, no sample")
+        XCTAssertTrue(model.recentSamples(10).isEmpty, "no mirror, no sample")
 
         // Beacon 1 mirrors echo 0 with the host-measured t4 = 1,008,500
         // (the worked example's numbers → offset 249,000, rtt 8,000).
@@ -505,7 +518,7 @@ final class FeedbackPathTests: XCTestCase {
                 hostReceive: HostTimestamp(microseconds: 1_008_500)))
         responder.handleCtrlPayload(second.encode(), arrivalMicroseconds: 2_253_000)
 
-        let samples = responder.snapshotClockSamples()
+        let samples = model.recentSamples(10)
         XCTAssertEqual(samples.count, 1)
         XCTAssertEqual(samples[0].beaconSeq, 0)
         XCTAssertEqual(samples[0].offsetMicroseconds, 249_000)

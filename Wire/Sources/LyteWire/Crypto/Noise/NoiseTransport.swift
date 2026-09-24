@@ -1,5 +1,5 @@
-// Transport-phase encryption (W5): the two post-Split cipher states with
-// the extended-counter nonce discipline the core plan pins (§2 decision 1):
+// Transport-phase encryption: the two post-Split cipher states with the
+// extended-counter nonce discipline:
 //
 //   nonce (12 B) = chan u8 ‖ epoch u24 LE ‖ extendedCounter u64 LE
 //
@@ -10,38 +10,47 @@
 // replaces the key via Noise REKEY) rides the next three bytes, so no
 // (key, nonce) pair ever repeats across channels, seq wraps, or rekeys.
 //
-// Replay policy (core plan §2 decision 2): a retransmit is a byte-identical
-// datagram resend, admitted once — the receiver keeps a 64-entry sliding
-// bitmap per channel: duplicates reject as `replayedSequence`, datagrams
-// older than the window reject as `staleSequence`, reorder inside the
-// window is admitted. Receiver state commits only after the AEAD opens,
-// so forged headers cannot desync the counter. The ARQ sublayer does NOT
-// rely on datagram-level resends surviving this window: its retransmit
-// unit is the segment, re-sealed inside a FRESH datagram (fresh seq,
-// fresh nonce) precisely so a busy channel's 64-deep window can never
-// starve a straggling retransmit — see ArqFrames.swift's retransmission
-// discipline, the W3-flagged interaction resolved.
+// Replay policy: each extended counter is admitted once. The receiver keeps
+// a 64-entry sliding bitmap per channel: duplicates reject as
+// `replayedSequence`, datagrams older than the window as `staleSequence`,
+// reorder inside the window is admitted. The counter anchor moves only
+// after the AEAD opens, so forged headers cannot desync it. ARQ retransmits
+// ride fresh datagrams (fresh seq, fresh nonce), so this window never
+// starves them.
 //
-// Rekey grace (core plan §2 decision 1): the receive side keeps the
+// Rekey grace: the receive side keeps the
 // previous epoch's key alive until the next rekey; unseal tries the
 // current epoch first, then the previous — the tag arbitrates — so
 // in-flight datagrams survive a rekey.
 
 /// Extended-counter bookkeeping for one (direction, channel).
+///
+/// Reconstruction is anchored at the last *accepted* counter, so it is
+/// exact only while consecutive accepted datagrams sit less than half the
+/// u16 seq space (32768) apart. A longer one-way gap — sustained loss on
+/// a busy channel — leaves the anchor behind: every later datagram reads
+/// as stale or opens under the wrong counter, and because the anchor only
+/// moves on a successful open, nothing would ever open again. After
+/// `resyncFailureThreshold` consecutive failures the receiver therefore
+/// also tries the next `resyncWrapCount` forward wraps of the same seq;
+/// the AEAD tag arbitrates, so a forged datagram can cost at most
+/// `resyncWrapCount` extra opens and never moves the anchor.
 package struct ExtendedCounterTracker: Sendable {
     /// Highest extended counter seen/sent; nil until the first datagram.
-    /// Anchor rule: the first datagram on a channel anchors at
-    /// rollover 0 — extended = seq's raw value. Both ends share the rule,
-    /// and a session that loses its entire first seq half-window (32768
-    /// datagrams, ≈1.8 s at peak) before delivering one is a failed
-    /// session, not a case to paper over.
+    /// The first datagram on a channel anchors at rollover 0 — extended =
+    /// seq's raw value — on both ends.
     package private(set) var highest: UInt64?
     /// Bit i = (highest − i) already accepted. Bit 0 is always set.
     private(set) var window: UInt64 = 0
+    /// Stale or unopenable datagrams since the last accept — the
+    /// "anchor may be lost" signal that enables forward resync.
+    package private(set) var failuresSinceAccept = 0
 
     package init() {}
 
     package static let windowBitCount = 64
+    package static let resyncFailureThreshold = 8
+    package static let resyncWrapCount = 4
 
     /// Reconstructs the extended counter for `seq` relative to the
     /// last-seen position via u16 serial distance (ROC-style). Returns
@@ -55,6 +64,35 @@ package struct ExtendedCounterTracker: Sendable {
         }
         guard highest >= UInt64(-delta) else { return nil }
         return highest - UInt64(-delta)
+    }
+
+    /// True once enough consecutive failures suggest the anchor fell a
+    /// half-window or more behind the sender.
+    package var needsResync: Bool {
+        failuresSinceAccept >= Self.resyncFailureThreshold
+    }
+
+    /// Forward candidates for `seq` past the anchor: the nearest counter
+    /// ahead of `highest` carrying this seq, then each later wrap —
+    /// excluding the ordinary reconstruction, which was already tried.
+    package func resyncCandidates(for seq: ChannelSeq) -> [UInt64] {
+        let ordinary = extendedCounter(for: seq)
+        let base: UInt64
+        if let highest {
+            let lastSeq = UInt16(truncatingIfNeeded: highest)
+            let ahead = UInt64(seq.rawValue &- lastSeq)
+            base = highest &+ (ahead == 0 ? 1 << 16 : ahead)
+        } else {
+            base = UInt64(seq.rawValue)
+        }
+        return (0...Self.resyncWrapCount)
+            .map { base &+ UInt64($0) << 16 }
+            .filter { $0 != ordinary }
+    }
+
+    /// Records a stale or unopenable datagram (never moves the anchor).
+    package mutating func noteFailure() {
+        failuresSinceAccept &+= 1
     }
 
     /// Replay-window verdict for a candidate extended counter; call
@@ -76,6 +114,7 @@ package struct ExtendedCounterTracker: Sendable {
 
     /// Commits an accepted counter — only after a successful open.
     package mutating func accept(_ extended: UInt64) {
+        failuresSinceAccept = 0
         guard let highest else {
             self.highest = extended
             window = 1
@@ -99,7 +138,10 @@ struct TransportDirection: Sendable {
     /// Previous epoch's cipher, kept for the receive-side grace window.
     var previousCipher: NoiseCipherState?
     var epoch: UInt32 = 0
-    var trackers: [UInt8: ExtendedCounterTracker] = [:]
+    /// Indexed by channel number.
+    var trackers = [ExtendedCounterTracker](
+        repeating: ExtendedCounterTracker(), count: 256
+    )
     /// Datagrams processed since the last rekey — the trigger input.
     var datagramsSinceRekey: UInt64 = 0
 
@@ -143,13 +185,12 @@ public struct NoiseTransport: Sendable {
     var send: TransportDirection
     var receive: TransportDirection
 
-    /// The completed handshake's transcript hash — the W6 PAKE binds to
-    /// this (Lyte-UDP decision §8.2) and resume tokens may reference it.
+    /// The completed handshake's transcript hash — the pairing PAKE binds
+    /// to it.
     public let handshakeHash: [UInt8]
 
-    /// Recommended rekey trigger (transport doc §5: every 2^24 datagrams
-    /// per direction or hourly, whichever first — the timer is shell
-    /// territory, the count is ours).
+    /// Recommended rekey trigger: every 2^24 datagrams per direction (the
+    /// hourly timer is the shell's).
     public static let rekeyDatagramThreshold: UInt64 = 1 << 24
 
     init(
@@ -169,7 +210,7 @@ public struct NoiseTransport: Sendable {
     /// nonce. Enforces plaintext ≤ 1112 B; output is ciphertext ‖ 16 B
     /// tag, ≤ 1128 B by construction. The (chan, seq) must advance past
     /// everything already sealed on that channel — a retransmit resends
-    /// the sealed bytes, it never re-seals (core plan §2 decision 2).
+    /// the sealed bytes, it never re-seals.
     public mutating func seal(
         plaintext: ArraySlice<UInt8>,
         aad: ArraySlice<UInt8>,
@@ -179,7 +220,7 @@ public struct NoiseTransport: Sendable {
         guard plaintext.count <= WireBudget.maxPlaintextShardByteCount else {
             throw NoiseError.plaintextOverBudget(plaintext.count)
         }
-        var tracker = send.trackers[channel.rawValue] ?? ExtendedCounterTracker()
+        var tracker = send.trackers[Int(channel.rawValue)]
         guard let extended = tracker.extendedCounter(for: seq),
               tracker.verdict(for: extended) == .fresh else {
             throw NoiseError.sendSequenceNotMonotonic
@@ -192,7 +233,7 @@ public struct NoiseTransport: Sendable {
             plaintext: plaintext
         )
         tracker.accept(extended)
-        send.trackers[channel.rawValue] = tracker
+        send.trackers[Int(channel.rawValue)] = tracker
         send.datagramsSinceRekey &+= 1
         return sealed
     }
@@ -227,27 +268,64 @@ public struct NoiseTransport: Sendable {
               wirePayload.count <= WireBudget.maxWirePayloadByteCount else {
             throw NoiseError.wirePayloadOutOfBounds(wirePayload.count)
         }
-        var tracker = receive.trackers[channel.rawValue]
-            ?? ExtendedCounterTracker()
-        guard let extended = tracker.extendedCounter(for: seq) else {
-            throw NoiseError.staleSequence
+        var tracker = receive.trackers[Int(channel.rawValue)]
+        let plaintext: [UInt8]
+        let extended: UInt64
+        do {
+            guard let ordinary = tracker.extendedCounter(for: seq) else {
+                throw NoiseError.staleSequence
+            }
+            switch tracker.verdict(for: ordinary) {
+            case .stale: throw NoiseError.staleSequence
+            case .replayed: throw NoiseError.replayedSequence
+            case .fresh, .insideWindow: break
+            }
+            plaintext = try openTryingEpochs(
+                wirePayload: wirePayload,
+                aad: aad,
+                channel: channel,
+                extended: ordinary
+            )
+            extended = ordinary
+        } catch let error as NoiseError where error != .replayedSequence {
+            guard tracker.needsResync,
+                  let resynced = resyncOpen(
+                      wirePayload: wirePayload, aad: aad, channel: channel,
+                      candidates: tracker.resyncCandidates(for: seq)
+                  )
+            else {
+                tracker.noteFailure()
+                receive.trackers[Int(channel.rawValue)] = tracker
+                throw error
+            }
+            (plaintext, extended) = resynced
         }
-        switch tracker.verdict(for: extended) {
-        case .stale: throw NoiseError.staleSequence
-        case .replayed: throw NoiseError.replayedSequence
-        case .fresh, .insideWindow: break
-        }
-
-        let plaintext = try openTryingEpochs(
-            wirePayload: wirePayload,
-            aad: aad,
-            channel: channel,
-            extended: extended
-        )
         tracker.accept(extended)
-        receive.trackers[channel.rawValue] = tracker
+        receive.trackers[Int(channel.rawValue)] = tracker
         receive.datagramsSinceRekey &+= 1
         return plaintext
+    }
+
+    /// Tries each forward resync candidate under the current epoch key;
+    /// the first that authenticates is the sender's counter.
+    private func resyncOpen(
+        wirePayload: ArraySlice<UInt8>,
+        aad: ArraySlice<UInt8>,
+        channel: ChannelId,
+        candidates: [UInt64]
+    ) -> (plaintext: [UInt8], extended: UInt64)? {
+        for candidate in candidates {
+            if let plaintext = try? receive.cipher.open(
+                nonceBytes: TransportDirection.nonce(
+                    channel: channel, epoch: receive.epoch, extended: candidate
+                ),
+                aad: aad,
+                ciphertextAndTag: wirePayload
+            ) {
+                return (plaintext, candidate)
+            }
+        }
+        return nil
     }
 
     public mutating func unseal(

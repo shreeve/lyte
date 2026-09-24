@@ -1,34 +1,24 @@
-// The receive-side UDP endpoint — CL-1's shell around ReceiveDemux. BSD
-// sockets, carrying the GameStream stack's socket craft (Video/AudioStream
-// lessons, kept, not the files): a large SO_RCVBUF so
-// kernel drops never masquerade as network loss, SO_NET_SERVICE_TYPE VI to
-// discourage Wi-Fi RX power-save, SO_TIMESTAMP kernel arrival stamps so
-// gap measurements blame the radio rather than our own thread stalls, a
-// 100 ms SO_RCVTIMEO so stop() unblocks the loop, and ECONNREFUSED
-// tolerance. One receive thread runs decode + demux inline.
+// The client's UDP socket: bind, the Noise handshake, one receive thread
+// running decode + demux inline, and the send leg back to the host.
 //
-// CL-3 adds the return leg: the receive loop captures each datagram's
-// source address, and `sendToPeer` fires client→host datagrams (feedback,
-// beacon echoes, IDR requests) back at the most recent source from the
-// same socket — so replies carry this endpoint's bound port as their
-// source and land inside the host's connected-socket filter. Until the
-// first datagram arrives there is no peer and sends report false; every
-// CL-3 message is telemetry-class, superseded by its next cadence, so
-// "no peer yet" is a counted non-event, not an error. Client-originated
-// traffic is control/input/feedback, including the Noise handshake, so
-// the socket rides the protected CS6 lane (0xC0) just like host control.
+// Kernel monotonic arrival stamps let gap measurements blame the radio,
+// not thread stalls. `sendToPeer` uses the same socket so replies pass
+// the host's connected-socket filter; the peer is the handshake's host
+// tuple, then the source of the latest authenticated datagram (roaming).
+// Start is two steps (`bindAndHandshake`, `startReceiving`) so the owner
+// can publish its datagram consumer in between.
 
 import LyteCore
 import LyteIO
 import Foundation
 import LyteWire
+import Synchronization
 
 public enum TransportEndpointError: Error, Sendable {
     case socketFailed(errno: Int32)
     case bindFailed(errno: Int32)
     case badAddress(String)
-    /// A session-shell entry point was called before `start()` built
-    /// the core (CL-9's sendInput is the first such surface).
+    /// A session-shell entry point was called before `start()`.
     case notStarted
 }
 
@@ -38,35 +28,43 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
     private let requestedPort: UInt16
     private let bindAddress: String
     private let crypto: TransportCrypto
-    /// Per-datagram hook, with the same arrival stamp the demux got
-    /// (kernel SCM_TIMESTAMP wall-clock µs when available, monotonic µs
-    /// otherwise) — a MIXED clock domain, never safe in monotonic math
-    /// like RTT (A-25). Consumers needing a monotonic instant (the
-    /// beacon echo's t2) take their own stamp — the hook runs inline on
-    /// the receive thread, so it is within microseconds of true arrival.
+    /// Per-datagram hook with the demux's arrival stamp: SystemMonotonic
+    /// µs (kernel stamp when present, else the thread's own reading).
     private let onDatagram: (@Sendable (IngestOutcome, _ arrivalMicroseconds: UInt64) -> Void)?
 
-    /// Internal (not private) so the stop-order pin can observe that
-    /// the fd survives until the receive thread is joined.
-    internal private(set) var fd: Int32 = -1
+    /// Atomic because timer threads read it in `sendToPeer` while
+    /// `stop()` closes it.
+    private let socketFd = Atomic<Int32>(-1)
+    internal var fd: Int32 { socketFd.load(ordering: .acquiring) }
     private var receiveThread: Thread?
-    private let running = TransportAtomicFlag()
+    private let running = Atomic<Bool>(false)
     private let receiveExit = NSCondition()
     private var receiveExited = true
 
+    /// Spans every `sendto` and the close, so no send outlives the fd.
+    private let sendLock = NSLock()
     // The last datagram's source address — the peer replies go to.
     private let peerLock = NSLock()
     private var peerAddress: sockaddr_in?
 
+    /// Arrivals stamped by the kernel rather than the fallback reading.
+    let kernelStampedArrivals = Atomic<UInt64>(0)
+
+    private let receiveTimeout: Duration
+
     /// The actual bound port — differs from the request when it was 0.
     public private(set) var boundPort: UInt16 = 0
 
+    /// `receiveTimeout` bounds each blocking receive, and so how long
+    /// `stop()` waits for the receive thread to notice.
     public init(
         port: UInt16,
         bindAddress: String = "0.0.0.0",
         crypto: TransportCrypto,
+        receiveTimeout: Duration = .milliseconds(100),
         onDatagram: (@Sendable (IngestOutcome, _ arrivalMicroseconds: UInt64) -> Void)? = nil
     ) {
+        self.receiveTimeout = receiveTimeout
         self.requestedPort = port
         self.bindAddress = bindAddress
         self.crypto = crypto
@@ -74,13 +72,15 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
         self.onDatagram = onDatagram
     }
 
-    /// Transport-open, then bind and start the receive thread. The crypto
-    /// seam gates the socket: no datagram is read before `open()` succeeds.
-    /// A handshaking crypto (Noise) inverts the first step — it needs the
-    /// bound socket to run the IK exchange, so the endpoint binds first,
-    /// drives `performHandshake` over the socket, and only then starts the
-    /// receive thread (open() then merely asserts the transport exists).
     public func start() throws {
+        try bindAndHandshake()
+        startReceiving()
+    }
+
+    /// Opens the transport and binds the socket; a handshaking crypto
+    /// handshakes over the bound socket before opening. No datagram is
+    /// read until `startReceiving()`. On failure the socket is closed.
+    public func bindAndHandshake() throws {
         let handshaking = crypto as? any HandshakingTransportCrypto
         if handshaking == nil {
             try crypto.open()
@@ -88,9 +88,36 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
 
         let fd = socket(AF_INET, SOCK_DGRAM, 0)
         guard fd >= 0 else { throw TransportEndpointError.socketFailed(errno: errno) }
-        self.fd = fd
         HandshakeWitness.record("socketCreated", fields: ["fd": String(fd)])
+        do {
+            try configureAndBind(fd, handshaking: handshaking)
+            if let handshaking {
+                try handshake(fd, crypto: handshaking)
+                try crypto.open()
+            }
+        } catch {
+            close(fd)
+            throw error
+        }
+        socketFd.store(fd, ordering: .releasing)
+    }
 
+    /// Starts the receive thread on the bound socket.
+    public func startReceiving() {
+        running.store(true, ordering: .releasing)
+        receiveExit.lock()
+        receiveExited = false
+        receiveExit.unlock()
+        let recv = Thread { [weak self] in self?.receiveLoop() }
+        recv.name = "lyte-wire-recv"
+        recv.qualityOfService = .userInteractive
+        recv.start()
+        receiveThread = recv
+    }
+
+    private func configureAndBind(
+        _ fd: Int32, handshaking: (any HandshakingTransportCrypto)?
+    ) throws {
         // Bursts must not drop in-kernel: room for ~1800 max-size datagrams.
         var rcvbuf: Int32 = 2 * 1024 * 1024
         _ = setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, socklen_t(MemoryLayout<Int32>.size))
@@ -100,17 +127,21 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
         _ = setsockopt(fd, SOL_SOCKET, SO_NET_SERVICE_TYPE,
                        &serviceType, socklen_t(MemoryLayout<Int32>.size))
 
-        // Kernel arrival timestamps (SCM_TIMESTAMP cmsg on recvmsg).
+        // Kernel monotonic arrival stamps (SCM_TIMESTAMP_MONOTONIC cmsg).
         var tsOn: Int32 = 1
-        _ = setsockopt(fd, SOL_SOCKET, SO_TIMESTAMP, &tsOn, socklen_t(MemoryLayout<Int32>.size))
+        _ = setsockopt(fd, SOL_SOCKET, SO_TIMESTAMP_MONOTONIC, &tsOn,
+                       socklen_t(MemoryLayout<Int32>.size))
 
-        // 100 ms receive timeout so stop() can interrupt the loop.
-        var tv = timeval(tv_sec: 0, tv_usec: 100_000)
+        // The receive timeout lets stop() interrupt the loop. A zero
+        // SO_RCVTIMEO means "block forever", so it floors at 1 µs.
+        let (seconds, attoseconds) = receiveTimeout.components
+        let micros = max(1, seconds * 1_000_000 + attoseconds / 1_000_000_000_000)
+        var tv = timeval(
+            tv_sec: Int(micros / 1_000_000),
+            tv_usec: Int32(micros % 1_000_000))
         _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
-        // The client sends control/input/feedback, never fresh video.
-        // Marking the whole socket as CS5 incorrectly put Noise message 1
-        // in the video queue; use the protocol's protected CS6 lane.
+        // The client never sends video: the protected CS6 lane.
         var tos = Int32(WireTos.protected)
         _ = setsockopt(fd, IPPROTO_IP, IP_TOS, &tos, socklen_t(MemoryLayout<Int32>.size))
 
@@ -119,7 +150,6 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_port = requestedPort.bigEndian
         guard inet_pton(AF_INET, bindAddress, &addr.sin_addr) == 1 else {
-            close(fd); self.fd = -1
             throw TransportEndpointError.badAddress(bindAddress)
         }
         let rc = withUnsafePointer(to: &addr) { ptr in
@@ -128,10 +158,7 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
             }
         }
         guard rc == 0 else {
-            let e = errno
-            close(fd)
-            self.fd = -1
-            throw TransportEndpointError.bindFailed(errno: e)
+            throw TransportEndpointError.bindFailed(errno: errno)
         }
 
         // Learn the kernel-assigned port when the request was 0 (tests).
@@ -150,54 +177,37 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
             "targetPort": String(handshaking?.hostPort ?? 0),
             "tos": String(tos),
         ])
+    }
 
-        if let handshaking {
-            do {
-                HandshakeWitness.record("noiseHandshakeBegin")
-                let io = try SocketHandshakeIO(
-                    fd: fd,
-                    host: handshaking.hostAddress,
-                    port: handshaking.hostPort
-                )
-                try handshaking.performHandshake(io: io)
-                HandshakeWitness.record("noiseHandshakeCompleted")
-                // The host tuple is the peer from the first byte, so the
-                // return leg (feedback ticks before any sealed host
-                // datagram arrives) has somewhere to go.
-                peerLock.lock()
-                peerAddress = io.hostSockaddr
-                peerLock.unlock()
-            } catch {
-                HandshakeWitness.record("noiseHandshakeFailed", fields: [
-                    "error": String(describing: error),
-                ])
-                close(fd)
-                self.fd = -1
-                throw error
-            }
-            try crypto.open()
+    private func handshake(
+        _ fd: Int32, crypto handshaking: any HandshakingTransportCrypto
+    ) throws {
+        do {
+            HandshakeWitness.record("noiseHandshakeBegin")
+            let io = try SocketHandshakeIO(
+                fd: fd,
+                host: handshaking.hostAddress,
+                port: handshaking.hostPort
+            )
+            try handshaking.performHandshake(io: io)
+            HandshakeWitness.record("noiseHandshakeCompleted")
+            // The host tuple is the peer until an authenticated arrival.
+            peerLock.lock()
+            peerAddress = io.hostSockaddr
+            peerLock.unlock()
+        } catch {
+            HandshakeWitness.record("noiseHandshakeFailed", fields: [
+                "error": String(describing: error),
+            ])
+            throw error
         }
-
-        running.set(true)
-        receiveExit.lock()
-        receiveExited = false
-        receiveExit.unlock()
-        let recv = Thread { [weak self] in self?.receiveLoop() }
-        recv.name = "lyte-wire-recv"
-        recv.qualityOfService = .userInteractive
-        recv.start()
-        receiveThread = recv
     }
 
     public func stop() {
-        running.set(false)
-        // Join BEFORE close (analysis finding 12's residue): the receive
-        // thread may be inside recvmsg on this fd, and closing first
-        // frees the fd number while that syscall is in flight — a
-        // roaming re-dial can then bind a fresh socket onto the same
-        // number and the old loop steals its datagrams. The 100 ms
-        // SO_RCVTIMEO bounds the join; the 1 s deadline is the wedge
-        // backstop, after which close() proceeds as the forcing move.
+        running.store(false, ordering: .releasing)
+        // Join before close: closing first frees the fd number while
+        // recvmsg is in flight, and a re-dial could reuse it. The receive
+        // timeout bounds the join; 1 s is the wedge backstop.
         if Thread.current !== receiveThread {
             receiveExit.lock()
             let deadline = Date(timeIntervalSinceNow: 1)
@@ -205,10 +215,12 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
             receiveExit.unlock()
             receiveThread = nil
         }
-        if fd >= 0 {
-            close(fd)
-            fd = -1
+        sendLock.lock()
+        let closing = socketFd.exchange(-1, ordering: .acquiringAndReleasing)
+        if closing >= 0 {
+            close(closing)
         }
+        sendLock.unlock()
     }
 
     // MARK: - Receive thread
@@ -220,13 +232,15 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
             receiveExit.broadcast()
             receiveExit.unlock()
         }
-        // Datagrams over the 1152 B budget must be *seen* over-budget, not
-        // silently truncated to it — read into a larger buffer and let
-        // Envelope.decode reject the length.
+        // Oversized datagrams must be seen, not truncated: Envelope.decode
+        // rejects the length.
         var buffer = [UInt8](repeating: 0, count: 4096)
         var control = [UInt8](repeating: 0, count: 64)
+        // stop() joins this thread before closing, so the fd is stable
+        // for the loop's lifetime.
+        let fd = self.fd
 
-        while running.get() {
+        while running.load(ordering: .acquiring) {
             var kernelUs: UInt64? = nil
             var source = sockaddr_in()
             var sourceCaptured = false
@@ -248,16 +262,11 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
                                srcPtr.pointee.sin_family == sa_family_t(AF_INET) {
                                 sourceCaptured = true
                             }
-                            // Single SCM_TIMESTAMP cmsg: timeval at data offset
-                            // 12 (4-byte len + 4-byte level + 4-byte type).
-                            if r > 0, msg.msg_controllen >= 12 + 16,
-                               let base = ctrl.baseAddress {
-                                let level = base.withMemoryRebound(to: Int32.self, capacity: 3) { ($0[1], $0[2]) }
-                                if level.0 == SOL_SOCKET, level.1 == SCM_TIMESTAMP {
-                                    var tv = timeval()
-                                    memcpy(&tv, base + 12, MemoryLayout<timeval>.size)
-                                    kernelUs = UInt64(tv.tv_sec) * 1_000_000 + UInt64(tv.tv_usec)
-                                }
+                            if r > 0, let base = ctrl.baseAddress {
+                                kernelUs = Self.monotonicArrivalMicroseconds(
+                                    control: UnsafeRawBufferPointer(
+                                        start: base,
+                                        count: Int(msg.msg_controllen)))
                             }
                             return r
                         }
@@ -272,7 +281,10 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
                 return   // socket closed by stop()
             }
 
-            let arrivalUs = kernelUs ?? (SystemMonotonicClock.nowMicroseconds)
+            if kernelUs != nil {
+                kernelStampedArrivals.add(1, ordering: .relaxed)
+            }
+            let arrivalUs = kernelUs ?? SystemMonotonicClock.nowMicroseconds
             let receivedAtNS = SystemMonotonicClock.nowNanoseconds
             let witnessEnvelope = PipelineWitness.isEnabled
                 ? (try? Envelope.decode(buffer[0..<n]).0) : nil
@@ -328,22 +340,53 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
         }
     }
 
-    // MARK: - Send path (CL-3)
+    /// The arrival stamp from a single SCM_TIMESTAMP_MONOTONIC cmsg, as
+    /// SystemMonotonicClock µs; nil when absent. The payload is a uint64
+    /// of mach absolute-time ticks at data offset 12 (4-byte len, level,
+    /// type; Darwin aligns cmsg data to 4 bytes, so the read is unaligned).
+    static func monotonicArrivalMicroseconds(
+        control: UnsafeRawBufferPointer
+    ) -> UInt64? {
+        guard control.count >= 12 + 8,
+              control.loadUnaligned(fromByteOffset: 4, as: Int32.self)
+                == SOL_SOCKET,
+              control.loadUnaligned(fromByteOffset: 8, as: Int32.self)
+                == SCM_TIMESTAMP_MONOTONIC
+        else { return nil }
+        let ticks = control.loadUnaligned(fromByteOffset: 12, as: UInt64.self)
+        return machTicksToNanoseconds(ticks) / 1_000
+    }
 
-    /// Sends one encoded datagram back at the most recent datagram source,
-    /// from the same socket (so the source port matches what the peer's
-    /// connected socket filters for). Returns false when no peer is known
-    /// yet, the socket is closed, or the kernel refused — all counted by
-    /// the caller (TransportSender), none fatal for telemetry-class
-    /// datagrams.
+    /// Mach absolute-time ticks → the nanoseconds DispatchTime's uptime
+    /// (and so SystemMonotonicClock) reports.
+    static func machTicksToNanoseconds(_ ticks: UInt64) -> UInt64 {
+        let (numer, denom) = machTimebase
+        guard numer != denom else { return ticks }
+        let product = ticks.multipliedFullWidth(by: UInt64(numer))
+        return UInt64(denom).dividingFullWidth(product).quotient
+    }
+
+    private static let machTimebase: (UInt32, UInt32) = {
+        var info = mach_timebase_info_data_t()
+        mach_timebase_info(&info)
+        return (info.numer, info.denom)
+    }()
+
+    // MARK: - Send path
+
+    /// Sends one datagram to the current peer. Returns false with no peer,
+    /// a closed socket, or a kernel refusal; callers treat that as loss.
+    /// Runs under `sendLock`, which `stop()` holds while closing, so a send
+    /// never reaches a reused fd number.
     @discardableResult
     public func sendToPeer(_ datagram: [UInt8]) -> Bool {
         peerLock.lock()
-        guard var peer = peerAddress else {
-            peerLock.unlock()
-            return false
-        }
+        let peerSnapshot = peerAddress
         peerLock.unlock()
+        guard var peer = peerSnapshot else { return false }
+        sendLock.lock()
+        defer { sendLock.unlock() }
+        let fd = self.fd
         guard fd >= 0 else { return false }
 
         let sent = datagram.withUnsafeBufferPointer { buf -> Int in
@@ -365,10 +408,8 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
     }
 }
 
-/// Blocking datagram IO over the endpoint's bound socket for the
-/// pre-thread Noise handshake window: sends aim at the resolved host
-/// tuple, receives poll() with the caller's timeout. Single-threaded by
-/// construction (the receive thread does not exist yet).
+/// Blocking datagram IO over the bound socket for the Noise handshake,
+/// before the receive thread exists.
 final class SocketHandshakeIO: NoiseHandshakeIO {
     private let fd: Int32
     let hostSockaddr: sockaddr_in
@@ -384,9 +425,11 @@ final class SocketHandshakeIO: NoiseHandshakeIO {
             hints.ai_family = AF_INET
             hints.ai_socktype = SOCK_DGRAM
             var result: UnsafeMutablePointer<addrinfo>?
-            guard getaddrinfo(host, nil, &hints, &result) == 0,
-                  let info = result,
-                  let sa = info.pointee.ai_addr else {
+            guard getaddrinfo(host, nil, &hints, &result) == 0 else {
+                throw TransportEndpointError.badAddress(host)
+            }
+            defer { freeaddrinfo(result) }
+            guard let sa = result?.pointee.ai_addr else {
                 throw TransportEndpointError.badAddress(host)
             }
             memcpy(
@@ -395,7 +438,6 @@ final class SocketHandshakeIO: NoiseHandshakeIO {
                     + MemoryLayout<sockaddr_in>.offset(of: \sockaddr_in.sin_addr)!,
                 MemoryLayout<in_addr>.size
             )
-            freeaddrinfo(result)
         }
         hostSockaddr = addr
     }
@@ -427,9 +469,8 @@ final class SocketHandshakeIO: NoiseHandshakeIO {
             capturedErrno: sendErrno)
     }
 
-    /// `errno` belongs to the failing syscall, not to later diagnostics.
-    /// Keep this seam executable so logging can never silently change the
-    /// transport error that reaches recovery policy.
+    /// Takes the errno captured right after the syscall, so logging can
+    /// never change the error that reaches recovery policy.
     static func validateSend(
         sent: Int, expected: Int, capturedErrno: Int32
     ) throws {
@@ -454,8 +495,7 @@ final class SocketHandshakeIO: NoiseHandshakeIO {
             recv(fd, buf.baseAddress, buf.count, 0)
         }
         guard n > 0 else {
-            // ECONNREFUSED bounced off the host between sends is
-            // transient; timeouts and empties are the caller's retry.
+            // Transient; the caller retries.
             return nil
         }
         HandshakeWitness.record("handshakeReceive", fields: [
@@ -475,13 +515,4 @@ final class SocketHandshakeIO: NoiseHandshakeIO {
         }
         return rc == 0 ? UInt16(bigEndian: local.sin_port) : 0
     }
-}
-
-/// Tiny lock-protected boolean (thread interruption flag) — the shape the
-/// GameStream stack proved; duplicated here rather than imported.
-final class TransportAtomicFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = false
-    func set(_ v: Bool) { lock.lock(); value = v; lock.unlock() }
-    func get() -> Bool { lock.lock(); defer { lock.unlock() }; return value }
 }

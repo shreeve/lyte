@@ -1,11 +1,9 @@
-// ClientKeystore (HS-9): the paired-clients trust store as a value —
-// the text format, parsing, and membership logic, kept sans-IO so the
-// format is pinned by cross-platform tests. The file itself lives at
-// ~/.config/lyte-host/paired_clients (0600, beside the portal token and
-// the host static — which this store NEVER replaces: pairing pins
-// CLIENT keys; the host's own noise_static.key is untouchable).
+// ClientKeystore: the paired-clients trust store as a value (format,
+// parsing, membership), sans-IO. The file lives at
+// ~/.config/lyte/paired_clients (0600). Pairing pins CLIENT keys; it
+// never touches the host's own noise_static.key.
 //
-// Format, frozen here:
+// Format:
 //   • UTF-8 text, one record per line.
 //   • A record is 64 lowercase hex characters (the client's X25519
 //     static public key), optionally followed by whitespace and a
@@ -31,8 +29,7 @@ public struct ClientKeystore: Equatable, Sendable {
     }
 
     public enum ParseError: Error, Equatable, Sendable {
-        /// (1-based line, its text) — surfaced verbatim so the operator
-        /// can find the damage.
+        /// (1-based line, its text), verbatim for the operator.
         case malformedLine(Int, String)
     }
 
@@ -91,7 +88,7 @@ public struct ClientKeystore: Equatable, Sendable {
         for entry in entries {
             let hex = Hex.string(entry.publicKey)
             lines.append(
-                entry.note.isEmpty ? hex : hex + " " + entry.note
+                entry.note.isEmpty ? hex : hex + " \(entry.note)"
             )
         }
         return lines.joined(separator: "\n") + "\n"
@@ -115,8 +112,7 @@ public struct ClientKeystore: Equatable, Sendable {
 }
 
 private extension Character {
-    /// Strict lowercase hex — an uppercase key is not ours and parses
-    /// loud, per the malformed-store rule.
+    /// Strict lowercase hex: an uppercase key is a parse error.
     var lowercaseHexValue: Int? {
         switch self {
         case "0"..."9": return Int(unicodeScalars.first!.value - 48)
@@ -127,8 +123,7 @@ private extension Character {
 }
 
 private extension StringProtocol {
-    /// Foundation-free whitespace trim (HostWire builds everywhere and
-    /// keeps Wire's no-Foundation spirit).
+    /// Foundation-free whitespace trim (HostWire is sans-Foundation).
     var trimmed: Substring {
         var slice = Substring(self)
         while let first = slice.first, first == " " || first == "\t"

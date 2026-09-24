@@ -1,6 +1,5 @@
-// The Lyte-UDP datagram envelope, exactly as the overview §2 pins it.
-// All multi-byte fields are little-endian — both ends are ours, no
-// network-order tax. 24 bytes fixed:
+// The Lyte-UDP datagram envelope. All multi-byte fields are little-endian.
+// 24 bytes fixed:
 //
 //   offset size field
 //   0      1    chan       channel number (ChannelId registry)
@@ -11,15 +10,12 @@
 //   8      8    timestamp  µs; host PipeWire monotonic domain on host-sent
 //                          datagrams, client monotonic on client-sent —
 //                          apply WireTimestamp<Domain> at the ends
-//   16     8    fec        FEC field; interior layout and codec in
-//                          FecField.swift (W1)
+//   16     8    fec        FEC field; layout and codec in FecField.swift
 //   24     …    [TLV block when flags bit0] then payload
 //
 // The header (fixed 24 bytes plus any TLV block) rides as AAD; the payload
-// is the AEAD ciphertext + authentication tag in a live session. Bare
-// shards exist only as frozen-vector/test equipment. Budgets are enforced
-// at encode time: 1112 B per
-// plaintext shard, 1128 B per wire payload, 1152 B per datagram.
+// is the AEAD ciphertext + tag in a live session (bare shards are test
+// equipment only). Budgets are enforced at encode time (see WireBudget).
 
 public struct Envelope: Hashable, Sendable {
     public var channel: ChannelId
@@ -63,8 +59,7 @@ public struct Envelope: Hashable, Sendable {
     // MARK: Encode
 
     /// Encodes header + wire payload (ciphertext + tag, or the bare shard in
-    /// insecure mode). Rejects payloads over 1128 B and datagrams over
-    /// 1152 B — exact enforcement is gate W-G1's requirement.
+    /// insecure mode). Rejects payloads over 1128 B and datagrams over 1152 B.
     public func encode(payload: ArraySlice<UInt8>) throws -> [UInt8] {
         guard payload.count <= WireBudget.maxWirePayloadByteCount else {
             throw WireError.payloadOverBudget(payload.count)
@@ -81,17 +76,12 @@ public struct Envelope: Hashable, Sendable {
         out.reserveCapacity(total)
         out.append(channel.rawValue)
         out.append(extensions.isEmpty ? 0 : Self.extensionsFlag)
-        appendLE(seq.rawValue, to: &out)
-        appendLE(frame.rawValue, to: &out)
-        appendLE(timestamp, to: &out)
-        appendLE(fec, to: &out)
+        wireAppendLE(seq.rawValue, to: &out)
+        wireAppendLE(frame.rawValue, to: &out)
+        wireAppendLE(timestamp, to: &out)
+        wireAppendLE(fec, to: &out)
         if !extensions.isEmpty {
-            out.append(UInt8(extensions.count))
-            for ext in extensions {
-                out.append(ext.type)
-                out.append(UInt8(ext.value.count))
-                out.append(contentsOf: ext.value)
-            }
+            WireExtension.appendBlock(extensions, to: &out)
         }
         out.append(contentsOf: payload)
         return out
@@ -102,8 +92,7 @@ public struct Envelope: Hashable, Sendable {
     }
 
     /// Encodes a plaintext shard, additionally enforcing the 1112 B shard
-    /// budget so FEC geometry and gate results are identical with and
-    /// without crypto (master plan §4.2).
+    /// budget so FEC geometry is identical with and without crypto.
     public func encode(plaintextShard: ArraySlice<UInt8>) throws -> [UInt8] {
         guard plaintextShard.count <= WireBudget.maxPlaintextShardByteCount else {
             throw WireError.shardOverBudget(plaintextShard.count)
@@ -135,39 +124,17 @@ public struct Envelope: Hashable, Sendable {
         let base = datagram.startIndex
         let channel = ChannelId(rawValue: datagram[base])
         let flags = datagram[base + 1]
-        let seq = ChannelSeq(rawValue: readLE(datagram, at: base + 2))
-        let frame = FrameNumber(rawValue: readLE(datagram, at: base + 4))
-        let timestamp: UInt64 = readLE(datagram, at: base + 8)
-        let fec: UInt64 = readLE(datagram, at: base + 16)
+        let seq = ChannelSeq(rawValue: wireReadLE(datagram, at: base + 2))
+        let frame = FrameNumber(rawValue: wireReadLE(datagram, at: base + 4))
+        let timestamp: UInt64 = wireReadLE(datagram, at: base + 8)
+        let fec: UInt64 = wireReadLE(datagram, at: base + 16)
 
-        var cursor = base + WireBudget.envelopeByteCount
-        var extensions: [WireExtension] = []
-        if flags & extensionsFlag != 0 {
-            guard cursor < datagram.endIndex else {
-                throw WireError.truncatedExtensions
-            }
-            let count = Int(datagram[cursor])
-            cursor += 1
-            extensions.reserveCapacity(count)
-            for _ in 0..<count {
-                guard cursor + 2 <= datagram.endIndex else {
-                    throw WireError.truncatedExtensions
-                }
-                let type = datagram[cursor]
-                let length = Int(datagram[cursor + 1])
-                cursor += 2
-                guard cursor + length <= datagram.endIndex else {
-                    throw WireError.truncatedExtensions
-                }
-                extensions.append(
-                    try WireExtension(
-                        type: type,
-                        value: Array(datagram[cursor..<cursor + length])
-                    )
-                )
-                cursor += length
-            }
-        }
+        var reader = WireReader(
+            datagram[(base + WireBudget.envelopeByteCount)...],
+            truncated: WireError.truncatedExtensions
+        )
+        let extensions = flags & extensionsFlag != 0
+            ? try WireExtension.readBlock(from: &reader) : []
 
         let envelope = Envelope(
             channel: channel,
@@ -177,7 +144,7 @@ public struct Envelope: Hashable, Sendable {
             fec: fec,
             extensions: extensions
         )
-        return (envelope, datagram[cursor...])
+        return (envelope, reader.rest())
     }
 
     public static func decode(
@@ -185,33 +152,4 @@ public struct Envelope: Hashable, Sendable {
     ) throws -> (envelope: Envelope, payload: ArraySlice<UInt8>) {
         try decode(datagram[...])
     }
-}
-
-// MARK: - Little-endian primitives
-
-private func appendLE(_ value: UInt16, to out: inout [UInt8]) {
-    out.append(UInt8(truncatingIfNeeded: value))
-    out.append(UInt8(truncatingIfNeeded: value >> 8))
-}
-
-private func appendLE(_ value: UInt32, to out: inout [UInt8]) {
-    for shift in stride(from: 0, to: 32, by: 8) {
-        out.append(UInt8(truncatingIfNeeded: value >> shift))
-    }
-}
-
-private func appendLE(_ value: UInt64, to out: inout [UInt8]) {
-    for shift in stride(from: 0, to: 64, by: 8) {
-        out.append(UInt8(truncatingIfNeeded: value >> shift))
-    }
-}
-
-private func readLE<T: FixedWidthInteger & UnsignedInteger>(
-    _ bytes: ArraySlice<UInt8>, at index: Int
-) -> T {
-    var value: T = 0
-    for i in 0..<(T.bitWidth / 8) {
-        value |= T(bytes[index + i]) << (8 * i)
-    }
-    return value
 }

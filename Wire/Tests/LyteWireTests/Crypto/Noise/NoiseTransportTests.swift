@@ -326,6 +326,100 @@ final class NoiseTransportTests: XCTestCase {
         )
     }
 
+    // MARK: Long one-way gaps
+
+    /// Seals `seq` values at the given extended counters (skipping ahead
+    /// in sub-half-window steps, as a sender whose datagrams are lost
+    /// does) and returns the sealed datagrams for the listed counters.
+    private func sealAcross(
+        _ client: inout NoiseTransport, through last: UInt64,
+        keeping kept: Set<UInt64>
+    ) throws -> [(env: Envelope, aad: [UInt8], wire: [UInt8])] {
+        var out: [(env: Envelope, aad: [UInt8], wire: [UInt8])] = []
+        var counter: UInt64 = 0
+        while counter <= last {
+            let env = envelope(seq: UInt16(truncatingIfNeeded: counter))
+            let headerBytes = try aad(env)
+            let wire = try client.seal(
+                plaintext: [UInt8(truncatingIfNeeded: counter)][...],
+                aad: headerBytes[...], envelope: env
+            )
+            if kept.contains(counter) { out.append((env, headerBytes, wire)) }
+            let next = kept.filter { $0 > counter }.min() ?? last + 1
+            counter = min(counter + 30_000, next)
+        }
+        return out
+    }
+
+    /// A receive gap of half the seq space or more must not kill the
+    /// channel: after a bounded run of failures the receiver resyncs
+    /// forward and every later datagram opens again.
+    func testReceiverResyncsAfterLongOneWayGaps() throws {
+        for gap: UInt64 in [40_000, 70_000, 200_000] {
+            var (client, host) = try makeTransports()
+            let resumed = (gap...(gap + 40)).map { $0 }
+            let kept = Set([0] + resumed)
+            let sealed = try sealAcross(&client, through: gap + 40, keeping: kept)
+            XCTAssertEqual(sealed.count, kept.count)
+
+            var opened: [UInt64] = []
+            for (index, datagram) in sealed.enumerated() {
+                if let plaintext = try? host.unseal(
+                    wirePayload: datagram.wire[...], aad: datagram.aad[...],
+                    envelope: datagram.env
+                ) {
+                    XCTAssertEqual(plaintext.count, 1)
+                    opened.append(index == 0 ? 0 : resumed[index - 1])
+                }
+            }
+            // Datagram 0, then at most the threshold's worth of losses
+            // before resync; everything after it opens.
+            let lost = kept.count - opened.count
+            XCTAssertLessThanOrEqual(lost, 8, "gap \(gap)")
+            XCTAssertEqual(opened.first, 0)
+            XCTAssertEqual(
+                Array(opened.dropFirst()), Array(resumed.suffix(opened.count - 1)),
+                "gap \(gap): contiguous after resync"
+            )
+        }
+    }
+
+    /// Forged datagrams in the stuck state neither resync the receiver
+    /// nor stop a genuine datagram from resyncing it afterwards.
+    func testForgeriesNeverResyncTheReceiver() throws {
+        var (client, host) = try makeTransports()
+        let gap: UInt64 = 70_000
+        let sealed = try sealAcross(
+            &client, through: gap + 1, keeping: [0, gap, gap + 1]
+        )
+        _ = try host.unseal(
+            wirePayload: sealed[0].wire[...], aad: sealed[0].aad[...],
+            envelope: sealed[0].env
+        )
+        for _ in 0..<20 {
+            var forged = sealed[1].wire
+            forged[0] ^= 0x5A
+            XCTAssertThrowsError(try host.unseal(
+                wirePayload: forged[...], aad: sealed[1].aad[...],
+                envelope: sealed[1].env
+            ))
+        }
+        XCTAssertEqual(
+            try host.unseal(
+                wirePayload: sealed[1].wire[...], aad: sealed[1].aad[...],
+                envelope: sealed[1].env
+            ),
+            [UInt8(truncatingIfNeeded: gap)]
+        )
+        XCTAssertEqual(
+            try host.unseal(
+                wirePayload: sealed[2].wire[...], aad: sealed[2].aad[...],
+                envelope: sealed[2].env
+            ),
+            [UInt8(truncatingIfNeeded: gap + 1)]
+        )
+    }
+
     // MARK: Rekey
 
     func testRekeyChangesKeyAndGraceWindowCoversInFlight() throws {
@@ -509,5 +603,102 @@ final class NoiseTransportTests: XCTestCase {
         XCTAssertEqual(host.datagramsOpenedSinceRekey, 3)
         try client.rekeySend()
         XCTAssertEqual(client.datagramsSealedSinceRekey, 0)
+    }
+}
+
+// MARK: - Sealed datagrams
+
+final class SealedDatagramTests: XCTestCase {
+
+    private func makeTransports() throws -> (client: NoiseTransport, host: NoiseTransport) {
+        let hostStatic = NoiseKeyPair.generate()
+        var client = try NoiseSession(
+            role: .initiator, staticKeys: NoiseKeyPair.generate(),
+            remoteStaticPublicKey: hostStatic.publicKey
+        )
+        var host = try NoiseSession(role: .responder, staticKeys: hostStatic)
+        _ = try host.readMessage1(try client.writeMessage1()[...])
+        _ = try client.readMessage2(try host.writeMessage2()[...])
+        return (try client.makeTransport(), try host.makeTransport())
+    }
+
+    private func envelope(seq: UInt16, tagged: Bool = true) -> Envelope {
+        Envelope(
+            channel: .ctrl, seq: ChannelSeq(rawValue: seq),
+            frame: FrameNumber(rawValue: 3), timestamp: 42, fec: 0,
+            extensions: tagged
+                ? [try! WireExtension(type: 0x01, value: [1, 2, 3, 4, 5, 6, 7, 8])]
+                : []
+        )
+    }
+
+    /// The datagram is header ‖ seal(plaintext, aad: header), byte for
+    /// byte what the two-step encode produces, and it opens back to the
+    /// same envelope and plaintext.
+    func testSealedDatagramIsHeaderThenSealedPayloadAndRoundTrips() throws {
+        // Two copies of one transport seal identically at the same seq.
+        var clientA = try makeTransports().client
+        var clientB = clientA
+        for tagged in [false, true] {
+            let env = envelope(seq: tagged ? 1 : 0, tagged: tagged)
+            let plaintext: [UInt8] = Array(0..<200)
+            let header = try env.encode(payload: [])
+            let twoStep = try env.encode(payload: try clientB.seal(
+                plaintext: plaintext[...], aad: header[...], envelope: env
+            )[...])
+            XCTAssertEqual(try clientA.sealDatagram(env, plaintext: plaintext), twoStep)
+        }
+
+        var (client, peer) = try makeTransports()
+        let env = envelope(seq: 9)
+        let datagram = try client.sealDatagram(env, plaintext: [7, 7, 7])
+        let opened = try peer.openDatagram(datagram)
+        XCTAssertEqual(opened.envelope, env)
+        XCTAssertEqual(opened.plaintext, [7, 7, 7])
+        // The header is authenticated: flip a header byte and it fails.
+        var tampered = datagram
+        tampered[8] ^= 1
+        XCTAssertThrowsError(try peer.openDatagram(tampered))
+        // Replays are the transport's verdict, passed through.
+        XCTAssertThrowsError(try peer.openDatagram(datagram)) {
+            XCTAssertEqual($0 as? NoiseError, .replayedSequence)
+        }
+    }
+
+    /// Decode failures surface as WireError before any open runs, and
+    /// the closure form sees the envelope first.
+    func testOpenDatagramDecodesBeforeOpening() throws {
+        var opens = 0
+        XCTAssertThrowsError(try Envelope.openDatagram([1, 2, 3][...]) { _, _, _ in
+            opens += 1
+            return []
+        }) {
+            XCTAssertEqual($0 as? WireError, .truncatedEnvelope)
+        }
+        let env = envelope(seq: 1)
+        let passthrough = try env.sealedDatagram([9, 8][...]) { plaintext, _ in
+            Array(plaintext)
+        }
+        let opened = try Envelope.openDatagram(passthrough[...]) { seen, payload, aad in
+            opens += 1
+            XCTAssertEqual(seen, env)
+            XCTAssertEqual(Array(aad), try env.encode(payload: []))
+            return Array(payload)
+        }
+        XCTAssertEqual(opened.plaintext, [9, 8])
+        XCTAssertEqual(opens, 1)
+    }
+
+    /// Budgets hold on the assembled datagram.
+    func testSealedDatagramEnforcesBudgets() {
+        let env = envelope(seq: 1)
+        XCTAssertThrowsError(try env.sealedDatagram([0][...]) { _, _ in
+            [UInt8](repeating: 0, count: WireBudget.maxWirePayloadByteCount + 1)
+        }) {
+            XCTAssertEqual(
+                $0 as? WireError,
+                .payloadOverBudget(WireBudget.maxWirePayloadByteCount + 1)
+            )
+        }
     }
 }

@@ -5,12 +5,9 @@
 ///
 ///     hotspot_in_crop = pointer − planeCrtc − cropOrigin
 ///
-/// Reading `CRTC_X`/`CRTC_Y` requires `DRM_CLIENT_CAP_ATOMIC` on the DRM fd;
-/// without that cap the properties are absent and every read collapses to a
-/// fake `(0,0)`. Treating that lie as a real plane position clamps the
-/// derived hotspot to the image bottom-right. When the plane is unavailable,
-/// fall back to the content top-left — correct for the common arrow tip and
-/// far less wrong for resize chrome than the clamp.
+/// Reading `CRTC_X`/`CRTC_Y` requires `DRM_CLIENT_CAP_ATOMIC`; without it
+/// the plane position is unknown (never a real `(0,0)`). Then the hotspot
+/// falls back to the content top-left, correct for the common arrow tip.
 public enum CursorHotspot {
     public struct Point: Sendable, Equatable {
         public var x: Int
@@ -26,8 +23,8 @@ public enum CursorHotspot {
     ///
     /// - Parameters:
     ///   - pointer: last injected absolute pointer in device pixels, if any.
-    ///   - planeCrtc: cursor plane CRTC position when known; `nil` when the
-    ///     atomic props are missing (the legacy-cursor lie fingerprint).
+    ///   - planeCrtc: cursor plane CRTC position; `nil` when the atomic
+    ///     props are missing.
     ///   - crop: content-box origin inside the full cursor buffer.
     ///   - width/height: content-cropped image size (must be ≥ 1).
     public static func derive(
@@ -50,8 +47,8 @@ public enum CursorHotspot {
     }
 
     /// True when a rest recheck may recompute the hotspot from a settled
-    /// plane. A missing plane (legacy lie) must not "correct" a tip
-    /// fallback into garbage; a real `(0,0)` plane is fair game.
+    /// plane. A missing plane must not "correct" a tip fallback; a real
+    /// `(0,0)` plane may.
     public static func canRecheck(planeCrtc: Point?) -> Bool {
         planeCrtc != nil
     }

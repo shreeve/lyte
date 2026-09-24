@@ -1,4 +1,5 @@
 import XCTest
+import LyteClientCore
 import LyteTransport
 import LyteWire
 import LyteWireTestKit
@@ -459,7 +460,12 @@ final class AudioAccelerateGateTests: XCTestCase {
     // MARK: Leg 7 — an output-device change rebuilds the engine with
     // the ring intact, counted (the production notification path)
 
+    /// Drives the machine's real audio output, so it is opt-in:
+    /// LYTE_HARDWARE_TESTS=1. Without an output device it skips.
     func testRouteChangeRebuildsOutputAndCounts() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["LYTE_HARDWARE_TESTS"] == "1",
+            "opt-in hardware test: set LYTE_HARDWARE_TESTS=1")
         let receiver = AudioReceiver()
         let player = try LyteAudioPlayer(receiver: receiver)
         do {
@@ -475,7 +481,7 @@ final class AudioAccelerateGateTests: XCTestCase {
         let deadline = Date().addingTimeInterval(3)
         while Date() < deadline,
               player.snapshotStats().routeChangesHandled == 0 {
-            usleep(50_000)
+            usleep(5_000)
         }
         let stats = player.snapshotStats()
         XCTAssertEqual(stats.routeChangesHandled, 1,

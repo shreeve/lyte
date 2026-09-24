@@ -2,6 +2,7 @@ import XCTest
 import HostCore
 import HostSession
 import HostWire
+import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
@@ -117,8 +118,10 @@ final class AudioRoutingGateTests: XCTestCase {
         XCTAssertEqual(
             try CapabilityDeclaration.decode(message).capabilities, declared
         )
-        print("HS-18 gate (spine): declaration = frozen bytes + `09 F5`, "
-            + "nothing else moved")
+        print("""
+            HS-18 gate (spine): declaration = frozen bytes + `09 F5`, \
+            nothing else moved
+            """)
     }
 
     func testIntersectionEnablesOnlyOnMutualDeclaration() throws {
@@ -148,192 +151,41 @@ final class AudioRoutingGateTests: XCTestCase {
         XCTAssertFalse(declared.intersecting(refusing).hostAudioRouting)
     }
 
-    // MARK: The negotiated loopback client (the InputGateTests shape)
-
-    private struct RoutingClient {
-        var noise: NoiseSession
-        var transport: NoiseTransport?
-        var ctrlSeq: UInt16 = 0
-        var arq = ArqEndpoint<ClientClock>(channel: .ctrl)
-        let staticKeys: NoiseKeyPair
-
-        var received: [(group: ArqGroupId, bytes: [UInt8])] = []
-
-        init(hostStaticPublicKey: [UInt8]) throws {
-            staticKeys = NoiseKeyPair.generate()
-            noise = try NoiseSession(
-                role: .initiator,
-                staticKeys: staticKeys,
-                remoteStaticPublicKey: hostStaticPublicKey
-            )
-        }
-
-        mutating func message1Datagram(clientMicros: UInt64) throws -> [UInt8] {
-            let message1 = try noise.writeMessage1()
-            return try ctrlDatagram(
-                body: [CtrlMessageType.noiseHandshake1] + message1,
-                sealed: false, clientMicros: clientMicros
-            )
-        }
-
-        mutating func ctrlDatagram(
-            body: [UInt8], sealed: Bool, clientMicros: UInt64
-        ) throws -> [UInt8] {
-            let envelope = Envelope(
-                channel: .ctrl,
-                seq: ChannelSeq(rawValue: ctrlSeq),
-                frame: FrameNumber(rawValue: 0),
-                timestamp: clientMicros,
-                fec: 0
-            )
-            ctrlSeq &+= 1
-            guard sealed else { return try envelope.encode(payload: body) }
-            let header = try envelope.encode(payload: [])
-            let payload = try transport!.seal(
-                plaintext: body[...], aad: header[...], envelope: envelope
-            )
-            return try envelope.encode(payload: payload)
-        }
-
-        mutating func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
-            let (envelope, payload) = try Envelope.decode(bytes)
-            if transport == nil {
-                XCTAssertEqual(envelope.channel, .ctrl)
-                XCTAssertEqual(payload.first, CtrlMessageType.noiseHandshake2)
-                _ = try noise.readMessage2(payload.dropFirst())
-                transport = try noise.makeTransport()
-                return
-            }
-            guard envelope.channel == .ctrl else { return }
-            let aad = bytes[bytes.startIndex..<payload.startIndex]
-            let plaintext: [UInt8]
-            do {
-                plaintext = try transport!.unseal(
-                    wirePayload: payload, aad: aad, envelope: envelope
-                )
-            } catch NoiseError.replayedSequence, NoiseError.staleSequence {
-                return // network duplicate; routine
-            }
-            switch plaintext.first {
-            case CtrlMessageType.arqSegment, CtrlMessageType.arqAck:
-                for event in arq.ingest(
-                    payload: plaintext,
-                    now: ClientTimestamp(microseconds: nowMicros)
-                ) {
-                    if case .message(let group, let bytes) = event {
-                        received.append((group, bytes))
-                    }
-                }
-            case CtrlMessageType.clockBeacon:
-                break // 1 Hz weather
-            default:
-                break
-            }
-        }
-
-        mutating func pollOut(nowMicros: UInt64) throws -> [[UInt8]] {
-            let (payloads, _) = arq.poll(
-                now: ClientTimestamp(microseconds: nowMicros)
-            )
-            return try payloads.map {
-                try ctrlDatagram(body: $0, sealed: true, clientMicros: nowMicros)
-            }
-        }
-
-        mutating func take(type: UInt8) -> [[UInt8]] {
-            let hits = received.filter { $0.bytes.first == type }.map(\.bytes)
-            received.removeAll { $0.bytes.first == type }
-            return hits
-        }
-    }
-
-    private final class DatagramBox {
-        var datagrams: [VideoChannelDatagram] = []
-    }
+    // MARK: The negotiated loopback client
 
     /// Handshake + capability exchange, direct pipe. The host always
     /// declares key 9 (the audio leg exists); the client's declaration
     /// is the leg's variable.
     private func establish(
         clientCapabilities: Capabilities
-    ) throws -> (session: Session, client: RoutingClient, box: DatagramBox) {
-        let hostStatic = NoiseKeyPair.generate()
-        let box = DatagramBox()
-        let session = Session(
+    ) throws -> (host: HostSessionHarness, client: SealedCtrlPeer<ClientClock>) {
+        let host = HostSessionHarness(
             config: SessionConfig(
-                crypto: .noise(hostStatic: hostStatic),
+                crypto: .noise(hostStatic: NoiseKeyPair.generate()),
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: 1 << 62,
                 capabilities: .wireDefault.declaringHostAudioRouting()
             ),
-            clientTuple: Self.tupleA,
-            now: 0,
-            rng: SplitMix64(seed: 0x1810),
-            send: { box.datagrams.append($0) }
+            tuple: Self.tupleA,
+            rng: SplitMix64(seed: 0x1810)
         )
-        var client = try RoutingClient(hostStaticPublicKey: hostStatic.publicKey)
-        _ = session.receive(
-            try client.message1Datagram(clientMicros: 500),
-            from: Self.tupleA, now: 0, hostMicroseconds: 0
-        )
-        XCTAssertEqual(session.phase, .established)
-        session.pump(now: 0)
-        var negotiator = CapabilityNegotiator(
-            role: .client, local: clientCapabilities
-        )
-        try client.arq.send(
-            message: try XCTUnwrap(negotiator.start()).encode(),
-            now: ClientTimestamp(microseconds: 1_000)
-        )
-        return (session, client, box)
-    }
-
-    /// Exchange passes 2 ms apart until both ends quiesce.
-    private func settle(
-        _ session: Session, _ client: inout RoutingClient,
-        _ box: DatagramBox, forwarded: inout Int, t: inout UInt64,
-        onEvent: (SessionEvent) -> Void = { _ in }
-    ) throws {
-        var idle = 0
-        while idle < 3 {
-            t += 2_000
-            let before = (forwarded, client.received.count)
-            var events = session.advance(now: t * 1_000, hostMicroseconds: t)
-            session.pump(now: t * 1_000)
-            while forwarded < box.datagrams.count {
-                try client.absorb(box.datagrams[forwarded].bytes, nowMicros: t)
-                forwarded += 1
-            }
-            for datagram in try client.pollOut(nowMicros: t) {
-                events += session.receive(
-                    datagram, from: Self.tupleA,
-                    now: t * 1_000, hostMicroseconds: t
-                )
-                session.pump(now: t * 1_000)
-                while forwarded < box.datagrams.count {
-                    try client.absorb(
-                        box.datagrams[forwarded].bytes, nowMicros: t
-                    )
-                    forwarded += 1
-                }
-            }
-            for event in events { onEvent(event) }
-            idle = (forwarded, client.received.count) == before ? idle + 1 : 0
-        }
+        let client = try host.connectClient(declaring: clientCapabilities)
+        XCTAssertEqual(host.session.phase, .established)
+        return (host, client)
     }
 
     // MARK: Leg 3 — the negotiated flip, end to end
 
     func testGateNegotiatedRequestSurfacesAndStatusAnswersByteExact() throws {
-        let (session, clientValue, box) = try establish(
+        let (host, clientValue) = try establish(
             clientCapabilities: .wireDefault.declaringHostAudioRouting()
         )
         var client = clientValue
-        var forwarded = 0
+        let session = host.session
         var t: UInt64 = 1_000
 
         var agreed: Capabilities?
-        try settle(session, &client, box, forwarded: &forwarded, t: &t) {
+        try host.settle(&client, t: &t) {
             if case .capabilitiesAgreed(let set) = $0 { agreed = set }
         }
         XCTAssertEqual(agreed?.hostAudioRouting, true,
@@ -347,7 +199,7 @@ final class AudioRoutingGateTests: XCTestCase {
             now: ClientTimestamp(microseconds: t)
         )
         var requests: [HostAudioRoutingMode] = []
-        try settle(session, &client, box, forwarded: &forwarded, t: &t) {
+        try host.settle(&client, t: &t) {
             if case .audioRoutingRequested(let mode) = $0 {
                 requests.append(mode)
             }
@@ -362,7 +214,7 @@ final class AudioRoutingGateTests: XCTestCase {
             .hostMuted, now: t * 1_000, hostMicroseconds: t
         )
         XCTAssertEqual(statusEvents, [.audioRoutingStatusSent(.hostMuted)])
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try host.settle(&client, t: &t)
         XCTAssertEqual(client.take(type: CtrlMessageType.audioRoutingStatus),
                        [[0x19, 0x02]])
         XCTAssertEqual(session.counters.audioRoutingStatusesSent, 1)
@@ -373,7 +225,7 @@ final class AudioRoutingGateTests: XCTestCase {
             now: ClientTimestamp(microseconds: t)
         )
         requests.removeAll()
-        try settle(session, &client, box, forwarded: &forwarded, t: &t) {
+        try host.settle(&client, t: &t) {
             if case .audioRoutingRequested(let mode) = $0 {
                 requests.append(mode)
             }
@@ -382,27 +234,29 @@ final class AudioRoutingGateTests: XCTestCase {
         _ = session.noteAudioRoutingApplied(
             .hostAudible, now: t * 1_000, hostMicroseconds: t
         )
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try host.settle(&client, t: &t)
         XCTAssertEqual(client.take(type: CtrlMessageType.audioRoutingStatus),
                        [[0x19, 0x01]])
 
-        print("HS-18 gate (in vivo): negotiated 0x18 → event → 0x19 "
-            + "byte-exact, both directions")
+        print("""
+            HS-18 gate (in vivo): negotiated 0x18 → event → 0x19 \
+            byte-exact, both directions
+            """)
     }
 
     // MARK: Leg 4 — the rule-3 gate holds against the unnegotiated
 
     func testGateUnnegotiatedRequestRefusedLoudAndStatusStaysSilent() throws {
         // A v1 client: declares, but never key 9.
-        let (session, clientValue, box) = try establish(
+        let (host, clientValue) = try establish(
             clientCapabilities: .wireDefault
         )
         var client = clientValue
-        var forwarded = 0
+        let session = host.session
         var t: UInt64 = 1_000
 
         var agreed: Capabilities?
-        try settle(session, &client, box, forwarded: &forwarded, t: &t) {
+        try host.settle(&client, t: &t) {
             if case .capabilitiesAgreed(let set) = $0 { agreed = set }
         }
         XCTAssertEqual(agreed?.hostAudioRouting, false)
@@ -417,7 +271,7 @@ final class AudioRoutingGateTests: XCTestCase {
         )
         var requests = 0
         var refusals = 0
-        try settle(session, &client, box, forwarded: &forwarded, t: &t) {
+        try host.settle(&client, t: &t) {
             if case .audioRoutingRequested = $0 { requests += 1 }
             if case .dropped(.audioRoutingNotNegotiated) = $0 { refusals += 1 }
         }
@@ -432,7 +286,7 @@ final class AudioRoutingGateTests: XCTestCase {
                 .hostMuted, now: t * 1_000, hostMicroseconds: t
             ), []
         )
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try host.settle(&client, t: &t)
         XCTAssertEqual(
             client.take(type: CtrlMessageType.audioRoutingStatus), []
         )
@@ -444,12 +298,14 @@ final class AudioRoutingGateTests: XCTestCase {
             now: ClientTimestamp(microseconds: t)
         )
         var confused = 0
-        try settle(session, &client, box, forwarded: &forwarded, t: &t) {
+        try host.settle(&client, t: &t) {
             if case .dropped(.unexpectedCtrlType(0x19)) = $0 { confused += 1 }
         }
         XCTAssertEqual(confused, 1)
 
-        print("HS-18 gate (rule 3): unnegotiated 0x18 refused loud, "
-            + "0x19 never volunteered, role confusion dropped")
+        print("""
+            HS-18 gate (rule 3): unnegotiated 0x18 refused loud, \
+            0x19 never volunteered, role confusion dropped
+            """)
     }
 }

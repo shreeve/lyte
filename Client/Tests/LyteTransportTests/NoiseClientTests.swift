@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import LyteClientTestKit
 @testable import LyteTransport
 import LyteWire
 
@@ -13,25 +14,29 @@ import LyteWire
 
 final class NoiseClientTests: XCTestCase {
 
-    func testHandshakeHashAloneOwnsEstablishedPosture() throws {
-        var components = #filePath.split(
-            separator: "/", omittingEmptySubsequences: false
-        )
-        components.removeLast(3)
-        let packageRoot = components.joined(separator: "/")
-        let source = try String(
-            contentsOfFile:
-                packageRoot
-                    + "/Sources/LyteTransport/NoiseTransportCrypto.swift",
-            encoding: .utf8
-        )
-
-        XCTAssertFalse(source.contains("private var established"))
-        XCTAssertFalse(source.contains("established ="))
-        XCTAssertGreaterThanOrEqual(
-            source.components(separatedBy: "handshakeHash != nil").count - 1,
-            4
-        )
+    /// Before the handshake publishes a transport, both directions refuse
+    /// as a handshake failure and no snapshot claims an established state.
+    func testTransportRefusesBothDirectionsBeforeTheHandshake() throws {
+        let crypto = try NoiseTransportCrypto(
+            hostAddress: "127.0.0.1", hostPort: 9,
+            hostStaticPublicKey: NoiseKeyPair.generate().publicKey)
+        let envelope = Envelope(
+            channel: .ctrl, seq: ChannelSeq(rawValue: 1),
+            frame: FrameNumber(rawValue: 0), timestamp: 0, fec: 0)
+        for attempt in [
+            { try crypto.seal(plaintext: [1][...], aad: [][...],
+                              envelope: envelope) },
+            { try crypto.unseal(wirePayload: [UInt8](repeating: 0, count: 17)[...],
+                                aad: [][...], envelope: envelope) },
+        ] as [() throws -> [UInt8]] {
+            XCTAssertThrowsError(try attempt()) {
+                guard case TransportCryptoError.handshakeFailed = $0 else {
+                    return XCTFail("expected handshakeFailed, got \($0)")
+                }
+            }
+        }
+        XCTAssertThrowsError(try crypto.open())
+        XCTAssertNil(crypto.handshakeHashSnapshot)
     }
 
     /// The host's half, in-process: answers a carried message 1 from
@@ -182,7 +187,7 @@ final class NoiseClientTests: XCTestCase {
 
     func testClientToHostSealedRoundTripThroughSender() throws {
         let (crypto, host) = try makeEstablishedPair()
-        let captured = LockedDatagrams()
+        let captured = LockedBytePile()
         let sender = TransportSender(crypto: crypto,
                                      transmit: { captured.append($0); return true })
         let echoBody: [UInt8] = Array(0..<29)
@@ -400,13 +405,6 @@ final class NoiseClientTests: XCTestCase {
         else {
             return XCTFail("the byte-identical resend must reject as replay")
         }
-    }
-
-    private final class LockedDatagrams: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [[UInt8]] = []
-        func append(_ d: [UInt8]) { lock.lock(); stored.append(d); lock.unlock() }
-        var all: [[UInt8]] { lock.lock(); defer { lock.unlock() }; return stored }
     }
 
     private final class LockedCryptoResults: @unchecked Sendable {

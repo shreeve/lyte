@@ -49,24 +49,6 @@ import LyteWire
 //     restore carries one second at the baseline cap.
 
 final class EncoderVbvGateTests: XCTestCase {
-    func testAppliedRungAloneOwnsSqueezePosture() throws {
-        var components = #filePath.split(
-            separator: "/", omittingEmptySubsequences: false
-        )
-        components.removeLast(3)
-        let packageRoot = components.joined(separator: "/")
-        let source = try String(
-            contentsOfFile:
-                packageRoot + "/Sources/HostWire/EncoderVbv.swift",
-            encoding: .utf8
-        )
-
-        XCTAssertTrue(source.contains(
-            "public var squeezeEngaged: Bool { appliedRungIndex != nil }"
-        ))
-        XCTAssertFalse(source.contains("squeezeEngaged ="))
-    }
-
     private static let ms: UInt64 = 1_000_000
     private static let sec: UInt64 = 1_000_000_000
 
@@ -597,38 +579,6 @@ final class EncoderVbvGateTests: XCTestCase {
         )
         XCTAssertEqual(rung?.kind, .loosen)
         XCTAssertEqual(rung?.maxBitsPerSecond, 2_500_000)
-    }
-
-    func testReconfigureBooksSplitIdrMintingFromNoReset() {
-        // THE HS-33 BOOKS PIN. A rate directive that applies with the
-        // reconfigure counted but ZERO IDR minted lands in `noReset`,
-        // never in the IDR-minting tally — the idr-books cause tags
-        // stay truthful under either libavcodec, decided by the
-        // observed outcome of the encode the directive rode into.
-        var books = EncoderReconfigureBooks()
-        books.note(.tighten, mintedIdr: false)
-        XCTAssertEqual(books.applied, 1)
-        XCTAssertEqual(books.noResetTotal, 1)
-        XCTAssertEqual(books.idrMintingTotal, 0,
-            "a no-IDR rate move must never read as an IDR cause")
-
-        // The distro path: the same directive kind, observed to reset.
-        books.note(.tighten, mintedIdr: true)
-        books.note(.loosen, mintedIdr: false)
-        books.note(.restore, mintedIdr: false)
-        XCTAssertEqual(books.applied, 4)
-        XCTAssertEqual(books.idrMintingTotal, 1)
-        XCTAssertEqual(books.noResetTotal, 3)
-        // The stats-line vocabulary matches the idr-books tags.
-        XCTAssertEqual(
-            EncoderReconfigureBooks.summary(books.noReset),
-            "tighten 1, rung 1, restore 1"
-        )
-        XCTAssertEqual(
-            EncoderReconfigureBooks.summary(books.idrMinting),
-            "tighten 1"
-        )
-        XCTAssertEqual(EncoderReconfigureBooks.summary([:]), "none")
     }
 
     func testDefaultLadderIsUnchangedByTheRetuneKnob() {

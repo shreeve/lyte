@@ -1,30 +1,23 @@
 import LyteIO
 import SwiftUI
+import LyteClientCore
 import LyteTransport
 import LyteUI
 import UniformTypeIdentifiers
 
-/// The streaming state's whole surface (CL-13): the stream view plus
-/// its overlays — the FROZEN pill (CL-8), the stats readout, and the
-/// auto-hiding control strip. CL-18 reworked the strip's ergonomics
-/// after the owner's first hand-test:
+/// The streaming state's whole surface: the stream view plus its
+/// overlays — the FROZEN pill, the stats readout, and the auto-hiding
+/// control strip.
 ///
-/// - The strip lives on a PREFERRED edge (bottom, as shipped, or top —
-///   `StripPreferences`, app-wide, togglable from the strip itself and
-///   the Actions menu), and the reveal zone follows it.
-/// - Reveal is a DWELL verdict, not a motion ping: `StripRevealPolicy`
-///   (LyteUI, sans-IO, virtual-time gated) reveals only after ~200 ms
-///   of pointer presence in the edge zone, ignores the fullscreen
-///   system-edge sliver (the Dock/menu-bar summons stay macOS's),
-///   hides instantly when the pointer leaves the window, and keeps
-///   CL-16's fade discipline (~2 s after the last zone activity,
-///   never while hovered). Aiming at the Dock no longer traps you.
-/// - Hidden mode ("Hide Control Strip" in the Actions menu) disables
-///   reveal entirely; the menu + shortcuts remain the full surface.
+/// - The strip lives on a preferred edge (`StripPreferences`, app-wide)
+///   and the reveal zone follows it.
+/// - Reveal is a dwell verdict (`StripRevealPolicy`): ~200 ms of pointer
+///   presence in the edge zone, ignoring the fullscreen system-edge
+///   sliver; hides when the pointer leaves the window and fades ~2 s
+///   after the last zone activity, never while hovered.
+/// - Hidden mode disables reveal; the menu and shortcuts remain.
 ///
-/// Buttons stay CAPABILITY-GATED: the strip shows what this session
-/// actually supports (the negotiated set decides), not per-button
-/// preferences.
+/// Buttons are capability-gated: the negotiated set decides what shows.
 struct StreamContainer: View {
     let model: ConnectionModel
 
@@ -34,13 +27,11 @@ struct StreamContainer: View {
     private var stripHidden = false
 
     @State private var stripVisible = false
-    /// The reveal machinery's mutable interior — a REFERENCE type (the
-    /// CL-16 lesson, kept): pointer-rate events mutate the policy
-    /// inside the box without invalidating any view; only actual
-    /// visibility flips touch @State.
+    /// A reference type: pointer-rate events mutate the policy inside
+    /// the box without invalidating any view; only visibility flips
+    /// touch @State.
     @State private var reveal = StripRevealBooks()
-    /// F-4: a file drag is over the window (SwiftUI's isTargeted) —
-    /// the drop hint renders while true.
+    /// A file drag is over the window; the drop hint renders while true.
     @State private var dropTargeted = false
 
     private var stripEdge: StripEdge {
@@ -69,13 +60,10 @@ struct StreamContainer: View {
     var body: some View {
         StreamView(model: model, onMouseActivity: { pointerActivity($0) })
             .overlay(alignment: stripEdge == .top ? .bottom : .top) {
-                // The connection-health pill, tiered (F-5 over CL-8):
-                // a short blip is the FROZEN pill; past the roaming
-                // thresholds the banner SAYS what is happening
-                // ("looking for pup…", "found at … — reconnecting…")
-                // instead of a silent frozen frame. Subtle, never
-                // modal; the edge OPPOSITE the strip so they never
-                // stack.
+                // The connection-health pill, tiered: a short blip is the
+                // FROZEN pill; past the roaming thresholds the banner says
+                // what is happening. Never modal; on the edge opposite
+                // the strip so they never stack.
                 VStack(spacing: 6) {
                     if let line = model.roamingStatusLine {
                         Label(line, systemImage: "arrow.triangle.2.circlepath")
@@ -95,9 +83,8 @@ struct StreamContainer: View {
                             .foregroundStyle(.orange)
                             .transition(.opacity)
                     }
-                    // V-5: the chroma fallback banner — non-modal,
-                    // never a dialog: the host lacked the declared
-                    // tier and the session already re-dialed at Good.
+                    // The chroma fallback banner: the host lacked the
+                    // declared tier and the session re-dialed at Good.
                     if let notice = model.chromaNotice {
                         Label(notice, systemImage: "camera.filters")
                             .font(.caption.weight(.semibold))
@@ -108,14 +95,9 @@ struct StreamContainer: View {
                             .transition(.opacity)
                     }
                     // The link-health pill: only terminal, uncorrectable
-                    // presentation misses or renderer failures, folded to a
-                    // verdict at 1 Hz. Delay, repair, re-cues, and successful
-                    // reserve use remain diagnostic evidence and stay silent.
-                    // Owner ruling 2026-08-03: the warning pill FILLS
-                    // with its color and the text goes bold white
-                    // (black on amber — white washes out there), so a
-                    // red pill reads across the room instead of red
-                    // text whispering on glass.
+                    // presentation misses or renderer failures, folded to
+                    // a verdict at 1 Hz. Filled with its color and bold
+                    // text (black on amber) so it reads across the room.
                     if let health = model.linkHealth,
                        health.level != .good {
                         Label(linkHealthLine(health),
@@ -138,8 +120,7 @@ struct StreamContainer: View {
                 }
                 .padding(stripEdge == .top ? .bottom : .top, 10)
                 .task {
-                    // The 1 Hz verdict tick — cheap by construction
-                    // (folds only frames recorded since last tick).
+                    // The 1 Hz verdict tick; folds only new frames.
                     while !Task.isCancelled {
                         model.tickLinkHealth()
                         try? await Task.sleep(for: .seconds(1))
@@ -155,10 +136,8 @@ struct StreamContainer: View {
                 }
             }
             .overlay(alignment: stripEdge == .top ? .bottomTrailing : .topTrailing) {
-                // F-4: the transfer pill (progress + cancel ×) and the
-                // transient verdict line — the trailing corner of the
-                // strip's OPPOSITE edge, clear of the FROZEN pill
-                // (centered there) and the stats readout (leading).
+                // The transfer pill and verdict line, in the trailing
+                // corner of the strip's opposite edge.
                 VStack(alignment: .trailing, spacing: 6) {
                     if model.bulkActive {
                         BulkProgressPill(model: model)
@@ -175,24 +154,18 @@ struct StreamContainer: View {
                 .padding(12)
             }
             .overlay {
-                // F-4: the drop hint, while a file drag hovers. The
-                // capability verdict shows DURING the drag, so nobody
-                // has to complete a doomed drop to learn the host's
-                // toggle is off (the drop itself answers with the
-                // notice either way).
+                // The drop hint shows the capability verdict during the
+                // drag, so nobody completes a doomed drop to learn it.
                 if dropTargeted {
                     DropHintOverlay(
-                        accepting: model.bulkNegotiated,
+                        accepting: model.negotiated.bulkTransfer,
                         hostName: model.hostName ?? "the host")
                 }
             }
-            // F-4: the drop TARGET. Drag-and-drop never touches the
-            // CL-16 input-capture path by construction: the capture's
-            // NSEvent local monitors see only the mouse/key mask —
-            // drag sessions ride NSDraggingDestination, a separate
-            // pipeline — and this modifier lives on the SwiftUI
-            // overlay layer, whose claimed points the capture already
-            // returns to AppKit (the landsOnVideoSurface rule).
+            // Drag sessions ride NSDraggingDestination, not the input
+            // capture's NSEvent monitors, and this modifier lives on the
+            // overlay layer whose points the capture returns to AppKit —
+            // drag-and-drop never reaches the host.
             .onDrop(
                 of: [UTType.fileURL],
                 isTargeted: $dropTargeted
@@ -212,19 +185,16 @@ struct StreamContainer: View {
                             with: .move(edge: stripEdge == .top ? .top : .bottom)))
                 }
             }
-            // Backup pointer path: hover tracking catches the pointer
-            // when the window is not key (the NSEvent monitor only
-            // sees key-window events) — and its `.ended` is the ONE
-            // window-exit signal (mouseExited is not in the monitor's
-            // mask, so it fires even while the capture eats moves).
+            // Backup pointer path for a non-key window (the NSEvent
+            // monitor sees only key-window events); its `.ended` is the
+            // one window-exit signal.
             .onContinuousHover(coordinateSpace: .local) { phase in
                 switch phase {
                 case .active(let point):
                     guard reveal.viewSize.height > 0 else { return }
-                    // SwiftUI's local space is top-left-origin. This
-                    // path only matters for non-key windows, which are
-                    // never the fullscreen front — the sliver rule
-                    // rides the capture path.
+                    // SwiftUI's local space is top-left-origin. Non-key
+                    // windows are never the fullscreen front, so the
+                    // sliver rule rides the capture path.
                     pointerActivity(PointerActivity(
                         distanceFromBottom: reveal.viewSize.height - point.y,
                         distanceFromTop: point.y,
@@ -278,11 +248,9 @@ struct StreamContainer: View {
         syncAndSchedule()
     }
 
-    /// Mirrors the policy's visibility into @State and keeps ONE
-    /// standing deadline task alive while the policy has work pending
-    /// (dwell completion for a stationary pointer, the idle fade) —
-    /// the CL-16 shape: activity writes state; the task just sleeps
-    /// to the current deadline and looks again.
+    /// Mirrors the policy's visibility into @State and keeps one standing
+    /// deadline task alive while the policy has work pending (dwell,
+    /// idle fade): it sleeps to the current deadline and looks again.
     private func syncAndSchedule() {
         if stripVisible != reveal.policy.isVisible {
             stripVisible = reveal.policy.isVisible
@@ -309,31 +277,20 @@ struct StreamContainer: View {
     }
 }
 
-/// StreamContainer's reveal books — deliberately a plain class (not
-/// Observable): pointer-rate mutations must be invisible to SwiftUI.
-/// Main-actor confined by its only owner.
+/// StreamContainer's reveal books — a plain class, not Observable:
+/// pointer-rate mutations must be invisible to SwiftUI.
 @MainActor
 private final class StripRevealBooks {
     var policy = StripRevealPolicy()
     var task: Task<Void, Never>?
-    /// The container's live size (onGeometryChange) — the hover
-    /// backup path's coordinate flip needs the height.
+    /// The container's live size, for the hover path's coordinate flip.
     var viewSize: CGSize = .zero
 }
 
-/// The strip itself: one translucent capsule of session verbs. Order:
-/// audio controls, stats, then the window/session verbs — Disconnect
-/// last and visually apart. Every command here is the SAME model verb
-/// the Actions menu drives, so menu and strip can never disagree.
-///
-/// CL-18, the mute distinction (the owner muted the wrong end): the
-/// two mute buttons stopped being speaker-glyph siblings. The HOST
-/// button wears the hifispeaker cabinet — a physical loudspeaker in
-/// the other room — and the LOCAL button wears headphones — what this
-/// Mac plays; each carries a tiny HOST/MAC caption, and mute is the
-/// same diagonal slash treatment on both. (SF Symbols ships no .slash
-/// variant for either glyph, so the slash is composed — one visual
-/// language for "silenced" across both.) Tooltips name the machine.
+/// The strip: one translucent capsule of session verbs, Disconnect last.
+/// Every command is the same model verb the Actions menu drives. The
+/// host mute wears a loudspeaker and the local mute headphones, each
+/// with a HOST/MAC caption and the same composed diagonal slash.
 struct ControlStrip: View {
     @Bindable var model: ConnectionModel
     let edge: StripEdge
@@ -341,11 +298,9 @@ struct ControlStrip: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            // Mute Host Speakers — EXISTS only when capability key 9
-            // survived intersection (against a legacy host there is
-            // nothing to show). Renders the 0x19-confirmed posture,
-            // never the ask: the icon flips when the host says it did.
-            if model.hostAudioNegotiated {
+            // Mute Host Speakers — only with capability key 9. Renders
+            // the 0x19-confirmed posture, never the ask.
+            if model.negotiated.hostAudioRouting {
                 let hostLabel = model.hostName ?? "the host"
                 stripButton(
                     active: model.hostMuted,
@@ -364,12 +319,9 @@ struct ControlStrip: View {
                 .disabled(model.hostAudioPosture == nil)
             }
 
-            // Mute-at-source (postures design, key 14): the whole
-            // audio TRACK leaves the wire — zero capture, zero
-            // packets — while the host's own speakers keep playing.
-            // The waveform glyph wears the WIRE caption: this is
-            // neither machine's speakers, it's the stream itself.
-            if model.audioStreamOffNegotiated {
+            // Mute-at-source (key 14): the audio track leaves the wire
+            // while the host's own speakers keep playing.
+            if model.negotiated.audioStreamOff {
                 stripButton(
                     active: model.hostAudioOff,
                     help: model.hostAudioPosture == nil
@@ -387,8 +339,7 @@ struct ControlStrip: View {
                 .disabled(model.hostAudioPosture == nil)
             }
 
-            // Client-side mute — the local pipeline's mixer (CL-11);
-            // always available while the session runs.
+            // Client-side mute — the local pipeline's mixer.
             stripButton(
                 active: model.muted,
                 help: model.muted
@@ -402,10 +353,9 @@ struct ControlStrip: View {
                 }
             )
 
-            // Share Clipboard — EXISTS only when capability key 10
-            // survived intersection (CL-15). Renders the live consent
-            // state; while off, nothing leaves and nothing lands.
-            if model.clipboardNegotiated {
+            // Share Clipboard — only with capability key 10. While off,
+            // nothing leaves and nothing lands.
+            if model.negotiated.clipboardText {
                 stripButton(
                     systemImage: model.clipboardSharing
                         ? "doc.on.clipboard.fill" : "doc.on.clipboard",
@@ -418,12 +368,9 @@ struct ControlStrip: View {
                 }
             }
 
-            // The images rung (P-1) — EXISTS only when keys 10∧12
-            // both survived (a text-only host never shows it). Its
-            // consent rides ON TOP of text sharing: the tier is
-            // Off / Text only / Text + images, so the button is
-            // meaningful only while the clipboard toggle is on.
-            if model.clipboardImagesNegotiated {
+            // The images rung — only when keys 10 and 12 both agree. Its
+            // consent rides on top of text sharing.
+            if model.negotiated.clipboardImages {
                 stripButton(
                     systemImage: model.clipboardImageSharing
                         ? "photo.fill.on.rectangle.fill"
@@ -440,17 +387,11 @@ struct ControlStrip: View {
                 }
             }
 
-            // Chroma (V-5, owner decision 1): the three-tier
-            // declaration control — Good 4:2:0 / Better 4:2:2
-            // (dormant: no wire id, no host silicon — visible but
-            // disabled) / Best 4:4:4. Picking a tier is a CLEAN
-            // RECONNECT with the new declaration; a host without the
-            // tier answers typed and the session auto-re-dials at
-            // Good with the banner above.
+            // Chroma: Good 4:2:0 / Better 4:2:2 (no wire id — disabled) /
+            // Best 4:4:4. Picking a tier is a clean reconnect; a host
+            // without it answers typed and the session re-dials at Good.
             ChromaStripMenu(model: model)
 
-            // The stats readout: the session's existing books, as a
-            // compact overlay toggle.
             stripButton(
                 systemImage: "chart.bar",
                 active: model.statsVisible,
@@ -462,8 +403,7 @@ struct ControlStrip: View {
 
             Divider().frame(height: 18)
 
-            // CL-18: the strip's own home — flip it to the other edge
-            // (persisted app-wide; the reveal zone follows).
+            // Flip the strip to the other edge (persisted app-wide).
             stripButton(
                 systemImage: edge == .bottom
                     ? "arrow.up.to.line" : "arrow.down.to.line",
@@ -561,13 +501,9 @@ struct ControlStrip: View {
     }
 }
 
-/// The strip's Chroma control (V-5): a tier menu wearing the strip's
-/// glyph+caption shape (the HOST/MAC precedent — the caption is the
-/// factual sampling, "4:2:0"/"4:4:4"). Non-Good renders active-orange
-/// like every other engaged strip state. The menu rows carry the
-/// owner's tier names; the dormant Better row is visible but disabled
-/// with the truth spelled out — the three-tier shape ships from day
-/// one even though only two rungs exist on today's wire.
+/// The strip's Chroma control: a tier menu with the glyph+caption shape,
+/// the caption being the sampling ("4:2:0"/"4:4:4"). Non-Good renders
+/// active-orange; the dormant Better row is visible but disabled.
 struct ChromaStripMenu: View {
     @Bindable var model: ConnectionModel
 
@@ -610,14 +546,13 @@ struct ChromaStripMenu: View {
     private func rowTitle(_ tier: ChromaTier) -> String {
         let base = "\(tier.displayName) (\(tier.samplingLabel))"
         return tier.isSelectable
-            ? base : base + " — not offered by this host"
+            ? base : base + " — not yet available"
     }
 }
 
-/// The transfer pill (F-4): file name, phase/progress, queue depth,
-/// and a cancel × — small and non-intrusive (the CL-16/CL-18 overlay
-/// discipline). Its SwiftUI content claims its own points, so clicks
-/// here never reach the host cursor (the landsOnVideoSurface rule).
+/// The transfer pill: file name, phase/progress, queue depth, and a
+/// cancel ×. Its SwiftUI content claims its own points, so clicks here
+/// never reach the host cursor.
 struct BulkProgressPill: View {
     let model: ConnectionModel
 
@@ -683,9 +618,8 @@ struct BulkProgressPill: View {
     }
 }
 
-/// The drag-over hint (F-4): tells the truth about the host's file
-/// consent DURING the drag. Hit-test transparent — a hint must never
-/// eat the drop it is hinting about.
+/// The drag-over hint: the host's file consent during the drag.
+/// Hit-test transparent — a hint must never eat the drop.
 struct DropHintOverlay: View {
     let accepting: Bool
     let hostName: String
@@ -715,18 +649,14 @@ struct DropHintOverlay: View {
     }
 }
 
-/// The compact stats overlay (CL-13): the session's existing books —
-/// datagram health, mode + host-audio posture, input latency when
-/// flowing, audio depth/PLC — re-read once a second while visible.
+/// The compact stats overlay, re-read once a second while visible.
 struct StatsOverlay: View {
     let model: ConnectionModel
-    @State private var rows: [ConnectionModel.StatsRow] = []
+    @State private var rows: [SessionStatsRow] = []
 
     var body: some View {
-        // The two-column ledger (owner steal from YouTube's
-        // stats-for-nerds, 2026-08-03): labels right-aligned and
-        // dimmed, values left-aligned — the eye scans one seam.
-        // Grammar unchanged: lowercase nominal, caps = alarm.
+        // Two-column ledger: labels right-aligned and dimmed, values
+        // left-aligned. Lowercase is nominal; caps are alarms.
         Grid(alignment: .topLeading,
              horizontalSpacing: 8, verticalSpacing: 3) {
             ForEach(rows) { statsRow in

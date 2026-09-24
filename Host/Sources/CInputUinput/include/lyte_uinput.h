@@ -7,17 +7,13 @@
 extern "C" {
 #endif
 
-/* uinput injection leaf (HS-13's documented SECONDARY fallback; the
-   primary is Mutter's internal RemoteDesktop D-Bus API). Mechanism only:
-   three virtual evdev devices shaped like hardware libinput already
-   understands, fed by ioctl/write — no protocol knowledge, no threads.
+/* uinput injection leaf — the host's sole, compositor-agnostic input
+   backend. Mechanism only: three virtual evdev devices shaped like
+   hardware libinput already understands, fed by ioctl/write — no
+   protocol knowledge, no threads. Needs a udev rule granting the seat
+   user an ACL on /dev/uinput (TAG+="uaccess"); then no sudo.
 
-   CP-5 proved the unprivileged path: Sunshine's udev rule
-   (60-sunshine.rules, KERNEL=="uinput" ... TAG+="uaccess") grants the
-   seat user an ACL on /dev/uinput, so open(O_RDWR) needs no sudo on the
-   reference host.
-
-   Device shapes (each mirrors a proven real-world profile):
+   Device shapes (each mirrors a real-world profile):
      keyboard  EV_KEY codes 1..255 (evdev keycodes; the host session's
                XKB map owns layout)
      mouse     EV_KEY BTN_LEFT..BTN_TASK, EV_REL X/Y + wheels incl.

@@ -4,33 +4,6 @@ import HostWire
 import LyteWire
 
 final class SessionBeaconClockTests: XCTestCase {
-    func testSessionDelegatesBeaconPolicyToTheNamedOwner() throws {
-        var components = #filePath.split(
-            separator: "/", omittingEmptySubsequences: false
-        )
-        components.removeLast(3)
-        let packageRoot = components.joined(separator: "/")
-        let session = try String(contentsOfFile:
-            packageRoot + "/Sources/HostWire/Session.swift",
-            encoding: .utf8
-        )
-
-        XCTAssertTrue(session.contains(
-            "private var beaconClock: SessionBeaconClock"
-        ))
-        for retiredOwnerSpelling in [
-            "private var beaconSeq",
-            "private var nextBeaconAt",
-            "private var lastEcho: ClockBeacon.LastEcho",
-            "echo.clockSample(hostReceive:",
-        ] {
-            XCTAssertFalse(
-                session.contains(retiredOwnerSpelling),
-                "beacon policy returned to Session: \(retiredOwnerSpelling)"
-            )
-        }
-    }
-
     func testFailedSendRetriesTheSameSequenceOnTheNextBeat() {
         var clock = SessionBeaconClock(intervalNanoseconds: 1_000)
         clock.armSessionStart(at: 100)

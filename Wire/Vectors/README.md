@@ -1,22 +1,47 @@
 # LyteWire test vectors
 
-These files are first-class, versioned wire-contract artifacts (master plan
-§4.12), not test fixtures: the client's `LyteTransport` (CL-1) verifies its
-codecs against exactly these bytes before the host ever sends a datagram,
-and `Wire/Tests` verifies `LyteWire` against them on macOS and Linux —
-byte-exact equality on both platforms is part of gate W-G1.
-`Scripts/wasm-test.sh` runs the same suite for wasm32-unknown-wasip1
-under wasmtime, attesting the same bytes on a third platform.
+These files are first-class, versioned wire-contract artifacts, not test
+fixtures: `Wire/Tests` verifies `LyteWire` against them byte-for-byte on
+macOS and Linux, and `Wire/Scripts/wasm-test.sh` runs the same suite for
+wasm32-unknown-wasip1 under wasmtime. The client and host suites verify
+their codecs against the same bytes. This README is the normative byte
+layout; [docs/PROTOCOL.md](../../docs/PROTOCOL.md) is the living overview
+that ties each protocol layer to its file, and
+[docs/GLOSSARY.md](../../docs/GLOSSARY.md) explains the slice and gate ids
+(W5, W-G6, HS-12, CL-3, …) used below. "Master plan" and "core plan"
+citations point into retired build plans; the
+[docs catalog](../../docs/README.md#retired-records) gives the command that
+recovers them.
 
 **Freeze policy.** A committed vector file is frozen. If the codec and a
 vector ever disagree, that is a wire-contract break to investigate — never a
-prompt to regenerate. New cases append; changed semantics mean a new file
-version (`envelope-v2.json`) and a wire-version discussion first. The
-authoring tool (`swift run lyte-wire-vectorgen <envelope|fec|video> <path>`)
-exists for adding files, and its output is anchored against hand-computed
-bytes in `EnvelopeTests`/`FecFieldTests` (and the k=1,m=1 parity-identity
-case in `FecCoderTests`, the hand-walked datagram in
-`VideoPacketizerTests`) so the codec never grades its own homework.
+prompt to regenerate. New cases go in a new file; changed semantics mean a
+new file version (`envelope-v2.json`) and a wire-version discussion first.
+The macOS gate (`Scripts/CI/test-all-macos.sh`) fails when a committed
+file here is modified, deleted, renamed or retyped; new files and edits to
+this README pass.
+
+**Authoring.** Every file is built by a builder in the `LyteWireVectorGen`
+library, and `VectorRegenerationTests` rebuilds each committed file inside
+the suite, so a builder can never drift from the bytes. The
+`lyte-wire-vectorgen` CLI writes one file:
+
+```sh
+swift run --package-path Wire lyte-wire-vectorgen <kind> <output-path>
+# kind: envelope fec video beacon noise session arq lifecycle pairing
+#       capabilities retry control clipboard bulk clipboard-images cursor
+#       repair-refusal postures
+swift run --package-path Wire lyte-wire-vectorgen video-roundtrip <in.hevc> <out.hevc>
+```
+
+`video` reads the corpus from `<output-dir>/video-corpus-v1/`.
+`video-roundtrip` is not an authoring tool: it packetizes an Annex-B file,
+shuffles and drops shards up to the parity limit, reassembles, verifies
+byte-exactness, and writes the stream for an external `ffmpeg -f null -`
+decode check. Builder output is anchored against hand-computed bytes in
+`EnvelopeTests`/`FecFieldTests` (and the k=1,m=1 parity-identity case in
+`FecCoderTests`, the hand-walked datagram in `VideoPacketizerTests`) so the
+codec never grades its own homework.
 
 **Impairment fixtures.** `LyteWireTestKit.SimNet` scenarios are deterministic
 test machinery, not wire contracts: schedules and seeds normally live beside
@@ -97,7 +122,7 @@ file; never rewrite a committed replay.
   precedent), with the layout pinned as hand-built bytes in
   `AudioInteriorTests`.
 - `clipboard-v1.json` — the CL-15 clipboard-text sync (the first H3
-  feature; design record `docs/20260722-231500-lyte-clipboard.md`):
+  feature; design record `docs/decisions/20260722-231500-lyte-clipboard.md`):
   ClipboardSet 0x1A (client→host) and ClipboardAnnounce 0x1B
   (host→client), both `type ‖ UTF-8 text` with the text the sole
   trailing field, plus capability key 10 (`clipboardText`) on the W7
@@ -118,7 +143,7 @@ file; never rewrite a committed replay.
   asserts the coverage discipline (every error case name present, the
   ceiling pinned legal, the spine pinned both ways).
 - `bulk-v1.json` — the W10/F-2 bulk-transfer channel (design record
-  `docs/20260728-053300-lyte-bulk-channel.md`): the message sextet
+  `docs/decisions/20260728-053300-lyte-bulk-channel.md`): the message sextet
   0x1C–0x21 (offer/accept/chunk/ack/complete/abort, all
   fixed-layout LE with the chunk-map credit spine shared by
   accept/ack), capability key 11 (`bulkTransfer`) on the W7
@@ -188,6 +213,26 @@ file; never rewrite a committed replay.
   zero reason (the zero-fill rule), and an unknown reason.
   `RepairRefusalVectorFileTests` asserts the coverage discipline
   (every reason pinned, every decode-reachable error name present).
+- `cursor-v1.json` — the E3 cursor-shape CTRL message 0x24
+  (`type ‖ width u16 ‖ height u16 ‖ hotspotX u16 ‖ hotspotY u16 ‖
+  BGRA pixels`) and the key-13 capability spine. Roundtrips cover the
+  hidden state, a non-square image, the 256 side cap and the exact
+  65,536-byte image ceiling; rejects cover every CursorMessageError
+  case; the spine is pinned declared, absent, and composed with key 10.
+  `CursorVectorFileTests` asserts the coverage discipline and anchors
+  against `CursorCodecTests`.
+- `postures-v1.json` — the quiet-posture announcements: AudioTrackState
+  0x25 (`type ‖ state`, active 0x01 / quiet 0x02) and VideoPostureState
+  0x26 (`type ‖ posture ‖ keepaliveSeconds`, the interval in force,
+  1–255), plus the key-15/16 capability spine declared, absent, and
+  together. Roundtrips cover both states, both postures and the backoff
+  ladder (1, 2, 4, 8, 16, 30 s and the 255 ceiling); rejects cover
+  every AudioTrackStateError and VideoPostureStateError case. A new
+  file rather than an append to control-v1.json, so no frozen file
+  moves. Anchored by hand-computed bytes in `PostureVectorFileTests`.
+
+Every file above is rebuilt from its builder by `VectorRegenerationTests`
+(see Authoring above).
 
 ## The 24-byte envelope (wire v1)
 
@@ -382,6 +427,11 @@ Scenarios: `in-order-tiny-idr`, `shuffled-k3`, `loss-at-parity-limit-k3`,
 `corpus-small-p-lossy-regime`.
 
 ## The CTRL message-type registry and the clock-beacon pair (wire v1)
+
+The complete registry, 0x00–0x26, with each type's direction, carriage and
+vector file, is the table in [docs/PROTOCOL.md](../../docs/PROTOCOL.md#ctrl-message-registry)
+(source: `LyteWire/Control/CtrlMessage.swift`). This section pins the
+registry's rules and the beacon pair.
 
 Every CTRL (chan 0) payload starts with one message-type byte — in
 today's bare datagrams and, once W3 lands, at the start of each
@@ -766,6 +816,21 @@ contract; `Capabilities.swift`):
 | 6 | audioExpress | bool | AND |
 | 7 | resume | bool | AND |
 | 8 | maxDatagramBytes | u32 ≥ 1152 | min |
+| 9 | hostAudioRouting | flag (`09 F5`) | both declare |
+| 10 | clipboardText | flag (`0A F5`) | both declare |
+| 11 | bulkTransfer | flag (`0B F5`) | both declare |
+| 12 | clipboardImages | flag (`0C F5`) | both declare |
+| 13 | cursorShape | flag (`0D F5`) | both declare |
+| 14 | audioStreamOff | flag (`0E F5`) | both declare |
+| 15 | audioQuietPosture | flag (`0F F5`) | both declare |
+| 16 | videoQuietPosture | flag (`10 F5`) | both declare |
+
+Keys 9–16 are not typed fields of the v1 set: each is one canonical
+`key: true` entry carried through the unknown-entry rule below, so
+`capabilities-v1.json` never moves. Their spine pins live in
+`control-v1.json` (9), `clipboard-v1.json` (10), `bulk-v1.json` (11),
+`clipboard-images-v1.json` (12), `cursor-v1.json` (13) and
+`postures-v1.json` (15, 16). Key 14 has no spine pin yet.
 
 Forward compatibility, three rules: unknown KEYS are ignored (never a
 decode error) and preserved verbatim; unknown VALUES inside id lists

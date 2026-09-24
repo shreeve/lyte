@@ -102,7 +102,7 @@ final class AudioDepacketizerGateTests: XCTestCase {
         // Decoding the hand-built bytes and depacketizing yields the
         // packets with the pinned number/stamp semantics: packet n =
         // frame + shardIndex, data shards carry their own capture µs.
-        let depacketizer = AudioDepacketizer()
+        var depacketizer = AudioDepacketizer()
         var emitted: [AudioPacket] = []
         for i in 0..<6 {
             let wire = handBuilt(
@@ -129,7 +129,7 @@ final class AudioDepacketizerGateTests: XCTestCase {
     }
 
     func testSecondGroupIdIsItsFirstPacketNumber() throws {
-        let depacketizer = AudioDepacketizer()
+        var depacketizer = AudioDepacketizer()
         var numbers: [UInt32] = []
         for groupIndex in 0..<2 {
             let packets = (0..<4).map {
@@ -155,7 +155,7 @@ final class AudioDepacketizerGateTests: XCTestCase {
         let packets = (0..<4).map { opusPacket($0) }
         for a in 0..<6 {
             for b in (a + 1)..<6 {
-                let depacketizer = AudioDepacketizer()
+                var depacketizer = AudioDepacketizer()
                 let group = try buildGroup(
                     packets: packets, groupId: 100, firstSeq: 0,
                     firstCaptureMicros: 7_000_000)
@@ -192,7 +192,7 @@ final class AudioDepacketizerGateTests: XCTestCase {
 
     func testLateOriginalAfterRecoveryCountsAsDuplicate() throws {
         let packets = (0..<4).map { opusPacket($0) }
-        let depacketizer = AudioDepacketizer()
+        var depacketizer = AudioDepacketizer()
         let group = try buildGroup(
             packets: packets, groupId: 0, firstSeq: 0,
             firstCaptureMicros: 1_000)
@@ -217,7 +217,7 @@ final class AudioDepacketizerGateTests: XCTestCase {
     // MARK: Leg 3 — honest refusals
 
     func testThreeLossesAreHonestlyUnrecoverableAndCountedAtEviction() throws {
-        let depacketizer = AudioDepacketizer(horizonGroups: 2)
+        var depacketizer = AudioDepacketizer(horizonGroups: 2)
         let packets = (0..<4).map { opusPacket($0) }
         let group = try buildGroup(
             packets: packets, groupId: 0, firstSeq: 0,
@@ -246,7 +246,7 @@ final class AudioDepacketizerGateTests: XCTestCase {
     }
 
     func testHostileShardsAreCountedNeverFatal() throws {
-        let depacketizer = AudioDepacketizer()
+        var depacketizer = AudioDepacketizer()
         let packets = (0..<4).map { opusPacket($0) }
         let group = try buildGroup(
             packets: packets, groupId: 0, firstSeq: 0,

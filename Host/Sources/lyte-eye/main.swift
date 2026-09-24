@@ -1,17 +1,15 @@
-// lyte-eye — the direct eye (docs/20260801-105800-direct-eye-plan.md, E0).
+// lyte-eye — the direct eye.
 //
 // Two modes:
-//   lyte-eye [device] [seconds] [poll_us]           — the doorbell
-//     (milestone 1): FB_ID change detection, unprivileged, output
-//     line-comparable with the retired fbid-poll.c probe.
+//   lyte-eye [device] [seconds] [poll_us]           — the doorbell:
+//     FB_ID change detection, unprivileged.
 //   lyte-eye capture [--device D] [--render R] [--seconds N]
-//            [--out PATH] [--qp N]                   — the full loop
-//     (milestone 2): screen beat → GPU change detection → GL blit
-//     RGB→NV12 into exported VAAPI surfaces → hevc_vaapi (vendored
-//     libavcodec) → Annex-B file. Needs privileges (GETFB2).
+//            [--out PATH] [--qp N]                   — the full loop:
+//     screen beat → GPU change detection → GL blit
+//     RGB→NV12 into exported VAAPI surfaces → the native VAAPI HEVC
+//     encoder → Annex-B file. Needs privileges (GETFB2).
 //
-// Swift-first is the point: libdrm/GBM/EGL/GL/libva/libavcodec all
-// arrive through module maps — no .c files anywhere in the eye.
+// libdrm/GBM/EGL/GL/libva all arrive through module maps — no .c files.
 
 import Foundation
 

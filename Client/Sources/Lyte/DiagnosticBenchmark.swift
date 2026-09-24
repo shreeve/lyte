@@ -83,10 +83,9 @@ struct DiagnosticBenchmarkSample: Codable {
         var packetsFed: UInt64
         var plcPacketsFed: UInt64
         var ringDepthFrames: Int
+        /// Every underrun frame passes AudioPcmRing's decay / silence /
+        /// crossfade path; no alternate zero-fill seam exists.
         var underrunFrames: UInt64
-        /// Every active-flow underrun frame passes AudioPcmRing's decay /
-        /// silence / crossfade path; no alternate zero-fill seam exists.
-        var declickProtectedUnderrunFrames: UInt64
         var decodeFailures: UInt64
         var routeChangeFailures: UInt64
         /// True while the host's 0x25 quiet announcement stands: the
@@ -106,8 +105,8 @@ struct DiagnosticBenchmarkSample: Codable {
     var quality: Quality? = nil
     var motionSource: MotionSource? = nil
     var motionLeg: String? = nil
-    /// V-5: the wire's observed chroma ("4:2:0"/"4:4:4", SPS-audit
-    /// truth) — the analyzer selects its commissioned floors by it.
+    /// The wire's observed chroma ("4:2:0"/"4:4:4", from the SPS audit);
+    /// the analyzer selects its floors by it.
     var streamChroma: String? = nil
 }
 
@@ -471,13 +470,5 @@ private final class DiagnosticQualityProbe {
     /// sentinel, far above every pinned pass bar.
     private static func jsonDB(_ value: Double) -> Double {
         value.isFinite ? value : 999
-    }
-}
-
-private extension Duration {
-    var seconds: Double {
-        let parts = components
-        return Double(parts.seconds)
-            + Double(parts.attoseconds) / 1_000_000_000_000_000_000
     }
 }

@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-// Drive system Chrome against the B-6 proof page: frozen WASM contracts,
-// a control session (Noise / pair / capabilities / teardown) through
+// Drive system Chrome against the proof page: frozen WASM contracts, a
+// control session (Noise / pair / capabilities / teardown) through
 // lyte-wt-sidecar --udp-peer → lyte-control-peer --emit-corpus, then
-// Conductor-scheduled multi-frame WebCodecs + WebGPU present, plus
-// sealed input echo, clipboard text round-trip, and Opus → AudioWorklet.
+// Conductor-scheduled WebCodecs + WebGPU present, sealed input echo,
+// clipboard text round-trip, and Opus → AudioWorklet. Run it through
+// smoke-chrome.sh, which restages .serve/ first.
 import { spawn, execFileSync } from "node:child_process";
 import { createServer } from "node:http";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
@@ -224,47 +225,43 @@ async function cdp(wsUrl, WebSocket) {
   return { ws, send };
 }
 
-const requiredLogSnippets = [
-  "envelope-v1/nominal-video-shard",
-  "noise-v1/snow-ik-25519-chachapoly-sha256",
-  "control-session/noise-pair-caps",
-  "control-session/teardown",
-  "frame-present/classify",
-  "frame-present/webcodecs",
-  "frame-present/webgpu",
-  "conductor-video/assemble",
-  "conductor-video/schedule",
-  "conductor-video/present",
-  "session-input/echo",
-  "clipboard/text-roundtrip",
-  "audio/depacketize",
-  "audio-worklet/ring",
-  "interaction-shell/b6",
+const mustPass = [
+  "PASS  envelope-v1/nominal-video-shard",
+  "PASS  noise-v1/snow-ik-25519-chachapoly-sha256",
+  "PASS  control-session/noise-pair-caps",
+  "PASS  control-session/clipboard-cap",
+  "PASS  control-session/teardown",
+  "PASS  frame-present/classify",
+  "PASS  frame-present/webcodecs",
+  "PASS  frame-present/webgpu",
+  "PASS  conductor-video/assemble",
+  "PASS  conductor-video/schedule",
+  "PASS  conductor-video/present",
+  "PASS  session-input/echo",
+  "PASS  clipboard/text-roundtrip",
+  "PASS  audio/depacketize",
+  "PASS  audio/webcodecs",
+  "PASS  audio-worklet/ring",
+  "PASS  interaction-shell/b6",
 ];
 
-if (
-  !existsSync(join(serveDir, "LyteClientBrowser.wasm")) ||
-  !existsSync(join(serveDir, "control-session.js")) ||
-  !existsSync(join(serveDir, "conductor-video.js")) ||
-  !existsSync(join(serveDir, "interaction.js")) ||
-  !existsSync(join(serveDir, "audio-ring-worklet.js")) ||
-  !existsSync(join(serveDir, "corpus", "frame-000-idr.annexb"))
-) {
-  console.log("browser-smoke: building Browser package first…");
-  execFileSync(join(browserRoot, "Scripts", "build.sh"), {
-    stdio: "inherit",
-  });
+if (!existsSync(join(serveDir, "LyteClientBrowser.wasm"))) {
+  throw new Error("missing .serve/ — run Browser/Scripts/smoke-chrome.sh (it builds first)");
 }
 
 const WebSocket = await ensureWs();
 console.log("browser-smoke: building lyte-control-peer…");
 const peerBin = buildControlPeer();
 const { proc: peerProc, meta: peerMeta } = await startControlPeer(peerBin);
-const { proc: sidecar, meta: sidecarMeta } = await startSidecar(peerMeta);
+const {
+  proc: sidecar,
+  meta: sidecarMeta,
+  stderr: sidecarStderr,
+} = await startSidecar(peerMeta);
 const { server, port } = await startStaticServer();
 const userData = await mkdtemp(join(tmpdir(), "lyte-browser-smoke-"));
 const debugPort = 9200 + Math.floor(Math.random() * 200);
-const pageUrl = `http://127.0.0.1:${port}/index.html`;
+const pageUrl = `http://127.0.0.1:${port}/index.html?smoke=1`;
 
 console.log(
   `browser-smoke: sidecar (${wtRuntime()}) ${sidecarMeta.url} → UDP ${peerMeta.listenPort} ` +
@@ -290,6 +287,7 @@ const chromeProc = spawn(
 );
 
 let failed = false;
+let done = false;
 try {
   let version;
   for (let i = 0; i < 50; i++) {
@@ -315,131 +313,63 @@ try {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const result = await send("Runtime.evaluate", {
-      expression: `(() => {
-        if (typeof lyteB6Passed === 'boolean' || typeof lyteB5Passed === 'boolean') {
-          const passed = typeof lyteB6Passed === 'boolean' ? lyteB6Passed : lyteB5Passed;
-          return JSON.stringify({
-            ready: true,
-            passed,
-            b1: typeof lyteB1Passed === 'boolean' ? lyteB1Passed : null,
-            b3: typeof lyteB3Passed === 'boolean' ? lyteB3Passed : null,
-            b6: typeof lyteB6Passed === 'boolean' ? lyteB6Passed : null,
-            status: document.getElementById('status')?.textContent || '',
-            log: document.getElementById('log')?.textContent || '',
-            meta: document.getElementById('meta')?.textContent || ''
-          });
-        }
-        return JSON.stringify({
-          ready: false,
-          status: document.getElementById('status')?.textContent || '',
-          log: document.getElementById('log')?.textContent || ''
-        });
-      })()`,
+      expression: `(() => JSON.stringify({
+        contracts: typeof lyteContractsPassed === 'boolean' ? lyteContractsPassed : null,
+        session: typeof lyteSessionPassed === 'boolean' ? lyteSessionPassed : null,
+        status: document.getElementById('status')?.textContent || '',
+        log: document.getElementById('log')?.textContent || '',
+        meta: document.getElementById('meta')?.textContent || ''
+      }))()`,
       returnByValue: true,
     });
     const payload = JSON.parse(result.result.value);
-    if (payload.ready) {
-      if (!payload.passed) {
-        console.error("browser-smoke: FAIL");
-        console.error(payload.log);
-        if (payload.meta) console.error(payload.meta);
-        try {
-          const peerLog = await readFile(join(serveDir, "control-peer.log"), "utf8");
-          if (peerLog.trim()) {
-            console.error("--- control-peer.log ---");
-            console.error(peerLog.trim().split("\n").slice(-40).join("\n"));
-          }
-        } catch {
-          /* ignore */
-        }
-        try {
-          const wtLog = sidecar.stderr?.() || "";
-          if (wtLog.trim()) {
-            console.error("--- wt-sidecar stderr ---");
-            console.error(wtLog.trim().split("\n").slice(-40).join("\n"));
-          }
-        } catch {
-          /* ignore */
-        }
-        failed = true;
-        break;
-      }
-      for (const snippet of requiredLogSnippets) {
-        if (!payload.log.includes(snippet)) {
-          console.error(
-            `browser-smoke: missing expected line containing ${snippet}`
-          );
-          console.error(payload.log);
-          failed = true;
-          break;
-        }
-      }
-      if (failed) break;
-      for (const mustPass of [
-        "PASS  control-session/noise-pair-caps",
-        "PASS  frame-present/webcodecs",
-        "PASS  frame-present/webgpu",
-        "PASS  conductor-video/assemble",
-        "PASS  conductor-video/schedule",
-        "PASS  conductor-video/present",
-        "PASS  session-input/echo",
-        "PASS  clipboard/text-roundtrip",
-        "PASS  audio/depacketize",
-        "PASS  audio-worklet/ring",
-        "PASS  interaction-shell/b6",
-      ]) {
-        if (!payload.log.includes(mustPass)) {
-          console.error(`browser-smoke: missing ${mustPass}`);
-          console.error(payload.log);
-          failed = true;
-          break;
-        }
-      }
-      if (failed) break;
-      console.log(
-        "browser-smoke: PASS — Chrome reported B-1…B-6 interaction shell green"
-      );
-      console.log(payload.log);
-      if (payload.meta) console.log(payload.meta);
-      try {
-        await writeFile(
-          join(serveDir, "conductor-video-measure.json"),
-          JSON.stringify(
-            {
-              passed: true,
-              adapter: sidecarMeta.adapter,
-              shape: sidecarMeta.shape,
-              url: sidecarMeta.url,
-              controlPeerPort: peerMeta.listenPort,
-              log: payload.log,
-              metaText: payload.meta,
-            },
-            null,
-            2
-          ) + "\n"
-        );
-      } catch {
-        /* non-fatal */
-      }
-      break;
+    const settled = payload.session !== null || payload.contracts === false;
+    if (!settled) {
+      await sleep(250);
+      continue;
     }
-    if (
-      (payload.status || "").includes("FAIL") &&
-      payload.log &&
-      !payload.log.includes("Instantiating") &&
-      !payload.log.includes("Dialing") &&
-      !payload.log.includes("Opening control") &&
-      !payload.log.includes("Decoding canned")
-    ) {
-      console.error("browser-smoke: page reported FAIL while loading");
+    const missing = mustPass.filter((line) => !payload.log.includes(line));
+    if (!payload.session || missing.length) {
+      console.error("browser-smoke: FAIL");
+      for (const line of missing) console.error(`browser-smoke: missing ${line}`);
       console.error(payload.log);
+      if (payload.meta) console.error(payload.meta);
+      for (const [label, text] of [
+        ["control-peer.log", await readFile(join(serveDir, "control-peer.log"), "utf8").catch(() => "")],
+        ["wt-sidecar stderr", sidecarStderr()],
+      ]) {
+        if (text.trim()) {
+          console.error(`--- ${label} ---`);
+          console.error(text.trim().split("\n").slice(-40).join("\n"));
+        }
+      }
       failed = true;
       break;
     }
-    await sleep(250);
+    console.log("browser-smoke: PASS — Chrome reported the session proof green");
+    console.log(payload.log);
+    if (payload.meta) console.log(payload.meta);
+    await writeFile(
+      join(serveDir, "session-proof-measure.json"),
+      JSON.stringify(
+        {
+          passed: true,
+          adapter: sidecarMeta.adapter,
+          shape: sidecarMeta.shape,
+          url: sidecarMeta.url,
+          controlPeerPort: peerMeta.listenPort,
+          log: payload.log,
+          metaText: payload.meta,
+        },
+        null,
+        2
+      ) + "\n"
+    ).catch(() => {});
+    done = true;
+    break;
   }
-  if (!failed && Date.now() >= deadline) {
-    console.error("browser-smoke: timeout waiting for lyteB6Passed");
+  if (!failed && !done) {
+    console.error("browser-smoke: timeout waiting for lyteSessionPassed");
     failed = true;
   }
   ws.close();

@@ -1,23 +1,16 @@
-// VideoQuietPacer — the postures design's video quiet/wake axis
-// (docs/20260802-013946-postures-design.md), sans-IO: the caller
-// supplies "seconds since the last damage or client input" and gets
-// back the keepalive interval now in force plus, exactly once per
-// step, the announcement to send. The ladder: 1 s while active
-// (idle < 30 s), then 2 → 4 → 8 → 16 → 30 s, one rung per further
-// 30 s of stillness. A wake (idle collapsing back under the
-// threshold — fresh damage or an input packet) steps straight back
-// to 1 s and announces active once.
-//
-// Pure function of idle time plus one word of memory (the interval
-// last announced) — no clocks, no wire, no thread opinions.
+// The video quiet/wake axis, sans-IO: the caller supplies seconds since
+// the last damage or client input and gets back the keepalive interval
+// in force plus, exactly once per step, the announcement to send. The
+// ladder: 1 s while active (idle < 30 s), then 2 → 4 → 8 → 16 → 30 s,
+// one rung per further 30 s of stillness. A wake steps straight back to
+// 1 s and announces active once.
 
 public struct VideoQuietPacerConfig: Sendable {
-    /// Stillness before the first backoff rung — the doc's ~30 s.
+    /// Stillness before the first backoff rung.
     public var quietAfterSeconds: Double
     /// Seconds of further stillness per additional rung.
     public var rungSeconds: Double
-    /// The deepest interval (the doc's ceiling; beacon-only "zero"
-    /// is a future posture, not an interval).
+    /// The deepest interval.
     public var maxIntervalSeconds: UInt8
 
     public init(
@@ -57,11 +50,12 @@ public struct VideoQuietPacer: Sendable {
     /// The ladder, as a pure function of stillness.
     public func interval(idleSeconds: Double) -> UInt8 {
         guard idleSeconds >= config.quietAfterSeconds else { return 1 }
-        let rungs = Int((idleSeconds - config.quietAfterSeconds)
-            / config.rungSeconds)
-        // Rung 0 = 2 s, doubling each rung, capped at the ceiling
-        // (the exponent clamp keeps the shift safe for any idle).
-        let unclamped = 1 << min(rungs + 1, 7)
+        // Rung 0 = 2 s, doubling each rung, capped at the ceiling. The
+        // rung count is clamped while still a Double, so any idle
+        // (including +infinity) converts safely; NaN never passes the guard.
+        let rungs = Int(min(
+            (idleSeconds - config.quietAfterSeconds) / config.rungSeconds, 6))
+        let unclamped = 1 << (rungs + 1)
         return UInt8(min(unclamped, Int(config.maxIntervalSeconds)))
     }
 

@@ -7,7 +7,7 @@ public struct SessionLifecycleVerdict: Sendable {
     public var stateChangedTo: SessionState?
 }
 
-/// The sans-IO owner of the Host session's W4b lifecycle projection.
+/// The sans-IO owner of the Host session's lifecycle projection.
 ///
 /// The shared Wire machine owns transition policy. This Host-role lane owns
 /// when that machine exists, converts its microsecond timer into the session's
@@ -40,7 +40,6 @@ public struct SessionLifecycleLane: Sendable {
     public var isEstablished: Bool { machine != nil }
     public var state: SessionState? { machine?.state }
     public var wireMode: SessionWireMode? { machine?.wireMode }
-    public var closeReason: SessionCloseReason? { machine?.closeReason }
     public var isRecovering: Bool { machine?.state == .recovery }
 
     /// A newly established machine needs one first service pass to project
@@ -80,15 +79,17 @@ public struct SessionLifecycleLane: Sendable {
     public mutating func drive(
         _ input: SessionInput?, now: UInt64
     ) -> SessionLifecycleVerdict {
-        guard machine != nil else {
+        // Moved out and back so the machine mutates uniquely referenced.
+        guard var current = machine.take() else {
             return SessionLifecycleVerdict(actions: [], stateChangedTo: nil)
         }
-        let before = machine!.state
+        defer { machine = current }
+        let before = current.state
         var actions: [SessionAction] = []
         if let input {
-            actions += machine!.apply(input, now: Self.instant(now))
+            actions += current.apply(input, now: Self.instant(now))
         }
-        let (polled, deadline) = machine!.poll(now: Self.instant(now))
+        let (polled, deadline) = current.poll(now: Self.instant(now))
         actions += polled
         nextDeadlineNanoseconds = deadline.map {
             $0.microseconds &* 1_000
@@ -106,7 +107,7 @@ public struct SessionLifecycleLane: Sendable {
         }
         return SessionLifecycleVerdict(
             actions: external,
-            stateChangedTo: machine!.state == before ? nil : machine!.state
+            stateChangedTo: current.state == before ? nil : current.state
         )
     }
 

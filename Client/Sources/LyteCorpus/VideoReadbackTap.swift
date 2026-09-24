@@ -1,21 +1,13 @@
-// VideoReadbackTap: a VTDecompressionSession readback of the samples
-// the production factory builds — the §7 corpus harness's client half
-// (H4 V-2), committed for V-3 per the plan. The display path
-// (AVSampleBufferDisplayLayer) decodes internally and never hands the
-// pixels back; gate math (RGB PSNR, chroma integrity, color truth)
-// needs the decoded planes, so this tap runs the SAME sample buffers
-// through an explicit decompression session and returns the
-// CVPixelBuffers. It also answers the question the display layer keeps
-// to itself: which decoder actually engaged (hardware or software) —
-// kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder,
-// read from the live session, is the plan's "hardware-path property
-// asserted" evidence.
+// VideoReadbackTap: a VTDecompressionSession readback of the samples the
+// production factory builds, for the corpus harness. The display layer
+// decodes internally and never hands pixels back; the gate math needs
+// decoded planes, so this tap runs the same sample buffers through an
+// explicit session. It also reports which decoder engaged (hardware or
+// software), read from the live session.
 //
-// Decode is synchronous (no async flag → the output handler runs
-// before DecodeFrame returns) and 1:1 in stream order — Lyte's wire is
-// low-delay HEVC with no reordering (I+P only), so decode order IS
-// display order. Not Sendable by design: harness legs are
-// single-threaded; confine an instance to one thread.
+// Decode is synchronous and 1:1 in stream order — the wire is low-delay
+// HEVC (I+P only), so decode order is display order. Not Sendable:
+// confine an instance to one thread.
 
 import CoreMedia
 import CoreVideo
@@ -45,13 +37,11 @@ public enum VideoReadbackError: Error, Sendable {
 
 public final class VideoReadbackTap {
     /// Requested output pixel format (kCVPixelFormatType_*), or nil to
-    /// take the decoder's native output — the honest probe posture:
-    /// what comes out when nobody asks for anything.
+    /// take the decoder's native output.
     private let outputPixelFormat: OSType?
-    /// When true the session demands hardware
-    /// (kVTVideoDecoderSpecification_Require…) and creation FAILS on a
-    /// software-only path — the loud-reject posture for gates that
-    /// must never silently measure a software decode.
+    /// When true the session requires hardware and creation fails on a
+    /// software-only path, so a gate never silently measures a
+    /// software decode.
     private let requireHardware: Bool
 
     private var session: VTDecompressionSession?
@@ -74,10 +64,9 @@ public final class VideoReadbackTap {
     public private(set) var isHardwareAccelerated: Bool?
 
     /// Decodes one factory-built sample buffer and returns its pixel
-    /// buffer with the presentation timestamp alongside. Rebuilds the
-    /// session when the stream's format description changes (the
-    /// factory rebuilds ITS description from in-band parameter sets on
-    /// IDR — mid-stream resolution changes arrive that way).
+    /// buffer with the presentation timestamp. Rebuilds the session when
+    /// the format description changes (mid-stream resolution changes
+    /// arrive as new in-band parameter sets on IDR).
     public func decode(
         _ sample: CMSampleBuffer
     ) throws -> (imageBuffer: CVPixelBuffer, presentationTimeStamp: CMTime) {

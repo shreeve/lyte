@@ -2,6 +2,7 @@ import XCTest
 import HostCore
 import HostSession
 import HostWire
+import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
@@ -70,8 +71,10 @@ final class ClipboardGateTests: XCTestCase {
             [0x1A] + [UInt8](repeating: 0x61,
                              count: ClipboardWire.maxTextByteCount + 1)
         ))
-        print("CL-15 gate (codec): 0x1A/0x1B pinned byte-exact against "
-            + "the Wire arrays")
+        print("""
+            CL-15 gate (codec): 0x1A/0x1B pinned byte-exact against \
+            the Wire arrays
+            """)
     }
 
     // MARK: Leg 2 — key 10 on the spine, mutual-only intersection
@@ -90,8 +93,10 @@ final class ClipboardGateTests: XCTestCase {
         XCTAssertFalse(
             Capabilities.wireDefault.intersecting(declared).clipboardText
         )
-        print("CL-15 gate (spine): declaration = local bytes + `0A F5`, "
-            + "mutual-only survival")
+        print("""
+            CL-15 gate (spine): declaration = local bytes + `0A F5`, \
+            mutual-only survival
+            """)
     }
 
     // MARK: Leg 2b — the leaf's text-flavor policy (HS-19), pinned
@@ -123,8 +128,10 @@ final class ClipboardGateTests: XCTestCase {
             ClipboardTextMime.pickForRead(fromOffered: ["text/plain"]),
             "text/plain"
         )
-        print("HS-19 gate (mime): read preference "
-            + "utf-8 → UTF8_STRING → text/plain, case-insensitive")
+        print("""
+            HS-19 gate (mime): read preference \
+            utf-8 → UTF8_STRING → text/plain, case-insensitive
+            """)
     }
 
     func testTextMimeRefusesNonTextAndOffersFaithfulFirst() {
@@ -140,8 +147,7 @@ final class ClipboardGateTests: XCTestCase {
         XCTAssertEqual(ClipboardTextMime.offered,
                        [ClipboardTextMime.utf8, "text/plain",
                         "UTF8_STRING"])
-        print("HS-19 gate (mime): non-text refused, "
-            + "offer list faithful-first")
+        print("HS-19 gate (mime): non-text refused, offer list faithful-first")
     }
 
     // MARK: The scripted leaf (the seam the portal leaf will drive)
@@ -182,191 +188,41 @@ final class ClipboardGateTests: XCTestCase {
         func stop() { started = false }
     }
 
-    // MARK: The negotiated loopback client (the AudioRoutingGateTests shape)
-
-    private struct ClipboardClient {
-        var noise: NoiseSession
-        var transport: NoiseTransport?
-        var ctrlSeq: UInt16 = 0
-        var arq = ArqEndpoint<ClientClock>(channel: .ctrl)
-        let staticKeys: NoiseKeyPair
-
-        var received: [(group: ArqGroupId, bytes: [UInt8])] = []
-
-        init(hostStaticPublicKey: [UInt8]) throws {
-            staticKeys = NoiseKeyPair.generate()
-            noise = try NoiseSession(
-                role: .initiator,
-                staticKeys: staticKeys,
-                remoteStaticPublicKey: hostStaticPublicKey
-            )
-        }
-
-        mutating func message1Datagram(clientMicros: UInt64) throws -> [UInt8] {
-            let message1 = try noise.writeMessage1()
-            return try ctrlDatagram(
-                body: [CtrlMessageType.noiseHandshake1] + message1,
-                sealed: false, clientMicros: clientMicros
-            )
-        }
-
-        mutating func ctrlDatagram(
-            body: [UInt8], sealed: Bool, clientMicros: UInt64
-        ) throws -> [UInt8] {
-            let envelope = Envelope(
-                channel: .ctrl,
-                seq: ChannelSeq(rawValue: ctrlSeq),
-                frame: FrameNumber(rawValue: 0),
-                timestamp: clientMicros,
-                fec: 0
-            )
-            ctrlSeq &+= 1
-            guard sealed else { return try envelope.encode(payload: body) }
-            let header = try envelope.encode(payload: [])
-            let payload = try transport!.seal(
-                plaintext: body[...], aad: header[...], envelope: envelope
-            )
-            return try envelope.encode(payload: payload)
-        }
-
-        mutating func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
-            let (envelope, payload) = try Envelope.decode(bytes)
-            if transport == nil {
-                XCTAssertEqual(envelope.channel, .ctrl)
-                XCTAssertEqual(payload.first, CtrlMessageType.noiseHandshake2)
-                _ = try noise.readMessage2(payload.dropFirst())
-                transport = try noise.makeTransport()
-                return
-            }
-            guard envelope.channel == .ctrl else { return }
-            let aad = bytes[bytes.startIndex..<payload.startIndex]
-            let plaintext: [UInt8]
-            do {
-                plaintext = try transport!.unseal(
-                    wirePayload: payload, aad: aad, envelope: envelope
-                )
-            } catch NoiseError.replayedSequence, NoiseError.staleSequence {
-                return // network duplicate; routine
-            }
-            switch plaintext.first {
-            case CtrlMessageType.arqSegment, CtrlMessageType.arqAck:
-                for event in arq.ingest(
-                    payload: plaintext,
-                    now: ClientTimestamp(microseconds: nowMicros)
-                ) {
-                    if case .message(let group, let bytes) = event {
-                        received.append((group, bytes))
-                    }
-                }
-            default:
-                break // beacons etc. — not this gate's business
-            }
-        }
-
-        mutating func pollOut(nowMicros: UInt64) throws -> [[UInt8]] {
-            let (payloads, _) = arq.poll(
-                now: ClientTimestamp(microseconds: nowMicros)
-            )
-            return try payloads.map {
-                try ctrlDatagram(body: $0, sealed: true, clientMicros: nowMicros)
-            }
-        }
-
-        mutating func take(type: UInt8) -> [[UInt8]] {
-            let hits = received.filter { $0.bytes.first == type }.map(\.bytes)
-            received.removeAll { $0.bytes.first == type }
-            return hits
-        }
-    }
-
-    private final class DatagramBox {
-        var datagrams: [VideoChannelDatagram] = []
-    }
+    // MARK: The negotiated loopback client
 
     /// Handshake + capability exchange, direct pipe. The host always
     /// declares key 10 (its clipboard leaf is "enabled" in this gate);
     /// the client's declaration is the leg's variable.
     private func establish(
         clientCapabilities: Capabilities
-    ) throws -> (session: Session, client: ClipboardClient, box: DatagramBox) {
-        let hostStatic = NoiseKeyPair.generate()
-        let box = DatagramBox()
-        let session = Session(
+    ) throws -> (host: HostSessionHarness, client: SealedCtrlPeer<ClientClock>) {
+        let host = HostSessionHarness(
             config: SessionConfig(
-                crypto: .noise(hostStatic: hostStatic),
+                crypto: .noise(hostStatic: NoiseKeyPair.generate()),
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: 1 << 62,
                 capabilities: .wireDefault.declaringClipboardText()
             ),
-            clientTuple: Self.tupleA,
-            now: 0,
-            rng: SplitMix64(seed: 0x1A1B),
-            send: { box.datagrams.append($0) }
+            tuple: Self.tupleA,
+            rng: SplitMix64(seed: 0x1A1B)
         )
-        var client = try ClipboardClient(
-            hostStaticPublicKey: hostStatic.publicKey)
-        _ = session.receive(
-            try client.message1Datagram(clientMicros: 500),
-            from: Self.tupleA, now: 0, hostMicroseconds: 0
-        )
-        XCTAssertEqual(session.phase, .established)
-        session.pump(now: 0)
-        var negotiator = CapabilityNegotiator(
-            role: .client, local: clientCapabilities
-        )
-        try client.arq.send(
-            message: try XCTUnwrap(negotiator.start()).encode(),
-            now: ClientTimestamp(microseconds: 1_000)
-        )
-        return (session, client, box)
-    }
-
-    /// Exchange passes 2 ms apart until both ends quiesce.
-    private func settle(
-        _ session: Session, _ client: inout ClipboardClient,
-        _ box: DatagramBox, forwarded: inout Int, t: inout UInt64,
-        onEvent: (SessionEvent) -> Void = { _ in }
-    ) throws {
-        var idle = 0
-        while idle < 3 {
-            t += 2_000
-            let before = (forwarded, client.received.count)
-            var events = session.advance(now: t * 1_000, hostMicroseconds: t)
-            session.pump(now: t * 1_000)
-            while forwarded < box.datagrams.count {
-                try client.absorb(box.datagrams[forwarded].bytes, nowMicros: t)
-                forwarded += 1
-            }
-            for datagram in try client.pollOut(nowMicros: t) {
-                events += session.receive(
-                    datagram, from: Self.tupleA,
-                    now: t * 1_000, hostMicroseconds: t
-                )
-                session.pump(now: t * 1_000)
-                while forwarded < box.datagrams.count {
-                    try client.absorb(
-                        box.datagrams[forwarded].bytes, nowMicros: t
-                    )
-                    forwarded += 1
-                }
-            }
-            for event in events { onEvent(event) }
-            idle = (forwarded, client.received.count) == before ? idle + 1 : 0
-        }
+        let client = try host.connectClient(declaring: clientCapabilities)
+        XCTAssertEqual(host.session.phase, .established)
+        return (host, client)
     }
 
     // MARK: Leg 3 — the negotiated round trip + the boomerang proof
 
     func testGateSetAppliesEchoSuppressesAndGenuineCopyAnnounces() throws {
-        let (session, clientValue, box) = try establish(
+        let (host, clientValue) = try establish(
             clientCapabilities: .wireDefault.declaringClipboardText()
         )
         var client = clientValue
-        var forwarded = 0
+        let session = host.session
         var t: UInt64 = 1_000
 
         var agreed: Capabilities?
-        try settle(session, &client, box, forwarded: &forwarded, t: &t) {
+        try host.settle(&client, t: &t) {
             if case .capabilitiesAgreed(let set) = $0 { agreed = set }
         }
         XCTAssertEqual(agreed?.clipboardText, true,
@@ -410,7 +266,7 @@ final class ClipboardGateTests: XCTestCase {
             now: ClientTimestamp(microseconds: t)
         )
         var sets: [String] = []
-        try settle(session, &client, box, forwarded: &forwarded, t: &t) {
+        try host.settle(&client, t: &t) {
             if case .clipboardSetReceived(let text) = $0 {
                 sets.append(text)
                 leaf.apply(text: text)
@@ -422,7 +278,7 @@ final class ClipboardGateTests: XCTestCase {
         drainLeafChanges(at: t)
         XCTAssertEqual(suppressions, [.loopEcho],
                        "the apply's echo must suppress — the boomerang proof")
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try host.settle(&client, t: &t)
         XCTAssertEqual(client.take(type: CtrlMessageType.clipboardAnnounce),
                        [], "a set must not boomerang as an announce")
         XCTAssertEqual(session.counters.clipboardSetsReceived, 1)
@@ -432,7 +288,7 @@ final class ClipboardGateTests: XCTestCase {
         // A genuine host copy: one byte-exact 0x1B reaches the client.
         leaf.copy("copied on the host")
         drainLeafChanges(at: t)
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try host.settle(&client, t: &t)
         XCTAssertEqual(
             client.take(type: CtrlMessageType.clipboardAnnounce),
             [try ClipboardAnnounce(text: "copied on the host").encode()]
@@ -443,28 +299,30 @@ final class ClipboardGateTests: XCTestCase {
         // Copying the identical text again dedupes — nothing new to say.
         leaf.copy("copied on the host")
         drainLeafChanges(at: t)
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try host.settle(&client, t: &t)
         XCTAssertEqual(client.take(type: CtrlMessageType.clipboardAnnounce), [])
         XCTAssertEqual(suppressions, [.loopEcho, .duplicate])
         XCTAssertEqual(session.counters.clipboardAnnouncesSent, 1)
 
-        print("CL-15 gate (in vivo): 0x1A → apply → echo suppressed "
-            + "(no boomerang); genuine copy → byte-exact 0x1B; dedupe holds")
+        print("""
+            CL-15 gate (in vivo): 0x1A → apply → echo suppressed \
+            (no boomerang); genuine copy → byte-exact 0x1B; dedupe holds
+            """)
     }
 
     // MARK: Leg 4 — the rule-3 gate against the unnegotiated
 
     func testGateUnnegotiatedSetRefusedLoudAndAnnounceStaysSilent() throws {
         // A v1 client: declares, but never key 10.
-        let (session, clientValue, box) = try establish(
+        let (host, clientValue) = try establish(
             clientCapabilities: .wireDefault
         )
         var client = clientValue
-        var forwarded = 0
+        let session = host.session
         var t: UInt64 = 1_000
 
         var agreed: Capabilities?
-        try settle(session, &client, box, forwarded: &forwarded, t: &t) {
+        try host.settle(&client, t: &t) {
             if case .capabilitiesAgreed(let set) = $0 { agreed = set }
         }
         XCTAssertEqual(agreed?.clipboardText, false)
@@ -479,7 +337,7 @@ final class ClipboardGateTests: XCTestCase {
         )
         var sets = 0
         var refusals = 0
-        try settle(session, &client, box, forwarded: &forwarded, t: &t) {
+        try host.settle(&client, t: &t) {
             if case .clipboardSetReceived = $0 { sets += 1 }
             if case .dropped(.clipboardNotNegotiated) = $0 { refusals += 1 }
         }
@@ -495,7 +353,7 @@ final class ClipboardGateTests: XCTestCase {
                 "host secret", now: t * 1_000, hostMicroseconds: t
             ), []
         )
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try host.settle(&client, t: &t)
         XCTAssertEqual(client.take(type: CtrlMessageType.clipboardAnnounce), [])
         XCTAssertEqual(session.counters.clipboardAnnouncesSent, 0)
 
@@ -505,25 +363,27 @@ final class ClipboardGateTests: XCTestCase {
             now: ClientTimestamp(microseconds: t)
         )
         var confused = 0
-        try settle(session, &client, box, forwarded: &forwarded, t: &t) {
+        try host.settle(&client, t: &t) {
             if case .dropped(.unexpectedCtrlType(0x1B)) = $0 { confused += 1 }
         }
         XCTAssertEqual(confused, 1)
 
-        print("CL-15 gate (rule 3): unnegotiated 0x1A refused loud, "
-            + "0x1B never volunteered, role confusion dropped")
+        print("""
+            CL-15 gate (rule 3): unnegotiated 0x1A refused loud, \
+            0x1B never volunteered, role confusion dropped
+            """)
     }
 
     // MARK: Leg 5 — the ceiling is weather, not an error
 
     func testGateOverCeilingHostCopySuppressedNeverSent() throws {
-        let (session, clientValue, box) = try establish(
+        let (host, clientValue) = try establish(
             clientCapabilities: .wireDefault.declaringClipboardText()
         )
         var client = clientValue
-        var forwarded = 0
+        let session = host.session
         var t: UInt64 = 1_000
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try host.settle(&client, t: &t)
         XCTAssertTrue(session.agreedClipboardText)
         _ = client.take(type: CtrlMessageType.capabilityDeclaration)
 
@@ -534,7 +394,7 @@ final class ClipboardGateTests: XCTestCase {
             huge, now: t * 1_000, hostMicroseconds: t
         )
         XCTAssertEqual(events, [.clipboardAnnounceSuppressed(.overBudget)])
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try host.settle(&client, t: &t)
         XCTAssertEqual(client.take(type: CtrlMessageType.clipboardAnnounce), [])
         XCTAssertEqual(session.counters.clipboardAnnouncesSuppressed, 1)
         XCTAssertEqual(session.counters.clipboardAnnouncesSent, 0)
@@ -557,13 +417,15 @@ final class ClipboardGateTests: XCTestCase {
             sent, [.clipboardAnnounceSent(
                 byteCount: ClipboardWire.maxTextByteCount)]
         )
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try host.settle(&client, t: &t)
         XCTAssertEqual(
             client.take(type: CtrlMessageType.clipboardAnnounce),
             [try ClipboardAnnounce(text: atCeiling).encode()]
         )
 
-        print("CL-15 gate (ceiling): one-over suppressed as weather, "
-            + "the exact ceiling flows")
+        print("""
+            CL-15 gate (ceiling): one-over suppressed as weather, \
+            the exact ceiling flows
+            """)
     }
 }

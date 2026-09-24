@@ -156,8 +156,10 @@ final class RateEstimatorGateTests: XCTestCase {
             now: 60 * Self.ms, inRecovery: false
         )
         XCTAssertNil(verdict.newRateBitsPerSecond,
-                     "one clean report must not move the standing rate "
-                     + "already at the ceiling")
+                     """
+                         one clean report must not move the standing rate \
+                         already at the ceiling
+                         """)
         let measured = estimator.deliveryRateBitsPerSecond
         XCTAssertNotNil(measured)
         XCTAssertEqual(Double(measured!), 8e6, accuracy: 0.4e6,
@@ -354,8 +356,10 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(
             Double(estimator.deliveryRateBitsPerSecond ?? 0),
             250e3, accuracy: 30e3,
-            "the four-packet same-frame train stays intact and keeps "
-                + "the existing short-train ×0.5 weighting"
+            """
+                the four-packet same-frame train stays intact and keeps \
+                the existing short-train ×0.5 weighting
+                """
         )
     }
 
@@ -413,8 +417,10 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling)
         XCTAssertEqual(estimator.stats.downshifts, downshiftsBefore)
         XCTAssertGreaterThanOrEqual(estimator.stats.selfReferenceHolds, 1,
-            "persisted delay with backlog and no frame-local witness "
-                + "must hold as self-explaining, not churn")
+            """
+                persisted delay with backlog and no frame-local witness \
+                must hold as self-explaining, not churn
+                """)
     }
 
     /// Q-1, the receipts fix: a receiver radio that drains a queued
@@ -442,14 +448,18 @@ final class RateEstimatorGateTests: XCTestCase {
         let burstMax = estimator.deliveryRateBitsPerSecond
         XCTAssertNotNil(burstMax)
         XCTAssertGreaterThan(burstMax!, 100_000_000,
-                             "the max window keeps the burst sample — "
-                             + "the control law's probe is untouched")
+                             """
+                                 the max window keeps the burst sample — \
+                                 the control law's probe is untouched
+                                 """)
         let reported = estimator.measuredDeliveryRateBitsPerSecond
         XCTAssertNotNil(reported)
         XCTAssertEqual(Double(reported!), 8e6, accuracy: 0.4e6,
-                       "the reported delivery is the full-train median "
-                       + "— a lone clumped burst cannot print as the "
-                       + "session's delivery rate")
+                       """
+                           the reported delivery is the full-train median \
+                           — a lone clumped burst cannot print as the \
+                           session's delivery rate
+                           """)
     }
 
     func testUnmatchedSamplesAreIgnoredNotInvented() {
@@ -479,28 +489,16 @@ final class RateEstimatorGateTests: XCTestCase {
 
     func testLossBurstFallsMultiplicativelyAndReconverges() {
         let estimator = makeEstimator()
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
+        let driver = EstimatorDriver(self, estimator)
         var received: UInt32 = 0
         var missing: UInt32 = 0
-        var seq = 0
 
         func beat(lossPerHundred: UInt32) -> RateEstimatorVerdict {
-            now += 25 * Self.ms
-            clientMicros += 25_000
             received += 100 - lossPerHundred
             missing += lossPerHundred
-            let samples = train(
-                estimator, seqStart: seq, count: 12,
-                sendStartNS: now - Self.ms,
-                bottleneckBitsPerSecond: 18e6
-            )
-            seq += 12
-            return estimator.ingest(
-                report(samples: samples, clientMicros: clientMicros,
-                       channels: lossLedger(received: received, missing: missing)),
-                now: now, inRecovery: false
-            )
+            return driver.beat(
+                bottleneckMbps: 18,
+                channels: lossLedger(received: received, missing: missing))
         }
 
         // Prime: the first ledger report only establishes totals.
@@ -553,8 +551,10 @@ final class RateEstimatorGateTests: XCTestCase {
             if let rate = beat(lossPerHundred: 0).newRateBitsPerSecond {
                 if rate < before {
                     XCTAssertLessThan(i, 40,
-                        "falls after the 1 s loss window drained "
-                        + "would be invented loss")
+                        """
+                            falls after the 1 s loss window drained \
+                            would be invented loss
+                            """)
                 } else {
                     XCTAssertLessThanOrEqual(
                         Double(rate), Double(before) * 1.011,
@@ -570,11 +570,13 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertLessThanOrEqual(lastRate, Self.ceiling)
         XCTAssertGreaterThanOrEqual(estimator.stats.lossDownshifts, 2)
 
-        print("HS-16 gate (loss): 5% HELD at \(Self.ceiling / 1_000) kbps "
-            + "(FEC's band); 20% burst → "
-            + "\(downshiftRates.map { "\($0 / 1_000)" }.joined(separator: " → "))"
-            + " kbps; re-converged to \(lastRate / 1_000) kbps "
-            + "after \(estimator.stats.upshifts) evidence climbs")
+        print("""
+            HS-16 gate (loss): 5% HELD at \(Self.ceiling / 1_000) kbps \
+            (FEC's band); 20% burst → \
+            \(downshiftRates.map { "\($0 / 1_000)" }.joined(separator: " → "))\
+             kbps; re-converged to \(lastRate / 1_000) kbps \
+            after \(estimator.stats.upshifts) evidence climbs
+            """)
     }
 
     /// The floor-deadlock the live gate caught: at 500 kbps the pacer
@@ -618,8 +620,10 @@ final class RateEstimatorGateTests: XCTestCase {
             }
         }
         XCTAssertTrue(sawUpshift,
-            "paced evidence at the floor must still form delivery "
-            + "samples and let the rate climb")
+            """
+                paced evidence at the floor must still form delivery \
+                samples and let the rate climb
+                """)
         XCTAssertGreaterThan(estimator.rateBitsPerSecond, 500_000)
     }
 
@@ -627,9 +631,7 @@ final class RateEstimatorGateTests: XCTestCase {
         let estimator = makeEstimator {
             $0.floorBitsPerSecond = 500_000
         }
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
         var received: UInt32 = 100
         var missing: UInt32 = 0
         // Relentless 50% loss with paced trains — ledger-only loss no
@@ -640,12 +642,8 @@ final class RateEstimatorGateTests: XCTestCase {
         for _ in 0..<400 {
             received += 50
             missing += 50
-            _ = selfRefBeat(
-                &now, &clientMicros, &seq, on: estimator,
-                bottleneckMbps: max(
-                    0.5, Double(estimator.rateBitsPerSecond) / 1e6),
-                extraDelayMicros: 0,
-                backlogBytes: 0,
+            driver.beat(
+                bottleneckMbps: max(0.5, Double(estimator.rateBitsPerSecond) / 1e6),
                 channels: lossLedger(received: received, missing: missing)
             )
         }
@@ -657,24 +655,10 @@ final class RateEstimatorGateTests: XCTestCase {
 
     func testDelayInflationDownshiftsAnchoredToMeasuredDelivery() {
         let estimator = makeEstimator()
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
 
         func beat(extraDelayMicros: UInt64) -> RateEstimatorVerdict {
-            now += 25 * Self.ms
-            clientMicros += 25_000
-            let samples = train(
-                estimator, seqStart: seq, count: 12,
-                sendStartNS: now - Self.ms,
-                bottleneckBitsPerSecond: 10e6,
-                extraDelayMicros: extraDelayMicros
-            )
-            seq += 12
-            return estimator.ingest(
-                report(samples: samples, clientMicros: clientMicros),
-                now: now, inRecovery: false
-            )
+            driver.beat(bottleneckMbps: 10, extraDelayMicros: extraDelayMicros)
         }
 
         // Baseline: clean delay for ten reports.
@@ -707,15 +691,19 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertNotNil(newRate)
         XCTAssertEqual(verdict.change, .overuse)
         XCTAssertEqual(Double(newRate!), 10e6 * 0.85, accuracy: 0.6e6,
-                       "the overuse fall anchors to measured delivery, "
-                       + "not to the configured rate")
+                       """
+                           the overuse fall anchors to measured delivery, \
+                           not to the configured rate
+                           """)
         XCTAssertGreaterThanOrEqual(
             estimator.queuingDelayMicroseconds ?? 0, 20_000
         )
 
-        print("HS-16 gate (overuse): 25 ms inflation over baseline → "
-            + "\(newRate! / 1_000) kbps (0.85 × the 10 Mbps the path "
-            + "measurably delivered)")
+        print("""
+            HS-16 gate (overuse): 25 ms inflation over baseline → \
+            \(newRate! / 1_000) kbps (0.85 × the 10 Mbps the path \
+            measurably delivered)
+            """)
     }
 
     // MARK: The baseline witness rule (v1-final analysis finding 5):
@@ -730,24 +718,10 @@ final class RateEstimatorGateTests: XCTestCase {
     /// witness rule shrugs it off: no overuse, rate never moves.
     func testLoneFastReportDoesNotPoisonTheDelayBaseline() {
         let estimator = makeEstimator()
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
 
         func beat(extraDelayMicros: UInt64) -> RateEstimatorVerdict {
-            now += 25 * Self.ms
-            clientMicros += 25_000
-            let samples = train(
-                estimator, seqStart: seq, count: 12,
-                sendStartNS: now - Self.ms,
-                bottleneckBitsPerSecond: 10e6,
-                extraDelayMicros: extraDelayMicros
-            )
-            seq += 12
-            return estimator.ingest(
-                report(samples: samples, clientMicros: clientMicros),
-                now: now, inRecovery: false
-            )
+            driver.beat(bottleneckMbps: 10, extraDelayMicros: extraDelayMicros)
         }
 
         for _ in 0..<10 {
@@ -770,9 +744,11 @@ final class RateEstimatorGateTests: XCTestCase {
             estimator.queuingDelayMicroseconds ?? 0, 1_000
         )
 
-        print("finding-5 gate (witness): one 25 ms-fast freak report → "
-            + "0 overuse verdicts, rate untouched (the raw-min "
-            + "baseline fell ~20 beats on this shape)")
+        print("""
+            finding-5 gate (witness): one 25 ms-fast freak report → \
+            0 overuse verdicts, rate untouched (the raw-min \
+            baseline fell ~20 beats on this shape)
+            """)
     }
 
     /// The control: TWO fast reports are corroboration — the floor
@@ -781,24 +757,10 @@ final class RateEstimatorGateTests: XCTestCase {
     /// inflated. Improvements still count; only loners don't.
     func testCorroboratedFasterFloorRebaselines() {
         let estimator = makeEstimator()
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
 
         func beat(extraDelayMicros: UInt64) -> RateEstimatorVerdict {
-            now += 25 * Self.ms
-            clientMicros += 25_000
-            let samples = train(
-                estimator, seqStart: seq, count: 12,
-                sendStartNS: now - Self.ms,
-                bottleneckBitsPerSecond: 10e6,
-                extraDelayMicros: extraDelayMicros
-            )
-            seq += 12
-            return estimator.ingest(
-                report(samples: samples, clientMicros: clientMicros),
-                now: now, inRecovery: false
-            )
+            driver.beat(bottleneckMbps: 10, extraDelayMicros: extraDelayMicros)
         }
 
         for _ in 0..<10 {
@@ -813,8 +775,7 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertFalse(beat(extraDelayMicros: 25_000).overuse,
                        "one inflated report must not fire (2 consecutive)")
         XCTAssertTrue(beat(extraDelayMicros: 25_000).overuse,
-                      "the corroborated floor must make real inflation "
-                      + "visible")
+                      "the corroborated floor must make real inflation visible")
     }
 
     // MARK: Leg 3b — HS-21: the overuse anchor is robust to one garbage
@@ -893,16 +854,20 @@ final class RateEstimatorGateTests: XCTestCase {
         let newRate = verdict.newRateBitsPerSecond
         XCTAssertNotNil(newRate)
         XCTAssertGreaterThan(Double(newRate!), 10e6,
-            "one garbage delivery sample must not crater the rate — "
-            + "the anchor is the clean median, not the lone outlier "
-            + "(got \(newRate! / 1_000) kbps)")
+            """
+                one garbage delivery sample must not crater the rate — \
+                the anchor is the clean median, not the lone outlier \
+                (got \(newRate! / 1_000) kbps)
+                """)
         XCTAssertEqual(Double(newRate!), 20e6 * 0.85, accuracy: 1.0e6,
             "the fall anchors to the 20 Mbps the median still measures")
 
-        print("HS-21 gate (garbage anchor): lone 2 Mbps sample at the "
-            + "overuse fire → \(newRate! / 1_000) kbps (median-anchored "
-            + "to 20 Mbps; the one-deep anchor would have cratered to "
-            + "~1,700 kbps)")
+        print("""
+            HS-21 gate (garbage anchor): lone 2 Mbps sample at the \
+            overuse fire → \(newRate! / 1_000) kbps (median-anchored \
+            to 20 Mbps; the one-deep anchor would have cratered to \
+            ~1,700 kbps)
+            """)
     }
 
     /// The regression pin: a GENUINE sustained overuse — delivery truly
@@ -912,23 +877,11 @@ final class RateEstimatorGateTests: XCTestCase {
     /// recent 5 Mbps samples already dominate the 3-median.
     func testGenuineSustainedOveruseStillFallsToMeasuredDelivery() {
         let estimator = makeEstimator()
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
 
         func beat(mbps: Double, inflate: Bool) -> RateEstimatorVerdict {
-            now += 25 * Self.ms; clientMicros += 25_000
-            let samples = train(
-                estimator, seqStart: seq, count: 12,
-                sendStartNS: now - Self.ms,
-                bottleneckBitsPerSecond: mbps * 1e6,
-                extraDelayMicros: inflate ? 40_000 : 0
-            )
-            seq += 12
-            return estimator.ingest(
-                report(samples: samples, clientMicros: clientMicros),
-                now: now, inRecovery: false
-            )
+            driver.beat(
+                bottleneckMbps: mbps, extraDelayMicros: inflate ? 40_000 : 0)
         }
 
         // Baseline clean at the full 20 Mbps.
@@ -952,8 +905,10 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertNotNil(first.newRateBitsPerSecond)
         XCTAssertEqual(Double(first.newRateBitsPerSecond!), 5e6 * 0.85,
             accuracy: 1.0e6,
-            "genuine sustained overuse still anchors to the 5 Mbps the "
-            + "path measurably delivers — the fast fall is intact")
+            """
+                genuine sustained overuse still anchors to the 5 Mbps the \
+                path measurably delivers — the fast fall is intact
+                """)
 
         // Sustained: it keeps falling under continued overuse (the
         // 500 ms limiter bounds cadence), never blunted by the median.
@@ -966,10 +921,12 @@ final class RateEstimatorGateTests: XCTestCase {
             Int(5e6 * 0.85) + 500_000,
             "the rate tracks the measured delivery down under the squeeze")
 
-        print("HS-21 gate (genuine fall): sustained 5 Mbps squeeze → "
-            + "first fall \(first.newRateBitsPerSecond! / 1_000) kbps "
-            + "(0.85 × measured), \(falls) falls total, settled at "
-            + "\(estimator.rateBitsPerSecond / 1_000) kbps")
+        print("""
+            HS-21 gate (genuine fall): sustained 5 Mbps squeeze → \
+            first fall \(first.newRateBitsPerSecond! / 1_000) kbps \
+            (0.85 × measured), \(falls) falls total, settled at \
+            \(estimator.rateBitsPerSecond / 1_000) kbps
+            """)
     }
 
     // MARK: Leg 3c — HS-22: only FULL trains vote on the anchor (the
@@ -1048,14 +1005,18 @@ final class RateEstimatorGateTests: XCTestCase {
         let newRate = verdict.newRateBitsPerSecond
         XCTAssertNotNil(newRate)
         XCTAssertEqual(Double(newRate!), 20e6 * 0.85, accuracy: 1.0e6,
-            "a micro-train MAJORITY must not crater the rate — the "
-            + "anchor votes are full trains only "
-            + "(got \(newRate! / 1_000) kbps)")
+            """
+                a micro-train MAJORITY must not crater the rate — the \
+                anchor votes are full trains only \
+                (got \(newRate! / 1_000) kbps)
+                """)
 
-        print("HS-22 gate (micro-train majority): two 4-packet ~1 Mbps "
-            + "audio-paced samples at the overuse fire → "
-            + "\(newRate! / 1_000) kbps (full-train-anchored to 20 Mbps; "
-            + "the HS-21 median alone would have cratered to ~850 kbps)")
+        print("""
+            HS-22 gate (micro-train majority): two 4-packet ~1 Mbps \
+            audio-paced samples at the overuse fire → \
+            \(newRate! / 1_000) kbps (full-train-anchored to 20 Mbps; \
+            the HS-21 median alone would have cratered to ~850 kbps)
+            """)
     }
 
     // MARK: Leg 3d — HS-22c: the self-reference gate (finding (ii)).
@@ -1070,32 +1031,59 @@ final class RateEstimatorGateTests: XCTestCase {
     // corroborated by something a self-limited pacer cannot produce:
     // loss, post-FEC evidence, or queue growth across the streak.
 
-    /// One beat of the self-reference shape: a full train at
-    /// `bottleneckMbps`, `extraDelayMicros` of standing queue, the
-    /// given backlog, optional loss.
-    private func selfRefBeat(
-        _ now: inout UInt64, _ clientMicros: inout UInt64,
-        _ seq: inout Int, on estimator: RateEstimator,
-        bottleneckMbps: Double, extraDelayMicros: UInt64,
-        backlogBytes: Int,
-        channels: [FeedbackReport.ChannelStats] = [],
-        nacks: [FeedbackReport.NackEntry] = []
-    ) -> RateEstimatorVerdict {
-        now += 25 * Self.ms
-        clientMicros += 25_000
-        let samples = train(
-            estimator, seqStart: seq, count: 12,
-            sendStartNS: now - Self.ms,
-            bottleneckBitsPerSecond: bottleneckMbps * 1e6,
-            extraDelayMicros: extraDelayMicros
-        )
-        seq += 12
-        return estimator.ingest(
-            report(samples: samples, clientMicros: clientMicros,
-                   channels: channels, nacks: nacks),
-            now: now, inRecovery: false,
-            pacerBacklogBytes: backlogBytes
-        )
+    /// One simulated feedback cadence against an estimator: each beat
+    /// advances the host and client clocks 25 ms, sends one 12-shard train
+    /// paced at the bottleneck (plus any standing queue delay), and
+    /// ingests the client's report — optionally with channel ledgers,
+    /// NACKs, and the pacer backlog the host reports alongside.
+    private final class EstimatorDriver {
+        let estimator: RateEstimator
+        private unowned let test: RateEstimatorGateTests
+        var now: UInt64
+        var clientMicros: UInt64
+        var seq: Int
+
+        init(
+            _ test: RateEstimatorGateTests, _ estimator: RateEstimator,
+            now: UInt64 = 0, clientMicros: UInt64 = 0, seq: Int = 0
+        ) {
+            self.test = test
+            self.estimator = estimator
+            self.now = now
+            self.clientMicros = clientMicros
+            self.seq = seq
+        }
+
+        @discardableResult
+        func beat(
+            bottleneckMbps: Double, extraDelayMicros: UInt64 = 0,
+            backlogBytes: Int = 0,
+            channels: [FeedbackReport.ChannelStats] = [],
+            nacks: [FeedbackReport.NackEntry] = []
+        ) -> RateEstimatorVerdict {
+            now += 25 * RateEstimatorGateTests.ms
+            clientMicros += 25_000
+            let samples = test.train(
+                estimator, seqStart: seq, count: 12,
+                sendStartNS: now - RateEstimatorGateTests.ms,
+                bottleneckBitsPerSecond: bottleneckMbps * 1e6,
+                extraDelayMicros: extraDelayMicros
+            )
+            seq += 12
+            return estimator.ingest(
+                test.report(samples: samples, clientMicros: clientMicros,
+                            channels: channels, nacks: nacks),
+                now: now, inRecovery: false,
+                pacerBacklogBytes: backlogBytes
+            )
+        }
+
+        /// A beat whose report never reaches the host: the clocks move,
+        /// nothing is sent or ingested.
+        func loseReport() {
+            now += 25 * RateEstimatorGateTests.ms
+            clientMicros += 25_000
+        }
     }
 
     /// THE HS-22c HEADLINE: standing backlog, full trains measuring
@@ -1106,16 +1094,12 @@ final class RateEstimatorGateTests: XCTestCase {
     /// the old law walked within these same beats) is dead.
     func testSelfReferentialOveruseHoldsInsteadOfSpiraling() {
         let estimator = makeEstimator()
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
 
         // Ten clean 20 Mbps trains: baseline delay, anchor window full
         // of ≈standing-rate samples.
         for _ in 0..<10 {
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0)
+            driver.beat(bottleneckMbps: 20)
         }
         XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling)
 
@@ -1124,9 +1108,9 @@ final class RateEstimatorGateTests: XCTestCase {
         // sits flat at 40 ms (a burst bump, not a building queue).
         var overuseVerdicts = 0
         for _ in 0..<40 {
-            let verdict = selfRefBeat(
-                &now, &clientMicros, &seq, on: estimator,
-                bottleneckMbps: 20, extraDelayMicros: 40_000,
+            let verdict = driver.beat(
+                bottleneckMbps: 20,
+                extraDelayMicros: 40_000,
                 backlogBytes: 40_000
             )
             if verdict.overuse { overuseVerdicts += 1 }
@@ -1134,18 +1118,22 @@ final class RateEstimatorGateTests: XCTestCase {
                 "a self-referential overuse verdict must hold, not fall")
         }
         XCTAssertGreaterThanOrEqual(overuseVerdicts, 30,
-            "the overuse verdicts genuinely fired — the gate held the "
-            + "FALL, not the detector")
+            """
+                the overuse verdicts genuinely fired — the gate held the \
+                FALL, not the detector
+                """)
         XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling,
             "the rate never moved — the 500 kbps spiral is dead")
         XCTAssertEqual(estimator.stats.downshifts, 0)
         XCTAssertGreaterThanOrEqual(estimator.stats.selfReferenceHolds, 1)
 
-        print("HS-22c gate (self-reference): \(overuseVerdicts) overuse "
-            + "verdicts over 1 s at anchor ≈ standing rate with backlog "
-            + "→ 0 falls, \(estimator.stats.selfReferenceHolds) holds, "
-            + "rate pinned at \(estimator.rateBitsPerSecond / 1_000) kbps "
-            + "(the old law reached the floor in these beats)")
+        print("""
+            HS-22c gate (self-reference): \(overuseVerdicts) overuse \
+            verdicts over 1 s at anchor ≈ standing rate with backlog \
+            → 0 falls, \(estimator.stats.selfReferenceHolds) holds, \
+            rate pinned at \(estimator.rateBitsPerSecond / 1_000) kbps \
+            (the old law reached the floor in these beats)
+            """)
     }
 
     /// Real degradation whose capacity sits AT the standing rate: the
@@ -1155,20 +1143,16 @@ final class RateEstimatorGateTests: XCTestCase {
     /// threshold (inside the same 500 ms fall-limiter window).
     func testQueueGrowthCorroboratesARealSqueezeNearTheRate() {
         let estimator = makeEstimator()
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
 
         for _ in 0..<10 {
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0)
+            driver.beat(bottleneckMbps: 20)
         }
 
         // The streak opens at 25 ms of inflation…
-        XCTAssertNil(selfRefBeat(
-            &now, &clientMicros, &seq, on: estimator,
-            bottleneckMbps: 20, extraDelayMicros: 25_000,
+        XCTAssertNil(driver.beat(
+            bottleneckMbps: 20,
+            extraDelayMicros: 25_000,
             backlogBytes: 40_000
         ).newRateBitsPerSecond)
         // …the second report shows the queue BUILT another 20 ms
@@ -1177,18 +1161,18 @@ final class RateEstimatorGateTests: XCTestCase {
         // holds while its budget lasts — and the queue keeps building
         // with NO drain, so the fall lands at 0.85 × the standing rate
         // despite the self-shaped anchor.
-        var verdict = selfRefBeat(
-            &now, &clientMicros, &seq, on: estimator,
-            bottleneckMbps: 20, extraDelayMicros: 45_000,
+        var verdict = driver.beat(
+            bottleneckMbps: 20,
+            extraDelayMicros: 45_000,
             backlogBytes: 40_000
         )
         var extraDelay: UInt64 = 45_000
         var deferredBeats = 0
         while verdict.newRateBitsPerSecond == nil, deferredBeats < 30 {
             extraDelay += 3_000 // keeps growing, stays under the ceiling
-            verdict = selfRefBeat(
-                &now, &clientMicros, &seq, on: estimator,
-                bottleneckMbps: 20, extraDelayMicros: extraDelay,
+            verdict = driver.beat(
+                bottleneckMbps: 20,
+                extraDelayMicros: extraDelay,
                 backlogBytes: 40_000
             )
             deferredBeats += 1
@@ -1207,37 +1191,34 @@ final class RateEstimatorGateTests: XCTestCase {
     /// fall even when the anchor is self-shaped and inflation is flat.
     func testLossCorroboratesDespiteSelfShapedAnchor() {
         let estimator = makeEstimator()
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
         var received: UInt32 = 0
         var missing: UInt32 = 0
 
         for _ in 0..<10 {
             received += 100
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0,
-                            channels: lossLedger(received: received,
-                                                 missing: missing))
+            driver.beat(
+                bottleneckMbps: 20,
+                channels: lossLedger(received: received, missing: missing)
+            )
         }
         XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling)
 
-        // Two inflated reports, constant 40 ms, but the wire now drops
+        // Two inflated reports, constant 40 ms, but the wire driver.now drops
         // 15 datagrams per beat — ~2.7% over the rolling 1 s window at
         // fire time, past the 2% clean bar (FEC's hold band for the
         // LOSS branch, but honest corroboration for the overuse one).
         received += 85; missing += 15
-        XCTAssertNil(selfRefBeat(
-            &now, &clientMicros, &seq, on: estimator,
-            bottleneckMbps: 20, extraDelayMicros: 40_000,
+        XCTAssertNil(driver.beat(
+            bottleneckMbps: 20,
+            extraDelayMicros: 40_000,
             backlogBytes: 40_000,
             channels: lossLedger(received: received, missing: missing)
         ).newRateBitsPerSecond)
         received += 85; missing += 15
-        let verdict = selfRefBeat(
-            &now, &clientMicros, &seq, on: estimator,
-            bottleneckMbps: 20, extraDelayMicros: 40_000,
+        let verdict = driver.beat(
+            bottleneckMbps: 20,
+            extraDelayMicros: 40_000,
             backlogBytes: 40_000,
             channels: lossLedger(received: received, missing: missing)
         )
@@ -1254,34 +1235,30 @@ final class RateEstimatorGateTests: XCTestCase {
     /// blind the estimator to a path that measurably slowed.
     func testGenuineDipWithBacklogStillFallsToMeasuredDelivery() {
         let estimator = makeEstimator()
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
 
         for _ in 0..<10 {
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0)
+            driver.beat(bottleneckMbps: 20)
         }
 
         // The path genuinely drops to 5 Mbps; the pacer (still at 20)
         // holds backlog the whole time. Arm, ride out the dwell
         // deferral's budget (the honesty cost), then fire.
-        XCTAssertNil(selfRefBeat(
-            &now, &clientMicros, &seq, on: estimator,
-            bottleneckMbps: 5, extraDelayMicros: 40_000,
+        XCTAssertNil(driver.beat(
+            bottleneckMbps: 5,
+            extraDelayMicros: 40_000,
             backlogBytes: 40_000
         ).newRateBitsPerSecond)
-        var verdict = selfRefBeat(
-            &now, &clientMicros, &seq, on: estimator,
-            bottleneckMbps: 5, extraDelayMicros: 40_000,
+        var verdict = driver.beat(
+            bottleneckMbps: 5,
+            extraDelayMicros: 40_000,
             backlogBytes: 40_000
         )
         var deferredBeats = 0
         while verdict.newRateBitsPerSecond == nil, deferredBeats < 30 {
-            verdict = selfRefBeat(
-                &now, &clientMicros, &seq, on: estimator,
-                bottleneckMbps: 5, extraDelayMicros: 40_000,
+            verdict = driver.beat(
+                bottleneckMbps: 5,
+                extraDelayMicros: 40_000,
                 backlogBytes: 40_000
             )
             deferredBeats += 1
@@ -1290,14 +1267,18 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertNotNil(verdict.newRateBitsPerSecond)
         XCTAssertEqual(Double(verdict.newRateBitsPerSecond!), 5e6 * 0.85,
             accuracy: 1.0e6,
-            "an honestly low anchor falls to measured delivery — the "
-            + "gate reads the evidence, it does not read the backlog")
+            """
+                an honestly low anchor falls to measured delivery — the \
+                gate reads the evidence, it does not read the backlog
+                """)
         XCTAssertEqual(estimator.stats.selfReferenceHolds, 0)
 
-        print("HS-22c gate (honest dip under backlog): 20 → 5 Mbps path "
-            + "with standing backlog → fall to "
-            + "\(verdict.newRateBitsPerSecond! / 1_000) kbps "
-            + "(0.85 × measured), zero self-reference holds")
+        print("""
+            HS-22c gate (honest dip under backlog): 20 → 5 Mbps path \
+            with standing backlog → fall to \
+            \(verdict.newRateBitsPerSecond! / 1_000) kbps \
+            (0.85 × measured), zero self-reference holds
+            """)
     }
 
     // MARK: Leg 3e — HS-23: the stall gate (the Wi-Fi study's receiver
@@ -1319,49 +1300,46 @@ final class RateEstimatorGateTests: XCTestCase {
     /// 200 Mbps — far above the 20 Mbps pace), then clean beats.
     func testStallCyclesRideThroughWithoutAnchoringDown() {
         let estimator = makeEstimator()
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
 
         for _ in 0..<10 {
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0)
+            driver.beat(bottleneckMbps: 20)
         }
         XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling)
 
         var overuseVerdicts = 0
         for _ in 0..<10 {
             for _ in 0..<2 {
-                let verdict = selfRefBeat(
-                    &now, &clientMicros, &seq, on: estimator,
-                    bottleneckMbps: 200, extraDelayMicros: 80_000,
-                    backlogBytes: 0
+                let verdict = driver.beat(
+                    bottleneckMbps: 200,
+                    extraDelayMicros: 80_000
                 )
                 if verdict.overuse { overuseVerdicts += 1 }
                 XCTAssertNil(verdict.newRateBitsPerSecond,
                     "a closed hole must hold the rate, never anchor a fall")
             }
             for _ in 0..<6 {
-                _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                                bottleneckMbps: 20, extraDelayMicros: 0,
-                                backlogBytes: 0)
+                driver.beat(bottleneckMbps: 20)
             }
         }
         XCTAssertGreaterThanOrEqual(overuseVerdicts, 10,
-            "the overuse verdicts genuinely fired — the gate held the "
-            + "FALL, not the detector")
+            """
+                the overuse verdicts genuinely fired — the gate held the \
+                FALL, not the detector
+                """)
         XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling,
             "the estimator rode through every stall cycle")
         XCTAssertEqual(estimator.stats.downshifts, 0)
         XCTAssertGreaterThanOrEqual(estimator.stats.stallHolds, 10)
 
-        print("HS-23 gate (stall ride-through): 10 gap-burst cycles "
-            + "(80 ms holes, 200 Mbps drains) → \(overuseVerdicts) "
-            + "overuse verdicts, \(estimator.stats.stallHolds) stall "
-            + "holds, 0 falls, rate pinned at "
-            + "\(estimator.rateBitsPerSecond / 1_000) kbps (the old law "
-            + "fell twice a second on this shape, forever)")
+        print("""
+            HS-23 gate (stall ride-through): 10 gap-burst cycles \
+            (80 ms holes, 200 Mbps drains) → \(overuseVerdicts) \
+            overuse verdicts, \(estimator.stats.stallHolds) stall \
+            holds, 0 falls, rate pinned at \
+            \(estimator.rateBitsPerSecond / 1_000) kbps (the old law \
+            fell twice a second on this shape, forever)
+            """)
     }
 
     /// A dwell TRAIN with rising peaks (70 → 90 ms) mimics queue
@@ -1371,32 +1349,25 @@ final class RateEstimatorGateTests: XCTestCase {
     /// the bounded peak are the stronger reading.
     func testRisingDwellTrainHoldsDespiteGrowthSignature() {
         let estimator = makeEstimator()
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
 
         for _ in 0..<10 {
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0)
+            driver.beat(bottleneckMbps: 20)
         }
 
-        XCTAssertNil(selfRefBeat(
-            &now, &clientMicros, &seq, on: estimator,
-            bottleneckMbps: 200, extraDelayMicros: 70_000,
-            backlogBytes: 0
+        XCTAssertNil(driver.beat(
+            bottleneckMbps: 200,
+            extraDelayMicros: 70_000
         ).newRateBitsPerSecond)
         // +20 ms past the streak's opening — queueGrew reads true, and
         // pre-HS-23 this beat fell.
-        let verdict = selfRefBeat(
-            &now, &clientMicros, &seq, on: estimator,
-            bottleneckMbps: 200, extraDelayMicros: 90_000,
-            backlogBytes: 0
-        )
+        let verdict = driver.beat(bottleneckMbps: 200, extraDelayMicros: 90_000)
         XCTAssertTrue(verdict.overuse)
         XCTAssertNil(verdict.newRateBitsPerSecond,
-            "rising dwells are not a building queue — the drain says "
-            + "the hole closed")
+            """
+                rising dwells are not a building queue — the drain says \
+                the hole closed
+                """)
         XCTAssertGreaterThanOrEqual(estimator.stats.stallHolds, 1)
         XCTAssertEqual(estimator.stats.downshifts, 0)
     }
@@ -1417,92 +1388,78 @@ final class RateEstimatorGateTests: XCTestCase {
     /// ≤150 ms later — inside the 500 ms fall limiter's granularity.
     func testFirstDwellFallDeferredUntilTheDrainTestifies() {
         let estimator = makeEstimator()
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
 
         for _ in 0..<10 {
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0)
+            driver.beat(bottleneckMbps: 20)
         }
         XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling)
 
         // Mid-dwell: two inflated reports whose trains still measure
         // our own 20 Mbps pace — the hole has NOT closed, so no
         // super-rate drain exists yet. Pre-deferral, this beat fell.
-        XCTAssertNil(selfRefBeat(
-            &now, &clientMicros, &seq, on: estimator,
-            bottleneckMbps: 20, extraDelayMicros: 80_000,
-            backlogBytes: 0
+        XCTAssertNil(driver.beat(
+            bottleneckMbps: 20,
+            extraDelayMicros: 80_000
         ).newRateBitsPerSecond)
-        let midDwell = selfRefBeat(
-            &now, &clientMicros, &seq, on: estimator,
-            bottleneckMbps: 20, extraDelayMicros: 80_000,
-            backlogBytes: 0
-        )
+        let midDwell = driver.beat(bottleneckMbps: 20, extraDelayMicros: 80_000)
         XCTAssertTrue(midDwell.overuse)
         XCTAssertNil(midDwell.newRateBitsPerSecond,
-            "the verdict fired mid-dwell — the deferral holds the fall "
-            + "so the drain can testify")
+            """
+                the verdict fired mid-dwell — the deferral holds the fall \
+                so the drain can testify
+                """)
         XCTAssertGreaterThanOrEqual(estimator.stats.fallDeferrals, 1)
 
         // The hole closes: the drain arrives compressed at 200 Mbps.
         // The stall gate reads the closed hole and holds as designed.
-        let drained = selfRefBeat(
-            &now, &clientMicros, &seq, on: estimator,
-            bottleneckMbps: 200, extraDelayMicros: 80_000,
-            backlogBytes: 0
-        )
+        let drained = driver.beat(bottleneckMbps: 200, extraDelayMicros: 80_000)
         XCTAssertNil(drained.newRateBitsPerSecond,
             "the drain proves the hole closed — stall hold, no fall")
         XCTAssertGreaterThanOrEqual(estimator.stats.stallHolds, 1)
         XCTAssertEqual(estimator.stats.downshifts, 0)
         XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling,
-            "the dwell cost ZERO rate moves — and therefore zero "
-            + "VBV-forced IDRs")
+            """
+                the dwell cost ZERO rate moves — and therefore zero \
+                VBV-forced IDRs
+                """)
 
-        print("ramp-hunt gate (dwell deferral): mid-dwell verdict "
-            + "deferred, drain testified one report later → "
-            + "\(estimator.stats.fallDeferrals) deferral, "
-            + "\(estimator.stats.stallHolds) stall hold(s), 0 falls, "
-            + "rate pinned at \(estimator.rateBitsPerSecond / 1_000) kbps")
+        print("""
+            ramp-hunt gate (dwell deferral): mid-dwell verdict \
+            deferred, drain testified one report later → \
+            \(estimator.stats.fallDeferrals) deferral, \
+            \(estimator.stats.stallHolds) stall hold(s), 0 falls, \
+            rate pinned at \(estimator.rateBitsPerSecond / 1_000) kbps
+            """)
     }
 
     /// A hole past the 150 ms ceiling is sustained degradation, not a
     /// dwell — the fall proceeds exactly as before the gate existed.
     func testHoleBeyondTheCeilingFallsAsEver() {
         let estimator = makeEstimator()
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
 
         for _ in 0..<10 {
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0)
+            driver.beat(bottleneckMbps: 20)
         }
 
-        XCTAssertNil(selfRefBeat(
-            &now, &clientMicros, &seq, on: estimator,
-            bottleneckMbps: 200, extraDelayMicros: 400_000,
-            backlogBytes: 0
+        XCTAssertNil(driver.beat(
+            bottleneckMbps: 200,
+            extraDelayMicros: 400_000
         ).newRateBitsPerSecond)
         // The pressure never clears (a real outage, not a dwell that
         // drains), so invariant 2's persistence is satisfied within
         // one extra fall-limiter beat and the fall bites.
-        var verdict = selfRefBeat(
-            &now, &clientMicros, &seq, on: estimator,
-            bottleneckMbps: 200, extraDelayMicros: 400_000,
-            backlogBytes: 0
+        var verdict = driver.beat(
+            bottleneckMbps: 200,
+            extraDelayMicros: 400_000
         )
         XCTAssertTrue(verdict.overuse)
         var beats = 0
         while verdict.newRateBitsPerSecond == nil, beats < 30 {
-            verdict = selfRefBeat(
-                &now, &clientMicros, &seq, on: estimator,
-                bottleneckMbps: 200, extraDelayMicros: 400_000,
-                backlogBytes: 0
+            verdict = driver.beat(
+                bottleneckMbps: 200,
+                extraDelayMicros: 400_000
             )
             beats += 1
         }
@@ -1520,36 +1477,23 @@ final class RateEstimatorGateTests: XCTestCase {
     /// measured delivery exactly as HS-21 pinned.
     func testDrainBelowThePaceIsARealSqueezeAndFalls() {
         let estimator = makeEstimator()
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
 
         for _ in 0..<10 {
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0)
+            driver.beat(bottleneckMbps: 20)
         }
 
-        XCTAssertNil(selfRefBeat(
-            &now, &clientMicros, &seq, on: estimator,
-            bottleneckMbps: 8, extraDelayMicros: 40_000,
-            backlogBytes: 0
+        XCTAssertNil(driver.beat(
+            bottleneckMbps: 8,
+            extraDelayMicros: 40_000
         ).newRateBitsPerSecond)
         // The verdict beats are deferred (dwell-shaped); the sub-pace
         // drain never improves, so the budget expires and the fall
         // bites.
-        var verdict = selfRefBeat(
-            &now, &clientMicros, &seq, on: estimator,
-            bottleneckMbps: 8, extraDelayMicros: 40_000,
-            backlogBytes: 0
-        )
+        var verdict = driver.beat(bottleneckMbps: 8, extraDelayMicros: 40_000)
         var deferredBeats = 0
         while verdict.newRateBitsPerSecond == nil, deferredBeats < 30 {
-            verdict = selfRefBeat(
-                &now, &clientMicros, &seq, on: estimator,
-                bottleneckMbps: 8, extraDelayMicros: 40_000,
-                backlogBytes: 0
-            )
+            verdict = driver.beat(bottleneckMbps: 8, extraDelayMicros: 40_000)
             deferredBeats += 1
         }
         XCTAssertNotNil(verdict.newRateBitsPerSecond)
@@ -1563,33 +1507,28 @@ final class RateEstimatorGateTests: XCTestCase {
     /// fall proceeds despite the bounded peak and the super-rate drain.
     func testLossDefeatsTheStallHold() {
         let estimator = makeEstimator()
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
         var received: UInt32 = 0
         var missing: UInt32 = 0
 
         for _ in 0..<10 {
             received += 100
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0,
-                            channels: lossLedger(received: received,
-                                                 missing: missing))
+            driver.beat(
+                bottleneckMbps: 20,
+                channels: lossLedger(received: received, missing: missing)
+            )
         }
 
         received += 85; missing += 15
-        XCTAssertNil(selfRefBeat(
-            &now, &clientMicros, &seq, on: estimator,
-            bottleneckMbps: 200, extraDelayMicros: 80_000,
-            backlogBytes: 0,
+        XCTAssertNil(driver.beat(
+            bottleneckMbps: 200,
+            extraDelayMicros: 80_000,
             channels: lossLedger(received: received, missing: missing)
         ).newRateBitsPerSecond)
         received += 85; missing += 15
-        let verdict = selfRefBeat(
-            &now, &clientMicros, &seq, on: estimator,
-            bottleneckMbps: 200, extraDelayMicros: 80_000,
-            backlogBytes: 0,
+        let verdict = driver.beat(
+            bottleneckMbps: 200,
+            extraDelayMicros: 80_000,
             channels: lossLedger(received: received, missing: missing)
         )
         XCTAssertTrue(verdict.overuse)
@@ -1607,43 +1546,38 @@ final class RateEstimatorGateTests: XCTestCase {
     /// branch.
     func testNackEchoInsideTheHoleStillHolds() throws {
         let estimator = makeEstimator()
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
         var received: UInt32 = 0
 
         for _ in 0..<10 {
             received += 400
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0,
-                            channels: lossLedger(received: received,
-                                                 missing: 0))
+            driver.beat(
+                bottleneckMbps: 20,
+                channels: lossLedger(received: received, missing: 0)
+            )
         }
 
         // The dwell, echoing as one 2-shard NACK: 2 / ~4,800 attempted
         // ≈ 0.04% post-FEC — deep inside the clean column.
         received += 400
-        XCTAssertNil(selfRefBeat(
-            &now, &clientMicros, &seq, on: estimator,
-            bottleneckMbps: 200, extraDelayMicros: 80_000,
-            backlogBytes: 0,
+        XCTAssertNil(driver.beat(
+            bottleneckMbps: 200,
+            extraDelayMicros: 80_000,
             channels: lossLedger(received: received, missing: 0),
-            nacks: [try FeedbackReport.NackEntry(
-                frame: FrameNumber(rawValue: 7), missingShards: [3, 4]
-            )]
+            nacks: [try FeedbackReport.NackEntry( frame: FrameNumber(rawValue: 7), missingShards: [3, 4] )]
         ).newRateBitsPerSecond)
         received += 400
-        let verdict = selfRefBeat(
-            &now, &clientMicros, &seq, on: estimator,
-            bottleneckMbps: 200, extraDelayMicros: 80_000,
-            backlogBytes: 0,
+        let verdict = driver.beat(
+            bottleneckMbps: 200,
+            extraDelayMicros: 80_000,
             channels: lossLedger(received: received, missing: 0)
         )
         XCTAssertTrue(verdict.overuse)
         XCTAssertNil(verdict.newRateBitsPerSecond,
-            "a NACK echo inside the clean column is the hole's shadow, "
-            + "not congestion")
+            """
+                a NACK echo inside the clean column is the hole's shadow, \
+                not congestion
+                """)
         XCTAssertGreaterThanOrEqual(estimator.stats.stallHolds, 1)
 
         // A rung-3-scale storm through the same shape: > 2% post-FEC
@@ -1656,10 +1590,8 @@ final class RateEstimatorGateTests: XCTestCase {
             ))
         }
         received += 400
-        let storm = selfRefBeat(
-            &now, &clientMicros, &seq, on: estimator,
-            bottleneckMbps: 200, extraDelayMicros: 0,
-            backlogBytes: 0,
+        let storm = driver.beat(
+            bottleneckMbps: 200,
             channels: lossLedger(received: received, missing: 0),
             nacks: stormNacks
         )
@@ -1679,61 +1611,49 @@ final class RateEstimatorGateTests: XCTestCase {
         // counters jump across the gaps (the differencing spans them),
         // arrivals show 50 ms seams — no loss is invented, no overuse
         // fires, no hold or fall moves the rate.
-        let clean = makeEstimator()
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let clean = EstimatorDriver(self, makeEstimator())
         var received: UInt32 = 0
         for beat in 0..<20 {
             received += 100
             if beat % 2 == 1 { // the odd reports never arrive
-                now += 25 * Self.ms
-                clientMicros += 25_000
+                clean.loseReport()
                 continue
             }
-            let verdict = selfRefBeat(
-                &now, &clientMicros, &seq, on: clean,
-                bottleneckMbps: 20, extraDelayMicros: 0,
-                backlogBytes: 0,
+            let verdict = clean.beat(
+                bottleneckMbps: 20,
                 channels: lossLedger(received: received, missing: 0)
             )
             XCTAssertFalse(verdict.overuse)
-            XCTAssertEqual(verdict.lossFraction, 0,
-                "a lost REPORT is not lost PACKETS — the cumulative "
-                + "ledgers span the gap")
+            XCTAssertEqual(verdict.lossFraction, 0, """
+                a lost REPORT is not lost PACKETS — the cumulative \
+                ledgers span the gap
+                """)
         }
-        XCTAssertEqual(clean.rateBitsPerSecond, Self.ceiling)
-        XCTAssertEqual(clean.stats.downshifts, 0)
-        XCTAssertEqual(clean.stats.stallHolds, 0)
+        XCTAssertEqual(clean.estimator.rateBitsPerSecond, Self.ceiling)
+        XCTAssertEqual(clean.estimator.stats.downshifts, 0)
+        XCTAssertEqual(clean.estimator.stats.stallHolds, 0)
 
         // Genuine squeeze, same 50% report loss: the ingested inflated
         // reports still make the streak and the fall still bites.
-        let squeezed = makeEstimator()
-        now = 0; clientMicros = 0; seq = 0
-        for _ in 0..<10 {
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: squeezed,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0)
-        }
+        let squeezed = EstimatorDriver(self, makeEstimator())
+        for _ in 0..<10 { squeezed.beat(bottleneckMbps: 20) }
         var fell = false
         // Enough ingested beats to arm, ride out the dwell deferral's
         // ≤150 ms budget across the 50 ms report seams, and bite.
         for beat in 0..<32 {
             if beat % 2 == 1 {
-                now += 25 * Self.ms
-                clientMicros += 25_000
+                squeezed.loseReport()
                 continue
             }
-            let verdict = selfRefBeat(
-                &now, &clientMicros, &seq, on: squeezed,
-                bottleneckMbps: 8, extraDelayMicros: 40_000,
-                backlogBytes: 0
+            let verdict = squeezed.beat(
+                bottleneckMbps: 8,
+                extraDelayMicros: 40_000
             )
             if verdict.newRateBitsPerSecond != nil { fell = true }
         }
         XCTAssertTrue(fell,
             "feedback loss must not launder a genuine squeeze")
-        XCTAssertEqual(squeezed.stats.stallHolds, 0)
+        XCTAssertEqual(squeezed.estimator.stats.stallHolds, 0)
     }
 
     // MARK: Leg 3g — HS-28: the estimator-honesty reformulation. A
@@ -1755,17 +1675,13 @@ final class RateEstimatorGateTests: XCTestCase {
     /// when it exists (demoting the belief to what the path proved).
     func testBeliefRisesOnCensoredDeliveryAndFallsOnlyOnHonestEvidence() {
         let estimator = makeEstimator()
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
 
         // Ten censored beats at the standing 20 Mbps: the belief
         // rises to what delivery proved; nothing reads honest (the
         // trains measure our own pace).
         for _ in 0..<10 {
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0)
+            driver.beat(bottleneckMbps: 20)
         }
         XCTAssertEqual(
             Double(estimator.capacityBeliefBitsPerSecond ?? 0),
@@ -1780,18 +1696,17 @@ final class RateEstimatorGateTests: XCTestCase {
         // with backlog and standing inflation. Invariant 1: after the
         // discontinuity re-anchor, censored samples must not move belief
         // again and no fall may anchor to the trickle.
-        _ = estimator.applyIdrPacing(.halfStaleEstimate, now: now)
+        _ = estimator.applyIdrPacing(.halfStaleEstimate, now: driver.now)
         XCTAssertEqual(Double(estimator.rateBitsPerSecond), 10e6,
                        accuracy: 0.2e6)
         for _ in 0..<40 {
-            let verdict = selfRefBeat(
-                &now, &clientMicros, &seq, on: estimator,
-                bottleneckMbps: 10, extraDelayMicros: 40_000,
+            let verdict = driver.beat(
+                bottleneckMbps: 10,
+                extraDelayMicros: 40_000,
                 backlogBytes: 40_000
             )
             XCTAssertNotEqual(verdict.change, .overuse,
-                "a censored trickle at half the belief must not anchor "
-                + "a fall")
+                "a censored trickle at half the belief must not anchor a fall")
         }
         XCTAssertEqual(Double(estimator.rateBitsPerSecond), 10e6,
                        accuracy: 0.5e6,
@@ -1799,8 +1714,10 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(
             Double(estimator.capacityBeliefBitsPerSecond ?? 0),
             10e6, accuracy: 1e6,
-            "RECOVERY re-anchors belief; censored trickle then leaves "
-                + "that new-path anchor standing"
+            """
+                RECOVERY re-anchors belief; censored trickle then leaves \
+                that new-path anchor standing
+                """
         )
         XCTAssertEqual(estimator.stats.beliefDemotions, 0)
 
@@ -1808,16 +1725,16 @@ final class RateEstimatorGateTests: XCTestCase {
         // trains to 4 Mbps (well under the 10 Mbps pace). The fall
         // executes and lands on measured delivery — and the belief
         // demotes to what the path proved, not a step sooner.
-        var verdict = selfRefBeat(
-            &now, &clientMicros, &seq, on: estimator,
-            bottleneckMbps: 4, extraDelayMicros: 60_000,
+        var verdict = driver.beat(
+            bottleneckMbps: 4,
+            extraDelayMicros: 60_000,
             backlogBytes: 40_000
         )
         var beats = 0
         while verdict.newRateBitsPerSecond == nil, beats < 30 {
-            verdict = selfRefBeat(
-                &now, &clientMicros, &seq, on: estimator,
-                bottleneckMbps: 4, extraDelayMicros: 60_000,
+            verdict = driver.beat(
+                bottleneckMbps: 4,
+                extraDelayMicros: 60_000,
                 backlogBytes: 40_000
             )
             beats += 1
@@ -1833,12 +1750,14 @@ final class RateEstimatorGateTests: XCTestCase {
             "the belief follows the path down on honest evidence"
         )
 
-        print("HS-28 gate (belief): RECOVERY re-anchored at 10 Mbps; "
-            + "1 s of censored trickle left it standing; honest 4 Mbps "
-            + "evidence demoted it to "
-            + "\((estimator.capacityBeliefBitsPerSecond ?? 0) / 1_000) kbps "
-            + "and the fall landed at "
-            + "\(verdict.newRateBitsPerSecond! / 1_000) kbps")
+        print("""
+            HS-28 gate (belief): RECOVERY re-anchored at 10 Mbps; \
+            1 s of censored trickle left it standing; honest 4 Mbps \
+            evidence demoted it to \
+            \((estimator.capacityBeliefBitsPerSecond ?? 0) / 1_000) kbps \
+            and the fall landed at \
+            \(verdict.newRateBitsPerSecond! / 1_000) kbps
+            """)
     }
 
     /// THE LEG-B REPLAY GATE (the truth-probe's shape, virtual time):
@@ -1851,20 +1770,17 @@ final class RateEstimatorGateTests: XCTestCase {
     /// limit cycle against a wire carrying 30 Mbps at 0% loss.
     func testLegBReplayCensoredTrickleRecoversTowardTheBelief() {
         let estimator = makeEstimator()
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
         var received: UInt32 = 0
         var missing: UInt32 = 0
 
         // Phase 1 — clean baseline: belief at the proven 20 Mbps.
         for _ in 0..<10 {
             received += 100
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0,
-                            channels: lossLedger(received: received,
-                                                 missing: missing))
+            driver.beat(
+                bottleneckMbps: 20,
+                channels: lossLedger(received: received, missing: missing)
+            )
         }
         XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling)
 
@@ -1872,16 +1788,17 @@ final class RateEstimatorGateTests: XCTestCase {
         // loss for 1.2 s. The loss branch falls exactly as ever.
         for _ in 0..<48 {
             received += 75; missing += 25
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0,
-                            channels: lossLedger(received: received,
-                                                 missing: missing))
+            driver.beat(
+                bottleneckMbps: 20,
+                channels: lossLedger(received: received, missing: missing)
+            )
         }
         let afterEpisode = estimator.rateBitsPerSecond
         XCTAssertLessThan(afterEpisode, Self.ceiling,
-            "genuine loss still falls — the honesty work must not "
-            + "blunt the loss branch")
+            """
+                genuine loss still falls — the honesty work must not \
+                blunt the loss branch
+                """)
         XCTAssertGreaterThanOrEqual(estimator.stats.lossDownshifts, 2)
 
         // Phase 3 — the limbo that killed the old law: 1.5 s of
@@ -1898,20 +1815,17 @@ final class RateEstimatorGateTests: XCTestCase {
                 // The drain: a compressed super-rate full train, clean
                 // delay (the hole closed — the streak resets, exactly
                 // the cadence the live forensics recorded).
-                verdict = selfRefBeat(
-                    &now, &clientMicros, &seq, on: estimator,
-                    bottleneckMbps: 300, extraDelayMicros: 0,
+                verdict = driver.beat(
+                    bottleneckMbps: 300,
                     backlogBytes: 40_000,
-                    channels: lossLedger(received: received,
-                                         missing: missing)
+                    channels: lossLedger(received: received, missing: missing)
                 )
             } else {
-                verdict = selfRefBeat(
-                    &now, &clientMicros, &seq, on: estimator,
-                    bottleneckMbps: paceMbps, extraDelayMicros: 40_000,
+                verdict = driver.beat(
+                    bottleneckMbps: paceMbps,
+                    extraDelayMicros: 40_000,
                     backlogBytes: 40_000,
-                    channels: lossLedger(received: received,
-                                         missing: missing)
+                    channels: lossLedger(received: received, missing: missing)
                 )
             }
             if let newRate = verdict.newRateBitsPerSecond,
@@ -1919,17 +1833,21 @@ final class RateEstimatorGateTests: XCTestCase {
                 XCTAssertGreaterThanOrEqual(
                     Double(newRate),
                     Double(estimator.rateBitsPerSecond) * 0.84,
-                    "an overuse fall in the limbo may be bounded "
-                    + "multiplicative at worst — never a crater to "
-                    + "0.85 × trickle"
+                    """
+                        an overuse fall in the limbo may be bounded \
+                        multiplicative at worst — never a crater to \
+                        0.85 × trickle
+                        """
                 )
             }
         }
         XCTAssertGreaterThanOrEqual(
             estimator.rateBitsPerSecond,
             Int(Double(afterEpisode) * 0.7),
-            "the limbo must not ratchet the rate toward the floor "
-            + "(the old law lived at 0.1–1.6 Mbps here)"
+            """
+                the limbo must not ratchet the rate toward the floor \
+                (the old law lived at 0.1–1.6 Mbps here)
+                """
         )
         XCTAssertLessThanOrEqual(
             estimator.stats.downshifts - downshiftsBeforeLimbo, 2,
@@ -1947,11 +1865,10 @@ final class RateEstimatorGateTests: XCTestCase {
         for _ in 0..<80 {
             received += 100
             let paceMbps = Double(estimator.rateBitsPerSecond) / 1e6
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: paceMbps, extraDelayMicros: 0,
-                            backlogBytes: 0,
-                            channels: lossLedger(received: received,
-                                                 missing: missing))
+            driver.beat(
+                bottleneckMbps: paceMbps,
+                channels: lossLedger(received: received, missing: missing)
+            )
         }
         XCTAssertGreaterThanOrEqual(
             Double(estimator.rateBitsPerSecond),
@@ -1959,13 +1876,15 @@ final class RateEstimatorGateTests: XCTestCase {
             "clean air climbs toward the belief (10%/s), not a pin"
         )
 
-        print("HS-28 gate (leg-B replay): loss episode "
-            + "\(Self.ceiling / 1_000) → \(afterEpisode / 1_000) kbps; "
-            + "1.5 s censored limbo held "
-            + "\(beforeRecovery / 1_000) kbps (0 crater falls, belief "
-            + "\((estimator.capacityBeliefBitsPerSecond ?? 0) / 1_000) "
-            + "kbps); recovery reached "
-            + "\(estimator.rateBitsPerSecond / 1_000) kbps")
+        print("""
+            HS-28 gate (leg-B replay): loss episode \
+            \(Self.ceiling / 1_000) → \(afterEpisode / 1_000) kbps; \
+            1.5 s censored limbo held \
+            \(beforeRecovery / 1_000) kbps (0 crater falls, belief \
+            \((estimator.capacityBeliefBitsPerSecond ?? 0) / 1_000) \
+            kbps); recovery reached \
+            \(estimator.rateBitsPerSecond / 1_000) kbps
+            """)
     }
 
     /// The persistence twin the brief demands beside the replay: a
@@ -1974,14 +1893,10 @@ final class RateEstimatorGateTests: XCTestCase {
     /// anchored at measured delivery.
     func testGenuineCapacityDropFallsWithinOneSecondOfOnset() {
         let estimator = makeEstimator()
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
 
         for _ in 0..<10 {
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0)
+            driver.beat(bottleneckMbps: 20)
         }
 
         // The squeeze: the path drops to 6 Mbps, the queue builds
@@ -1992,9 +1907,9 @@ final class RateEstimatorGateTests: XCTestCase {
         var beats = 0
         while fell?.newRateBitsPerSecond == nil, beats < 40 {
             extraDelay += 10_000
-            let verdict = selfRefBeat(
-                &now, &clientMicros, &seq, on: estimator,
-                bottleneckMbps: 6, extraDelayMicros: extraDelay,
+            let verdict = driver.beat(
+                bottleneckMbps: 6,
+                extraDelayMicros: extraDelay,
                 backlogBytes: 40_000
             )
             if verdict.newRateBitsPerSecond != nil { fell = verdict }
@@ -2003,16 +1918,19 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertNotNil(fell?.newRateBitsPerSecond,
             "a genuine capacity drop must fall")
         XCTAssertLessThanOrEqual(beats, 40,
-            "within ~1 s of onset (the pillar's fast fall, at most one "
-            + "limiter beat later than the old law)")
+            """
+                within ~1 s of onset (the pillar's fast fall, at most one \
+                limiter beat later than the old law)
+                """)
         XCTAssertEqual(Double(fell!.newRateBitsPerSecond!), 6e6 * 0.85,
                        accuracy: 1.0e6,
-            "anchored at measured delivery — the belief followed the "
-            + "path down")
+            "anchored at measured delivery — the belief followed the path down")
 
-        print("HS-28 gate (persistence twin): 20 → 6 Mbps genuine drop "
-            + "fell in \(beats) beats (\(beats * 25) ms) to "
-            + "\(fell!.newRateBitsPerSecond! / 1_000) kbps")
+        print("""
+            HS-28 gate (persistence twin): 20 → 6 Mbps genuine drop \
+            fell in \(beats) beats (\(beats * 25) ms) to \
+            \(fell!.newRateBitsPerSecond! / 1_000) kbps
+            """)
     }
 
     /// Self-inflicted evidence recuses itself: NACKs against frames
@@ -2022,18 +1940,15 @@ final class RateEstimatorGateTests: XCTestCase {
     /// regime ladder. The same storm unrecused still bites.
     func testRecusedNackShardsAreNotPathEvidence() throws {
         let estimator = makeEstimator()
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
         var received: UInt32 = 0
 
         for _ in 0..<10 {
             received += 400
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0,
-                            channels: lossLedger(received: received,
-                                                 missing: 0))
+            driver.beat(
+                bottleneckMbps: 20,
+                channels: lossLedger(received: received, missing: 0)
+            )
         }
 
         func storm(_ frames: Range<UInt32>) throws
@@ -2050,13 +1965,13 @@ final class RateEstimatorGateTests: XCTestCase {
         // pacer: recused whole. No post-FEC fraction, no rung-3 fall,
         // no regime step — the evidence measured our drain, not the
         // path.
-        now += 25 * Self.ms; clientMicros += 25_000
+        driver.now += 25 * Self.ms; driver.clientMicros += 25_000
         received += 400
         let recused = estimator.ingest(
-            report(samples: [], clientMicros: clientMicros,
+            report(samples: [], clientMicros: driver.clientMicros,
                    channels: lossLedger(received: received, missing: 0),
                    nacks: try storm(100..<106)),
-            now: now, inRecovery: false,
+            now: driver.now, inRecovery: false,
             recusedNackFrames: Set(100..<106)
         )
         XCTAssertEqual(recused.postFecLossFraction, 0)
@@ -2068,22 +1983,26 @@ final class RateEstimatorGateTests: XCTestCase {
 
         // The same storm against frames the pacer has long released:
         // honest path evidence — rung 3 bites and the regime steps.
-        now += 500 * Self.ms; clientMicros += 500_000
+        driver.now += 500 * Self.ms; driver.clientMicros += 500_000
         received += 400
         let honest = estimator.ingest(
-            report(samples: [], clientMicros: clientMicros,
+            report(samples: [], clientMicros: driver.clientMicros,
                    channels: lossLedger(received: received, missing: 0),
                    nacks: try storm(200..<206)),
-            now: now, inRecovery: false
+            now: driver.now, inRecovery: false
         )
         XCTAssertEqual(honest.change, .postFecLoss,
-            "unrecused NACK storms still bite — the recusal is "
-            + "surgical, not a muzzle")
+            """
+                unrecused NACK storms still bite — the recusal is \
+                surgical, not a muzzle
+                """)
         XCTAssertEqual(honest.fecRegime, .lossy)
 
-        print("HS-28 gate (recusal): 186 NACK shards against draining "
-            + "frames → 0 path evidence; the same storm against "
-            + "released frames → rung-3 fall + regime step")
+        print("""
+            HS-28 gate (recusal): 186 NACK shards against draining \
+            frames → 0 path evidence; the same storm against \
+            released frames → rung-3 fall + regime step
+            """)
     }
 
     /// The first live leg-B rerun's confession, pinned: a Wi-Fi hole
@@ -2096,14 +2015,10 @@ final class RateEstimatorGateTests: XCTestCase {
     /// the hole's trickle.
     func testDrainPurgesMidHoleStretchReadings() {
         let estimator = makeEstimator()
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
 
         for _ in 0..<10 {
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0)
+            driver.beat(bottleneckMbps: 20)
         }
         XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling)
 
@@ -2114,29 +2029,31 @@ final class RateEstimatorGateTests: XCTestCase {
         // reached — the purge is the only thing standing between the
         // belief and the 3 Mbps trickle).
         for _ in 0..<30 {
-            now += 25 * Self.ms
-            clientMicros += 25_000
+            driver.now += 25 * Self.ms
+            driver.clientMicros += 25_000
             let stretched = train(
-                estimator, seqStart: seq, count: 12,
-                sendStartNS: now - 20 * Self.ms,
+                estimator, seqStart: driver.seq, count: 12,
+                sendStartNS: driver.now - 20 * Self.ms,
                 bottleneckBitsPerSecond: 3e6, extraDelayMicros: 80_000
             )
-            seq += 12
+            driver.seq += 12
             let drain = train(
-                estimator, seqStart: seq, count: 12,
-                sendStartNS: now - Self.ms,
+                estimator, seqStart: driver.seq, count: 12,
+                sendStartNS: driver.now - Self.ms,
                 bottleneckBitsPerSecond: 200e6, extraDelayMicros: 80_000
             )
-            seq += 12
+            driver.seq += 12
             let verdict = estimator.ingest(
                 report(samples: stretched + drain,
-                       clientMicros: clientMicros),
-                now: now, inRecovery: false,
+                       clientMicros: driver.clientMicros),
+                now: driver.now, inRecovery: false,
                 pacerBacklogBytes: 40_000
             )
             XCTAssertNil(verdict.newRateBitsPerSecond,
-                "a hole whose own drain testifies in the same report "
-                + "must not anchor a fall")
+                """
+                    a hole whose own drain testifies in the same report \
+                    must not anchor a fall
+                    """)
         }
         XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling,
             "the belief never demoted to the mid-hole trickle")
@@ -2152,15 +2069,19 @@ final class RateEstimatorGateTests: XCTestCase {
         )
         XCTAssertLessThanOrEqual(
             estimator.capacityBeliefBitsPerSecond ?? 0, 30_000_000,
-            "the drains raised the belief toward their burst rate again "
-            + "— HS-30's sustainable cap is dead"
+            """
+                the drains raised the belief toward their burst rate again \
+                — HS-30's sustainable cap is dead
+                """
         )
 
-        print("HS-28 gate (drain purge): 30 mid-hole reports (3 Mbps "
-            + "stretch + 200 Mbps drain, held delay) → 0 falls, belief "
-            + "\((estimator.capacityBeliefBitsPerSecond ?? 0) / 1_000) "
-            + "kbps, rate pinned at "
-            + "\(estimator.rateBitsPerSecond / 1_000) kbps")
+        print("""
+            HS-28 gate (drain purge): 30 mid-hole reports (3 Mbps \
+            stretch + 200 Mbps drain, held delay) → 0 falls, belief \
+            \((estimator.capacityBeliefBitsPerSecond ?? 0) / 1_000) \
+            kbps, rate pinned at \
+            \(estimator.rateBitsPerSecond / 1_000) kbps
+            """)
     }
 
     /// The other live confession: a 41 ms streak crashed to the floor
@@ -2171,18 +2092,15 @@ final class RateEstimatorGateTests: XCTestCase {
     /// rung-3 scale is instant (and rung 3's own branch still falls).
     func testPostFecEchoBelowRungThreeNeedsPersistence() throws {
         let estimator = makeEstimator()
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
         var received: UInt32 = 0
 
         for _ in 0..<10 {
             received += 1_200
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0,
-                            channels: lossLedger(received: received,
-                                                 missing: 0))
+            driver.beat(
+                bottleneckMbps: 20,
+                channels: lossLedger(received: received, missing: 0)
+            )
         }
 
         // One NACK-echo burst: 4 frames × 31 shards ≈ 1% of the
@@ -2195,10 +2113,9 @@ final class RateEstimatorGateTests: XCTestCase {
             )
         }
         received += 1_200
-        XCTAssertNil(selfRefBeat(
-            &now, &clientMicros, &seq, on: estimator,
-            bottleneckMbps: 20, extraDelayMicros: 60_000,
-            backlogBytes: 0,
+        XCTAssertNil(driver.beat(
+            bottleneckMbps: 20,
+            extraDelayMicros: 60_000,
             channels: lossLedger(received: received, missing: 0),
             nacks: echo
         ).newRateBitsPerSecond)
@@ -2208,33 +2125,29 @@ final class RateEstimatorGateTests: XCTestCase {
         // fell here on a 41 ms streak).
         for _ in 0..<10 {
             received += 1_200
-            let verdict = selfRefBeat(
-                &now, &clientMicros, &seq, on: estimator,
-                bottleneckMbps: 20, extraDelayMicros: 60_000,
-                backlogBytes: 0,
+            let verdict = driver.beat(
+                bottleneckMbps: 20,
+                extraDelayMicros: 60_000,
                 channels: lossLedger(received: received, missing: 0)
             )
             XCTAssertNil(verdict.newRateBitsPerSecond,
-                "a sub-rung-3 NACK echo is a shadow, not instant "
-                + "corroboration")
+                "a sub-rung-3 NACK echo is a shadow, not instant corroboration")
         }
 
         // Pressure that outlives the persistence still falls — and
         // bounded multiplicative (no honest votes), never anchored
         // to the echo.
-        var verdict = selfRefBeat(
-            &now, &clientMicros, &seq, on: estimator,
-            bottleneckMbps: 20, extraDelayMicros: 60_000,
-            backlogBytes: 0,
+        var verdict = driver.beat(
+            bottleneckMbps: 20,
+            extraDelayMicros: 60_000,
             channels: lossLedger(received: received, missing: 0)
         )
         var beats = 0
         while verdict.newRateBitsPerSecond == nil, beats < 20 {
             received += 1_200
-            verdict = selfRefBeat(
-                &now, &clientMicros, &seq, on: estimator,
-                bottleneckMbps: 20, extraDelayMicros: 60_000,
-                backlogBytes: 0,
+            verdict = driver.beat(
+                bottleneckMbps: 20,
+                extraDelayMicros: 60_000,
                 channels: lossLedger(received: received, missing: 0)
             )
             beats += 1
@@ -2242,13 +2155,17 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertNotNil(verdict.newRateBitsPerSecond)
         XCTAssertGreaterThanOrEqual(verdict.newRateBitsPerSecond!,
                                     16_000_000,
-            "the persisted fall is bounded multiplicative — the echo "
-            + "never became an anchor")
+            """
+                the persisted fall is bounded multiplicative — the echo \
+                never became an anchor
+                """)
 
-        print("HS-28 gate (echo persistence): 0.8% post-FEC echo + "
-            + "young streak → 0 instant falls; persisted pressure "
-            + "fell bounded to "
-            + "\(verdict.newRateBitsPerSecond! / 1_000) kbps")
+        print("""
+            HS-28 gate (echo persistence): 0.8% post-FEC echo + \
+            young streak → 0 instant falls; persisted pressure \
+            fell bounded to \
+            \(verdict.newRateBitsPerSecond! / 1_000) kbps
+            """)
     }
 
     /// Mild residual post-FEC (clean column < x ≤ rung 3) must not pin
@@ -2261,9 +2178,7 @@ final class RateEstimatorGateTests: XCTestCase {
         let estimator = makeEstimator {
             $0.initialRateBitsPerSecond = startRate
         }
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
         var received: UInt32 = 0
         var frame: UInt32 = 100
 
@@ -2272,11 +2187,8 @@ final class RateEstimatorGateTests: XCTestCase {
         // the residual phase must keep climbing from that settle point.
         for _ in 0..<12 {
             received += 1_200
-            _ = selfRefBeat(
-                &now, &clientMicros, &seq, on: estimator,
+            driver.beat(
                 bottleneckMbps: Double(startRate) / 1e6,
-                extraDelayMicros: 0,
-                backlogBytes: 0,
                 channels: lossLedger(received: received, missing: 0)
             )
         }
@@ -2296,11 +2208,8 @@ final class RateEstimatorGateTests: XCTestCase {
             )
             frame &+= 1
             let before = estimator.rateBitsPerSecond
-            let verdict = selfRefBeat(
-                &now, &clientMicros, &seq, on: estimator,
+            let verdict = driver.beat(
                 bottleneckMbps: Double(before) / 1e6,
-                extraDelayMicros: 0,
-                backlogBytes: 0,
                 channels: lossLedger(received: received, missing: 0),
                 nacks: [residual]
             )
@@ -2322,11 +2231,13 @@ final class RateEstimatorGateTests: XCTestCase {
             estimator.stats.postFecDownshifts, 1,
             "residual below rung 3 must not mint rung-3 falls")
 
-        print("mild post-FEC climb: \(settlePoint / 1_000) → "
-            + "\(estimator.rateBitsPerSecond / 1_000) kbps after "
-            + "\(climbs) rises "
-            + "(\(estimator.stats.upshiftsUnderMildPostFec - mildBefore) "
-            + "mild-residual)")
+        print("""
+            mild post-FEC climb: \(settlePoint / 1_000) → \
+            \(estimator.rateBitsPerSecond / 1_000) kbps after \
+            \(climbs) rises \
+            (\(estimator.stats.upshiftsUnderMildPostFec - mildBefore) \
+            mild-residual)
+            """)
     }
 
     /// Rung-3 post-FEC still falls and blocks climbs — the mild-residual
@@ -2335,18 +2246,14 @@ final class RateEstimatorGateTests: XCTestCase {
         let estimator = makeEstimator {
             $0.initialRateBitsPerSecond = 6_000_000
         }
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
         var received: UInt32 = 0
         var frame: UInt32 = 200
 
         for _ in 0..<8 {
             received += 400
-            _ = selfRefBeat(
-                &now, &clientMicros, &seq, on: estimator,
-                bottleneckMbps: 6, extraDelayMicros: 0,
-                backlogBytes: 0,
+            driver.beat(
+                bottleneckMbps: 6,
                 channels: lossLedger(received: received, missing: 0)
             )
         }
@@ -2360,10 +2267,8 @@ final class RateEstimatorGateTests: XCTestCase {
                 missingShards: Array(0..<20)
             )
         }
-        let fall = selfRefBeat(
-            &now, &clientMicros, &seq, on: estimator,
-            bottleneckMbps: 6, extraDelayMicros: 0,
-            backlogBytes: 0,
+        let fall = driver.beat(
+            bottleneckMbps: 6,
             channels: lossLedger(received: received, missing: 0),
             nacks: heavy
         )
@@ -2380,11 +2285,8 @@ final class RateEstimatorGateTests: XCTestCase {
             )
             frame &+= 1
             let before = estimator.rateBitsPerSecond
-            let verdict = selfRefBeat(
-                &now, &clientMicros, &seq, on: estimator,
+            let verdict = driver.beat(
                 bottleneckMbps: Double(max(before, 2_000_000)) / 1e6,
-                extraDelayMicros: 0,
-                backlogBytes: 0,
                 channels: lossLedger(received: received, missing: 0),
                 nacks: [keepHeavy]
             )
@@ -2399,9 +2301,11 @@ final class RateEstimatorGateTests: XCTestCase {
             "sustained rung-3 evidence must not raise the rate")
         XCTAssertEqual(estimator.stats.upshiftsUnderMildPostFec, 0)
 
-        print("rung-3 climb block: fell to "
-            + "\(rateAfterFall / 1_000) kbps; 0 climbs under sustained "
-            + "post-FEC past the downshift bar")
+        print("""
+            rung-3 climb block: fell to \
+            \(rateAfterFall / 1_000) kbps; 0 climbs under sustained \
+            post-FEC past the downshift bar
+            """)
     }
 
     /// Quiet-static / sparse keepalive under impairment must not
@@ -2411,17 +2315,13 @@ final class RateEstimatorGateTests: XCTestCase {
     /// reverse (doctrine: no padding a blank desktop to probe).
     func testSparseKeepaliveLossDoesNotRatchetWithoutDeliveryEvidence() {
         let estimator = makeEstimator()
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
         var received: UInt32 = 0
 
         // One clean full train primes delivery freshness + belief.
         received += 1_200
-        _ = selfRefBeat(
-            &now, &clientMicros, &seq, on: estimator,
-            bottleneckMbps: 20, extraDelayMicros: 0,
-            backlogBytes: 0,
+        driver.beat(
+            bottleneckMbps: 20,
             channels: lossLedger(received: received, missing: 0)
         )
         let primed = estimator.rateBitsPerSecond
@@ -2429,8 +2329,8 @@ final class RateEstimatorGateTests: XCTestCase {
 
         // Age past the climb freshness window with no new trains —
         // the quiet-desktop shape after the opening IDR drains.
-        now += 3_000 * Self.ms
-        clientMicros += 3_000_000
+        driver.now += 3_000 * Self.ms
+        driver.clientMicros += 3_000_000
 
         let holdsBefore = estimator.stats.sparseEvidenceHolds
         var receivedSparse: UInt32 = received
@@ -2445,14 +2345,14 @@ final class RateEstimatorGateTests: XCTestCase {
             let verdict = estimator.ingest(
                 report(
                     samples: [],
-                    clientMicros: clientMicros,
+                    clientMicros: driver.clientMicros,
                     channels: lossLedger(
                         received: receivedSparse, missing: missingSparse)
                 ),
-                now: now, inRecovery: false
+                now: driver.now, inRecovery: false
             )
-            now += 25 * Self.ms
-            clientMicros += 25_000
+            driver.now += 25 * Self.ms
+            driver.clientMicros += 25_000
             XCTAssertNil(verdict.newRateBitsPerSecond,
                 "stale delivery evidence must freeze the standing rate")
         }
@@ -2471,13 +2371,9 @@ final class RateEstimatorGateTests: XCTestCase {
         for _ in 0..<8 {
             receivedSparse += 960
             missingSparse += 240
-            let verdict = selfRefBeat(
-                &now, &clientMicros, &seq, on: estimator,
+            let verdict = driver.beat(
                 bottleneckMbps: Double(beforeMotion) / 1e6,
-                extraDelayMicros: 0,
-                backlogBytes: 0,
-                channels: lossLedger(
-                    received: receivedSparse, missing: missingSparse)
+                channels: lossLedger( received: receivedSparse, missing: missingSparse)
             )
             if verdict.change == .loss { fell = true }
         }
@@ -2485,10 +2381,12 @@ final class RateEstimatorGateTests: XCTestCase {
             "paced multi-packet trains must still admit loss falls")
         XCTAssertLessThan(estimator.rateBitsPerSecond, beforeMotion)
 
-        print("sparse-hold: primed \(primed / 1_000) kbps held across "
-            + "\(estimator.stats.sparseEvidenceHolds - holdsBefore) "
-            + "stale-loss beats; motion reopened falls → "
-            + "\(estimator.rateBitsPerSecond / 1_000) kbps")
+        print("""
+            sparse-hold: primed \(primed / 1_000) kbps held across \
+            \(estimator.stats.sparseEvidenceHolds - holdsBefore) \
+            stale-loss beats; motion reopened falls → \
+            \(estimator.rateBitsPerSecond / 1_000) kbps
+            """)
     }
 
     /// Stale overuse pressure on an empty path (netem delay on
@@ -2496,24 +2394,18 @@ final class RateEstimatorGateTests: XCTestCase {
     /// full-train forensic and no climb path back.
     func testSparseOveruseDoesNotFallWithoutFreshDeliveryEvidence() {
         let estimator = makeEstimator()
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
 
         for _ in 0..<8 {
-            _ = selfRefBeat(
-                &now, &clientMicros, &seq, on: estimator,
-                bottleneckMbps: 20, extraDelayMicros: 0,
-                backlogBytes: 0
-            )
+            driver.beat(bottleneckMbps: 20)
         }
         let primed = estimator.rateBitsPerSecond
 
         // Age the delivery window past freshness, then apply sustained
         // inflation with no new trains and no backlog — the live
         // static overuse shape (`full-train … 25560 ms ago`).
-        now += 3_000 * Self.ms
-        clientMicros += 3_000_000
+        driver.now += 3_000 * Self.ms
+        driver.clientMicros += 3_000_000
         let holdsBefore = estimator.stats.sparseEvidenceHolds
         var overuseBeats = 0
         for _ in 0..<40 {
@@ -2522,21 +2414,21 @@ final class RateEstimatorGateTests: XCTestCase {
             // enough for inflation bookkeeping but never form a
             // delivery train (≥3), so freshness stays stale.
             let samples = train(
-                estimator, seqStart: seq, count: 2,
-                frameNumber: UInt32(seq),
-                sendStartNS: now - Self.ms,
+                estimator, seqStart: driver.seq, count: 2,
+                frameNumber: UInt32(driver.seq),
+                sendStartNS: driver.now - Self.ms,
                 bottleneckBitsPerSecond: 20e6,
                 extraDelayMicros: 40_000
             )
-            seq += 2
+            driver.seq += 2
             let verdict = estimator.ingest(
-                report(samples: samples, clientMicros: clientMicros),
-                now: now, inRecovery: false, pacerBacklogBytes: 0
+                report(samples: samples, clientMicros: driver.clientMicros),
+                now: driver.now, inRecovery: false, pacerBacklogBytes: 0
             )
             if verdict.overuse { overuseBeats += 1 }
             XCTAssertNil(verdict.newRateBitsPerSecond)
-            now += 25 * Self.ms
-            clientMicros += 25_000
+            driver.now += 25 * Self.ms
+            driver.clientMicros += 25_000
         }
         XCTAssertGreaterThan(overuseBeats, 0,
             "overuse must still detect — the gate holds the FALL")
@@ -2545,9 +2437,11 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertGreaterThan(
             estimator.stats.sparseEvidenceHolds, holdsBefore)
 
-        print("sparse overuse hold: \(overuseBeats) verdicts, "
-            + "\(estimator.stats.sparseEvidenceHolds - holdsBefore) "
-            + "sparse holds, rate still \(primed / 1_000) kbps")
+        print("""
+            sparse overuse hold: \(overuseBeats) verdicts, \
+            \(estimator.stats.sparseEvidenceHolds - holdsBefore) \
+            sparse holds, rate still \(primed / 1_000) kbps
+            """)
     }
 
     // MARK: Leg 4 — the machine's numbers
@@ -2643,8 +2537,10 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(
             Double(estimator.capacityBeliefBitsPerSecond ?? 0),
             5e6, accuracy: 0.7e6,
-            "fresh uniformly-stretched evidence demotes the re-anchored "
-                + "belief on the 5 Mbps tether"
+            """
+                fresh uniformly-stretched evidence demotes the re-anchored \
+                belief on the 5 Mbps tether
+                """
         )
         XCTAssertLessThan(estimator.rateBitsPerSecond, 6_000_000)
     }
@@ -2808,9 +2704,11 @@ final class RateEstimatorGateTests: XCTestCase {
         _ = feedback(tMicros: t, newReceived: 100, newMissing: 0)
         XCTAssertEqual(session.lifecycleState, .active)
 
-        print("HS-16 gate (recovery): FROZEN → RECOVERY at "
-            + "\(Self.ceiling / 2_000) kbps (half-stale, on the pacer) → "
-            + "10 lossy windows HELD → 2 clean windows → ACTIVE")
+        print("""
+            HS-16 gate (recovery): FROZEN → RECOVERY at \
+            \(Self.ceiling / 2_000) kbps (half-stale, on the pacer) → \
+            10 lossy windows HELD → 2 clean windows → ACTIVE
+            """)
     }
 
     // MARK: Leg 6 — malformed feedback is counted, never fed
@@ -3034,18 +2932,22 @@ final class RateEstimatorGateTests: XCTestCase {
         deviations.sort()
         let p99 = deviations[Int(Double(deviations.count - 1) * 0.99)]
         XCTAssertLessThanOrEqual(p99, 2 * ms,
-            "audio inter-send p99 deviation \(Double(p99) / 1e6) ms > 2 ms "
-            + "through the rate crash")
+            """
+                audio inter-send p99 deviation \(Double(p99) / 1e6) ms > 2 ms \
+                through the rate crash
+                """)
 
-        print("HS-16 gate (R-G8 + crash) @6 s virtual: rate "
-            + "\(Self.ceiling / 1_000) → \(minRate / 1_000) kbps under the "
-            + "loss burst, back to \(session.pacerRateBitsPerSecond / 1_000) "
-            + "kbps on evidence (\(session.estimatorStats.downshifts) down / "
-            + "\(session.estimatorStats.upshifts) up); "
-            + "\(dataSends.count) audio packets, inter-send deviation "
-            + "p99 \(Double(p99) / 1e6) ms, worst "
-            + "\(Double(deviations.last!) / 1e6) ms; audio max queue delay "
-            + "\(Double(session.pacerTelemetry[.audio].maxQueueDelayNS) / 1e6) ms")
+        print("""
+            HS-16 gate (R-G8 + crash) @6 s virtual: rate \
+            \(Self.ceiling / 1_000) → \(minRate / 1_000) kbps under the \
+            loss burst, back to \(session.pacerRateBitsPerSecond / 1_000) \
+            kbps on evidence (\(session.estimatorStats.downshifts) down / \
+            \(session.estimatorStats.upshifts) up); \
+            \(dataSends.count) audio packets, inter-send deviation \
+            p99 \(Double(p99) / 1e6) ms, worst \
+            \(Double(deviations.last!) / 1e6) ms; audio max queue delay \
+            \(Double(session.pacerTelemetry[.audio].maxQueueDelayNS) / 1e6) ms
+            """)
     }
 
     // MARK: HS-29 — cap-aware probe damping (row ³'s shared cause)
@@ -3061,15 +2963,11 @@ final class RateEstimatorGateTests: XCTestCase {
             $0.ceilingBitsPerSecond = 50_000_000
             $0.initialRateBitsPerSecond = 20_000_000
         }
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
 
         // Establish the belief at ~20 Mbps: censored beats at pace.
         for _ in 0..<10 {
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0)
+            driver.beat(bottleneckMbps: 20)
         }
         let belief = Double(estimator.capacityBeliefBitsPerSecond ?? 0)
         XCTAssertEqual(belief, 20e6, accuracy: 2.5e6)
@@ -3078,9 +2976,7 @@ final class RateEstimatorGateTests: XCTestCase {
         // trains keep measuring ≈20 whatever the pace wants. The climb
         // must park at belief × 1.1, not walk to the 50 Mbps cap.
         for _ in 0..<200 {
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0)
+            driver.beat(bottleneckMbps: 20)
         }
         let parked = Double(estimator.rateBitsPerSecond)
         let ceiling = (estimator.capacityBeliefBitsPerSecond
@@ -3094,10 +2990,12 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(estimator.stats.downshifts, 0,
             "damping must come from the probe ceiling, not from falls")
 
-        print("HS-29 gate (damping): belief "
-            + "\(Int(belief) / 1_000) kbps, 50 Mbps cap — climb parked at "
-            + "\(Int(parked) / 1_000) kbps "
-            + "(\(estimator.stats.upshiftsDamped) damped rises, 0 falls)")
+        print("""
+            HS-29 gate (damping): belief \
+            \(Int(belief) / 1_000) kbps, 50 Mbps cap — climb parked at \
+            \(Int(parked) / 1_000) kbps \
+            (\(estimator.stats.upshiftsDamped) damped rises, 0 falls)
+            """)
     }
 
     /// THE OSSIFICATION GUARD: the belief must still grow when the air
@@ -3111,13 +3009,9 @@ final class RateEstimatorGateTests: XCTestCase {
             $0.ceilingBitsPerSecond = 50_000_000
             $0.initialRateBitsPerSecond = 20_000_000
         }
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
         for _ in 0..<10 {
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0)
+            driver.beat(bottleneckMbps: 20)
         }
 
         // The air steps to 45: from here every train drains at the
@@ -3126,23 +3020,25 @@ final class RateEstimatorGateTests: XCTestCase {
         var beats = 0
         while estimator.rateBitsPerSecond < 40_000_000, beats < 480 {
             let paceMbps = Double(estimator.rateBitsPerSecond) / 1e6
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: min(paceMbps, 45),
-                            extraDelayMicros: 0, backlogBytes: 0)
+            driver.beat(bottleneckMbps: min(paceMbps, 45))
             beats += 1
         }
         XCTAssertGreaterThanOrEqual(estimator.rateBitsPerSecond, 40_000_000,
-            "the belief ossified: 12 virtual seconds of improved air "
-            + "never walked the rate up — headroom probing is dead")
+            """
+                the belief ossified: 12 virtual seconds of improved air \
+                never walked the rate up — headroom probing is dead
+                """)
         XCTAssertLessThanOrEqual(beats, 480)
         XCTAssertGreaterThanOrEqual(
             estimator.capacityBeliefBitsPerSecond ?? 0, 36_000_000,
             "the belief did not follow the walk up")
 
-        print("HS-29 gate (capacity step): 20 → 45 Mbps air — rate "
-            + "reached \(estimator.rateBitsPerSecond / 1_000) kbps in "
-            + "\(beats) beats (\(Double(beats) * 0.025) s), belief "
-            + "\((estimator.capacityBeliefBitsPerSecond ?? 0) / 1_000) kbps")
+        print("""
+            HS-29 gate (capacity step): 20 → 45 Mbps air — rate \
+            reached \(estimator.rateBitsPerSecond / 1_000) kbps in \
+            \(beats) beats (\(Double(beats) * 0.025) s), belief \
+            \((estimator.capacityBeliefBitsPerSecond ?? 0) / 1_000) kbps
+            """)
     }
 
     // MARK: HS-30 — burst-vs-sustainable belief + probe cadence
@@ -3156,30 +3052,28 @@ final class RateEstimatorGateTests: XCTestCase {
             $0.ceilingBitsPerSecond = 50_000_000
             $0.initialRateBitsPerSecond = 20_000_000
         }
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
         for _ in 0..<10 {
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0)
+            driver.beat(bottleneckMbps: 20)
         }
         let before = estimator.capacityBeliefBitsPerSecond ?? 0
         // A hole closes: one compressed drain at 300 Mbps (≫ pace ×
         // stallBurstRateFactor). The belief may rise to ≈pace, never
         // to the drain's instantaneous rate.
-        _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                        bottleneckMbps: 300, extraDelayMicros: 0,
-                        backlogBytes: 0)
+        driver.beat(bottleneckMbps: 300)
         let after = estimator.capacityBeliefBitsPerSecond ?? 0
         XCTAssertLessThanOrEqual(after, Int(25e6),
-            "a 300 Mbps drain burst set the belief to \(after) — burst "
-            + "pollution is back")
+            """
+                a 300 Mbps drain burst set the belief to \(after) — burst \
+                pollution is back
+                """)
         XCTAssertGreaterThanOrEqual(after, before,
             "the drain may never LOWER the belief")
 
-        print("HS-30 gate (drain cap): belief \(before / 1_000) → "
-            + "\(after / 1_000) kbps through a 300 Mbps drain burst")
+        print("""
+            HS-30 gate (drain cap): belief \(before / 1_000) → \
+            \(after / 1_000) kbps through a 300 Mbps drain burst
+            """)
     }
 
     /// A fall inside the belief's headroom band arms the probe
@@ -3192,23 +3086,20 @@ final class RateEstimatorGateTests: XCTestCase {
             $0.initialRateBitsPerSecond = 20_000_000
             $0.probeCadenceNS = 5_000_000_000
         }
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
         for _ in 0..<10 {
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0)
+            driver.beat(bottleneckMbps: 20)
         }
         // Probe into the wall: honest stretched trains + growing queue
         // until the fall executes (invariant-2 persistence).
         var fell = false
         var delay: UInt64 = 30_000
         for _ in 0..<60 where !fell {
-            let verdict = selfRefBeat(&now, &clientMicros, &seq,
-                                      on: estimator, bottleneckMbps: 15,
-                                      extraDelayMicros: delay,
-                                      backlogBytes: 60_000)
+            let verdict = driver.beat(
+                bottleneckMbps: 15,
+                extraDelayMicros: delay,
+                backlogBytes: 60_000
+            )
             delay += 8_000
             fell = verdict.change == .overuse
         }
@@ -3218,9 +3109,7 @@ final class RateEstimatorGateTests: XCTestCase {
         // Clean beats follow: the climb recovers but must PARK below
         // the band floor while the cadence holds.
         for _ in 0..<80 {
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0)
+            driver.beat(bottleneckMbps: 20)
         }
         XCTAssertLessThanOrEqual(
             Double(estimator.rateBitsPerSecond), bandFloor + 0.1e6,
@@ -3229,18 +3118,18 @@ final class RateEstimatorGateTests: XCTestCase {
         // The cadence expires (5 s): the next probe fires and the rate
         // re-enters the band.
         for _ in 0..<130 {
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0)
+            driver.beat(bottleneckMbps: 20)
         }
         XCTAssertGreaterThan(
             Double(estimator.rateBitsPerSecond), bandFloor,
             "the probe never fired after the cadence expired")
 
-        print("HS-30 gate (cadence): fall at the wall parked the climb "
-            + "below \(Int(bandFloor) / 1_000) kbps for the cadence "
-            + "(\(estimator.stats.upshiftsCadenceHeld) held rises), "
-            + "then re-probed to \(estimator.rateBitsPerSecond / 1_000) kbps")
+        print("""
+            HS-30 gate (cadence): fall at the wall parked the climb \
+            below \(Int(bandFloor) / 1_000) kbps for the cadence \
+            (\(estimator.stats.upshiftsCadenceHeld) held rises), \
+            then re-probed to \(estimator.rateBitsPerSecond / 1_000) kbps
+            """)
     }
 
     func testRecoveryClearsFailedProbeBandFromTheOldPath() {
@@ -3249,29 +3138,23 @@ final class RateEstimatorGateTests: XCTestCase {
             $0.initialRateBitsPerSecond = 20_000_000
             $0.probeCadenceNS = 10_000_000_000
         }
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
 
         // Establish the 20 Mbps belief, then drive into its headroom
         // band and make that probe fail so the old path owns a live
         // cadence hold and finite band floor.
         for _ in 0..<12 {
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0)
+            driver.beat(bottleneckMbps: 20)
         }
         for _ in 0..<80 {
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0)
+            driver.beat(bottleneckMbps: 20)
         }
         var delay: UInt64 = 20_000
         var fell = false
         for _ in 0..<40 where !fell {
-            let verdict = selfRefBeat(
-                &now, &clientMicros, &seq, on: estimator,
-                bottleneckMbps: 12, extraDelayMicros: delay,
+            let verdict = driver.beat(
+                bottleneckMbps: 12,
+                extraDelayMicros: delay,
                 backlogBytes: 60_000
             )
             delay += 8_000
@@ -3279,16 +3162,14 @@ final class RateEstimatorGateTests: XCTestCase {
         }
         XCTAssertTrue(fell)
 
-        _ = estimator.applyIdrPacing(.halfStaleEstimate, now: now)
+        _ = estimator.applyIdrPacing(.halfStaleEstimate, now: driver.now)
         let heldBefore = estimator.stats.upshiftsCadenceHeld
         let rateBefore = estimator.rateBitsPerSecond
         // Fresh new-path evidence may climb immediately once the normal
         // one-second queue-drain hold passes; the old failed-probe band
         // must not impose the remaining ten-second cadence.
         for _ in 0..<60 {
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 30, extraDelayMicros: 0,
-                            backlogBytes: 0)
+            driver.beat(bottleneckMbps: 30)
         }
         XCTAssertGreaterThan(estimator.rateBitsPerSecond, rateBefore)
         XCTAssertEqual(estimator.stats.upshiftsCadenceHeld, heldBefore,
@@ -3303,18 +3184,12 @@ final class RateEstimatorGateTests: XCTestCase {
             $0.initialRateBitsPerSecond = 20_000_000
             $0.probeHeadroomFactor = 1.5
         }
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
+        let driver = EstimatorDriver(self, estimator)
         for _ in 0..<10 {
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0)
+            driver.beat(bottleneckMbps: 20)
         }
         for _ in 0..<400 {
-            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
-                            bottleneckMbps: 20, extraDelayMicros: 0,
-                            backlogBytes: 0)
+            driver.beat(bottleneckMbps: 20)
         }
         let belief = Double(estimator.capacityBeliefBitsPerSecond ?? 0)
         let parked = Double(estimator.rateBitsPerSecond)
@@ -3322,9 +3197,11 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(parked, belief * 1.3,
             "factor 1.5 should park the climb well past the 1.1 default")
 
-        print("HS-29 gate (knob): factor 1.5 parked the climb at "
-            + "\(Int(parked) / 1_000) kbps over a "
-            + "\(Int(belief) / 1_000) kbps belief")
+        print("""
+            HS-29 gate (knob): factor 1.5 parked the climb at \
+            \(Int(parked) / 1_000) kbps over a \
+            \(Int(belief) / 1_000) kbps belief
+            """)
     }
 }
 

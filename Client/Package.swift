@@ -27,7 +27,13 @@ let package = Package(
     targets: [
         // Pure client-role policy: injected time, value-state decisions,
         // and no platform frameworks or IO.
-        .target(name: "LyteClientCore"),
+        .target(
+            name: "LyteClientCore",
+            dependencies: [
+                .product(name: "LyteCore", package: "Common"),
+                .product(name: "LyteWire", package: "Wire"),
+            ]
+        ),
         // IO-free initiator/session orchestration over LyteWire. Platform
         // shells inject clocks and execute the returned decisions.
         .target(
@@ -42,6 +48,7 @@ let package = Package(
         .target(
             name: "LyteTransport",
             dependencies: [
+                "LyteClientCore",
                 "LyteClientSession",
                 .product(name: "COpus", package: "Common"),
                 .product(name: "LyteCore", package: "Common"),
@@ -67,8 +74,10 @@ let package = Package(
             name: "LyteClientTestKit",
             dependencies: [
                 "LyteTransport",
+                .product(name: "LyteCore", package: "Common"),
                 .product(name: "LyteTestKit", package: "Common"),
                 .product(name: "LyteWire", package: "Wire"),
+                .product(name: "LyteWireTestKit", package: "Wire"),
             ]
         ),
         .executableTarget(
@@ -80,6 +89,8 @@ let package = Package(
             dependencies: [
                 "LyteUI",
                 "LyteHelperProtocol",
+                "LyteClientCore",
+                "LyteClientSession",
                 "LyteTransport",
                 "LyteCorpus",
                 .product(name: "LyteCore", package: "Common"),
@@ -92,30 +103,37 @@ let package = Package(
             name: "Lyte",
             dependencies: [
                 "LyteClientCore", "LyteUI", "LyteHelperProtocol",
-                "LyteTransport",
-                // The env-gated diagnostic benchmark's quality scorer
-                // (VideoQualityReadback) — an explicit, honest dependency;
-                // the streaming stack itself carries no corpus code.
+                "LyteClientSession", "LyteTransport",
+                // The env-gated diagnostic benchmark's quality scorer and
+                // synthetic motion reference — an explicit dependency; the
+                // streaming stack itself carries no corpus code.
                 "LyteCorpus",
                 .product(name: "LyteCore", package: "Common"),
                 .product(name: "LyteIO", package: "Common"),
                 .product(name: "LyteWire", package: "Wire"),
             ]
         ),
-        // CL-18: the control strip's ergonomics policy (StripRevealPolicy,
-        // StripPreferences) lives in LyteUI so the feel is virtual-time
-        // testable without the app shell.
+        // The app's policies and lifecycle under injected services, plus
+        // LyteUI's control-strip ergonomics in virtual time.
         .testTarget(
-            name: "LyteUITests",
-            dependencies: ["LyteUI"]
+            name: "LyteAppTests",
+            dependencies: [
+                "LyteUI", "Lyte", "LyteClientCore", "LyteTransport",
+                .product(name: "LyteWire", package: "Wire"),
+            ]
         ),
         .testTarget(
-            name: "LyteHelperSecurityTests",
-            dependencies: ["LyteHelperSecurity"]
+            name: "LyteHelperTests",
+            dependencies: ["LyteHelperSecurity", "lyte-helperd"]
         ),
         .testTarget(
             name: "LyteClientCoreTests",
-            dependencies: ["LyteClientCore"]
+            dependencies: [
+                "LyteClientCore",
+                .product(name: "LyteTestKit", package: "Common"),
+                .product(name: "LyteWire", package: "Wire"),
+                .product(name: "LyteWireTestKit", package: "Wire"),
+            ]
         ),
         .testTarget(
             name: "LyteClientSessionTests",
@@ -124,12 +142,25 @@ let package = Package(
                 .product(name: "LyteWire", package: "Wire"),
             ]
         ),
+        // The corpus harness, quality scorer and synthetic motion
+        // reference — the slow diagnostic legs, apart from the transport's.
+        .testTarget(
+            name: "LyteCorpusTests",
+            dependencies: [
+                "LyteCorpus",
+                "LyteTransport",
+                "LyteClientTestKit",
+                .product(name: "LyteCore", package: "Common"),
+                .product(name: "LyteWire", package: "Wire"),
+            ],
+            exclude: ["Fixtures"]
+        ),
         .testTarget(
             name: "LyteTransportTests",
             dependencies: [
                 "LyteClientCore",
+                "LyteClientSession",
                 "LyteTransport",
-                "LyteCorpus",
                 "LyteClientTestKit",
                 // CL-11: the Opus leaf round-trip generates real packets
                 // with libopus' encoder (test-only; production encodes
@@ -138,8 +169,7 @@ let package = Package(
                 .product(name: "LyteCore", package: "Common"),
                 .product(name: "LyteWire", package: "Wire"),
                 .product(name: "LyteWireTestKit", package: "Wire"),
-            ],
-            exclude: ["Fixtures"]
+            ]
         ),
     ]
 )

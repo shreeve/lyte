@@ -1,13 +1,13 @@
+import LyteClientCore
 import LyteTransport
 import ServiceManagement
 import SwiftUI
 
-/// The agent (A0): Lyte's quiet menu-bar presence — the same binary wearing
-/// its always-on face. Fronts the client role today: new connections.
-/// The Host toggle is visible but disabled until the Lyte host lands.
+/// Lyte's quiet menu-bar presence — the same binary wearing its always-on
+/// face: stream status, the helper's approval nudge, new connections.
 struct AgentMenu: View {
     @Environment(\.openWindow) private var openWindow
-    @Bindable private var agent = AgentState.shared
+    private var agent = AgentState.shared
 
     var body: some View {
         Text(agent.statusLine)
@@ -20,19 +20,13 @@ struct AgentMenu: View {
 
         Divider()
 
-        Toggle("Be a Host", isOn: $agent.hostEnabled)
-            .disabled(!agent.hostAvailable)
-            .help("Stream this Mac to other Lyte clients — arrives with the Lyte host")
-
-        Divider()
-
         Button("Quit Lyte") { NSApplication.shared.terminate(nil) }
             .keyboardShortcut("q")
     }
 }
 
-/// Role state, shared across scenes. Born in A0 so the host role has a home
-/// to land in: the H-ladder flips `hostAvailable`, H6 wires the toggle.
+/// Process-wide stream state, shared across scenes: the stream count that
+/// brackets the AWDL helper's hold, and the radio watchdog.
 @MainActor
 @Observable
 final class AgentState {
@@ -41,19 +35,13 @@ final class AgentState {
     /// Streams currently running across all connection windows.
     private(set) var activeStreams = 0
 
-    /// Reserved for the Lyte host role; stays false until the host ships.
-    var hostAvailable: Bool { false }
-    var hostEnabled = false
-
     /// A user-facing nudge when the privileged helper needs its one-time
     /// System Settings approval (nil once enabled). Shown by the agent
     /// menu; set on the first stream of a run.
     private(set) var helperHint: String?
-    /// The watchdog's alarm: streams are active but awdl0 is UP and two
-    /// re-engage attempts didn't cure it — the radio hold is NOT
-    /// working. Drives the overlay's caps-alarm token. The debounce
-    /// itself is RadioHoldPolicy (LyteTransport), pinned in
-    /// RadioHoldPolicyTests; this is its rendered face.
+    /// Streams are active but awdl0 is UP and two re-engage attempts
+    /// didn't cure it. Drives the overlay's caps-alarm token; the
+    /// debounce is RadioHoldPolicy.
     private(set) var radioAlarm = false
     private var radioWatchdog: Task<Void, Never>?
     private var radioPolicy = RadioHoldPolicy()
@@ -65,10 +53,8 @@ final class AgentState {
     func streamBegan() {
         activeStreams += 1
         // The AWDL hold rides the stream lifecycle: engage on the first
-        // stream, release on the last (HelperClient/lyte-helperd — the
-        // radio's channel-scan stalls are the choppiness signature:
-        // 100–220 ms delay bursts, zero loss. Both ends existed since
-        // M6; THIS call is what makes them meet).
+        // stream, release on the last (the radio's channel scans cause
+        // 100–220 ms delay bursts with zero loss).
         if activeStreams == 1 {
             helperHint = HelperClient.shared.streamBegan(
                 registration: helperRegistration)
@@ -87,13 +73,10 @@ final class AgentState {
         }
     }
 
-    /// The hold's watchdog: every 5 s while streaming, ask the INTERFACE
-    /// (the one witness that cannot lie — the XPC call is void-returning,
-    /// so a daemon that failed to spawn or died mid-stream produces no
-    /// error, only an awdl0 that never went down). Loose → re-engage
-    /// through the full client path (a dead connection re-spawns the
-    /// daemon via launchd); still loose after two more checks → raise
-    /// the overlay alarm instead of pretending.
+    /// The hold's watchdog: every 5 s while streaming, ask the interface
+    /// (the void-returning XPC call cannot report a dead daemon). Loose →
+    /// re-engage through the full client path (launchd respawns the
+    /// daemon); still loose after two more checks → raise the alarm.
     private func startRadioWatchdog() {
         radioWatchdog?.cancel()
         radioPolicy.reset()
@@ -105,9 +88,8 @@ final class AgentState {
                 let action = self.radioPolicy.check(
                     radioUp: HelperClient.awdlIsUp())
                 if action == .reengage {
-                    // First loose sighting: re-engage. A crashed daemon's
-                    // connection already invalidated (engaged=false), so
-                    // this mints a fresh connection and launchd respawns.
+                    // First loose sighting: re-engage, minting a fresh
+                    // connection if the old one invalidated.
                     NSLog("lyte helper: awdl0 UP while streaming — re-engaging")
                     if !HelperClient.shared.engaged {
                         self.helperHint = HelperClient.shared.streamBegan(

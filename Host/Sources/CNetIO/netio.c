@@ -9,8 +9,11 @@
 #include <linux/net_tstamp.h>
 #include <linux/sockios.h>
 #include <netinet/in.h>
+#include <poll.h>
+#include <sys/eventfd.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <time.h>
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -169,6 +172,29 @@ int lyte_netio_enable_tx_timestamps(lyte_netio *n, char *err, size_t errlen)
     return 0;
 }
 
+int lyte_netio_errno_class(int err)
+{
+    switch (err) {
+    case EAGAIN:
+#if EWOULDBLOCK != EAGAIN
+    case EWOULDBLOCK:
+#endif
+        return 0;
+    case ENOBUFS:
+        return LYTE_NETIO_NO_BUFFER;
+    case ECONNREFUSED:
+        return LYTE_NETIO_PEER_GONE;
+    case EHOSTUNREACH:
+    case EHOSTDOWN:
+    case ENETUNREACH:
+    case ENETDOWN:
+    case EPERM:
+        return LYTE_NETIO_TRANSIENT;
+    default:
+        return -1;
+    }
+}
+
 int lyte_netio_send_batch(lyte_netio *n, const lyte_netio_pkt *pkts, int count,
                           uint32_t *first_pkt_id, char *err, size_t errlen)
 {
@@ -206,14 +232,10 @@ int lyte_netio_send_batch(lyte_netio *n, const lyte_netio_pkt *pkts, int count,
 
     int sent = sendmmsg(n->fd, msgs, (unsigned int)count, 0);
     if (sent < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK)
-            return 0;
-        if (errno == ENOBUFS)
-            return LYTE_NETIO_NO_BUFFER;
-        if (errno == ECONNREFUSED)
-            return LYTE_NETIO_PEER_GONE;
-        sys_err(err, errlen, "sendmmsg failed");
-        return -1;
+        int class = lyte_netio_errno_class(errno);
+        if (class == -1 || class == LYTE_NETIO_TRANSIENT)
+            sys_err(err, errlen, "sendmmsg failed");
+        return class;
     }
     if (first_pkt_id)
         *first_pkt_id = n->sent_since_arm;
@@ -256,12 +278,10 @@ int lyte_netio_send_to(lyte_netio *n, const lyte_netio_pkt *pkt,
 
     ssize_t sent = sendmsg(n->fd, &msg, 0);
     if (sent < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK)
-            return 0;
-        if (errno == ECONNREFUSED)
-            return LYTE_NETIO_PEER_GONE;
-        sys_err(err, errlen, "sendmsg(to) failed");
-        return -1;
+        int class = lyte_netio_errno_class(errno);
+        if (class == -1 || class == LYTE_NETIO_TRANSIENT)
+            sys_err(err, errlen, "sendmsg(to) failed");
+        return class;
     }
     /* The kernel's OPT_ID counter ticks for this send too — keep the
        local mirror aligned so batch pkt_ids stay matchable. */
@@ -301,12 +321,13 @@ int lyte_netio_recv_batch(lyte_netio *n, lyte_netio_slot *slots, int count,
 
     int got = recvmmsg(n->fd, msgs, (unsigned int)count, 0, NULL);
     if (got < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK)
-            return 0;
-        if (errno == ECONNREFUSED)
-            return LYTE_NETIO_PEER_GONE;
-        sys_err(err, errlen, "recvmmsg failed");
-        return -1;
+        int class = lyte_netio_errno_class(errno);
+        /* ENOBUFS has no receive meaning; keep it fatal-and-loud. */
+        if (class == LYTE_NETIO_NO_BUFFER)
+            class = -1;
+        if (class == -1 || class == LYTE_NETIO_TRANSIENT)
+            sys_err(err, errlen, "recvmmsg failed");
+        return class;
     }
 
     for (int i = 0; i < got; i++) {
@@ -374,6 +395,59 @@ int lyte_netio_poll_txstamps(lyte_netio *n, lyte_netio_txstamp *out, int max,
     return drained;
 }
 
+int lyte_netio_fd(const lyte_netio *n)
+{
+    return n->fd;
+}
+
+int lyte_netio_wake_new(void)
+{
+    return eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+}
+
+void lyte_netio_wake_signal(int wake_fd)
+{
+    uint64_t one = 1;
+    /* A full counter (never in practice) still leaves the fd readable. */
+    ssize_t ignored = write(wake_fd, &one, sizeof(one));
+    (void)ignored;
+}
+
+void lyte_netio_wake_drain(int wake_fd)
+{
+    uint64_t count;
+    ssize_t ignored = read(wake_fd, &count, sizeof(count));
+    (void)ignored;
+}
+
+int lyte_netio_wait(const int *fds, const short *events, short *revents,
+                    int count, int64_t timeout_ns)
+{
+    struct pollfd pfds[8];
+    if (count < 0 || count > 8) {
+        errno = EINVAL;
+        return -1;
+    }
+    for (int i = 0; i < count; i++) {
+        pfds[i].fd = fds[i];
+        pfds[i].events = events[i];
+        pfds[i].revents = 0;
+    }
+    struct timespec ts;
+    struct timespec *timeout = NULL;
+    if (timeout_ns >= 0) {
+        ts.tv_sec = (time_t)(timeout_ns / 1000000000);
+        ts.tv_nsec = (long)(timeout_ns % 1000000000);
+        timeout = &ts;
+    }
+    int ready = ppoll(pfds, (nfds_t)count, timeout, NULL);
+    if (ready < 0 && errno == EINTR)
+        ready = 0;
+    for (int i = 0; i < count; i++)
+        revents[i] = ready > 0 ? pfds[i].revents : 0;
+    return ready;
+}
+
 void lyte_netio_free(lyte_netio *n)
 {
     if (!n)
@@ -389,7 +463,6 @@ int lyte_set_dumpable(void) {
     return prctl(PR_SET_DUMPABLE, 1, 0, 0, 0);
 }
 
-/* Moved here from the demolished CHevcEncode leaf (E5): prints must
- * land live through an ssh pipe on every binary. */
+/* Prints must land live through an ssh pipe on every binary. */
 void lyte_stdout_linebuf(void) { setvbuf(stdout, NULL, _IOLBF, 0); }
 

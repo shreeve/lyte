@@ -15,7 +15,8 @@ verify_image() {
 self_test() {
     local scratch fake_binary crypto_root asn1_root image
     scratch="$(mktemp -d -t lyte-host-image-test.XXXXXX)"
-    cleanup_self_test() { find "$scratch" -xdev -depth -delete; }
+    self_test_scratch="$scratch"
+    cleanup_self_test() { find "$self_test_scratch" -xdev -depth -delete; }
     trap cleanup_self_test EXIT
 
     fake_binary="$scratch/lyte-host"
@@ -47,7 +48,7 @@ self_test() {
         return 1
     fi
 
-    printf 'corruption\n' >> "$image/etc/lyte/lyte-host.conf"
+    printf 'corruption\n' >> "$image/etc/host.conf"
     if verify_image "$image" >/dev/null 2>&1; then
         echo "host package image FAILED: manifest corruption was accepted" >&2
         return 1

@@ -1,15 +1,10 @@
-// Termination signals (HS-18): a SIGINT/SIGTERM must exit through the
-// same door as a completed run, so the audio-routing restore (the
-// virtual sink's default-sink switch put back) and the typed 0x0A
-// teardown both happen. The handler only raises a flag; the pre-session
-// handshake wait and DirectEyeLeg's capture tick read it and return through
-// their normal cleanup paths. kill -9 bypasses all of this by
-// definition; that is what AudioWire.sweepLeftoverRouting's
-// next-start sweep is for.
+// Termination signals: SIGINT/SIGTERM exit through the same door as a
+// completed run, so the audio-routing restore and the typed 0x0A teardown
+// both happen. The handler only raises a flag; the handshake wait and the
+// capture loop poll it. kill -9 is AudioWire.sweepLeftoverRouting's job.
 //
-// This lives OUTSIDE main.swift on purpose: a file with top-level
-// code gives its globals special isolation, and the flag must be a
-// plain (async-signal-writable) global.
+// Outside main.swift on purpose: top-level code gives its globals special
+// isolation, and the flag must be a plain (async-signal-writable) global.
 
 import Foundation
 

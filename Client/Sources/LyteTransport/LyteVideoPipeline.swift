@@ -1,25 +1,11 @@
-// LyteVideoPipeline: the CL-2 wiring — video-channel datagrams from
-// ReceiveDemux in, ready-to-enqueue CMSampleBuffers out. The interesting
-// parts live elsewhere by design (build plan §4.3: the core owns the
-// assembler; this module owns the seam):
+// LyteVideoPipeline: video datagrams → VideoAssembler → VideoRenderFactory
+// → CMSampleBuffer → one VideoSink. Presentation timing is the sink
+// owner's; frame order is the assembler's guarantee. Damage leaves through
+// `onFecImpossible` and `onRepairSignal`.
 //
-//   (envelope, payload) → VideoAssembler → DecodeUnit
-//       → VideoRenderFactory → CMSampleBuffer → VideoSink
-//
-// The display layer is deliberately absent: the pipeline submits samples to
-// one named sink, implemented by the app renderer handoff, wire-view's direct
-// AVFoundation adapter, or a headless test sink. Presentation timing is
-// assigned by the app's conductor; frame order is the assembler's guarantee.
-//
-// fecImpossible events surface through `onFecImpossible` — the seam
-// CL-3's IDR-request feedback hooks into; nothing is implemented behind
-// it today. Assembler eviction is driven by `start()`'s timer (or by
-// `tick(now:)` directly, which is what tests do).
-//
-// Threading: assembly is lock-confined, but CoreMedia allocation runs on
-// a dedicated serial queue in production. Tests may choose synchronous
-// construction for deterministic assertions. Callbacks never hold the
-// assembler lock.
+// Assembly and the books are confined by `lock`. Sample construction runs
+// on the serial `sampleQueue`, which alone touches the factory. Callbacks
+// never run under `lock`.
 
 import LyteCore
 import CoreMedia
@@ -39,13 +25,10 @@ public struct VideoPipelineStats: Sendable {
     public var samplesWithheld: UInt64 = 0
     /// CMSampleBuffer construction failures (CoreMedia refused).
     public var sampleFailures: UInt64 = 0
-    /// CoreMedia sample construction on the receive thread, µs. This is
-    /// the boundary between completed assembly and the app delivery hop;
-    /// without it a factory stall is falsely blamed on network/assembly.
+    /// CoreMedia sample construction on the sample queue, µs.
     public var sampleBuildMicroseconds = Histogram<UInt64>(
         capacity: 360, retention: .rolling)
-    /// Time spent holding the assembly/state lock for an ingest that
-    /// completed a frame. CoreMedia work is deliberately excluded.
+    /// Lock hold for an ingest that completed a frame (excludes CoreMedia).
     public var assemblyLockHoldMicroseconds = Histogram<UInt64>(
         capacity: 360, retention: .rolling)
     /// fecImpossible verdicts (each also fired the seam callback).
@@ -54,22 +37,17 @@ public struct VideoPipelineStats: Sendable {
     public var evictions: UInt64 = 0
     /// Shards the assembler dropped (duplicates, malformed, stale).
     public var shardsDropped: UInt64 = 0
-    /// Fresh-seq repair shards (HS-17's NACK answers) the assembler
-    /// slotted into tracked groups (CL-12).
+    /// Fresh-seq repair shards slotted into tracked groups.
     public var repairShardsAccepted: UInt64 = 0
-    /// Reliable-channel frames (0x15 idle frames) rendered through the
-    /// same factory as the datagram path (CL-8).
+    /// Reliable 0x15 idle frames rendered through the shared factory.
     public var reliableFramesRendered: UInt64 = 0
-    /// Reliable-channel frames deduplicated — the datagram path already
-    /// delivered that frame number (or a newer one).
+    /// Reliable frames the datagram path had already delivered.
     public var reliableFramesDeduplicated: UInt64 = 0
     /// Client µs from the first ingested video datagram to the first
-    /// delivered sample — the render path's bootstrap latency.
+    /// delivered sample.
     public var firstSampleMicroseconds: Int64?
-    /// HS-22: the receive-side quality window — decoded frames over
-    /// the last ~5 s, derived entirely from what already arrives (no
-    /// wire vocabulary): frame cadence, video bitrate, frame-size
-    /// percentiles. Nil until a frame has decoded inside the window.
+    /// Receive-side quality over the last ~5 s; nil until a frame has
+    /// decoded inside the window.
     public var quality: VideoQualitySnapshot?
 }
 
@@ -79,11 +57,7 @@ public struct VideoFrameBuildTelemetry: Sendable, Equatable {
     public var sampleBuildMicroseconds: UInt64
 }
 
-/// HS-22: what the client can say about incoming video quality from
-/// its own books — the overlay/wire-view quality line. Host-side
-/// truth (nvenc QP, the encoder's reconfigured posture) lives in the
-/// host's per-second `quality:` books; this is the wire-view-side
-/// derivation of the same story.
+/// Incoming video quality derived from the client's own books.
 public struct VideoQualitySnapshot: Sendable {
     /// Decoded frames per second over the window.
     public var framesPerSecond: Double
@@ -99,11 +73,9 @@ public struct VideoQualitySnapshot: Sendable {
 public enum ReliableFrameOutcome: Equatable, Sendable {
     /// Rendered through the shared factory and delivered to the sink.
     case rendered
-    /// The datagram path already delivered this frame number (or a
-    /// newer one) — nothing to do; the screen is current.
+    /// The datagram path already delivered this frame number or newer.
     case deduplicated
-    /// No format description exists yet (a P-frame idle frame before
-    /// any IDR) — withheld like the datagram path withholds.
+    /// No format description exists yet (a P-frame before any IDR).
     case withheld
     /// CoreMedia refused the sample (counted in `sampleFailures`).
     case failed
@@ -121,22 +93,15 @@ public final class LyteVideoPipeline: @unchecked Sendable {
     private let nowNanoseconds: @Sendable () -> UInt64
     private var stats = VideoPipelineStats()
     private var firstIngest: ClientTimestamp?
-    /// HS-22 quality window: (decode instant, Annex-B byte count) per
-    /// decoded frame, pruned to the last `qualityWindowMicroseconds`
-    /// on record and on snapshot. Confined by `lock`.
-    private var qualityWindow: [(at: ClientTimestamp, bytes: Int)] = []
-    private static let qualityWindowMicroseconds: Int64 = 5_000_000
-    /// The newest frame number delivered by either path — the reliable
-    /// idle frame's dedupe reference (its `frame` field names the
-    /// number the converged frame last rode the datagram path with).
+    /// Confined by `lock`.
+    private var qualityWindow = VideoQualityWindow()
+    /// The newest frame number delivered by either path; idle-frame
+    /// dedupe reference.
     private var newestDeliveredFrame: FrameNumber?
-    private var frameBuildTelemetry: [UInt32: VideoFrameBuildTelemetry] = [:]
-    private var frameBuildOrder: [UInt32] = []
 
     private let sink: any VideoSink
     private let onFecImpossible: (@Sendable (FrameNumber, _ presumedLostDataShards: Int, _ bestCaseParityShards: Int) -> Void)?
-    /// CL-12: the NackPolicy's feed — presumption pictures, accepted
-    /// repairs, and frame fates, with the pipeline's clock alongside.
+    /// The NackPolicy's feed.
     private let onRepairSignal: (@Sendable (VideoRepairSignal, ClientTimestamp) -> Void)?
 
     private var evictionTimer: DispatchSourceTimer?
@@ -144,9 +109,9 @@ public final class LyteVideoPipeline: @unchecked Sendable {
     /// - Parameters:
     ///   - sink: receives one ready sample per rendered frame on the sample
     ///     worker. The owner assigns local presentation time.
-    ///   - onFecImpossible: the CL-3 seam — fired once per frame the
-    ///     assembler writes off as unrecoverable from plausible arrivals.
-    ///   - onRepairSignal: the CL-12 seam — the NackPolicy's event feed.
+    ///   - onFecImpossible: fired once per frame the assembler writes off
+    ///     as unrecoverable from plausible arrivals.
+    ///   - onRepairSignal: the NackPolicy's event feed.
     ///   - nowNanoseconds: the shell's monotonic clock. All convenience
     ///     timestamps and lock/build telemetry derive from this one source.
     public init(
@@ -192,14 +157,11 @@ public final class LyteVideoPipeline: @unchecked Sendable {
         timer?.cancel()
     }
 
-    /// Feeds one accepted datagram — the endpoint's `onDatagram` hook
-    /// calls this with every `.accepted` outcome; other channels pass
-    /// through untouched.
+    /// Feeds one accepted datagram; other channels pass through untouched.
     public func ingest(envelope: Envelope, payload: [UInt8]) {
         ingest(envelope: envelope, payload: payload, now: currentTimestamp())
     }
 
-    /// Injected-clock variant (tests drive time explicitly).
     public func ingest(envelope: Envelope, payload: [UInt8], now: ClientTimestamp) {
         guard envelope.channel == channel else { return }
         let lockStarted = nowNanoseconds()
@@ -212,15 +174,10 @@ public final class LyteVideoPipeline: @unchecked Sendable {
         dispatch(actions)
     }
 
-    /// Feeds one reliable-channel frame (a 0x15 idle frame the ARQ
-    /// delivered) into the same render chain the datagram path uses —
-    /// the seam the build plan designed at CL-2 and CL-8 exercises: the
-    /// SAME factory, so the idle frame inherits the session's parameter
-    /// sets and format-description continuity. Deduplicates against the
-    /// newest delivered frame number (wrap-aware): the idle frame names
-    /// the number its bytes last rode the datagram path with, so a
-    /// clean-path receiver already shows it and re-rendering would be a
-    /// visible stutter for nothing.
+    /// Renders a reliable 0x15 idle frame through the same factory, so it
+    /// inherits parameter sets and format continuity. Deduplicates
+    /// (wrap-aware) against the newest delivered frame: the idle frame
+    /// names the number it last rode the datagram path with.
     public func ingestReliableFrame(
         frame: FrameNumber,
         captureTimestampMicroseconds: UInt64,
@@ -241,19 +198,20 @@ public final class LyteVideoPipeline: @unchecked Sendable {
             isIDR: AnnexBCheck.containsIrap(annexB),
             annexB: annexB
         )
-        let outcome: ReliableFrameOutcome
         lock.unlock()
         var sample: CMSampleBuffer?
-        var buildOutcome: ReliableFrameOutcome = .failed
+        var outcome: ReliableFrameOutcome = .failed
+        var buildMicroseconds: UInt64 = 0
         sampleQueue.sync {
             let started = nowNanoseconds()
             do {
                 sample = try factory.makeSampleBuffer(from: unit)
-                buildOutcome = sample == nil ? .withheld : .rendered
+                outcome = sample == nil ? .withheld : .rendered
             } catch {
-                buildOutcome = .failed
+                outcome = .failed
             }
             let elapsed = (nowNanoseconds() &- started) / 1_000
+            buildMicroseconds = elapsed
             lock.lock()
             stats.sampleBuildMicroseconds.record(elapsed)
             if sample != nil {
@@ -262,30 +220,24 @@ public final class LyteVideoPipeline: @unchecked Sendable {
                 stats.reliableFramesRendered += 1
                 stats.samplesDelivered += 1
                 newestDeliveredFrame = frame
-            } else if buildOutcome == .withheld {
+            } else if outcome == .withheld {
                 stats.samplesWithheld += 1
             } else {
                 stats.sampleFailures += 1
             }
-            recordFrameBuildTelemetry(
-                frame: frame.rawValue, lockHold: 0, sampleBuild: elapsed)
             lock.unlock()
         }
-        outcome = buildOutcome
         if let sample {
-            let telemetry = frameTelemetry(frame: frame)
             VideoSampleTiming.attachBuildTelemetry(
                 to: sample,
-                sampleBuildMicroseconds:
-                    telemetry?.sampleBuildMicroseconds ?? 0,
+                sampleBuildMicroseconds: buildMicroseconds,
                 assemblyLockHoldMicroseconds: 0)
             sink.submit(sample: sample, unit: unit)
         }
         return outcome
     }
 
-    /// Time-only tick: assembler eviction and holdback expiry. The timer
-    /// calls this; tests call it directly.
+    /// Assembler eviction and holdback expiry.
     public func tick(now: ClientTimestamp) {
         lock.lock()
         let events = assembler.evictStale(now: now)
@@ -298,54 +250,17 @@ public final class LyteVideoPipeline: @unchecked Sendable {
         snapshotStats(now: currentTimestamp())
     }
 
-    /// Injected-clock variant (tests drive time explicitly).
     public func snapshotStats(now: ClientTimestamp) -> VideoPipelineStats {
         lock.lock()
         defer { lock.unlock() }
         var out = stats
-        pruneQualityWindow(now: now)
-        if !qualityWindow.isEmpty {
-            let sizes = qualityWindow.map(\.bytes).sorted()
-            func pct(_ q: Double) -> Int {
-                sizes[max(Int((q * Double(sizes.count)).rounded(.up)), 1) - 1]
-            }
-            // The span the frames actually cover, floored at 1 s so a
-            // young session reads as its true short-window rate rather
-            // than dividing by a few ms.
-            let span = max(
-                now.microseconds(since: qualityWindow.first!.at), 1_000_000
-            )
-            let bytes = sizes.reduce(0, +)
-            out.quality = VideoQualitySnapshot(
-                framesPerSecond: Double(sizes.count) * 1e6 / Double(span),
-                bitsPerSecond: Int(Double(bytes) * 8e6 / Double(span)),
-                frameBytesP50: pct(0.5),
-                frameBytesP95: pct(0.95),
-                frameBytesMax: sizes.last!
-            )
-        }
+        out.quality = qualityWindow.snapshot(now: now)
         return out
-    }
-
-    public func frameTelemetry(frame: FrameNumber) -> VideoFrameBuildTelemetry? {
-        lock.lock()
-        defer { lock.unlock() }
-        return frameBuildTelemetry[frame.rawValue]
     }
 
     /// Runs under `lock`.
     private func recordQuality(bytes: Int, now: ClientTimestamp) {
-        qualityWindow.append((at: now, bytes: bytes))
-        pruneQualityWindow(now: now)
-    }
-
-    /// Runs under `lock`.
-    private func pruneQualityWindow(now: ClientTimestamp) {
-        while let first = qualityWindow.first,
-              now.microseconds(since: first.at)
-                  > Self.qualityWindowMicroseconds {
-            qualityWindow.removeFirst()
-        }
+        qualityWindow.record(bytes: bytes, now: now)
     }
 
     // MARK: - Interior
@@ -356,8 +271,8 @@ public final class LyteVideoPipeline: @unchecked Sendable {
         case repairSignal(VideoRepairSignal, ClientTimestamp)
     }
 
-    /// Turns assembler events into stats and deferred callbacks. Runs
-    /// under the lock (factory access); callbacks fire after release.
+    /// Turns assembler events into stats and deferred actions. Runs
+    /// under the lock; the actions execute after release.
     private func process(
         _ events: [VideoAssemblerEvent], now: ClientTimestamp,
         assemblyLockHoldMicroseconds: UInt64
@@ -403,9 +318,8 @@ public final class LyteVideoPipeline: @unchecked Sendable {
                     .framesGone(from: frame, through: frame), now))
             case .shardDropped(let reason):
                 stats.shardsDropped += 1
-                // The two reasons a NACK answer can land as (duplicate
-                // slot, passed turn) feed the policy's late/duplicate/
-                // superseded books; the rest are counters only.
+                // Duplicate-slot and passed-turn drops feed the policy's
+                // repair books; the rest are counters only.
                 switch reason {
                 case .duplicateShard(let frame, let shardIndex):
                     actions.append(.repairSignal(
@@ -420,7 +334,6 @@ public final class LyteVideoPipeline: @unchecked Sendable {
                 }
             case .nackCandidates(
                 let frame, _, let missingIndices, let parity, let age):
-                // CL-12: §4.7's consumer exists now — the NackPolicy.
                 actions.append(.repairSignal(
                     .nackCandidates(
                         frame: frame,
@@ -477,10 +390,6 @@ public final class LyteVideoPipeline: @unchecked Sendable {
             lock.lock()
             stats.sampleBuildMicroseconds.record(elapsed)
             stats.sampleFailures += 1
-            recordFrameBuildTelemetry(
-                frame: unit.frameNumber.rawValue,
-                lockHold: assemblyLockHoldMicroseconds,
-                sampleBuild: elapsed)
             lock.unlock()
             return
         }
@@ -492,10 +401,6 @@ public final class LyteVideoPipeline: @unchecked Sendable {
         ])
         lock.lock()
         stats.sampleBuildMicroseconds.record(elapsed)
-        recordFrameBuildTelemetry(
-            frame: unit.frameNumber.rawValue,
-            lockHold: assemblyLockHoldMicroseconds,
-            sampleBuild: elapsed)
         if sample != nil {
             stats.samplesDelivered += 1
             if stats.firstSampleMicroseconds == nil, let firstIngest {
@@ -514,25 +419,50 @@ public final class LyteVideoPipeline: @unchecked Sendable {
         }
     }
 
-    /// Runs under `lock`.
-    private func recordFrameBuildTelemetry(
-        frame: UInt32, lockHold: UInt64, sampleBuild: UInt64
-    ) {
-        if frameBuildTelemetry[frame] == nil {
-            frameBuildOrder.append(frame)
-            if frameBuildOrder.count > 512 {
-                frameBuildTelemetry.removeValue(
-                    forKey: frameBuildOrder.removeFirst())
-            }
-        }
-        frameBuildTelemetry[frame] = VideoFrameBuildTelemetry(
-            frame: frame,
-            assemblyLockHoldMicroseconds: lockHold,
-            sampleBuildMicroseconds: sampleBuild)
-    }
-
     private func currentTimestamp() -> ClientTimestamp {
         ClientTimestamp(microseconds: nowNanoseconds() / 1_000)
     }
 
+}
+
+/// (decode instant, Annex-B bytes) per decoded frame over the last 5 s.
+struct VideoQualityWindow {
+    static let spanMicroseconds: Int64 = 5_000_000
+
+    private var entries = Deque<(at: ClientTimestamp, bytes: Int)>()
+
+    var liveCount: Int { entries.count }
+    var storedCount: Int { entries.retainedCapacity }
+
+    mutating func record(bytes: Int, now: ClientTimestamp) {
+        entries.append((at: now, bytes: bytes))
+        prune(now: now)
+    }
+
+    mutating func prune(now: ClientTimestamp) {
+        while let oldest = entries.first,
+              now.microseconds(since: oldest.at) > Self.spanMicroseconds {
+            entries.removeFirst()
+        }
+    }
+
+    /// Cadence and bitrate over the frames' actual span (floored at 1 s,
+    /// so a young session reads its true short-window rate), percentiles
+    /// over their sizes; nil when no frame decoded inside the window.
+    mutating func snapshot(now: ClientTimestamp) -> VideoQualitySnapshot? {
+        prune(now: now)
+        guard let oldest = entries.first else { return nil }
+        let sizes = entries.map(\.bytes).sorted()
+        func pct(_ q: Double) -> Int {
+            sizes[max(Int((q * Double(sizes.count)).rounded(.up)), 1) - 1]
+        }
+        let span = max(now.microseconds(since: oldest.at), 1_000_000)
+        let bytes = sizes.reduce(0, +)
+        return VideoQualitySnapshot(
+            framesPerSecond: Double(sizes.count) * 1e6 / Double(span),
+            bitsPerSecond: Int(Double(bytes) * 8e6 / Double(span)),
+            frameBytesP50: pct(0.5),
+            frameBytesP95: pct(0.95),
+            frameBytesMax: sizes.last!)
+    }
 }

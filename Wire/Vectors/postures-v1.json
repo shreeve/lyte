@@ -1,0 +1,218 @@
+{
+  "format" : "lyte-wire-posture-vectors",
+  "formatVersion" : 1,
+  "vectors" : [
+    {
+      "codec" : "audioTrackState",
+      "description" : "type ‖ state: [0x25, 0x01].",
+      "kind" : "roundtrip",
+      "messageHex" : "2501",
+      "name" : "audio-track-active",
+      "state" : "active"
+    },
+    {
+      "codec" : "audioTrackState",
+      "description" : "type ‖ state: [0x25, 0x02].",
+      "kind" : "roundtrip",
+      "messageHex" : "2502",
+      "name" : "audio-track-quiet",
+      "state" : "quiet"
+    },
+    {
+      "codec" : "audioTrackState",
+      "description" : "No bytes at all.",
+      "error" : "truncatedMessage",
+      "kind" : "decodeReject",
+      "messageHex" : "",
+      "name" : "audio-track-empty"
+    },
+    {
+      "codec" : "audioTrackState",
+      "description" : "The bare type byte rejects.",
+      "error" : "truncatedMessage",
+      "kind" : "decodeReject",
+      "messageHex" : "25",
+      "name" : "audio-track-truncated"
+    },
+    {
+      "codec" : "audioTrackState",
+      "description" : "A VideoPostureState type byte at audio length rejects with what it found.",
+      "error" : "unexpectedType",
+      "kind" : "decodeReject",
+      "messageHex" : "2601",
+      "name" : "audio-track-foreign-type"
+    },
+    {
+      "codec" : "audioTrackState",
+      "description" : "3 bytes reject — the message is exactly its layout.",
+      "error" : "trailingBytes",
+      "kind" : "decodeReject",
+      "messageHex" : "250100",
+      "name" : "audio-track-trailing-byte"
+    },
+    {
+      "codec" : "audioTrackState",
+      "description" : "State 0x00 rejects — the loud zero-fill bug.",
+      "error" : "unknownState",
+      "kind" : "decodeReject",
+      "messageHex" : "2500",
+      "name" : "audio-track-state-zero"
+    },
+    {
+      "codec" : "audioTrackState",
+      "description" : "State 0x03 rejects — the state space is exactly active and quiet.",
+      "error" : "unknownState",
+      "kind" : "decodeReject",
+      "messageHex" : "2503",
+      "name" : "audio-track-state-unknown"
+    },
+    {
+      "codec" : "videoPostureState",
+      "description" : "Active always carries the 1 s keepalive.",
+      "keepaliveSeconds" : 1,
+      "kind" : "roundtrip",
+      "messageHex" : "260101",
+      "name" : "video-posture-active-1s",
+      "posture" : "active"
+    },
+    {
+      "codec" : "videoPostureState",
+      "description" : "Quiet at a 2 s keepalive (the backoff ladder; 255 is the u8 ceiling).",
+      "keepaliveSeconds" : 2,
+      "kind" : "roundtrip",
+      "messageHex" : "260202",
+      "name" : "video-posture-quiet-2s",
+      "posture" : "quiet"
+    },
+    {
+      "codec" : "videoPostureState",
+      "description" : "Quiet at a 4 s keepalive (the backoff ladder; 255 is the u8 ceiling).",
+      "keepaliveSeconds" : 4,
+      "kind" : "roundtrip",
+      "messageHex" : "260204",
+      "name" : "video-posture-quiet-4s",
+      "posture" : "quiet"
+    },
+    {
+      "codec" : "videoPostureState",
+      "description" : "Quiet at a 8 s keepalive (the backoff ladder; 255 is the u8 ceiling).",
+      "keepaliveSeconds" : 8,
+      "kind" : "roundtrip",
+      "messageHex" : "260208",
+      "name" : "video-posture-quiet-8s",
+      "posture" : "quiet"
+    },
+    {
+      "codec" : "videoPostureState",
+      "description" : "Quiet at a 16 s keepalive (the backoff ladder; 255 is the u8 ceiling).",
+      "keepaliveSeconds" : 16,
+      "kind" : "roundtrip",
+      "messageHex" : "260210",
+      "name" : "video-posture-quiet-16s",
+      "posture" : "quiet"
+    },
+    {
+      "codec" : "videoPostureState",
+      "description" : "Quiet at a 30 s keepalive (the backoff ladder; 255 is the u8 ceiling).",
+      "keepaliveSeconds" : 30,
+      "kind" : "roundtrip",
+      "messageHex" : "26021e",
+      "name" : "video-posture-quiet-30s",
+      "posture" : "quiet"
+    },
+    {
+      "codec" : "videoPostureState",
+      "description" : "Quiet at a 255 s keepalive (the backoff ladder; 255 is the u8 ceiling).",
+      "keepaliveSeconds" : 255,
+      "kind" : "roundtrip",
+      "messageHex" : "2602ff",
+      "name" : "video-posture-quiet-255s",
+      "posture" : "quiet"
+    },
+    {
+      "codec" : "videoPostureState",
+      "description" : "Type and posture without the interval.",
+      "error" : "truncatedMessage",
+      "kind" : "decodeReject",
+      "messageHex" : "2602",
+      "name" : "video-posture-truncated"
+    },
+    {
+      "codec" : "videoPostureState",
+      "description" : "An AudioTrackState type byte at posture length rejects with what it found.",
+      "error" : "unexpectedType",
+      "kind" : "decodeReject",
+      "messageHex" : "250201",
+      "name" : "video-posture-foreign-type"
+    },
+    {
+      "codec" : "videoPostureState",
+      "description" : "4 bytes reject — the message is exactly its layout.",
+      "error" : "trailingBytes",
+      "kind" : "decodeReject",
+      "messageHex" : "26020200",
+      "name" : "video-posture-trailing-byte"
+    },
+    {
+      "codec" : "videoPostureState",
+      "description" : "Posture 0x00 rejects — the loud zero-fill bug.",
+      "error" : "unknownPosture",
+      "kind" : "decodeReject",
+      "messageHex" : "260002",
+      "name" : "video-posture-zero"
+    },
+    {
+      "codec" : "videoPostureState",
+      "description" : "Posture 0x03 rejects — the posture space is exactly active and quiet.",
+      "error" : "unknownPosture",
+      "kind" : "decodeReject",
+      "messageHex" : "260302",
+      "name" : "video-posture-unknown"
+    },
+    {
+      "codec" : "videoPostureState",
+      "description" : "A zero keepalive rejects — \"no keepalive\" is a future posture, not an interval.",
+      "error" : "zeroInterval",
+      "kind" : "decodeReject",
+      "messageHex" : "260200",
+      "name" : "video-posture-zero-interval"
+    },
+    {
+      "audioQuietPosture" : true,
+      "codec" : "capabilitySet",
+      "description" : "wireDefault plus exactly `0F F5`: audioQuietPosture reads true.",
+      "kind" : "roundtrip",
+      "messageHex" : "a9010002810103810104f5058006f407f4081904800ff5",
+      "name" : "capability-key15-declared",
+      "videoQuietPosture" : false
+    },
+    {
+      "audioQuietPosture" : false,
+      "codec" : "capabilitySet",
+      "description" : "wireDefault plus exactly `10 F5`: videoQuietPosture reads true.",
+      "kind" : "roundtrip",
+      "messageHex" : "a9010002810103810104f5058006f407f40819048010f5",
+      "name" : "capability-key16-declared",
+      "videoQuietPosture" : true
+    },
+    {
+      "audioQuietPosture" : true,
+      "codec" : "capabilitySet",
+      "description" : "Both posture keys, in canonical order.",
+      "kind" : "roundtrip",
+      "messageHex" : "aa010002810103810104f5058006f407f4081904800ff510f5",
+      "name" : "capability-key15-and-key16",
+      "videoQuietPosture" : true
+    },
+    {
+      "audioQuietPosture" : false,
+      "codec" : "capabilitySet",
+      "description" : "wireDefault unchanged: both keys read false — \"not supported\", never an error.",
+      "kind" : "roundtrip",
+      "messageHex" : "a8010002810103810104f5058006f407f408190480",
+      "name" : "capability-postures-absent",
+      "videoQuietPosture" : false
+    }
+  ],
+  "wireVersion" : 1
+}

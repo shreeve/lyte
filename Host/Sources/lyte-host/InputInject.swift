@@ -1,29 +1,13 @@
-// Input injection (HS-13 → E2): wire events → the host's desktop.
-//
-// PRIMARY — the uinput C leaf (CInputUinput), E2 of the direct-eye
-// plan: three virtual evdev devices (keyboard, relative mouse,
-// absolute tablet) under the seat-user ACL the 60-lyte-uinput.rules
-// udev rule grants (uaccess tag; setup-host.sh installs it). Kernel
-// injection is compositor-agnostic — it works under GNOME today and
-// under whatever compositor (or no compositor) Lyte OS runs
-// tomorrow — and it costs one write(2) per event where the retired
-// leaf paid a blocking D-Bus round-trip on the wire-drain thread.
-//
-// RETIRED (E2, 2026-08-03) — the Mutter RemoteDesktop injector
-// (org.gnome.Mutter.RemoteDesktop Notify* calls; the CP-5 verdict's
-// primary). Recover it from git history if archaeology calls. The
-// clipboard's OWN RemoteDesktop session (ClipboardLeaf.swift) is
-// deliberately untouched — it was always an independent session on
-// its own bus connection. The Wayland-helper replacement stays
-// filed and is blocked on GNOME today; see
-// docs/20260807-015743-wayland-clipboard-gnome-blocker.md.
-//
-// The sanctioned xdg-desktop-portal RemoteDesktop path was never
-// here: its combined Start auto-denies headless on this GNOME
-// (CP-5 Q1) — a dead end, deliberately not retried.
+// Input injection: wire events → the host's desktop through the uinput C
+// leaf (CInputUinput) — three virtual evdev devices (keyboard, relative
+// mouse, absolute tablet) under the seat-user ACL that the
+// 60-lyte-uinput.rules udev rule grants (setup-host.sh installs it).
+// Kernel injection is compositor-agnostic and costs one write(2) per
+// event.
 
 import Foundation
 import HostWire
+import LyteIO
 import LyteWire
 
 #if os(Linux)
@@ -37,10 +21,13 @@ protocol InputInjector: AnyObject {
     /// The recorded monitor's pixel size, once capture reads it (the
     /// uinput tablet scales absolute moves against it).
     func noteMonitorExtent(width: UInt32, height: UInt32)
+    /// Releases every key and button still held — a session ended with
+    /// its client's press outstanding. The devices stay up.
+    func releaseHeld()
     func stop()
 }
 
-/// The uinput injector (E2 primary). Pixel scroll deltas convert to
+/// The uinput injector. Pixel scroll deltas convert to
 /// the kernel's v120 hi-res units at 15 px per detent (the libinput
 /// convention for smooth sources).
 final class UinputInjector: InputInjector {
@@ -48,20 +35,19 @@ final class UinputInjector: InputInjector {
 
     private let handle: OpaquePointer
     private static let pixelsPerDetent = 15.0
-    /// Every key/button currently held down, by evdev code. E2's
-    /// release-all law: the retired Mutter session released latched
-    /// keys when it closed; a kernel device has no such janitor, so
-    /// the injector is its own — stop() releases everything still
-    /// held (the ⌘Tab latch, a click mid-teardown) before the
-    /// devices are destroyed. inject() and stop() both run on the
-    /// wire-drain thread; no lock needed.
+    /// Every key/button currently held down, by evdev code. A kernel
+    /// device never releases latched keys itself, so releaseHeld() at
+    /// every session end and stop() release everything still held.
+    /// inject() runs under SessionWire's session lock; releaseHeld() and
+    /// stop() run on main after the session's threads have stopped —
+    /// never concurrently.
     private var heldCodes: Set<UInt32> = []
     private var stopped = false
 
     init() throws {
         var err = [CChar](repeating: 0, count: 256)
         guard let handle = lyte_uinput_open(&err, err.count) else {
-            throw HostError("uinput open failed: \(errString(err))")
+            throw HostError("uinput open failed: \(String(cBuffer: err))")
         }
         self.handle = handle
         // Freshly created evdev devices need a moment before
@@ -101,7 +87,7 @@ final class UinputInjector: InputInjector {
                 &err, err.count)
         }
         guard rc == 0 else {
-            throw HostError("uinput inject failed: \(errString(err))")
+            throw HostError("uinput inject failed: \(String(cBuffer: err))")
         }
     }
 
@@ -109,24 +95,27 @@ final class UinputInjector: InputInjector {
         var err = [CChar](repeating: 0, count: 256)
         if lyte_uinput_set_extent(handle, width, height,
                                   &err, err.count) != 0 {
-            print("input: uinput extent refused: \(errString(err))")
+            print("input: uinput extent refused: \(String(cBuffer: err))")
         }
     }
 
-    func stop() {
-        guard !stopped else { return }
-        stopped = true
-        guard !heldCodes.isEmpty else { return }
+    func releaseHeld() {
+        guard !stopped, !heldCodes.isEmpty else { return }
         var err = [CChar](repeating: 0, count: 256)
         for code in heldCodes {
             _ = lyte_uinput_key(handle, code, 0, &err, err.count)
         }
-        print("input: released \(heldCodes.count) held key(s) at stop")
+        print("input: released \(heldCodes.count) held key(s)")
         heldCodes.removeAll()
+    }
+
+    func stop() {
+        releaseHeld()
+        stopped = true
     }
 }
 
-/// The `--input` policy (E2): uinput is primary and sole; a refused
+/// The `--input` policy: uinput is the only injector; a refused
 /// /dev/uinput is a LOUD off (the udev rule in setup-host.sh is the
 /// fix), never a silent one.
 func makeInputInjector(_ choice: InputBackendChoice) -> InputInjector? {
@@ -137,8 +126,10 @@ func makeInputInjector(_ choice: InputBackendChoice) -> InputInjector? {
         do {
             return try UinputInjector()
         } catch {
-            print("input: uinput unavailable (\(error)) — injection "
-                + "OFF (install the udev rule: setup-host.sh)")
+            print("""
+                input: uinput unavailable (\(error)) — injection \
+                OFF (install the udev rule: setup-host.sh)
+                """)
             return nil
         }
     }

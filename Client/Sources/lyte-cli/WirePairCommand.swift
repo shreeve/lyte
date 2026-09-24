@@ -4,19 +4,16 @@ import LyteCore
 import LyteTransport
 import LyteWire
 
-/// CL-6: PIN pairing against a Lyte-UDP host. The host side runs
-/// `lyte-host --wire-listen PORT --pair`, which prints its static public
-/// key and a 6-digit PIN on ITS console; this command dials that key
-/// trust-on-first-use, runs the W6 CPace exchange bound to the Noise
-/// session (sid = handshake hash, CI = both statics), and on a verified
-/// confirmation pins the host static locally — the host pins ours in the
-/// same exchange. Every later connect is plain Noise IK against the
-/// pinned keys, no PIN, no UI (`wire-view` without --host-key).
+/// PIN pairing against a Lyte-UDP host. `lyte-host --wire-listen PORT
+/// --pair` prints its static public key and a 6-digit PIN on its
+/// console; this command dials that key trust-on-first-use, runs the
+/// CPace exchange bound to the Noise session, and on a verified
+/// confirmation pins the host static locally (the host pins ours in the
+/// same exchange). Later connects are plain Noise IK, no PIN.
 ///
-/// The client identity lives in the login Keychain
-/// (ClientNoiseIdentity): build this binary via Scripts/build-cli.sh so
-/// the stable "Lyte Dev" signature keeps the Keychain grant across
-/// rebuilds (docs/MACOS-SIGNING.md).
+/// The client identity lives in the login Keychain: build via
+/// Scripts/build-cli.sh so the stable signature keeps the Keychain grant
+/// across rebuilds (docs/MACOS-SIGNING.md).
 struct WirePair: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "wire-pair",
@@ -38,7 +35,7 @@ struct WirePair: AsyncParsableCommand {
     var timeout: Double = 20
 
     func validate() throws {
-        guard pin.count == 6, pin.allSatisfy(\.isNumber) else {
+        guard PairingPin.isValid(pin) else {
             throw ValidationError("--pin must be the host's 6 digits, got \"\(pin)\"")
         }
     }
@@ -96,7 +93,7 @@ struct WirePair: AsyncParsableCommand {
         // ── Our persistent identity (Keychain; minted on first pairing). ──
         let identity: NoiseKeyPair
         do {
-            identity = try ClientNoiseIdentity.loadOrCreate()
+            identity = try await ClientNoiseIdentityProvider.shared.identity()
         } catch ClientNoiseIdentityError.keychain(let status) {
             throw ValidationError(
                 "Keychain refused the client identity (OSStatus \(status)) — build via Scripts/build-cli.sh so the binary is signed (docs/MACOS-SIGNING.md)")
@@ -114,47 +111,27 @@ struct WirePair: AsyncParsableCommand {
             timeoutSeconds: timeout,
             onProgress: { print("wire-pair: \($0)") }))
 
-        switch outcome {
-        case .paired(let key):
-            var store = PinnedHostStore.load()
-            let fresh = store.pin(
-                staticPublicKey: key,
-                name: isLiteralAddress ? address : host,
-                address: address,
-                port: dialPort,
-                pairedAt: ISO8601DateFormatter().string(from: Date()))
-            try store.save()
-            let hex = Hex.string(key)
-            print("wire-pair: PAIRED — host static \(hex) "
-                + (fresh ? "pinned" : "re-pinned") + " → \(PinnedHostStore.url.path)")
-            print("wire-pair: reconnects are now 1-RTT Noise IK with zero UI: "
-                + "lyte-cli wire-view \(dialPort) --host \(address)")
-        case .pinMismatch:
-            print("wire-pair: WRONG PIN — the host's tag disagreed with this "
-                + "entry (each displayed PIN survives 3 wrong guesses; a "
-                + "burned PIN answers nothing until --pair reruns)")
-            throw ExitCode(1)
-        case .hostRejected(let reason):
-            print("wire-pair: host rejected the run (\(reason))")
-            throw ExitCode(1)
-        case .invalidShare:
-            print("wire-pair: the host's share was cryptographically invalid")
-            throw ExitCode(1)
-        case .timedOut:
-            print("wire-pair: no verdict in \(Int(timeout))s — wrong port, "
-                + "host not in --pair mode, or a burned PIN's silence")
-            throw ExitCode(1)
-        case .failed(let message):
-            print("wire-pair: FAILED — \(message)")
+        guard case .paired(let key) = outcome else {
+            print("wire-pair: FAILED — \(outcome.failureMessage ?? "\(outcome)")")
             throw ExitCode(1)
         }
+        var store = PinnedHostStore.load()
+        let fresh = store.pinPaired(
+            staticPublicKey: key,
+            name: isLiteralAddress ? address : host,
+            address: address,
+            port: dialPort)
+        try store.save()
+        print("wire-pair: PAIRED — host static \(Hex.string(key)) "
+            + (fresh ? "pinned" : "re-pinned") + " → \(PinnedHostStore.url.path)")
+        print("wire-pair: reconnects are now 1-RTT Noise IK with zero UI: "
+            + "lyte-cli wire-view \(dialPort) --host \(address)")
     }
 }
 
-/// The unpair affordance: drops the local pin. Trust stores are
-/// per-end — the host keeps its `paired_clients` entry until pruned
-/// there; without OUR pin this client simply refuses to dial that host
-/// unauthenticated ever again (until a fresh pairing).
+/// The unpair affordance: drops the local pin (the host keeps its
+/// `paired_clients` entry until pruned there). Without our pin this
+/// client refuses to dial that host until a fresh pairing.
 struct WireUnpair: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "wire-unpair",

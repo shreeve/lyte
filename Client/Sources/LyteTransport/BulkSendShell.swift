@@ -1,26 +1,10 @@
-// BulkSendShell (F-4): the client's driver for ONE bulk transfer —
-// the shell around LyteWire's sans-IO `BulkSendEngine` (W10, design
-// record docs/20260728-053300-lyte-bulk-channel.md §7/§9). The engine
-// has no timers and no IO; this shell answers its actions:
+// BulkSendShell: drives one bulk transfer for one session leg around
+// LyteWire's sans-IO `BulkSendEngine`: `.emit` goes to the injected chan-8
+// send, `.readChunk` to the injected chunk reader, and decoded chan-8
+// messages come in through `ingest`. Resume is the coordinator's job.
 //
-//   `.emit`      → the injected send closure (the session core's
-//                  chan-8 ARQ ordered stream — never CTRL, so a file
-//                  cannot head-of-line-block a keystroke);
-//   `.readChunk` → the injected chunk reader (production: a FileHandle
-//                  on a serial utility queue — file IO never touches
-//                  the main thread; tests: a payload-backed synchronous
-//                  reader in virtual time), whose result comes back
-//                  through `supplyChunk`;
-//
-// and feeds decoded chan-8 messages to `ingest`. One shell = one
-// transfer = one session leg: on session teardown the shell is
-// discarded with the ARQ state (resume is the COORDINATOR's job — it
-// re-offers the same id into a fresh shell, per design §5).
-//
-// Threading: engine access is lock-serialized; actions execute OUTSIDE
-// the lock (a synchronous test reader's completion re-enters
-// `supplyChunk` legally). Reads the engine issues are credit-bounded
-// (design §4), so the re-entry depth is bounded by the window.
+// Engine access is lock-serialized; actions execute outside the lock (a
+// synchronous reader re-enters `supplyChunk`, bounded by the credit window).
 
 import Foundation
 import LyteCore
@@ -31,9 +15,7 @@ import UniformTypeIdentifiers
 
 // MARK: - Progress arithmetic
 
-/// Bytes-confirmed-vs-total, computed from the engine's view of the
-/// RECEIVER's possession (its acks, merged monotonically) — never from
-/// what this end merely sent. Pinned in virtual time (F-4 tests).
+/// Bytes confirmed by the receiver's acks, never merely sent, vs total.
 public struct BulkTransferProgress: Equatable, Sendable {
     public var totalByteCount: UInt64
     public var confirmedByteCount: UInt64
@@ -43,9 +25,8 @@ public struct BulkTransferProgress: Equatable, Sendable {
         return Double(confirmedByteCount) / Double(totalByteCount)
     }
 
-    /// The exact byte count a possession map represents against an
-    /// offer's geometry: full chunks are `chunkByteCount`, the LAST
-    /// chunk is the remainder (never zero — the offer codec's rule).
+    /// The exact byte count a possession map represents (the last chunk
+    /// is the remainder).
     public static func confirmedByteCount(
         possession: BulkPossession, offer: BulkOffer
     ) -> UInt64 {
@@ -76,13 +57,10 @@ public struct BulkTransferProgress: Equatable, Sendable {
 
 // MARK: - The chunk-reading seam
 
-/// One transfer's chunk source. Production is `BulkFileChunkReader`
-/// (async, serial queue); tests inject a synchronous payload-backed
-/// reader so the whole transfer runs in virtual time.
+/// One transfer's chunk source.
 public protocol BulkChunkReading: Sendable {
     /// Reads exactly `byteCount` bytes at `offset`; the completion may
-    /// fire on any thread (or synchronously). Short reads are errors —
-    /// the offer promised those bytes.
+    /// fire on any thread or synchronously. Short reads are errors.
     func read(
         offset: UInt64, byteCount: Int,
         completion: @escaping @Sendable (Result<[UInt8], Error>) -> Void
@@ -92,16 +70,13 @@ public protocol BulkChunkReading: Sendable {
 }
 
 public enum BulkChunkReadError: Error, Equatable, Sendable {
-    /// The file ended before the offer's geometry said it would (it
-    /// changed or vanished under the transfer).
+    /// The file changed or vanished under the transfer.
     case shortRead(offset: UInt64, wanted: Int, got: Int)
 }
 
-/// The production reader: one FileHandle, all IO on a shared serial
-/// utility queue — never the main thread, never the receive thread.
+/// One FileHandle; all IO on a shared serial utility queue.
 public final class BulkFileChunkReader: BulkChunkReading, @unchecked Sendable {
-    /// One queue for all transfers: v1 runs one transfer at a time by
-    /// design (§6), so contention is structural zero.
+    /// Shared: transfers run one at a time.
     private static let queue = DispatchQueue(
         label: "lyte.bulk.file-read", qos: .utility)
 
@@ -140,21 +115,15 @@ public final class BulkFileChunkReader: BulkChunkReading, @unchecked Sendable {
 // MARK: - Offer preparation
 
 public enum BulkPrepareError: Error, Equatable, Sendable {
-    /// v1 does not transfer empty blobs (the offer codec's rule,
-    /// surfaced before a byte of hashing is spent).
+    /// The offer codec refuses empty blobs.
     case emptyFile
     case unreadable(String)
 }
 
-/// Builds the offer a dropped file rides under: size and streaming
-/// SHA-256 computed up front (the digest IS the completion contract —
-/// design §0), name from the URL's last component (truncated to the
-/// 255-byte wire bound on a UTF-8 character boundary), MIME hint from
-/// the path extension. Blocking — callers run it off the main thread
-/// (the coordinator's background executor).
+/// Builds a dropped file's offer: size and streaming SHA-256 up front (the
+/// digest is the completion contract), wire name, and MIME hint. Blocking.
 public enum BulkFilePreparer {
-    /// Hash/size read granularity. 256 KiB keeps the syscall count low
-    /// without staging a whole file.
+    /// Hash/size read granularity.
     public static let readBlockByteCount = 262_144
 
     public static func prepare(
@@ -168,8 +137,7 @@ public enum BulkFilePreparer {
         }
         defer { try? handle.close() }
 
-        // Size is counted as read, not asked of attributes — the bytes
-        // hashed are exactly the bytes the offer promises.
+        // Size is counted as read so it matches the bytes hashed.
         var hasher = Sha256()
         var totalByteCount: UInt64 = 0
         do {
@@ -194,10 +162,8 @@ public enum BulkFilePreparer {
         )
     }
 
-    /// The offer's name field: the file's display name, truncated to
-    /// the 255-UTF-8-byte wire bound on a character boundary (the
-    /// codec refuses more; sanitization beyond that is the RECEIVER
-    /// end's job — design §3).
+    /// The file name truncated to the wire bound on a character
+    /// boundary; sanitization is the receiver's job.
     public static func wireName(for url: URL) -> String {
         var name = url.lastPathComponent
         if name.isEmpty { name = "file" }
@@ -207,8 +173,7 @@ public enum BulkFilePreparer {
         return name.isEmpty ? "file" : name
     }
 
-    /// The optional MIME hint, from the path extension via
-    /// UniformTypeIdentifiers; empty when the system knows nothing.
+    /// From the path extension; empty when unknown.
     public static func mimeHint(for url: URL) -> String {
         #if canImport(UniformTypeIdentifiers)
         let ext = url.pathExtension
@@ -226,21 +191,15 @@ public enum BulkFilePreparer {
 
 // MARK: - The shell
 
-/// Everything one transfer's driving loop surfaces to its owner (the
-/// coordinator). Fired from whatever thread drove the engine — the
-/// receive thread (acks), the read queue (chunk supplies), or the
-/// caller (begin/cancel).
+/// Fired from whatever thread drove the engine.
 public enum BulkSendShellEvent: Sendable {
-    /// The receiver's possession advanced (or the transfer state
-    /// moved) — re-read `progress`/`state`.
+    /// Re-read `progress`/`state`.
     case progressChanged
-    /// The receiver verified the digest: the file LANDED, sha-exact.
+    /// The receiver verified the digest.
     case completed
     /// Terminal failure; `byRemote` says whose abort it was.
     case aborted(BulkAbortReason, byRemote: Bool)
-    /// A local read failed (the file changed or vanished under the
-    /// transfer). An abort(cancelled) already left for the peer; this
-    /// carries the local why.
+    /// A local read failed; abort(cancelled) already left for the peer.
     case readFailed(String)
     /// The peer broke the bulk state machine (precedes its abort).
     case violated(BulkTransferViolation)
@@ -281,8 +240,7 @@ public final class BulkSendShell: @unchecked Sendable {
         return .measuring(possession: engine.remoteHeld, offer: offer)
     }
 
-    /// Emits the offer. Once per shell (the engine throws on a second
-    /// begin — a coordinator bug, kept loud).
+    /// Emits the offer; throws on a second begin.
     public func begin() throws {
         lock.lock()
         let actions: [BulkSendEngine.Action]
@@ -296,9 +254,6 @@ public final class BulkSendShell: @unchecked Sendable {
         perform(actions)
     }
 
-    /// One decoded chan-8 message from the session (accept/ack/
-    /// complete/abort — the engine treats anything else as the peer's
-    /// violation). Never throws.
     public func ingest(_ message: BulkMessage) {
         lock.lock()
         let heldBefore = engine.remoteHeld.heldChunkCount
@@ -313,8 +268,7 @@ public final class BulkSendShell: @unchecked Sendable {
         perform(actions)
     }
 
-    /// The human's ×: emits abort(cancelled) while in flight, terminal
-    /// either way.
+    /// Emits abort(cancelled) while in flight; terminal either way.
     public func cancel() {
         lock.lock()
         let actions = engine.cancel()
@@ -357,17 +311,15 @@ public final class BulkSendShell: @unchecked Sendable {
                 self.lock.unlock()
                 self.perform(actions)
             case .failure(let error):
-                // The wire has no sender-side read-failure reason; the
-                // honest terminal is a cancel with the local why kept
-                // loud (design §3's pinned reason space).
+                // The wire has no read-failure reason: cancel, keeping
+                // the local why.
                 self.lock.lock()
                 let terminal = self.engine.isTerminal
                 let actions = terminal ? [] : self.engine.cancel()
                 self.lock.unlock()
                 if !terminal {
-                    // Surface the why FIRST, then the abort the cancel
-                    // path emits (the coordinator maps this pair to
-                    // one user-facing failure, not a cancel).
+                    // The why precedes the abort, so the coordinator
+                    // reports one failure, not a cancel.
                     self.onEvent(.readFailed(String(describing: error)))
                 }
                 self.perform(actions)
@@ -383,10 +335,8 @@ public final class BulkSendShell: @unchecked Sendable {
         if !alreadyClosed { reader.close() }
     }
 
-    /// Session-teardown path (the coordinator's): release the file
-    /// handle WITHOUT emitting an abort — there is nobody left to send
-    /// one to, and the transfer itself lives on in the coordinator's
-    /// resume entry.
+    /// Releases the file handle without an abort: the transfer lives on
+    /// in the coordinator's resume entry.
     func closeReaderForTeardown() {
         closeReader()
     }

@@ -126,48 +126,34 @@ final class InterleavedPcmSlicerTests: XCTestCase {
         XCTAssertEqual(timestamps, [307_000])
     }
 
-    func testConsumersCarryNoSecondSlicerState() throws {
-        let hostRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let consumers = [
-            "Sources/lyte-host/AudioWire.swift",
-            "Sources/lyte-audio-check/main.swift",
-        ]
-        for path in consumers {
-            let source = try String(
-                contentsOf: hostRoot.appendingPathComponent(path),
-                encoding: .utf8
-            )
-            XCTAssertTrue(source.contains("InterleavedPcmSlicer"), path)
-            XCTAssertFalse(source.contains("pendingStartFrame"), path)
-            XCTAssertFalse(source.contains("marks.append"), path)
-            XCTAssertFalse(source.contains("framesSeen"), path)
-            XCTAssertFalse(source.contains("1_000_000 / UInt64"), path)
-        }
-    }
-
-    func testConsumedHeadAndRetainedFramesOwnTheTotal() throws {
-        let hostRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let source = try String(
-            contentsOf: hostRoot.appendingPathComponent(
-                "Sources/HostCore/InterleavedPcmSlicer.swift"
-            ),
-            encoding: .utf8
+    /// A long session of irregular buffers keeps every packet stamp exact:
+    /// the consumed head plus the retained frames account for every frame.
+    func testLongSessionStampsStayExactAcrossManyBuffers() {
+        let slicer = InterleavedPcmSlicer(
+            sampleRate: 48_000, channels: 2, packetFrames: 240
         )
-
-        XCTAssertTrue(source.contains(
-            "let startFrame = pendingStartFrame + pending.count / channels"
-        ))
-        XCTAssertTrue(source.contains(
-            "precondition(startFrame <= Int.max - samples.count / channels)"
-        ))
-        XCTAssertFalse(source.contains("private var framesSeen"))
-        XCTAssertFalse(source.contains("framesSeen +="))
+        var stamps: [UInt64] = []
+        var graphFrame = 0
+        let bufferFrames = [1_024, 997, 480, 1_031]
+        for index in 0..<4_000 {
+            let frames = bufferFrames[index % bufferFrames.count]
+            let samples = [Float](repeating: 0, count: frames * 2)
+            let graphUS = UInt64(graphFrame) * 1_000_000 / 48_000 + 5_000
+            samples.withUnsafeBufferPointer {
+                slicer.ingest($0, graphStartMicroseconds: graphUS) { pcm, us in
+                    XCTAssertEqual(pcm.count, 480)
+                    stamps.append(us)
+                }
+            }
+            graphFrame += frames
+        }
+        XCTAssertEqual(stamps.count, graphFrame / 240)
+        for (packet, stamp) in stamps.enumerated() {
+            let frame = packet * 240
+            XCTAssertLessThanOrEqual(
+                abs(Int64(stamp) - Int64(frame * 1_000_000 / 48_000 + 5_000)), 1,
+                "packet \(packet)")
+        }
     }
 
     private func slice(

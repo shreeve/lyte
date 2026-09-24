@@ -1,4 +1,4 @@
-// HS-4 verification harness: proves the CNetIO leaf can drive per-packet
+// Verification harness: proves the CNetIO leaf can drive per-packet
 // DSCP and kernel TX timestamps on loopback. Sends one sendmmsg batch to a
 // paired socket with a rotating TOS cycle (0xB8/EF-46 for contrast,
 // 0xA0/CS5-40 video, 0xC0/CS6-48 audio), reads the received TOS per packet
@@ -15,12 +15,6 @@ struct CheckError: Error, CustomStringConvertible {
     init(_ description: String) { self.description = description }
 }
 
-/// Decodes a NUL-terminated C error buffer.
-func errString(_ buf: [CChar]) -> String {
-    let bytes = buf.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }
-    return String(decoding: bytes, as: UTF8.self)
-}
-
 func realtimeNowNS() -> UInt64 {
     var ts = timespec()
     clock_gettime(CLOCK_REALTIME, &ts)
@@ -28,8 +22,8 @@ func realtimeNowNS() -> UInt64 {
 }
 
 func hexTOS(_ tos: UInt8) -> String {
-    Hex.string(tos, width: 2, uppercase: true, prefix: true)
-        + "/dscp\(WireTos.dscp(tos))"
+    let hex = Hex.string(tos, width: 2, uppercase: true, prefix: true)
+    return "\(hex)/dscp\(WireTos.dscp(tos))"
 }
 
 func pad(_ s: String, _ width: Int) -> String {
@@ -50,20 +44,20 @@ func run() throws {
     }
 
     guard let rx = lyte_netio_new("127.0.0.1", rxPort, &err, err.count) else {
-        throw CheckError("receiver open failed: \(errString(err))")
+        throw CheckError("receiver open failed: \(String(cBuffer: err))")
     }
     defer { lyte_netio_free(rx) }
     let port = lyte_netio_local_port(rx)
 
     guard let tx = lyte_netio_new("127.0.0.1", 0, &err, err.count) else {
-        throw CheckError("sender open failed: \(errString(err))")
+        throw CheckError("sender open failed: \(String(cBuffer: err))")
     }
     defer { lyte_netio_free(tx) }
     guard lyte_netio_set_peer(tx, "127.0.0.1", port, &err, err.count) == 0 else {
-        throw CheckError("sender connect failed: \(errString(err))")
+        throw CheckError("sender connect failed: \(String(cBuffer: err))")
     }
     guard lyte_netio_enable_tx_timestamps(tx, &err, err.count) == 0 else {
-        throw CheckError("SO_TIMESTAMPING arm failed: \(errString(err))")
+        throw CheckError("SO_TIMESTAMPING arm failed: \(String(cBuffer: err))")
     }
 
     let tosCycle: [UInt8] = [0xB8, WireTos.video, WireTos.protected]
@@ -71,9 +65,11 @@ func run() throws {
     let payloadSize = 1152 // the universal datagram budget
     let sentTOS = (0..<count).map { tosCycle[$0 % tosCycle.count] }
 
-    print("netio-check: \(count) datagrams of \(payloadSize) B to "
-        + "127.0.0.1:\(port), TOS cycle "
-        + tosCycle.map { hexTOS($0) }.joined(separator: " "))
+    print("""
+        netio-check: \(count) datagrams of \(payloadSize) B to \
+        127.0.0.1:\(port), TOS cycle \
+        \(tosCycle.map { hexTOS($0) }.joined(separator: " "))
+        """)
 
     // Payload byte 0 identifies the datagram, so received TOS matches to
     // sent TOS regardless of delivery order.
@@ -96,7 +92,7 @@ func run() throws {
                                      &err, err.count)
     guard sent == count else {
         throw CheckError(sent < 0
-            ? "send failed: \(errString(err))"
+            ? "send failed: \(String(cBuffer: err))"
             : "short send: \(sent)/\(count)")
     }
     print("sent \(sent) in one sendmmsg batch (first pkt_id \(firstId))")
@@ -120,7 +116,7 @@ func run() throws {
                                         Int32(count - received),
                                         &err, err.count)
         guard got >= 0 else {
-            throw CheckError("recv failed: \(errString(err))")
+            throw CheckError("recv failed: \(String(cBuffer: err))")
         }
         if got > 0 {
             received += Int(got)
@@ -133,8 +129,10 @@ func run() throws {
         throw CheckError("received \(received)/\(count) within 3 s")
     }
     let deliveryMS = (lastRecvAt - sendStartMono) * 1000
-    print("received \(received)/\(count), batch delivery "
-        + String(Int(deliveryMS.rounded())) + " ms")
+    print("""
+        received \(received)/\(count), batch delivery \
+        \(String(Int(deliveryMS.rounded()))) ms
+        """)
 
     // Drain TX timestamps; the kernel delivers them asynchronously.
     var stamps: [UInt32: UInt64] = [:]
@@ -145,7 +143,7 @@ func run() throws {
         let got = lyte_netio_poll_txstamps(tx, &stampBuf, Int32(count),
                                            &err, err.count)
         guard got >= 0 else {
-            throw CheckError("txstamp poll failed: \(errString(err))")
+            throw CheckError("txstamp poll failed: \(String(cBuffer: err))")
         }
         for s in stampBuf.prefix(Int(got)) {
             stamps[s.pkt_id] = s.ts_ns
@@ -178,9 +176,11 @@ func run() throws {
         }
         if stamp != 0 { prevStamp = stamp }
         let deltaUS = stamp == 0 ? "-" : String((stamp &- sendStartNS) / 1000)
-        print("\(pad(String(i), 4)) \(pad(hexTOS(sentTOS[i]), 13)) "
-            + "\(pad(hexTOS(slot.tos), 13)) \(pad(String(slot.len), 5)) "
-            + "\(stamp) (+\(deltaUS) µs)\(marks)")
+        print("""
+            \(pad(String(i), 4)) \(pad(hexTOS(sentTOS[i]), 13)) \
+            \(pad(hexTOS(slot.tos), 13)) \(pad(String(slot.len), 5)) \
+            \(stamp) (+\(deltaUS) µs)\(marks)
+            """)
     }
     if stamps.count < count {
         print("tx stamps: only \(stamps.count)/\(count) arrived within 3 s")

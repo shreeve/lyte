@@ -1,13 +1,22 @@
-// The one shared SHA-256 implementation. Streaming is the primitive so
-// large file-transfer payloads never require a whole-file allocation;
-// one-shot hashing is only a convenience over the same state machine.
+// The one shared SHA-256 implementation. Streaming is the primitive so large
+// payloads never need a whole-file allocation.
 
 /// FIPS 180-4 SHA-256, sans IO and byte-exact on every Swift platform.
+///
+/// Every input is borrowed contiguously and compressed by one non-generic
+/// raw-pointer loop compiled inside LyteCore: no allocation per block, no
+/// bounds-checked schedule, and callers in other modules never run an
+/// unspecialized generic path. A non-contiguous collection is copied once.
 public struct Sha256: Sendable {
-    private var state: [UInt32] = [
-        0x6A09_E667, 0xBB67_AE85, 0x3C6E_F372, 0xA54F_F53A,
-        0x510E_527F, 0x9B05_688C, 0x1F83_D9AB, 0x5BE0_CD19,
-    ]
+    private var h0: UInt32 = 0x6A09_E667
+    private var h1: UInt32 = 0xBB67_AE85
+    private var h2: UInt32 = 0x3C6E_F372
+    private var h3: UInt32 = 0xA54F_F53A
+    private var h4: UInt32 = 0x510E_527F
+    private var h5: UInt32 = 0x9B05_688C
+    private var h6: UInt32 = 0x1F83_D9AB
+    private var h7: UInt32 = 0x5BE0_CD19
+    /// Bytes of an incomplete block, always fewer than 64 between calls.
     private var buffer: [UInt8] = []
     private var totalByteCount: UInt64 = 0
 
@@ -33,47 +42,35 @@ public struct Sha256: Sendable {
     public init() {}
 
     /// Feeds bytes without copying complete 64-byte blocks.
+    @inlinable
     public mutating func update<Bytes: RandomAccessCollection>(
         _ bytes: Bytes
     ) where Bytes.Element == UInt8 {
-        totalByteCount &+= UInt64(bytes.count)
-        var index = bytes.startIndex
-
-        if !buffer.isEmpty {
-            let take = min(64 - buffer.count, bytes.count)
-            let end = bytes.index(index, offsetBy: take)
-            buffer.append(contentsOf: bytes[index..<end])
-            index = end
-            guard buffer.count == 64 else { return }
-            compress(buffer[...])
-            buffer.removeAll(keepingCapacity: true)
+        let borrowed: Void? = bytes.withContiguousStorageIfAvailable {
+            update(raw: UnsafeRawBufferPointer($0))
         }
-
-        while bytes.distance(from: index, to: bytes.endIndex) >= 64 {
-            let end = bytes.index(index, offsetBy: 64)
-            compress(bytes[index..<end])
-            index = end
+        if borrowed == nil {
+            Array(bytes).withUnsafeBytes { update(raw: $0) }
         }
-        buffer.append(contentsOf: bytes[index..<bytes.endIndex])
     }
 
     /// Pads and consumes this stream. Use a fresh instance for another blob.
     public mutating func finalized() -> [UInt8] {
         let bitLength = totalByteCount &* 8
-        var tail: [UInt8] = [0x80]
-        while (buffer.count + tail.count) % 64 != 56 { tail.append(0) }
+        buffer.append(0x80)
+        let padding = (64 + 56 - buffer.count % 64) % 64
+        buffer.append(contentsOf: repeatElement(0, count: padding))
         for shift in stride(from: 56, through: 0, by: -8) {
-            tail.append(UInt8(truncatingIfNeeded: bitLength >> UInt64(shift)))
+            buffer.append(UInt8(truncatingIfNeeded: bitLength >> UInt64(shift)))
         }
-        buffer.append(contentsOf: tail)
-        for start in stride(from: 0, to: buffer.count, by: 64) {
-            compress(buffer[start..<start + 64])
+        buffer.withUnsafeBytes { tail in
+            compress(tail.baseAddress!, blocks: tail.count / 64)
         }
         buffer.removeAll(keepingCapacity: false)
 
         var digest: [UInt8] = []
         digest.reserveCapacity(32)
-        for word in state {
+        for word in [h0, h1, h2, h3, h4, h5, h6, h7] {
             for shift in stride(from: 24, through: 0, by: -8) {
                 digest.append(UInt8(truncatingIfNeeded: word >> UInt32(shift)))
             }
@@ -81,6 +78,7 @@ public struct Sha256: Sendable {
         return digest
     }
 
+    @inlinable
     public static func digest<Bytes: RandomAccessCollection>(
         _ bytes: Bytes
     ) -> [UInt8] where Bytes.Element == UInt8 {
@@ -89,58 +87,78 @@ public struct Sha256: Sendable {
         return sha256.finalized()
     }
 
-    private mutating func compress<Bytes: RandomAccessCollection>(
-        _ block: Bytes
-    ) where Bytes.Element == UInt8 {
-        precondition(block.count == 64)
-        var words = [UInt32](repeating: 0, count: 64)
-        var index = block.startIndex
-        for round in 0..<16 {
-            let b0 = UInt32(block[index])
-            index = block.index(after: index)
-            let b1 = UInt32(block[index])
-            index = block.index(after: index)
-            let b2 = UInt32(block[index])
-            index = block.index(after: index)
-            let b3 = UInt32(block[index])
-            index = block.index(after: index)
-            words[round] = b0 << 24 | b1 << 16 | b2 << 8 | b3
-        }
-        for round in 16..<64 {
-            let s0 = rotateRight(words[round - 15], 7)
-                ^ rotateRight(words[round - 15], 18)
-                ^ (words[round - 15] >> 3)
-            let s1 = rotateRight(words[round - 2], 17)
-                ^ rotateRight(words[round - 2], 19)
-                ^ (words[round - 2] >> 10)
-            words[round] = words[round - 16] &+ s0
-                &+ words[round - 7] &+ s1
+    @usableFromInline
+    mutating func update(raw bytes: UnsafeRawBufferPointer) {
+        guard let base = bytes.baseAddress, !bytes.isEmpty else { return }
+        totalByteCount &+= UInt64(bytes.count)
+        var offset = 0
+
+        if !buffer.isEmpty {
+            let take = min(64 - buffer.count, bytes.count)
+            buffer.append(contentsOf: UnsafeRawBufferPointer(
+                start: base, count: take))
+            offset = take
+            guard buffer.count == 64 else { return }
+            buffer.withUnsafeBytes { block in
+                compress(block.baseAddress!, blocks: 1)
+            }
+            buffer.removeAll(keepingCapacity: true)
         }
 
-        var (a, b, c, d, e, f, g, h) = (
-            state[0], state[1], state[2], state[3],
-            state[4], state[5], state[6], state[7]
-        )
-        for round in 0..<64 {
-            let sum1 = rotateRight(e, 6) ^ rotateRight(e, 11)
-                ^ rotateRight(e, 25)
-            let choice = (e & f) ^ (~e & g)
-            let temporary1 = h &+ sum1 &+ choice
-                &+ Self.roundConstants[round] &+ words[round]
-            let sum0 = rotateRight(a, 2) ^ rotateRight(a, 13)
-                ^ rotateRight(a, 22)
-            let majority = (a & b) ^ (a & c) ^ (b & c)
-            let temporary2 = sum0 &+ majority
-            (h, g, f, e, d, c, b, a) = (
-                g, f, e, d &+ temporary1, c, b, a,
-                temporary1 &+ temporary2
-            )
+        let blocks = (bytes.count - offset) / 64
+        if blocks > 0 {
+            compress(base + offset, blocks: blocks)
+            offset += blocks * 64
         }
-        state[0] &+= a; state[1] &+= b; state[2] &+= c; state[3] &+= d
-        state[4] &+= e; state[5] &+= f; state[6] &+= g; state[7] &+= h
+        if offset < bytes.count {
+            buffer.append(contentsOf: UnsafeRawBufferPointer(
+                start: base + offset, count: bytes.count - offset))
+        }
     }
 
-    private func rotateRight(_ value: UInt32, _ amount: UInt32) -> UInt32 {
-        (value >> amount) | (value << (32 - amount))
+    /// Compresses `blocks` consecutive 64-byte blocks starting at `data`.
+    /// The state lives in locals for the whole run and the message schedule
+    /// in one stack allocation.
+    private mutating func compress(_ data: UnsafeRawPointer, blocks: Int) {
+        var (s0, s1, s2, s3, s4, s5, s6, s7) = (h0, h1, h2, h3, h4, h5, h6, h7)
+        Self.roundConstants.withUnsafeBufferPointer { k in
+            withUnsafeTemporaryAllocation(of: UInt32.self, capacity: 64) { w in
+                for block in 0..<blocks {
+                    let p = data + block * 64
+                    for t in 0..<16 {
+                        w[t] = UInt32(bigEndian: p.loadUnaligned(
+                            fromByteOffset: t * 4, as: UInt32.self))
+                    }
+                    for t in 16..<64 {
+                        let x = w[t - 15], y = w[t - 2]
+                        let sigma0 = x.rotatedRight(7) ^ x.rotatedRight(18) ^ (x >> 3)
+                        let sigma1 = y.rotatedRight(17) ^ y.rotatedRight(19) ^ (y >> 10)
+                        w[t] = w[t - 16] &+ sigma0 &+ w[t - 7] &+ sigma1
+                    }
+                    var (a, b, c, d, e, f, g, h) = (s0, s1, s2, s3, s4, s5, s6, s7)
+                    for t in 0..<64 {
+                        let sum1 = e.rotatedRight(6) ^ e.rotatedRight(11)
+                            ^ e.rotatedRight(25)
+                        let choice = (e & f) ^ (~e & g)
+                        let t1 = h &+ sum1 &+ choice &+ k[t] &+ w[t]
+                        let sum0 = a.rotatedRight(2) ^ a.rotatedRight(13)
+                            ^ a.rotatedRight(22)
+                        let majority = (a & b) ^ (a & c) ^ (b & c)
+                        (h, g, f, e, d, c, b, a) = (
+                            g, f, e, d &+ t1, c, b, a, t1 &+ sum0 &+ majority)
+                    }
+                    s0 &+= a; s1 &+= b; s2 &+= c; s3 &+= d
+                    s4 &+= e; s5 &+= f; s6 &+= g; s7 &+= h
+                }
+            }
+        }
+        (h0, h1, h2, h3, h4, h5, h6, h7) = (s0, s1, s2, s3, s4, s5, s6, s7)
+    }
+}
+
+private extension UInt32 {
+    @inline(__always)
+    func rotatedRight(_ amount: UInt32) -> UInt32 {
+        (self >> amount) | (self << (32 - amount))
     }
 }

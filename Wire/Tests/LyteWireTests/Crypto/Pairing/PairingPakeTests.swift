@@ -38,6 +38,63 @@ final class PairingPakeTests: XCTestCase {
         return (initiator, responder)
     }
 
+    // MARK: Secret hygiene
+
+    /// Byte arrays anywhere in a value's stored state (one level deep).
+    private func storedByteArrays(_ value: Any) -> [[UInt8]] {
+        Mirror(reflecting: value).children.compactMap { $0.value as? [UInt8] }
+    }
+
+    /// Once the scalar has been used against the peer share, neither
+    /// role keeps it: a finished (or failed) run holds nothing that
+    /// could test PINs offline.
+    func testFinishedRunsDropTheScalar() throws {
+        let scalarA = [UInt8](repeating: 0x21, count: 32)
+        let scalarB = [UInt8](repeating: 0x42, count: 32)
+        var initiator = try PairingPakeInitiator(
+            pin: Self.pin, clientStaticPublicKey: Self.clientStatic,
+            hostStaticPublicKey: Self.hostStatic,
+            noiseHandshakeHash: Self.handshakeHash, fixedScalar: scalarA
+        )
+        var responder = try PairingPakeResponder(
+            pin: Self.pin, clientStaticPublicKey: Self.clientStatic,
+            hostStaticPublicKey: Self.hostStatic,
+            noiseHandshakeHash: Self.handshakeHash, fixedScalar: scalarB
+        )
+        XCTAssertTrue(storedByteArrays(initiator).contains(scalarA))
+        let shareB = try responder.receiveShareA(try initiator.makeShareA())
+        XCTAssertFalse(storedByteArrays(responder).contains(scalarB))
+        try responder.receiveConfirm(try initiator.receiveShareB(shareB))
+        XCTAssertFalse(storedByteArrays(initiator).contains(scalarA))
+        XCTAssertNotNil(initiator.result)
+        // The responder keeps only public 32-byte values — the session
+        // id, the client static to pin, its own share — never the
+        // PIN-derived generator.
+        XCTAssertEqual(
+            storedByteArrays(responder).filter { $0.count == 32 }.count, 3
+        )
+    }
+
+    /// Printing a pairing result or a key pair never prints the secret.
+    func testSecretsNeverPrint() throws {
+        var (initiator, responder) = try makePair()
+        let shareB = try responder.receiveShareA(try initiator.makeShareA())
+        try responder.receiveConfirm(try initiator.receiveShareB(shareB))
+        let result = try XCTUnwrap(initiator.result)
+        func leaks(_ printed: String, _ secret: [UInt8]) -> Bool {
+            printed.contains(Hex.string(secret)) || printed.contains("\(secret)")
+        }
+        let isk = result.intermediateSessionKey
+        XCTAssertFalse(leaks("\(result)", isk))
+        XCTAssertFalse(leaks(String(reflecting: result), isk))
+        XCTAssertTrue("\(result)".contains(Hex.string(Self.hostStatic)))
+
+        let keys = NoiseKeyPair.generate()
+        XCTAssertFalse(leaks("\(keys)", keys.privateKey))
+        XCTAssertFalse(leaks(String(reflecting: keys), keys.privateKey))
+        XCTAssertTrue("\(keys)".contains(Hex.string(keys.publicKey)))
+    }
+
     // MARK: The happy path
 
     func testFullPairingRunAgreesOnIskAndPins() throws {

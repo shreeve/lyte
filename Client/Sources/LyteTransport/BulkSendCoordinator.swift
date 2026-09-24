@@ -1,42 +1,22 @@
-// BulkSendCoordinator (F-4): everything ABOVE one transfer — the
-// dropped-file queue, the capability gate, and resume-on-reconnect.
-// It outlives the wire session deliberately: a session teardown
-// discards the shell (ARQ state dies with the session by design), but
-// the coordinator keeps the interrupted entry — transfer id, prepared
-// offer, file URL — and re-offers the SAME id into the next session,
-// which is exactly what makes the receiver's persisted possession map
-// resume the transfer from the gap (design record
-// docs/20260728-053300-lyte-bulk-channel.md §5).
+// BulkSendCoordinator: everything above one transfer — the dropped-file
+// queue, the capability gate, and resume-on-reconnect. It outlives the
+// wire session: an interrupted entry keeps its transfer id and prepared
+// offer and re-offers the same id into the next session, so the receiver
+// resumes from the gap (docs/decisions/20260728-053300-lyte-bulk-channel.md).
 //
-// QUEUE POLICY (the F-4 ruling, documented here): multi-file drops
-// QUEUE and send SERIALLY, one transfer at a time — v1's engines are
-// single-transfer by construction and the wire refuses concurrency
-// with abort(busy) (design §6), so the polite client never even asks.
-// The pill's × cancels EVERYTHING — the active transfer and the queue
-// both: a human reaching for cancel wants the sending to stop, not a
-// surprise next file starting.
-//
-// CAPABILITY GATE (H3 §0 decision 1): the client OFFERS ONLY when
-// key 11 is in the agreed set — the host declares it iff its standing
-// consent toggle is ON. A drop against a key-11-less host answers
-// `.hostNotAccepting` so the UI can say why, rather than silently
-// doing nothing.
-//
-// Threading: lock-serialized like the session core; `onChange`/
-// `onNotice` fire from whatever thread drove the mutation (receive
-// thread, read queue, main) — UI owners hop to the main actor
-// themselves (the LyteUdpSessionEvent contract).
+// Drops queue and send serially (the wire refuses concurrency with
+// abort(busy)); cancel stops the active transfer and clears the queue.
+// Offers go out only when key 11 was agreed. `onChange`/`onNotice` fire
+// on whatever thread drove the mutation; UI owners hop to the main actor.
 
 import Foundation
+import LyteCore
 import LyteWire
 
 /// What became of one drop, for immediate UI feedback.
 public enum BulkDropVerdict: Equatable, Sendable {
-    /// Accepted: transfers started/queued (the snapshot has the live
-    /// picture).
     case accepted(count: Int)
-    /// Key 11 never survived intersection — the host's standing
-    /// consent toggle is off (or the host predates bulk transfer).
+    /// Key 11 never survived intersection.
     case hostNotAccepting
     /// No session is attached (dropped between sessions).
     case notConnected
@@ -72,24 +52,20 @@ public struct BulkSendSnapshot: Equatable, Sendable {
 
 public final class BulkSendCoordinator: @unchecked Sendable {
     /// Prepares one file's offer (blocking; runs on the background
-    /// executor). Injected so tests author offers in virtual time.
+    /// executor).
     public typealias Preparer = @Sendable (
         _ url: URL, _ transferId: UInt64, _ chunkByteCount: UInt32
     ) throws -> BulkOffer
-    /// Opens one file's chunk reader. Injected likewise.
     public typealias ReaderFactory = @Sendable (URL) throws -> any BulkChunkReading
 
     private struct Entry {
         var url: URL
         var displayName: String
-        /// Minted ONCE at first preparation and reused verbatim on
-        /// every re-offer — the resume identity (design §5).
+        /// Minted once and reused on every re-offer: the resume identity.
         var transferId: UInt64?
-        /// The prepared offer, kept across session teardown so the
-        /// re-offer is byte-identical (same quadruple = resume match).
+        /// Kept across teardown so the re-offer is byte-identical.
         var offer: BulkOffer?
-        /// One fresh-id retry after abort(resumeMismatch) — the
-        /// sender's mandated recovery; a second mismatch fails loudly.
+        /// One fresh-id retry after abort(resumeMismatch).
         var resumeMismatchRetried = false
     }
 
@@ -104,22 +80,20 @@ public final class BulkSendCoordinator: @unchecked Sendable {
 
     /// The session's chan-8 send leg; nil between sessions.
     private var sessionSend: (@Sendable ([UInt8]) -> Void)?
-    /// Key 11 in the agreed set — the offer gate.
+    /// Key 11 in the agreed set.
     private var negotiated = false
 
-    private var entries: [Entry] = []
+    private var entries = Deque<Entry>()
     private var shell: BulkSendShell?
-    /// Bumped per shell; a discarded shell's late events (a pending
-    /// read completing after cancel/teardown) must never pop the
-    /// queue's CURRENT head.
+    /// Bumped per shell so a discarded shell's late events never touch
+    /// the current head.
     private var shellGeneration: UInt64 = 0
     /// True while the head entry is being prepared (hash in flight).
     private var preparing = false
     /// True when the head entry's transfer was interrupted by a
     /// session teardown and waits for the next attach.
     private var awaitingReconnect = false
-    /// A read failure already explained this abort — don't re-notice
-    /// the cancel that carried it.
+    /// A read failure already explained the abort that follows.
     private var readFailureNoticed = false
 
     public init(
@@ -154,9 +128,8 @@ public final class BulkSendCoordinator: @unchecked Sendable {
 
     // MARK: Session attachment
 
-    /// A session reached capability agreement: attach its chan-8 send
-    /// leg and the key-11 verdict. An interrupted transfer (or a queue
-    /// that outlived the last session) starts/resumes here.
+    /// Attaches a session after capability agreement; pending work
+    /// starts or resumes here.
     public func sessionReady(
         negotiated: Bool,
         send: @escaping @Sendable ([UInt8]) -> Void
@@ -167,8 +140,7 @@ public final class BulkSendCoordinator: @unchecked Sendable {
         self.awaitingReconnect = false
         var refusedNames: [String] = []
         if !negotiated, !entries.isEmpty {
-            // The pending work can never move on this session — fail
-            // it loudly rather than holding files hostage.
+            // Pending work can never move on this session: fail it.
             refusedNames = entries.map(\.displayName)
             entries.removeAll()
         }
@@ -180,18 +152,14 @@ public final class BulkSendCoordinator: @unchecked Sendable {
         onChange()
     }
 
-    /// The session ended (teardown, liveness, disconnect). The active
-    /// transfer — if any — keeps its entry at the queue's head with
-    /// its id and offer intact: the next `sessionReady` re-offers the
-    /// SAME id, and the accept's possession map resumes from the gap.
+    /// The active entry stays at the head with its id and offer intact
+    /// for the next `sessionReady` to re-offer.
     public func sessionEnded() {
         lock.lock()
         sessionSend = nil
         negotiated = false
         preparing = false
         if let active = shell {
-            // Discard the shell with the session (ARQ state is gone);
-            // the head entry stays for the re-offer.
             shell = nil
             if !entries.isEmpty {
                 awaitingReconnect = true
@@ -202,10 +170,8 @@ public final class BulkSendCoordinator: @unchecked Sendable {
         onChange()
     }
 
-    /// The window is leaving this host for good (new host, window
-    /// closed): drop everything, including a resume-in-waiting —
-    /// a file dropped for one host must never follow the user to
-    /// another (the consent posture).
+    /// Drops everything, including a pending resume: a file dropped for
+    /// one host must never follow the user to another.
     public func abandonAll() {
         lock.lock()
         let active = shell
@@ -220,8 +186,7 @@ public final class BulkSendCoordinator: @unchecked Sendable {
 
     // MARK: Drops
 
-    /// Files landed on the stream window. Serial queue policy (file
-    /// comment); the verdict is immediate, preparation is async.
+    /// The verdict is immediate; preparation is async.
     public func drop(urls: [URL]) -> BulkDropVerdict {
         guard !urls.isEmpty else { return .accepted(count: 0) }
         lock.lock()
@@ -244,8 +209,7 @@ public final class BulkSendCoordinator: @unchecked Sendable {
         return .accepted(count: urls.count)
     }
 
-    /// The pill's ×: cancels the active transfer AND clears the queue
-    /// (file comment — cancel means stop sending, not "next file").
+    /// Cancels the active transfer and clears the queue.
     public func cancelAll() {
         lock.lock()
         let active = shell
@@ -264,9 +228,7 @@ public final class BulkSendCoordinator: @unchecked Sendable {
 
     // MARK: Inbound
 
-    /// One decoded chan-8 message from the session. Messages with no
-    /// active transfer (a late abort after cancel, mostly) drop as
-    /// weather.
+    /// Messages for no active transfer are dropped.
     public func ingest(_ message: BulkMessage) {
         lock.lock()
         let active = shell
@@ -301,8 +263,7 @@ public final class BulkSendCoordinator: @unchecked Sendable {
             return snap
         }
         guard let shell else {
-            // Entries pending but nothing driving (no session): idle
-            // queue, surfaced as awaiting reconnect.
+            // Pending with no session.
             snap.activeName = head.displayName
             snap.phase = .awaitingReconnect
             snap.queuedCount = max(0, entries.count - 1)
@@ -326,11 +287,8 @@ public final class BulkSendCoordinator: @unchecked Sendable {
 
     // MARK: Interior
 
-    /// Advances the queue: starts (or resumes) the head entry when
-    /// nothing is driving. NEVER called with the lock held — the
-    /// preparation leg runs on the injected executor, which tests make
-    /// synchronous (virtual time), so scheduling under the lock would
-    /// self-deadlock there.
+    /// Starts or resumes the head entry when nothing is driving. Never
+    /// called with the lock held: the injected executor may be synchronous.
     private func advance() {
         while true {
             lock.lock()
@@ -343,9 +301,7 @@ public final class BulkSendCoordinator: @unchecked Sendable {
             }
 
             if let offer = head.offer {
-                // Resume (or a prepared entry whose session died
-                // before begin): re-offer the SAME id — the
-                // byte-identical quadruple is the resume match.
+                // Re-offer the same id: the resume match.
                 let failedName = beginShellLocked(
                     entry: head, offer: offer, send: send)
                 lock.unlock()
@@ -375,7 +331,6 @@ public final class BulkSendCoordinator: @unchecked Sendable {
         }
     }
 
-    /// The preparation leg's landing (executor thread).
     private func finishPreparation(
         transferId: UInt64, prepared: Result<BulkOffer, Error>
     ) {
@@ -393,8 +348,7 @@ public final class BulkSendCoordinator: @unchecked Sendable {
         case .success(let offer):
             entries[0].offer = offer
             if !negotiated || sessionSend == nil {
-                // The session died mid-hash; the prepared entry waits
-                // for the next attach.
+                // The session died mid-hash.
                 awaitingReconnect = true
                 lock.unlock()
                 onChange()
@@ -413,10 +367,8 @@ public final class BulkSendCoordinator: @unchecked Sendable {
         }
     }
 
-    /// Builds and begins the shell for one prepared entry. Caller
-    /// holds the lock. Returns the failure (name, error) when the
-    /// reader refused to open — the entry is popped and the caller
-    /// speaks/advances outside the lock.
+    /// Caller holds the lock. Returns (name, error) when the reader
+    /// refused to open; the entry is then already popped.
     private func beginShellLocked(
         entry: Entry, offer: BulkOffer,
         send: @escaping @Sendable ([UInt8]) -> Void
@@ -440,9 +392,7 @@ public final class BulkSendCoordinator: @unchecked Sendable {
                 self?.shellEvent(event, name: name, generation: generation)
             })
         shell = built
-        // begin() can only throw on a re-begin — this shell is fresh.
-        // Its actions here are emissions only (the offer); nothing
-        // re-enters the coordinator's lock.
+        // begin() throws only on a re-begin, and never re-enters our lock.
         try? built.begin()
         return nil
     }
@@ -450,10 +400,8 @@ public final class BulkSendCoordinator: @unchecked Sendable {
     private func shellEvent(
         _ event: BulkSendShellEvent, name: String, generation: UInt64
     ) {
-        // Stale-shell guard, re-checked inside each locked section:
-        // shells discarded at cancel/teardown may still land late
-        // events off pending read completions — never let them touch
-        // the current queue.
+        // Discarded shells may still land late events; each locked
+        // section re-checks the generation.
         switch event {
         case .progressChanged:
             lock.lock()
@@ -498,8 +446,7 @@ public final class BulkSendCoordinator: @unchecked Sendable {
             var notice: String?
             if reason == .resumeMismatch, !entries.isEmpty,
                !entries[0].resumeMismatchRetried {
-                // The file changed under the id: the mandated recovery
-                // is a FRESH id and a fresh hash, once.
+                // The file changed: retry once with a fresh id and hash.
                 entries[0].transferId = nil
                 entries[0].offer = nil
                 entries[0].resumeMismatchRetried = true

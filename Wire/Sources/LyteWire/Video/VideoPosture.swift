@@ -1,20 +1,14 @@
-// VideoPostureState (0x26), host→client — the postures design's video
-// quiet/wake axis (docs/20260802-013946-postures-design.md). After
-// ~30 s without damage the host's 1 s retained keepalive backs off
-// exponentially (2 → 4 → 8 → 16 → 30 s); EVERY step rides a fresh
+// VideoPostureState (0x26), host→client
+// (docs/decisions/20260802-013946-postures-design.md). When the host's
+// retained keepalive backs off during quiet, every step rides a fresh
 // announcement carrying the interval now in force, so the client's
-// freshness contracts arm against the ANNOUNCED heartbeat instead of
-// guessing. Damage is its own wake (the frame IS the announcement's
-// companion) and client input wakes the posture preemptively — the
-// input packet is the wake signal, zero added latency.
+// freshness contracts arm against the announced heartbeat. Damage and
+// client input are their own wake signals.
 //
-// CAPABILITY CARRIAGE — key 16 (videoQuietPosture), the W7 spine used
-// exactly as keys 9–15 use it: one canonical `10 F5` map entry through
-// `unknownEntries`, byte-equal intersection, capabilities-v1.json
-// never regenerates. A host never backs off against a set without the
-// key — a legacy client keeps today's 1 s keepalive forever.
+// Capability key 16 (videoQuietPosture) rides `unknownEntries`; a host
+// never backs off against a peer that did not declare it.
 //
-// Layout (ARQ ordered stream — the 0x18/0x19/0x25 carriage argument):
+// Layout (ARQ ordered stream):
 //
 //   offset size field
 //   0      1    type              0x26
@@ -22,41 +16,28 @@
 //   2      1    keepaliveSeconds  the interval now in force (1–255;
 //                                 active always carries 1)
 //
-// Unknown postures, a zero interval, trailing bytes, and truncation
-// all reject — reliable ordered carriage between negotiated peers,
-// so a foreign byte is a protocol break to surface. Never traps.
+// Unknown postures, a zero interval, trailing bytes, and truncation all
+// reject. Never traps.
 
 // MARK: - The capability spine helpers
 
 extension Capabilities {
-    /// The key-16 entry as it rides the wire: CBOR bool under
-    /// unsigned key 16 (`10 F5` inside the map).
-    private static var videoQuietPostureEntry: CborMapEntry {
-        CborMapEntry(
-            key: .unsigned(CapabilityKey.videoQuietPosture),
-            value: .bool(true)
-        )
-    }
-
-    /// True when this set carries `videoQuietPosture: true`.
+    /// True when this set carries `videoQuietPosture: true` (key 16) — see
+    /// `declaresFlag(_:)`.
     public var videoQuietPosture: Bool {
-        unknownEntries.contains(Self.videoQuietPostureEntry)
+        declaresFlag(CapabilityKey.videoQuietPosture)
     }
 
-    /// A copy of this set declaring video-quiet-posture support.
-    /// Idempotent; the CBOR encoder owns canonical key order.
+    /// A copy of this set declaring `videoQuietPosture`.
     public func declaringVideoQuietPosture() -> Capabilities {
-        guard !videoQuietPosture else { return self }
-        var declared = self
-        declared.unknownEntries.append(Self.videoQuietPostureEntry)
-        return declared
+        declaringFlag(CapabilityKey.videoQuietPosture)
     }
 }
 
 // MARK: - The CTRL codec
 
 /// The host's video posture announcement (type 0x26).
-public struct VideoPostureState: Hashable, Sendable {
+public struct VideoPostureState: Hashable, Sendable, SliceDecodable {
     public enum Posture: UInt8, Hashable, CaseIterable, Sendable {
         /// Damage-driven frames with the 1 s retained keepalive.
         case active = 0x01
@@ -100,10 +81,6 @@ public struct VideoPostureState: Hashable, Sendable {
         }
         return VideoPostureState(
             posture: posture, keepaliveSeconds: payload[base + 2])
-    }
-
-    public static func decode(_ payload: [UInt8]) throws -> VideoPostureState {
-        try decode(payload[...])
     }
 }
 

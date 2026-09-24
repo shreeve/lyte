@@ -1,23 +1,24 @@
 // The control-codec vector-file model and loader:
-// `Wire/Vectors/control-v1.json` — the CTRL/TLV/capability codecs that
-// were pinned end-side under mirror-and-flag during H2 (HS-11's idle
-// frame, HS-13/CL-9's input pair + lastInputSeq TLV, HS-18/CL-13's
-// audio-routing pair + capability key 9) and promoted into LyteWire by
-// the second codec-promotion slice. Same doctrine as the other
-// loaders: TestKit may import Foundation, LyteWire may not.
+// `Wire/Vectors/control-v1.json` — the idle frame, the input pair and
+// lastInputSeq TLV, the audio-routing pair, and capability key 9.
 
 import LyteCore
 import Foundation
 import LyteWire
 
 /// One vector file: `Wire/Vectors/control-v1.json`.
-public struct ControlVectorFile: Codable, Sendable {
+public struct ControlVectorFile: FrozenVectorFile {
     public var format: String
     public var formatVersion: Int
     public var wireVersion: Int
     public var vectors: [ControlVector]
 
     public static let expectedFormat = "lyte-wire-control-vectors"
+    public static let fileName = "control-v1.json"
+
+    public var vectorNameGroups: [[String]] {
+        [vectors.map(\.name)]
+    }
 
     public init(
         format: String,
@@ -31,10 +32,6 @@ public struct ControlVectorFile: Codable, Sendable {
         self.vectors = vectors
     }
 
-    public static func load(from path: String) throws -> ControlVectorFile {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(ControlVectorFile.self, from: data)
-    }
 }
 
 /// One input-echo tuple as vector data (u64s ride as hex, the house
@@ -52,15 +49,12 @@ public struct ControlEchoTuple: Codable, Sendable {
 }
 
 /// One control-codec vector. `codec` names the codec under test; kinds
-/// match the session file (`roundtrip` encodes the typed fields to
-/// exactly `messageHex` and decodes back; `decodeReject` throws
-/// `error`, a case name of the codec's error type). For
-/// `lastInputSeqTlv`, `messageHex` is a whole envelope datagram (the
-/// conn-id TLV precedent): decode must yield exactly `lastInputSeq`,
-/// and the datagram re-encodes byte-exactly. For `capabilitySet`,
-/// `messageHex` is a declaration's CBOR map: decode must answer
-/// exactly `hostAudioRouting` through the key-9 accessor and re-encode
-/// byte-exactly.
+/// match the session file (`error` is a case name of the codec's error
+/// type). For `lastInputSeqTlv`, `messageHex` is a whole envelope datagram:
+/// decode must yield exactly `lastInputSeq` and re-encode byte-exactly.
+/// For `capabilitySet`, `messageHex` is a declaration's CBOR map: decode
+/// must answer exactly `hostAudioRouting` through the key-9 accessor and
+/// re-encode byte-exactly.
 public struct ControlVector: Codable, Sendable {
     public var name: String
     public var description: String
@@ -245,40 +239,5 @@ public func controlVectorMode(
     case .hostAudible: return .hostAudible
     case .hostMuted: return .hostMuted
     case .streamOff: return .streamOff
-    }
-}
-
-/// Stable names for `IdleFrameError` cases, as they appear in vectors.
-public func idleFrameErrorName(_ error: IdleFrameError) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .unexpectedType: return "unexpectedType"
-    }
-}
-
-/// Stable names for `InputMessageError` cases, as they appear in vectors.
-public func inputMessageErrorName(_ error: InputMessageError) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .unexpectedType: return "unexpectedType"
-    case .unknownKind: return "unknownKind"
-    case .bodyLengthMismatch: return "bodyLengthMismatch"
-    case .malformedFlag: return "malformedFlag"
-    case .reservedBitsSet: return "reservedBitsSet"
-    case .malformedTupleCount: return "malformedTupleCount"
-    case .duplicateLastInputSeqTlv: return "duplicateLastInputSeqTlv"
-    case .malformedLastInputSeqTlv: return "malformedLastInputSeqTlv"
-    }
-}
-
-/// Stable names for `AudioRoutingMessageError` cases.
-public func audioRoutingMessageErrorName(
-    _ error: AudioRoutingMessageError
-) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .unexpectedType: return "unexpectedType"
-    case .unknownMode: return "unknownMode"
-    case .trailingBytes: return "trailingBytes"
     }
 }

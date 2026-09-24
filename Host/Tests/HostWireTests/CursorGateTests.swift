@@ -2,6 +2,7 @@ import XCTest
 import HostCore
 import HostSession
 import HostWire
+import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
@@ -64,8 +65,7 @@ final class CursorGateTests: XCTestCase {
         XCTAssertThrowsError(try CursorShape.decode(
             [0x24, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00]
         ))
-        print("E3 gate (codec): 0x24 pinned byte-exact against the "
-            + "Wire arrays")
+        print("E3 gate (codec): 0x24 pinned byte-exact against the Wire arrays")
     }
 
     // MARK: Leg 2 — key 13 on the spine, mutual-only intersection
@@ -85,200 +85,47 @@ final class CursorGateTests: XCTestCase {
         XCTAssertFalse(
             Capabilities.wireDefault.intersecting(declared).cursorShape
         )
-        print("E3 gate (spine): declaration = local bytes + `0D F5`, "
-            + "mutual-only survival")
+        print("""
+            E3 gate (spine): declaration = local bytes + `0D F5`, \
+            mutual-only survival
+            """)
     }
 
     // MARK: The scripted client (the ClipboardGateTests harness)
-
-    private struct CursorClient {
-        var noise: NoiseSession
-        var transport: NoiseTransport?
-        var ctrlSeq: UInt16 = 0
-        var arq = ArqEndpoint<ClientClock>(channel: .ctrl)
-        let staticKeys: NoiseKeyPair
-
-        var received: [(group: ArqGroupId, bytes: [UInt8])] = []
-
-        init(hostStaticPublicKey: [UInt8]) throws {
-            staticKeys = NoiseKeyPair.generate()
-            noise = try NoiseSession(
-                role: .initiator,
-                staticKeys: staticKeys,
-                remoteStaticPublicKey: hostStaticPublicKey
-            )
-        }
-
-        mutating func message1Datagram(
-            clientMicros: UInt64
-        ) throws -> [UInt8] {
-            let message1 = try noise.writeMessage1()
-            return try ctrlDatagram(
-                body: [CtrlMessageType.noiseHandshake1] + message1,
-                sealed: false, clientMicros: clientMicros
-            )
-        }
-
-        mutating func ctrlDatagram(
-            body: [UInt8], sealed: Bool, clientMicros: UInt64
-        ) throws -> [UInt8] {
-            let envelope = Envelope(
-                channel: .ctrl,
-                seq: ChannelSeq(rawValue: ctrlSeq),
-                frame: FrameNumber(rawValue: 0),
-                timestamp: clientMicros,
-                fec: 0
-            )
-            ctrlSeq &+= 1
-            guard sealed else { return try envelope.encode(payload: body) }
-            let header = try envelope.encode(payload: [])
-            let payload = try transport!.seal(
-                plaintext: body[...], aad: header[...], envelope: envelope
-            )
-            return try envelope.encode(payload: payload)
-        }
-
-        mutating func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
-            let (envelope, payload) = try Envelope.decode(bytes)
-            if transport == nil {
-                XCTAssertEqual(envelope.channel, .ctrl)
-                XCTAssertEqual(
-                    payload.first, CtrlMessageType.noiseHandshake2)
-                _ = try noise.readMessage2(payload.dropFirst())
-                transport = try noise.makeTransport()
-                return
-            }
-            guard envelope.channel == .ctrl else { return }
-            let aad = bytes[bytes.startIndex..<payload.startIndex]
-            let plaintext: [UInt8]
-            do {
-                plaintext = try transport!.unseal(
-                    wirePayload: payload, aad: aad, envelope: envelope
-                )
-            } catch NoiseError.replayedSequence, NoiseError.staleSequence {
-                return // network duplicate; routine
-            }
-            switch plaintext.first {
-            case CtrlMessageType.arqSegment, CtrlMessageType.arqAck:
-                for event in arq.ingest(
-                    payload: plaintext,
-                    now: ClientTimestamp(microseconds: nowMicros)
-                ) {
-                    if case .message(let group, let bytes) = event {
-                        received.append((group, bytes))
-                    }
-                }
-            default:
-                break // beacons etc. — not this gate's business
-            }
-        }
-
-        mutating func pollOut(nowMicros: UInt64) throws -> [[UInt8]] {
-            let (payloads, _) = arq.poll(
-                now: ClientTimestamp(microseconds: nowMicros)
-            )
-            return try payloads.map {
-                try ctrlDatagram(
-                    body: $0, sealed: true, clientMicros: nowMicros)
-            }
-        }
-
-        mutating func take(type: UInt8) -> [[UInt8]] {
-            let hits = received.filter { $0.bytes.first == type }
-                .map(\.bytes)
-            received.removeAll { $0.bytes.first == type }
-            return hits
-        }
-    }
-
-    private final class DatagramBox {
-        var datagrams: [VideoChannelDatagram] = []
-    }
 
     /// Handshake + capability exchange, direct pipe. The host always
     /// declares key 13 (the direct eye in this gate); the client's
     /// declaration is the leg's variable.
     private func establish(
         clientCapabilities: Capabilities
-    ) throws -> (session: Session, client: CursorClient, box: DatagramBox) {
-        let hostStatic = NoiseKeyPair.generate()
-        let box = DatagramBox()
-        let session = Session(
+    ) throws -> (host: HostSessionHarness, client: SealedCtrlPeer<ClientClock>) {
+        let host = HostSessionHarness(
             config: SessionConfig(
-                crypto: .noise(hostStatic: hostStatic),
+                crypto: .noise(hostStatic: NoiseKeyPair.generate()),
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: 1 << 62,
                 capabilities: .wireDefault.declaringCursorShape()
             ),
-            clientTuple: Self.tupleA,
-            now: 0,
-            rng: SplitMix64(seed: 0x24),
-            send: { box.datagrams.append($0) }
+            tuple: Self.tupleA,
+            rng: SplitMix64(seed: 0x24)
         )
-        var client = try CursorClient(
-            hostStaticPublicKey: hostStatic.publicKey)
-        _ = session.receive(
-            try client.message1Datagram(clientMicros: 500),
-            from: Self.tupleA, now: 0, hostMicroseconds: 0
-        )
-        XCTAssertEqual(session.phase, .established)
-        session.pump(now: 0)
-        var negotiator = CapabilityNegotiator(
-            role: .client, local: clientCapabilities
-        )
-        try client.arq.send(
-            message: try XCTUnwrap(negotiator.start()).encode(),
-            now: ClientTimestamp(microseconds: 1_000)
-        )
-        return (session, client, box)
-    }
-
-    /// Exchange passes 2 ms apart until both ends quiesce.
-    private func settle(
-        _ session: Session, _ client: inout CursorClient,
-        _ box: DatagramBox, forwarded: inout Int, t: inout UInt64,
-        onEvent: (SessionEvent) -> Void = { _ in }
-    ) throws {
-        var idle = 0
-        while idle < 3 {
-            t += 2_000
-            let before = (forwarded, client.received.count)
-            var events = session.advance(now: t * 1_000, hostMicroseconds: t)
-            session.pump(now: t * 1_000)
-            while forwarded < box.datagrams.count {
-                try client.absorb(box.datagrams[forwarded].bytes, nowMicros: t)
-                forwarded += 1
-            }
-            for datagram in try client.pollOut(nowMicros: t) {
-                events += session.receive(
-                    datagram, from: Self.tupleA,
-                    now: t * 1_000, hostMicroseconds: t
-                )
-                session.pump(now: t * 1_000)
-                while forwarded < box.datagrams.count {
-                    try client.absorb(
-                        box.datagrams[forwarded].bytes, nowMicros: t
-                    )
-                    forwarded += 1
-                }
-            }
-            for event in events { onEvent(event) }
-            idle = (forwarded, client.received.count) == before ? idle + 1 : 0
-        }
+        let client = try host.connectClient(declaring: clientCapabilities)
+        XCTAssertEqual(host.session.phase, .established)
+        return (host, client)
     }
 
     // MARK: Leg 3 — the negotiated shape stream, dedupe, the ceiling
 
     func testGateNegotiatedShapeTravelsOnceDedupesAndHides() throws {
-        let (session, clientValue, box) = try establish(
+        let (host, clientValue) = try establish(
             clientCapabilities: .wireDefault.declaringCursorShape()
         )
         var client = clientValue
-        var forwarded = 0
+        let session = host.session
         var t: UInt64 = 1_000
 
         var agreed: Capabilities?
-        try settle(session, &client, box, forwarded: &forwarded, t: &t) {
+        try host.settle(&client, t: &t) {
             if case .capabilitiesAgreed(let set) = $0 { agreed = set }
         }
         XCTAssertEqual(agreed?.cursorShape, true,
@@ -293,7 +140,7 @@ final class CursorGateTests: XCTestCase {
         )
         XCTAssertEqual(events, [.cursorShapeSent(
             pixelByteCount: 8, hidden: false)])
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try host.settle(&client, t: &t)
         XCTAssertEqual(
             client.take(type: CtrlMessageType.cursorShape),
             [try Self.arrow.encode()]
@@ -305,7 +152,7 @@ final class CursorGateTests: XCTestCase {
             Self.arrow, now: t * 1_000, hostMicroseconds: t
         )
         XCTAssertEqual(events, [.cursorShapeSuppressed(.duplicate)])
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try host.settle(&client, t: &t)
         XCTAssertEqual(client.take(type: CtrlMessageType.cursorShape), [])
 
         // The hidden state is a STATE — it travels.
@@ -314,7 +161,7 @@ final class CursorGateTests: XCTestCase {
         )
         XCTAssertEqual(events, [.cursorShapeSent(
             pixelByteCount: 0, hidden: true)])
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try host.settle(&client, t: &t)
         XCTAssertEqual(
             client.take(type: CtrlMessageType.cursorShape),
             [try CursorShape.hidden.encode()]
@@ -331,29 +178,31 @@ final class CursorGateTests: XCTestCase {
             over, now: t * 1_000, hostMicroseconds: t
         )
         XCTAssertEqual(events, [.cursorShapeSuppressed(.overBudget)])
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try host.settle(&client, t: &t)
         XCTAssertEqual(client.take(type: CtrlMessageType.cursorShape), [])
 
         XCTAssertEqual(session.counters.cursorShapesSent, 2)
         XCTAssertEqual(session.counters.cursorShapesSuppressed, 2)
-        print("E3 gate (in vivo): shape → byte-exact 0x24 once; "
-            + "duplicate dedupes; hidden travels; over-ceiling "
-            + "suppresses and counts")
+        print("""
+            E3 gate (in vivo): shape → byte-exact 0x24 once; \
+            duplicate dedupes; hidden travels; over-ceiling \
+            suppresses and counts
+            """)
     }
 
     // MARK: Leg 4 — the rule-3 gate against the unnegotiated
 
     func testGateUnnegotiatedStaysSilentAndArrivingShapeDropsLoud() throws {
         // A v1 client: declares, but never key 13.
-        let (session, clientValue, box) = try establish(
+        let (host, clientValue) = try establish(
             clientCapabilities: .wireDefault
         )
         var client = clientValue
-        var forwarded = 0
+        let session = host.session
         var t: UInt64 = 1_000
 
         var agreed: Capabilities?
-        try settle(session, &client, box, forwarded: &forwarded, t: &t) {
+        try host.settle(&client, t: &t) {
             if case .capabilitiesAgreed(let set) = $0 { agreed = set }
         }
         XCTAssertEqual(agreed?.cursorShape, false)
@@ -366,7 +215,7 @@ final class CursorGateTests: XCTestCase {
             Self.arrow, now: t * 1_000, hostMicroseconds: t
         )
         XCTAssertEqual(events, [])
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try host.settle(&client, t: &t)
         XCTAssertEqual(client.take(type: CtrlMessageType.cursorShape), [])
         XCTAssertEqual(session.counters.cursorShapesSent, 0)
         XCTAssertEqual(session.counters.cursorShapesSuppressed, 0)
@@ -378,14 +227,16 @@ final class CursorGateTests: XCTestCase {
             now: ClientTimestamp(microseconds: t)
         )
         var drops: [UInt8] = []
-        try settle(session, &client, box, forwarded: &forwarded, t: &t) {
+        try host.settle(&client, t: &t) {
             if case .dropped(.unexpectedCtrlType(let type)) = $0 {
                 drops.append(type)
             }
         }
         XCTAssertEqual(drops, [CtrlMessageType.cursorShape])
 
-        print("E3 gate (rule 3): unnegotiated stays silent; "
-            + "0x24-at-host drops loud")
+        print("""
+            E3 gate (rule 3): unnegotiated stays silent; \
+            0x24-at-host drops loud
+            """)
     }
 }

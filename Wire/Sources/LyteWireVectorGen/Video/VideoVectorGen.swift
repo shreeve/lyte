@@ -1,9 +1,7 @@
-// Authors Vectors/video-v1.json — the W2 packetized golden corpus and
-// its assembly scenarios. Inline synthetic frames pin the small
-// geometries with full datagram hex (auditable by eye); the corpus
-// frames pin real HEVC material by sha256. Anchored against the
-// hand-walked packetize case in VideoPacketizerTests so the packetizer
-// never grades its own homework. Freeze policy per Vectors/README.md.
+// Authors Vectors/video-v1.json: the packetized golden corpus and its
+// assembly scenarios. Inline synthetic frames pin small geometries by
+// full datagram hex; corpus frames pin real HEVC by sha256. Anchored by
+// the hand-walked packetize case in VideoPacketizerTests.
 
 import Foundation
 import LyteCore
@@ -33,7 +31,7 @@ private struct FrameSpec {
     let includeHex: Bool
 }
 
-func makeVideoVectorFile(corpusDirectory: String) throws -> VideoVectorFile {
+public func makeVideoVectorFile(corpusDirectory: String) throws -> VideoVectorFile {
     var specs: [FrameSpec] = []
 
     // Inline synthetic frames — every geometry bucket edge the vectors

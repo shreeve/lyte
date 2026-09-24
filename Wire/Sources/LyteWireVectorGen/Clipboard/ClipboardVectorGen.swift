@@ -1,15 +1,11 @@
-// Clipboard-codec vector authoring (CL-15, the first H3 feature): the
-// clipboard-text pair 0x1A/0x1B and the key-10 capability spine —
-// codecs born in the registry rather than promoted, frozen at their
-// birth slice. Run once, commit, freeze. The circularity is broken by
-// the hand-computed anchor bytes in ClipboardCodecTests, which pin the
-// same nominal messages.
+// Authors Vectors/clipboard-v1.json: the clipboard-text pair 0x1A/0x1B
+// and the key-10 capability spine. Anchored by ClipboardCodecTests.
 
 import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-func makeClipboardVectorFile() throws -> ClipboardVectorFile {
+public func makeClipboardVectorFile() throws -> ClipboardVectorFile {
     var vectors: [ClipboardVector] = []
 
     // MARK: Roundtrips — ASCII, multi-byte UTF-8, the exact ceiling

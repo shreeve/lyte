@@ -19,9 +19,10 @@ import LyteWireTestKit
 //     one-shot group, both endpoints quiescent, inside simulated 240 s.
 //
 // Any failure names its seed; rerun with LYTE_ARQ_SEED=<seed> to
-// reproduce a single trial. The in-tree default of 25k trials keeps
-// `swift test` fast (the W-G1 precedent); the full W-G4 bar runs with
-// LYTE_ARQ_TRIALS=1000000, recorded in the slice's gate evidence.
+// reproduce a single trial. The in-tree default of 2,000 trials keeps
+// `swift test` fast — ArqExhaustiveTests already covers every small
+// interleaving; LYTE_ARQ_TRIALS=25000 is the long form for a pre-merge
+// gate, and the full W-G4 bar is LYTE_ARQ_TRIALS=1000000.
 
 final class ArqSimulationTests: XCTestCase {
 
@@ -33,7 +34,7 @@ final class ArqSimulationTests: XCTestCase {
             runTrial(seed: single)
             return
         }
-        let trials = env["LYTE_ARQ_TRIALS"].flatMap(Int.init) ?? 25_000
+        let trials = env["LYTE_ARQ_TRIALS"].flatMap(Int.init) ?? 2_000
         let masterSeed: UInt64 = 0x57_33_A2_00 // stable base
         for trial in 0..<trials {
             runTrial(seed: masterSeed &+ UInt64(trial))
@@ -191,6 +192,11 @@ final class ArqSimulationTests: XCTestCase {
                         "\(label) [\(step)]: duplicate completion for \(group)"
                     )
                     oneShotAcks[destination].insert(group.rawValue)
+                case .ignored(.beyondReceiveWindow(let group, let seq)):
+                    // An honest sender never overruns the window.
+                    XCTFail("\(label) [\(step)]: \(group) seq \(seq) sent past the receive window")
+                case .ignored(.ackForUnsentData(let group)):
+                    XCTFail("\(label) [\(step)]: honest ACK for \(group) read as forged")
                 case .ignored:
                     break
                 }

@@ -1,38 +1,24 @@
-// The W7 capability wire messages, CTRL types 0x0F / 0x11 / 0x12. All
-// three ride the sealed ARQ ordered stream (group 0) of an established
-// Noise session — the lifecycle messages' carriage. Reliable ordered
-// carriage is load-bearing twice over: the declaration must be the
-// first post-establishment word each way (everything gated on a
-// capability orders behind it for free), and an update ack must never
-// reorder against the update it answers.
+// The capability wire messages, CTRL types 0x0F / 0x11 / 0x12, all on the
+// sealed ARQ ordered stream: the declaration is the first
+// post-establishment word each way (everything gated on a capability
+// orders behind it), and an update ack never reorders against its update.
 //
-// Declaration (type 0x0F): `type ‖ CBOR map` — one end's full
-// capability set (Capabilities.swift's registry and rules). Both ends
-// send one immediately after establishment; each computes the agreed
-// set as the intersection. There is no accept/reject round: the
-// intersection IS the agreement, computed identically on both ends
-// from the same two declarations.
+// Declaration (0x0F): `type ‖ CBOR map` — one end's full capability set.
+// There is no accept/reject round: the intersection IS the agreement.
 //
-// Update (type 0x11): `type ‖ CBOR map` — a session-parameter
-// renegotiation proposal (overview §2's renegotiation row). The map
-// carries ONLY renegotiable registry keys (v1: maxDatagramBytes — the
-// DPLPMTUD raise); naming a fixed or unknown key rejects at the
-// negotiator. Host→client only in v1: the host owns pacing and
-// geometry, so the sender of media is the sender of geometry
-// proposals.
+// Update (0x11): `type ‖ CBOR map` — a renegotiation proposal carrying
+// only renegotiable registry keys; naming a fixed or unknown key rejects
+// at the negotiator. Host→client only: the sender of media proposes
+// geometry.
 //
-// Update ack (type 0x12): `type ‖ status ‖ CBOR map` — status 0x01
-// accepted / 0x02 rejected, the map echoing the proposal verbatim so
-// the ack is bound to specific bytes, not to conversational position
-// alone. Accepted parameters apply at the next IDR boundary (shell
-// timing, not this layer's).
+// Update ack (0x12): `type ‖ status ‖ CBOR map` — status 0x01 accepted /
+// 0x02 rejected; the map echoes the proposal verbatim, binding the ack to
+// specific bytes. Accepted parameters apply at the next IDR boundary.
 //
-// Framing discipline: the CBOR body extends to the end of the
-// ARQ-delivered message and its own trailing-bytes rule makes the
-// message exactly its layout. One bound is enforced here: the whole
-// encoded message ≤ 1024 bytes — generous for a map of eight scalars
-// and short lists, and a hard stop against a hostile peer streaming
-// megabytes of "capabilities" through the reassembler.
+// The CBOR body extends to the end of the message; its trailing-bytes
+// rule makes the message exactly its layout. The whole encoded message is
+// capped at 1024 bytes against a peer streaming megabytes of
+// "capabilities" through the reassembler.
 
 /// The capability-declaration CTRL message (type 0x0F).
 public struct CapabilityDeclaration: Hashable, Sendable {
@@ -96,7 +82,7 @@ public struct CapabilityParameter: Hashable, Sendable {
 }
 
 /// The session-parameter update proposal (type 0x11).
-public struct CapabilityUpdate: Hashable, Sendable {
+public struct CapabilityUpdate: Hashable, Sendable, SliceDecodable {
     /// Key-ascending (the CBOR map's canonical order).
     public var parameters: [CapabilityParameter]
 
@@ -130,10 +116,6 @@ public struct CapabilityUpdate: Hashable, Sendable {
             throw CapabilityMessageError.emptyUpdate
         }
         return CapabilityUpdate(parameters: parameters)
-    }
-
-    public static func decode(_ payload: [UInt8]) throws -> CapabilityUpdate {
-        try decode(payload[...])
     }
 }
 

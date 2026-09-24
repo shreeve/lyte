@@ -1,52 +1,39 @@
-// BulkReceiveShell (F-3): the host's receiving end of file transfer —
-// the shell that drives Wire's sans-IO BulkReceiveEngine with real
-// disk verdicts (design record 20260728-053300 §7/§9). The engine
-// owns every protocol decision (credit, possession, resume matching,
-// violations); this shell answers its ACTIONS:
+// BulkReceiveShell: the host's receiving end of file transfer. It drives
+// Wire's sans-IO BulkReceiveEngine (which owns every protocol decision)
+// with real disk verdicts, answering its actions:
 //
-//   • `.offered`  → consent is the standing per-host toggle — the
-//     shell existing IS the yes (lyte-host builds one only when
-//     --accept-files armed it and declared key 11). What the shell
-//     still judges is the DISK: an offer whose remainder exceeds free
-//     space draws abort(storageFailure) — the truthful reason ("the
-//     receiver's disk said no"), not declined.
+//   • `.offered`  → consent is the standing per-host toggle (the shell
+//     exists only when --accept-files armed it). The shell judges the
+//     DISK: an offer whose remainder exceeds free space draws
+//     abort(storageFailure), not declined.
 //   • `.store`    → a durable write (pwrite + fsync) into the hidden
-//     `.part` staging file at the chunk's exact offset, THEN
-//     `chunkStored` — fsync-before-ack, so persisted possession never
-//     claims a byte the disk could still lose.
-//   • `.verify`   → a streaming SHA-256 of the staging file into
-//     `verificationResult` — the sha-exact finish line.
-//   • `.completed`→ fsync-then-rename promotion into the destination
-//     directory under a SANITIZED, collision-numbered name (the
-//     offer's name is untrusted input; kill -9 mid-transfer leaves
-//     only the dotted staging file, never a partial in the drop dir).
+//     staging file, THEN `chunkStored` — fsync-before-ack, so persisted
+//     possession never claims a byte the disk could still lose.
+//   • `.verify`   → a streaming SHA-256 of the staging file.
+//   • `.completed`→ fsync-then-rename into the destination directory
+//     under a sanitized, collision-numbered name; kill -9 mid-transfer
+//     leaves only the dotted staging file.
 //
-// One transfer at a time (v1): a second concurrent offer draws
-// abort(busy) from THIS dispatcher — the engine never sees it — and a
-// terminal engine is re-armed fresh, seeded with the shell's resume
-// book. The RECEIVING end owes persistence (design §5): `teardown()`
-// writes the mid-flight BulkResumeState beside the staging file, and
-// construction loads every persisted state back as the engine's
-// resume book, so a torn session resumes sha-exact from the gap.
+// One transfer at a time: a second concurrent offer draws abort(busy)
+// here, unseen by the engine, and a terminal engine is re-armed fresh
+// with the shell's resume book. `teardown()` persists the mid-flight
+// BulkResumeState beside the staging file and construction loads every
+// persisted state back, so a torn session resumes sha-exact from the gap.
 //
-// Threading is the caller's concern (lyte-host drains session events
-// into `ingest` off the session lock, the SessionWire clipboard
-// pattern); file IO lives behind the BulkReceiveStore seam so the
-// failure paths are testable without a failing disk.
+// Threading is the caller's concern; file IO lives behind the
+// BulkReceiveStore seam so failure paths are testable.
 
 import LyteWire
 
 /// What the shell needs from the disk. One production conformance
-/// (`BulkFileStore`, POSIX); tests wrap it to inject failures.
+/// (HostIO's `BulkFileStore`, POSIX); tests wrap it to inject failures.
 public protocol BulkReceiveStore: AnyObject {
     /// Absolute destination directory (for events and logs).
     var directoryPath: String { get }
     /// Open (creating if absent) the transfer's staging file. The
     /// staging file is dotted — invisible in the drop directory.
     func openStaging(transferId: UInt64) throws
-    /// Write `data` at `byteOffset`, DURABLE on return (fsync — the
-    /// fsync-before-ack rule; a false `chunkStored` would poison the
-    /// persisted possession map).
+    /// Write `data` at `byteOffset`, DURABLE (fsynced) on return.
     func writeChunkDurably(
         _ data: [UInt8], atByteOffset byteOffset: UInt64
     ) throws
@@ -56,29 +43,22 @@ public protocol BulkReceiveStore: AnyObject {
     /// in the destination directory (plus a directory fsync, so the
     /// rename itself is durable).
     func promoteStaging(toName name: String) throws
-    /// Remove the transfer's staging file (aborted transfers whose
-    /// possession has no future).
     func removeStaging(transferId: UInt64)
     /// Close the staging descriptor without removing the file.
     func closeStaging()
-    /// True when `name` already exists in the destination directory —
-    /// the collision-numbering probe.
+    /// True when `name` already exists in the destination directory.
     func finalNameExists(_ name: String) -> Bool
     /// Free bytes on the destination filesystem; nil when the OS
     /// cannot say (the shell then accepts and lets writes speak).
     func freeDiskSpaceByteCount() -> UInt64?
-    /// Every persisted resume state in the directory (startup).
     func loadResumeStates() -> [BulkResumeState]
-    /// Persist one resume state beside its staging file (atomic:
-    /// tmp + fsync + rename).
+    /// Persist one resume state beside its staging file, atomically.
     func persistResumeState(_ state: BulkResumeState) throws
-    /// Remove a transfer's persisted resume state.
     func removeResumeState(transferId: UInt64)
 }
 
-/// What the shell's caller must know about. `.send` is the one that
-/// moves bytes — the loop feeds it to `Session.sendBulk`; the rest is
-/// evidence for logs and tests. Payload bytes never appear here.
+/// `.send` moves bytes (the loop feeds it to `Session.sendBulk`); the
+/// rest is evidence for logs and tests. Payload bytes never appear here.
 public enum BulkReceiveShellEvent: Equatable, Sendable {
     /// Put this message on chan 8's ordered stream.
     case send(BulkMessage)
@@ -87,8 +67,7 @@ public enum BulkReceiveShellEvent: Equatable, Sendable {
         transferId: UInt64, name: String, byteCount: UInt64,
         resuming: Bool
     )
-    /// v1 runs ONE transfer at a time — a second concurrent offer
-    /// drew abort(busy) from the dispatcher, engine untouched.
+    /// A second concurrent offer drew abort(busy), engine untouched.
     case offerRefusedBusy(transferId: UInt64)
     /// The offer's remainder exceeds free disk space —
     /// abort(storageFailure) follows in the same batch.
@@ -139,18 +118,6 @@ public final class BulkReceiveShell {
         self.engine = BulkReceiveEngine(config: config, resumeBook: book)
     }
 
-    /// The production shape: a POSIX store on `directoryPath`,
-    /// created if missing. Throws when the directory cannot exist.
-    public convenience init(
-        directoryPath: String,
-        config: BulkTransferConfig = BulkTransferConfig()
-    ) throws {
-        self.init(
-            store: try BulkFileStore(directoryPath: directoryPath),
-            config: config
-        )
-    }
-
     public var state: BulkReceiveEngine.State { engine.state }
 
     /// True while an offer/transfer is mid-flight — the busy gate.
@@ -161,13 +128,10 @@ public final class BulkReceiveShell {
         }
     }
 
-    /// One decoded chan-8 message (the session's
-    /// `.bulkMessageReceived`) into the engine, every resulting
+    /// One decoded chan-8 message into the engine, every resulting
     /// action answered synchronously. Never throws: remote badness is
-    /// the engine's violation path, disk badness is the storage-
-    /// failure path, and a second concurrent offer is answered
-    /// abort(busy) right here (the v1 dispatcher rule — the engine is
-    /// single-transfer by construction and never sees it).
+    /// the engine's violation path, disk badness the storage-failure
+    /// path, and a second concurrent offer is answered abort(busy) here.
     public func ingest(_ message: BulkMessage) -> [BulkReceiveShellEvent] {
         if case .offer(let incoming) = message, isTransferActive {
             counters.offersRefusedBusy += 1
@@ -183,15 +147,13 @@ public final class BulkReceiveShell {
         return pump(engine.ingest(message))
     }
 
-    /// A human at the host cancelled (future control surface; wired
-    /// for completeness — the engines mirror it).
+    /// A human at the host cancelled.
     public func cancel() -> [BulkReceiveShellEvent] {
         pump(engine.cancel())
     }
 
     /// The session is going down: persist the mid-flight resume state
-    /// beside its staging file (the receiving end's one resume
-    /// obligation, design §5) and release the descriptor. Idempotent.
+    /// and release the descriptor. Idempotent.
     public func teardown() {
         if let resume = engine.resumeState {
             try? store.persistResumeState(resume)
@@ -236,10 +198,8 @@ public final class BulkReceiveShell {
         _ offer: BulkOffer, resuming: Bool
     ) -> [BulkReceiveShellEvent] {
         var events: [BulkReceiveShellEvent] = []
-        // The disk-space judgment: refuse an offer the filesystem
-        // cannot hold — abort(storageFailure), the truthful reason.
-        // The remainder is exact (all chunks are chunkByteCount but
-        // the last), so a resume is only charged for its gap.
+        // Refuse an offer the filesystem cannot hold; a resume is only
+        // charged for its gap.
         let needed = remainingByteCount(of: offer)
         if let free = store.freeDiskSpaceByteCount(), needed > free {
             counters.spaceRefusals += 1
@@ -328,7 +288,7 @@ public final class BulkReceiveShell {
             counters.filesCompleted += 1
             events.append(.fileCompleted(
                 name: finalName,
-                path: store.directoryPath + "/" + finalName,
+                path: store.directoryPath + "/\(finalName)",
                 byteCount: offer.totalByteCount
             ))
         } catch {
@@ -349,18 +309,15 @@ public final class BulkReceiveShell {
         store.closeStaging()
         switch reason {
         case .storageFailure, .resumeMismatch:
-            // The persisted possession is still honest for a future
-            // re-offer of the same quadruple (disk-full clears, the
-            // confused sender re-baselines with a fresh id) — keep
-            // the staging file exactly when a resume book entry
+            // Persisted possession stays honest for a future re-offer:
+            // keep the staging file exactly when a resume book entry
             // vouches for it; a fresh transfer's orphan is removed.
             if let transferId,
                !book.contains(where: { $0.transferId == transferId }) {
                 store.removeStaging(transferId: transferId)
             }
         default:
-            // declined/cancelled/shaMismatch/busy/protocolViolation:
-            // the partial has no future — no strays in the drop dir.
+            // The partial has no future — no strays in the drop dir.
             if let transferId {
                 store.removeStaging(transferId: transferId)
                 store.removeResumeState(transferId: transferId)
@@ -372,9 +329,8 @@ public final class BulkReceiveShell {
     }
 
     /// A disk refusal mid-transfer: persist the possession the engine
-    /// still vouches for (its map excludes the failed chunk — the
-    /// fsync audit dropping what it could not durably write, design
-    /// §5), then let the engine abort with the truthful reason.
+    /// still vouches for (excluding the failed chunk), then let the
+    /// engine abort with storageFailure.
     private func failStorage(_ detail: String) -> [BulkReceiveShellEvent] {
         counters.storageFailures += 1
         var events: [BulkReceiveShellEvent] = [.storageFailure(detail)]
@@ -394,8 +350,7 @@ public final class BulkReceiveShell {
     }
 
     /// Bytes still owed for `offer` given the engine's possession —
-    /// exact, since every chunk but the last is exactly
-    /// chunkByteCount.
+    /// exact, since every chunk but the last is chunkByteCount.
     private func remainingByteCount(of offer: BulkOffer) -> UInt64 {
         let possession = engine.possession
         guard possession.heldChunkCount > 0, offer.chunkCount > 0 else {
@@ -416,9 +371,7 @@ public final class BulkReceiveShell {
 
 // MARK: - Filename sanitization
 
-/// The offer's name is hostile until proven boring (design §3: "sani-
-/// tization is the receiver end's job — path separators, dotfiles").
-/// Pure functions, pinned by a table in the gate tests.
+/// The offer's name is hostile input; the receiver sanitizes it.
 public enum BulkFileNaming {
     /// The fallback when sanitization consumes the whole name.
     public static let fallbackName = "lyte-transfer"
@@ -500,11 +453,8 @@ public enum BulkFileNaming {
 // MARK: - Resume-state persistence format
 
 /// `BulkResumeState` as bytes — the `.resume` file beside the staging
-/// file. Fixed-layout little-endian in the house codec style; frozen
-/// by roundtrip pins in the gate tests. A torn write decodes loud and
-/// the loader treats it as weather (the state is our own cache — the
-/// cost of losing it is re-receiving chunks, arbitrated by the digest
-/// either way).
+/// file, fixed-layout little-endian. A torn write decodes loud and the
+/// loader skips it: losing this cache only costs re-received chunks.
 ///
 ///   magic "LBR1" ‖ transferId u64 ‖ totalByteCount u64 ‖
 ///   chunkByteCount u32 ‖ sha256 32 B ‖ contiguousCount u64 ‖
@@ -590,8 +540,7 @@ public enum BulkResumeStateCodec {
     }
 }
 
-/// Foundation-free strict UTF-8 decode (HostWire keeps Wire's
-/// no-Foundation spirit; `String(bytes:encoding:)` is Foundation's).
+/// Foundation-free strict UTF-8 decode (HostWire is sans-Foundation).
 private extension String {
     init?(bytes: [UInt8], encoding: Void?) {
         var text = ""

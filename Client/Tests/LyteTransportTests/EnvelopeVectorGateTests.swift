@@ -122,7 +122,7 @@ final class EnvelopeVectorGateTests: XCTestCase {
             guard let wireError = error as? WireError else {
                 return XCTFail("\(vector.name): non-WireError \(error)")
             }
-            XCTAssertEqual(wireErrorName(wireError), expected, vector.name)
+            XCTAssertEqual(vectorErrorName(wireError), expected, vector.name)
         }
     }
 
@@ -141,7 +141,7 @@ final class EnvelopeVectorGateTests: XCTestCase {
         guard case .malformed(let wireError) = outcome else {
             return XCTFail("\(vector.name): ingest did not reject — \(outcome)")
         }
-        XCTAssertEqual(wireErrorName(wireError), expected, vector.name)
+        XCTAssertEqual(vectorErrorName(wireError), expected, vector.name)
         XCTAssertEqual(demux.snapshotTotals().malformed, 1, vector.name)
     }
 }

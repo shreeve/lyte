@@ -2,6 +2,7 @@ import XCTest
 import HostCore
 import HostSession
 import HostWire
+import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
@@ -16,12 +17,6 @@ import LyteWireTestKit
 //     declaration is the agreement — no accept round;
 //   • an empty codec intersection is a typed teardown (0x0A), never
 //     silence, and the session stops carrying video;
-//   • the idle flip waits for the converged frame's one-shot ACK
-//     (ModeTransition idle is never emitted before it), and the
-//     converged frame crosses byte-exact;
-//   • new damage aborts a pending flip — a late ack must not flip a
-//     session that never left ACTIVE — and damage in IDLE is the WAKE
-//     (mode=active + next-damage-as-IDR);
 //   • 350 ms of media-path silence freezes datagram video (the host's
 //     own detector); returning evidence is RECOVERY (resume + forced
 //     IDR); clean feedback windows graduate back to ACTIVE;
@@ -44,137 +39,42 @@ final class SessionLifecycleGateTests: XCTestCase {
 
     // MARK: The lifecycle-aware loopback client
 
-    private struct LifecycleClient {
-        var noise: NoiseSession
-        var transport: NoiseTransport?
-        var ctrlSeq: UInt16 = 0
-        var feedbackSeq: UInt16 = 0
-        var arq = ArqEndpoint<ClientClock>(channel: .ctrl)
-        let staticKeys: NoiseKeyPair
-
-        var received: [(group: ArqGroupId, bytes: [UInt8])] = []
+    private struct LifecycleClient: PeerBackedClient {
+        var peer: SealedCtrlPeer<ClientClock>
         var videoDatagrams = 0
 
         init(hostStaticPublicKey: [UInt8]) throws {
-            staticKeys = NoiseKeyPair.generate()
-            noise = try NoiseSession(
-                role: .initiator,
-                staticKeys: staticKeys,
-                remoteStaticPublicKey: hostStaticPublicKey
-            )
-        }
-
-        mutating func message1Datagram(clientMicros: UInt64) throws -> [UInt8] {
-            let message1 = try noise.writeMessage1()
-            return try datagram(
-                channel: .ctrl,
-                body: [CtrlMessageType.noiseHandshake1] + message1,
-                sealed: false,
-                clientMicros: clientMicros
-            )
-        }
-
-        mutating func datagram(
-            channel: ChannelId, body: [UInt8], sealed: Bool,
-            clientMicros: UInt64
-        ) throws -> [UInt8] {
-            let seq: UInt16
-            if channel == .feedback {
-                seq = feedbackSeq
-                feedbackSeq &+= 1
-            } else {
-                seq = ctrlSeq
-                ctrlSeq &+= 1
-            }
-            let envelope = Envelope(
-                channel: channel,
-                seq: ChannelSeq(rawValue: seq),
-                frame: FrameNumber(rawValue: 0),
-                timestamp: clientMicros,
-                fec: 0
-            )
-            guard sealed else { return try envelope.encode(payload: body) }
-            let header = try envelope.encode(payload: [])
-            let payload = try transport!.seal(
-                plaintext: body[...], aad: header[...], envelope: envelope
-            )
-            return try envelope.encode(payload: payload)
+            peer = try SealedCtrlPeer(initiatorTo: hostStaticPublicKey)
         }
 
         /// The 25–50 ms chan-3 report the client emits continuously —
-        /// media-path evidence for the blackout detector AND, since
-        /// HS-16, the estimator's diet: a real (empty) FeedbackReport,
-        /// the shape FeedbackSender builds when a window saw nothing
-        /// worth sampling. No ledgers, no loss — reads clean.
+        /// media-path evidence for the blackout detector AND the
+        /// estimator's diet: a real (empty) FeedbackReport, the shape
+        /// FeedbackSender builds when a window saw nothing worth
+        /// sampling. No ledgers, no loss — reads clean.
         mutating func feedbackDatagram(clientMicros: UInt64) throws -> [UInt8] {
-            try datagram(
+            try peer.datagram(
                 channel: .feedback,
                 body: try FeedbackReport(
                     clientTimestamp: ClientTimestamp(
                         microseconds: clientMicros
                     )
                 ).encode(),
-                sealed: true,
-                clientMicros: clientMicros
+                timestamp: clientMicros
             )
         }
 
         mutating func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
-            let (envelope, payload) = try Envelope.decode(bytes)
-            if envelope.channel == .videoActive {
+            if try Envelope.decode(bytes).0.channel == .videoActive {
                 videoDatagrams += 1
                 return
             }
-            XCTAssertEqual(envelope.channel, .ctrl)
-            if transport == nil {
-                XCTAssertEqual(payload.first, CtrlMessageType.noiseHandshake2)
-                _ = try noise.readMessage2(payload.dropFirst())
-                transport = try noise.makeTransport()
-                return
-            }
-            let aad = bytes[bytes.startIndex..<payload.startIndex]
-            let plaintext: [UInt8]
-            do {
-                plaintext = try transport!.unseal(
-                    wirePayload: payload, aad: aad, envelope: envelope
-                )
-            } catch NoiseError.replayedSequence, NoiseError.staleSequence {
-                return // network duplicate; routine
-            }
-            switch plaintext.first {
-            case CtrlMessageType.arqSegment, CtrlMessageType.arqAck:
-                for event in arq.ingest(
-                    payload: plaintext,
-                    now: ClientTimestamp(microseconds: nowMicros)
-                ) {
-                    if case .message(let group, let bytes) = event {
-                        received.append((group, bytes))
-                    }
-                }
-            case CtrlMessageType.clockBeacon:
-                break // 1 Hz weather
-            default:
+            XCTAssertEqual(try Envelope.decode(bytes).0.channel, .ctrl)
+            if case .plain(_, let plaintext) =
+                try peer.absorb(bytes, nowMicros: nowMicros),
+               plaintext.first != CtrlMessageType.clockBeacon { // 1 Hz weather
                 XCTFail("unexpected host CTRL type \(plaintext.first ?? 0)")
             }
-        }
-
-        mutating func pollOut(nowMicros: UInt64) throws -> [[UInt8]] {
-            let (payloads, _) = arq.poll(
-                now: ClientTimestamp(microseconds: nowMicros)
-            )
-            return try payloads.map {
-                try datagram(
-                    channel: .ctrl, body: $0, sealed: true,
-                    clientMicros: nowMicros
-                )
-            }
-        }
-
-        /// Reliable messages of one CTRL type, drained.
-        mutating func take(type: UInt8) -> [[UInt8]] {
-            let hits = received.filter { $0.bytes.first == type }.map(\.bytes)
-            received.removeAll { $0.bytes.first == type }
-            return hits
         }
     }
 
@@ -351,9 +251,11 @@ final class SessionLifecycleGateTests: XCTestCase {
         XCTAssertEqual(loop.session.lifecycleState, .active,
                        "a workable agreement never disturbs the session")
 
-        print("HS-11/HS-8 gate (capabilities): declaration first-word, "
-            + "intersection agreed — codecs \(agreed.videoCodecs), "
-            + "ceiling \(agreed.maxDatagramBytes) B")
+        print("""
+            HS-11/HS-8 gate (capabilities): declaration first-word, \
+            intersection agreed — codecs \(agreed.videoCodecs), \
+            ceiling \(agreed.maxDatagramBytes) B
+            """)
     }
 
     // MARK: Chroma negotiation → encoder posture (H4 V-4)
@@ -380,8 +282,10 @@ final class SessionLifecycleGateTests: XCTestCase {
         }
         XCTAssertEqual(agreements.count, 1)
         XCTAssertEqual(agreements[0].chromaModes, [CapabilityChroma.yuv444],
-                       "declaration-as-choice: the client's singleton IS "
-                           + "the agreement")
+                       """
+                           declaration-as-choice: the client's singleton IS \
+                           the agreement
+                           """)
         XCTAssertEqual(
             ChromaPosture.from(
                 agreedChromaModes: loop.session.agreedCapabilities?
@@ -391,8 +295,10 @@ final class SessionLifecycleGateTests: XCTestCase {
         )
         XCTAssertEqual(loop.session.lifecycleState, .active)
 
-        print("V-4 gate (chroma): host [420, 444] ∩ client [444] → "
-            + "agreed [444] → Best posture")
+        print("""
+            V-4 gate (chroma): host [420, 444] ∩ client [444] → \
+            agreed [444] → Best posture
+            """)
     }
 
     /// The same 4:4:4-capable host against a Good-tier client ([420]
@@ -458,8 +364,10 @@ final class SessionLifecycleGateTests: XCTestCase {
                 CapabilityChroma.yuv420, CapabilityChroma.yuv444,
             ]),
             .yuv420,
-            "a multi-mode agreement is not a choice — the conservative "
-                + "path rides"
+            """
+                a multi-mode agreement is not a choice — the conservative \
+                path rides
+                """
         )
         XCTAssertEqual(ChromaPosture.from(agreedChromaModes: nil), .yuv420,
                        "the grandfathered pre-W7 posture")
@@ -506,269 +414,10 @@ final class SessionLifecycleGateTests: XCTestCase {
         XCTAssertEqual(suppressed, 0)
         XCTAssertEqual(loop.session.counters.videoFramesSuppressed, 1)
 
-        print("HS-11/HS-8 gate (refusal): empty codec intersection → "
-            + "typed teardown delivered, session closed, video suppressed")
-    }
-
-    // MARK: The idle flip — ack-gated, damage-abortable
-
-    func testGateIdleFlipWaitsForTheConvergedFramesAck() throws {
-        let (loopValue, _) = try establish()
-        var loop = loopValue
-        var t: UInt64 = 200_000
-
-        // One real frame first (the converged frame needs a number).
-        let frame = syntheticFrame(byteCount: 900)
-        _ = try loop.session.ingestVideoFrame(
-            frame, captureTimestampMicroseconds: 42_000,
-            isKeyframe: false, now: t * 1_000
-        )
-        try loop.settle(t: &t)
-
-        // Convergence: the one-shot leaves; the mode does NOT flip yet.
-        let converged = syntheticFrame(byteCount: 700)
-        loop.hostEvents += loop.session.noteRatchetConverged(
-            finalFrame: converged,
-            captureTimestampMicroseconds: 42_000,
-            now: t * 1_000, hostMicroseconds: t
-        )
-        loop.session.pump(now: t * 1_000)
-        XCTAssertEqual(loop.session.wireMode, .active,
-                       "no flip before the one-shot is acknowledged")
-        XCTAssertTrue(loop.modeTransitions().isEmpty)
-        let sentGroups = loop.events { event -> ArqGroupId? in
-            if case .finalFrameSent(let group) = event { return group }
-            return nil
-        }
-        XCTAssertEqual(sentGroups.count, 1)
-
-        // Deliver + ack: the client holds the converged frame BEFORE
-        // it learns the session went idle (the W4b ordering rule).
-        try loop.settle(t: &t)
-        let idleFrames = loop.client.received.filter {
-            $0.group == sentGroups[0]
-        }
-        XCTAssertEqual(idleFrames.count, 1, "one-shot delivered exactly once")
-        let decoded = try IdleFrame.decode(idleFrames[0].bytes)
-        XCTAssertEqual(decoded.annexB, converged,
-                       "the converged frame must cross byte-exact")
-        XCTAssertEqual(decoded.frame, FrameNumber(rawValue: 0))
-        XCTAssertEqual(
-            decoded.frame,
-            try XCTUnwrap(loop.session.lastAdmittedVideoFrameNumber))
-        XCTAssertEqual(decoded.captureTimestampMicroseconds, 42_000)
-
-        XCTAssertEqual(loop.session.wireMode, .idle, "the ack IS the flip")
-        XCTAssertEqual(loop.session.lifecycleState, .idle)
-        XCTAssertEqual(loop.modeTransitions(), [.idle])
-        let modeMessages = loop.client.take(
-            type: CtrlMessageType.modeTransition
-        )
-        XCTAssertEqual(modeMessages.count, 1)
-        XCTAssertEqual(
-            try ModeTransition.decode(modeMessages[0]).mode, .idle,
-            "mode=idle rides the ordered stream, after the frame landed"
-        )
-
-        // WAKE: damage in IDLE → mode=active + the damage frame owed
-        // as an IDR.
-        XCTAssertFalse(loop.session.takeFreshKeyframeRequest())
-        loop.hostEvents += loop.session.noteDamage(
-            now: t * 1_000, hostMicroseconds: t
-        )
-        XCTAssertEqual(loop.session.wireMode, .active)
-        XCTAssertTrue(loop.session.takeFreshKeyframeRequest(),
-                      "WAKE arms next-damage-as-IDR")
-        XCTAssertFalse(loop.session.takeFreshKeyframeRequest())
-        try loop.settle(t: &t)
-        XCTAssertEqual(loop.modeTransitions(), [.idle, .active])
-        let wakeMessages = loop.client.take(
-            type: CtrlMessageType.modeTransition
-        )
-        XCTAssertEqual(
-            try wakeMessages.map { try ModeTransition.decode($0).mode },
-            [.active]
-        )
-
-        print("HS-11 gate (idle flip): converged frame one-shot → ack → "
-            + "mode=idle; damage → WAKE (mode=active + armed IDR)")
-    }
-
-    func testGateDamageAbortsThePendingFlip() throws {
-        let (loopValue, box) = try establish()
-        var loop = loopValue
-        var t: UInt64 = 200_000
-
-        _ = try loop.session.ingestVideoFrame(
-            syntheticFrame(byteCount: 900),
-            captureTimestampMicroseconds: 42_000,
-            isKeyframe: false, now: t * 1_000
-        )
-        try loop.settle(t: &t)
-
-        // Converge, but hold the wire: the one-shot is emitted and NOT
-        // delivered yet.
-        loop.hostEvents += loop.session.noteRatchetConverged(
-            finalFrame: syntheticFrame(byteCount: 700),
-            captureTimestampMicroseconds: 42_000,
-            now: t * 1_000, hostMicroseconds: t
-        )
-        loop.session.pump(now: t * 1_000)
-        let held = box.datagrams[loop.forwarded...]
-        XCTAssertFalse(held.isEmpty, "the one-shot must be in flight")
-
-        // New damage during the handoff: the session never left ACTIVE.
-        loop.hostEvents += loop.session.noteDamage(
-            now: t * 1_000, hostMicroseconds: t
-        )
-        _ = loop.session.takeFreshKeyframeRequest() // active: nothing armed
-
-        // NOW deliver everything (the held one-shot) and let the ack
-        // come back: no flip may happen.
-        try loop.settle(t: &t)
-        XCTAssertEqual(loop.session.wireMode, .active,
-                       "a late ack must not flip an aborted handoff")
-        XCTAssertTrue(loop.modeTransitions().isEmpty)
-
-        print("HS-11 gate (abort): damage during the handoff → the late "
-            + "one-shot ack flips nothing")
-    }
-
-    // MARK: The HS-22 idle-flip quiet — a desktop metronome never
-    // WAKE-pulses. (The pillar's idle→active-restarts-with-an-IDR
-    // decision stands; the session just refuses to ENTER idle between
-    // the beats of a 1 Hz clock / blinking cursor, so the per-beat
-    // full-frame WAKE IDR — the owner's "1 Hz blur while paused" —
-    // structurally cannot happen.)
-
-    func testGateConvergenceAfterDamageWaitsOutTheQuiet() throws {
-        // Damage, then convergence 400 ms later: the one-shot must NOT
-        // leave until damage has been quiet for the 3 s holdoff — and
-        // once it has, the flip completes exactly as before.
-        let (loopValue, _) = try establish(lifecycle: SessionMachineConfig(
-            blackoutSilenceMicroseconds: 60_000_000
-        ))
-        var loop = loopValue
-        var t: UInt64 = 200_000
-
-        _ = try loop.session.ingestVideoFrame(
-            syntheticFrame(byteCount: 900),
-            captureTimestampMicroseconds: 42_000,
-            isKeyframe: false, now: t * 1_000
-        )
-        try loop.settle(t: &t)
-
-        loop.hostEvents += loop.session.noteDamage(
-            now: t * 1_000, hostMicroseconds: t
-        )
-        let damagedAt = t
-
-        // The ratchet converges 400 ms after the damage: held.
-        t = damagedAt + 400_000
-        loop.hostEvents += loop.session.noteRatchetConverged(
-            finalFrame: syntheticFrame(byteCount: 700),
-            captureTimestampMicroseconds: 42_000,
-            now: t * 1_000, hostMicroseconds: t
-        )
-        loop.session.pump(now: t * 1_000)
-        try loop.exchange(t: t + 2_000)
-        var oneShots = loop.events { event -> ArqGroupId? in
-            if case .finalFrameSent(let group) = event { return group }
-            return nil
-        }
-        XCTAssertTrue(oneShots.isEmpty,
-                      "no one-shot before the quiet holdoff elapses")
-
-        // Still held 100 ms shy of the boundary.
-        try loop.exchange(t: damagedAt + 2_900_000)
-        oneShots = loop.events { event -> ArqGroupId? in
-            if case .finalFrameSent(let group) = event { return group }
-            return nil
-        }
-        XCTAssertTrue(oneShots.isEmpty)
-        XCTAssertEqual(loop.session.wireMode, .active)
-
-        // Past the boundary: the handoff runs to completion — one-shot,
-        // ack, mode=idle (the HS-11 flip, merely 3 s later).
-        t = damagedAt + 3_050_000
-        try loop.settle(t: &t)
-        oneShots = loop.events { event -> ArqGroupId? in
-            if case .finalFrameSent(let group) = event { return group }
-            return nil
-        }
-        XCTAssertEqual(oneShots.count, 1, "exactly one one-shot, after quiet")
-        XCTAssertEqual(loop.session.wireMode, .idle)
-        XCTAssertEqual(loop.modeTransitions(), [.idle])
-
-        print("HS-22 gate (idle-flip quiet): convergence 400 ms after "
-            + "damage held for the 3 s quiet, then the ack flipped to "
-            + "IDLE as ever")
-    }
-
-    func testGateDesktopMetronomeNeverReachesIdle() throws {
-        // The pulse reproducer: a 1 Hz ticker — damage, convergence
-        // ~500 ms later, next damage on the second — for five beats.
-        // The session must stay ACTIVE the whole time (no flip, no
-        // mode traffic) and no WAKE IDR may ever be armed. When the
-        // ticker stops, the ordinary flip completes after the quiet.
-        let (loopValue, _) = try establish(lifecycle: SessionMachineConfig(
-            blackoutSilenceMicroseconds: 60_000_000
-        ))
-        var loop = loopValue
-        var t: UInt64 = 200_000
-
-        _ = try loop.session.ingestVideoFrame(
-            syntheticFrame(byteCount: 900),
-            captureTimestampMicroseconds: 42_000,
-            isKeyframe: false, now: t * 1_000
-        )
-        try loop.settle(t: &t)
-
-        var beatAt = t
-        for beat in 0..<5 {
-            loop.hostEvents += loop.session.noteDamage(
-                now: beatAt * 1_000, hostMicroseconds: beatAt
-            )
-            XCTAssertEqual(loop.session.wireMode, .active,
-                           "beat \(beat): damage lands in ACTIVE")
-            // Converged ~500 ms after the tick (settle 0.25 s + a few
-            // passes — the live cadence).
-            let convergedAt = beatAt + 500_000
-            loop.hostEvents += loop.session.noteRatchetConverged(
-                finalFrame: syntheticFrame(byteCount: 700),
-                captureTimestampMicroseconds: 42_000,
-                now: convergedAt * 1_000, hostMicroseconds: convergedAt
-            )
-            loop.session.pump(now: convergedAt * 1_000)
-            // The rest of the second passes in exchange beats.
-            for step in 1...5 {
-                try loop.exchange(t: convergedAt + UInt64(step) * 100_000)
-            }
-            XCTAssertFalse(loop.session.takeFreshKeyframeRequest(),
-                           "beat \(beat): no WAKE IDR may ever be armed")
-            beatAt += 1_000_000
-        }
-
-        XCTAssertEqual(loop.session.wireMode, .active,
-                       "five beats of a 1 Hz ticker: never IDLE")
-        XCTAssertTrue(loop.modeTransitions().isEmpty,
-                      "no mode traffic at all while the ticker runs")
-        XCTAssertTrue(loop.events { event -> ArqGroupId? in
-            if case .finalFrameSent(let group) = event { return group }
-            return nil
-        }.isEmpty, "no one-shot ever left")
-
-        // The ticker stops: the last convergence is still pending, and
-        // the ordinary flip completes once the quiet holds.
-        var quiet = beatAt - 1_000_000 + 3_050_000
-        try loop.settle(t: &quiet)
-        XCTAssertEqual(loop.session.wireMode, .idle,
-                       "a genuinely static desktop still reaches IDLE")
-        XCTAssertEqual(loop.modeTransitions(), [.idle])
-
-        print("HS-22 gate (metronome): 5 × 1 Hz damage/convergence beats "
-            + "→ ACTIVE throughout, zero WAKE IDRs, zero mode traffic; "
-            + "ticker stopped → IDLE after the 3 s quiet")
+        print("""
+            HS-11/HS-8 gate (refusal): empty codec intersection → \
+            typed teardown delivered, session closed, video suppressed
+            """)
     }
 
     // MARK: FROZEN / RECOVERY off the host's own silence detector
@@ -829,9 +478,11 @@ final class SessionLifecycleGateTests: XCTestCase {
         try loop.feedback(t: t)
         XCTAssertEqual(loop.session.lifecycleState, .active)
 
-        print("HS-11 gate (overlay): 350 ms silence → FROZEN (video "
-            + "suppressed) → evidence → RECOVERY (forced IDR) → two clean "
-            + "windows → ACTIVE")
+        print("""
+            HS-11 gate (overlay): 350 ms silence → FROZEN (video \
+            suppressed) → evidence → RECOVERY (forced IDR) → two clean \
+            windows → ACTIVE
+            """)
     }
 
     // MARK: Teardown — orderly, peer-initiated, and liveness
@@ -862,8 +513,10 @@ final class SessionLifecycleGateTests: XCTestCase {
             [.shuttingDown]
         )
 
-        print("HS-11 gate (shutdown): 0x0A delivered exactly once, "
-            + "acknowledged, session closed")
+        print("""
+            HS-11 gate (shutdown): 0x0A delivered exactly once, \
+            acknowledged, session closed
+            """)
     }
 
     func testGatePeerTeardownClosesTheSession() throws {
@@ -882,8 +535,10 @@ final class SessionLifecycleGateTests: XCTestCase {
             .sessionClosed(.peerTeardown(.shuttingDown))
         ))
 
-        print("HS-11 gate (peer teardown): client 0x0A → host closed "
-            + "cleanly — the graceful half of the ECONNREFUSED fix")
+        print("""
+            HS-11 gate (peer teardown): client 0x0A → host closed \
+            cleanly — the graceful half of the ECONNREFUSED fix
+            """)
     }
 
     func testGateLivenessTimeoutClosesLocallyAndSendsNothing() throws {
@@ -908,11 +563,15 @@ final class SessionLifecycleGateTests: XCTestCase {
         loop.session.pump(now: t * 1_000)
         XCTAssertEqual(
             box.datagrams.count, quietBaseline,
-            "a liveness close sends NOTHING — the peer that would read "
-                + "it is the one that died"
+            """
+                a liveness close sends NOTHING — the peer that would read \
+                it is the one that died
+                """
         )
 
-        print("HS-11 gate (liveness): 30 s of silence → local close, "
-            + "zero datagrams emitted")
+        print("""
+            HS-11 gate (liveness): 30 s of silence → local close, \
+            zero datagrams emitted
+            """)
     }
 }

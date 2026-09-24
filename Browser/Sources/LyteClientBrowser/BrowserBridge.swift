@@ -1,225 +1,175 @@
 import JavaScriptKit
+import LyteClientBrowserCore
 import LyteCore
 import LyteWire
 
+/// Publishes `globalThis.lyteBrowser`, the page's only door into the
+/// sans-IO core; this file converts values and owns the single session.
+/// Datagrams cross in one `Uint8Array` of `u16 big-endian length + bytes`
+/// records, so a burst costs one call and one copy each way. A step with
+/// nothing to act on returns `null`.
 enum BrowserBridge {
-    // Single-threaded JS↔WASM pump owns this; JavaScriptKit calls are serial.
-    nonisolated(unsafe) private static var controlSession: BrowserControlSession?
+    // The page's single-threaded pump owns this; JavaScriptKit calls are serial.
+    nonisolated(unsafe) private static var session: BrowserControlSession?
+    nonisolated(unsafe) private static var closures: [JSClosure] = []
 
     static func runFrozenContracts() -> [ContractResult] {
-        [
-            FrozenEnvelopeContract.verify(),
-            FrozenNoiseContract.verify(),
-        ]
+        [FrozenEnvelopeContract.verify(), FrozenNoiseContract.verify()]
     }
 
-    /// Installs `globalThis.lyteBrowser` so page JavaScript can call into
-    /// Swift/WASM and drive B-1/B-2 proofs plus the B-3 control session.
     static func install() {
-        let runContracts = JSClosure { _ in
-            resultsToJS(runFrozenContracts())
-        }
-        let verifyEnvelope = JSClosure { arguments in
-            let hex = arguments.first?.string ?? FrozenEnvelopeContract.datagramHex
-            return verifyEnvelopeHex(hex)
-        }
-        let verifyCarrier = JSClosure { arguments in
-            let kind = arguments[0].string ?? "opaque"
-            let sent = arguments[1].string ?? ""
-            let recv = arguments[2].string ?? ""
-            return carrierResultToJS(DatagramCarrierProof.verifyEcho(
-                kind: kind,
-                sentHex: sent,
-                recvHex: recv
-            ))
-        }
-        let openControl = JSClosure { arguments in
-            controlOpen(
-                hostStaticHex: arguments[0].string ?? "",
-                pin: arguments[1].string ?? ""
-            )
-        }
-        let beginControl = JSClosure { arguments in
-            let now = UInt64(arguments[0].number ?? 0)
-            return controlBegin(nowMicros: now)
-        }
-        let ingestControl = JSClosure { arguments in
-            let hex = arguments[0].string ?? ""
-            let now = UInt64(arguments[1].number ?? 0)
-            return controlIngest(datagramHex: hex, nowMicros: now)
-        }
-        let ingestControlBytes = JSClosure { arguments in
-            let now = UInt64(arguments[1].number ?? 0)
-            guard let typed = JSTypedArray<UInt8>(from: arguments[0]) else {
-                return stepToJS(
-                    outbound: [], events: ["FAIL  ingest: not Uint8Array"],
-                    status: "failed", detail: "not Uint8Array", passed: false
-                )
-            }
-            let bytes = typed.withUnsafeBytes { Array($0) }
-            return controlIngest(datagram: bytes, nowMicros: now)
-        }
-        let tickControl = JSClosure { arguments in
-            let now = UInt64(arguments[0].number ?? 0)
-            return controlTick(nowMicros: now)
-        }
-        let teardownControl = JSClosure { arguments in
-            let now = UInt64(arguments[0].number ?? 0)
-            return controlTeardown(nowMicros: now)
-        }
-        let classifyAnnexB = JSClosure { arguments in
-            classifyAnnexBHex(arguments[0].string ?? "")
-        }
-        let classifyAnnexBTyped = JSClosure { arguments in
-            guard let typed = JSTypedArray<UInt8>(from: arguments[0]) else {
-                return [
-                    "ok": false.jsValue,
-                    "frameShaped": false.jsValue,
-                    "containsIrap": false.jsValue,
-                    "byteCount": 0.jsValue,
-                    "summary": "".jsValue,
-                    "detail": "not Uint8Array".jsValue,
-                ].jsValue
-            }
-            let bytes = typed.withUnsafeBytes { Array($0) }
-            return classifyFrameBytes(bytes)
-        }
-        let mediaAnnexB = JSClosure { arguments in
-            let frame = UInt32(arguments[0].number ?? -1)
-            guard let session = controlSession,
-                  let hex = session.annexBHex(frameNumber: frame)
-            else {
-                return JSValue.null
-            }
-            return hex.jsValue
-        }
-        let mediaAnnexBBytes = JSClosure { arguments in
-            let frame = UInt32(arguments[0].number ?? -1)
-            guard let session = controlSession,
-                  let bytes = session.annexBBytes(frameNumber: frame)
-            else {
-                return JSValue.null
-            }
-            return JSTypedArray<UInt8>(bytes).jsValue
-        }
-        let mediaPopDue = JSClosure { arguments in
-            let now = UInt64(arguments[0].number ?? 0)
-            guard let session = controlSession,
-                  let frame = session.popDueFrame(nowMicros: now)
-            else {
-                return JSValue.null
-            }
-            return scheduledFrameToJS(frame)
-        }
-        let mediaNotePresented = JSClosure { arguments in
-            let frame = UInt32(arguments[0].number ?? -1)
-            controlSession?.notePresented(frameNumber: frame)
-            return JSValue.undefined
-        }
-        let mediaNoteDropped = JSClosure { arguments in
-            let frame = UInt32(arguments[0].number ?? -1)
-            controlSession?.noteDropped(frameNumber: frame)
-            return JSValue.undefined
-        }
-        let mediaStats = JSClosure { _ in
-            guard let session = controlSession else {
-                return [
-                    "assembled": 0.jsValue,
-                    "presented": 0.jsValue,
-                ].jsValue
-            }
-            return [
-                "assembled": Double(session.framesAssembled).jsValue,
-                "presented": Double(session.framesPresented).jsValue,
-            ].jsValue
-        }
-        let sendInput = JSClosure { arguments in
-            controlSendInput(arguments)
-        }
-        let shareClipboard = JSClosure { arguments in
-            let text = arguments[0].string ?? ""
-            let now = UInt64(arguments[1].number ?? 0)
-            return controlClipboardSet(text: text, nowMicros: now)
-        }
-        let audioPop = JSClosure { _ in
-            guard let packet = controlSession?.popAudioPacket() else {
-                return JSValue.null
-            }
-            return [
-                "number": Double(packet.number).jsValue,
-                "captureMicroseconds": Double(packet.captureMicroseconds)
-                    .jsValue,
-                "recovered": packet.recovered.jsValue,
-                "byteCount": Double(packet.bytes.count).jsValue,
-                "bytes": JSTypedArray<UInt8>(packet.bytes).jsValue,
-            ].jsValue
-        }
-        let interactionStats = JSClosure { _ in
-            guard let session = controlSession else {
-                return [
-                    "inputsSent": 0.jsValue,
-                    "inputEchoes": 0.jsValue,
-                    "clipboardSent": 0.jsValue,
-                    "clipboardReceived": 0.jsValue,
-                    "clipboardNegotiated": false.jsValue,
-                    "audioAssembled": 0.jsValue,
-                    "audioPopped": 0.jsValue,
-                    "lastClipboardText": JSValue.null,
-                ].jsValue
-            }
-            return [
-                "inputsSent": Double(session.inputsSent).jsValue,
-                "inputEchoes": Double(session.inputEchoes).jsValue,
-                "clipboardSent": Double(session.clipboardSent).jsValue,
-                "clipboardReceived": Double(session.clipboardReceived).jsValue,
-                "clipboardNegotiated": session.clipboardNegotiated.jsValue,
-                "audioAssembled": Double(session.audioPacketsAssembled)
-                    .jsValue,
-                "audioPopped": Double(session.audioPacketsPopped).jsValue,
-                "lastClipboardText":
-                    (session.lastClipboardText.map { $0.jsValue }
-                        ?? JSValue.null),
-            ].jsValue
-        }
-
-        JSObject.global["lyteBrowser"] = [
-            "runFrozenContracts": runContracts.jsValue,
-            "verifyEnvelopeHex": verifyEnvelope.jsValue,
-            "verifyCarrierEcho": verifyCarrier.jsValue,
+        var api: [String: JSValue] = [
             "envelopeVectorHex": FrozenEnvelopeContract.datagramHex.jsValue,
             "noiseMsg1CiphertextHex": DatagramCarrierProof.noiseMsg1CiphertextHex.jsValue,
             "wireBudgetBytes": Double(DatagramCarrierProof.wireBudgetBytes).jsValue,
-            "vectorNames": [
-                FrozenEnvelopeContract.vectorName,
-                FrozenNoiseContract.vectorName,
-            ].joined(separator: "; ").jsValue,
-            "controlOpen": openControl.jsValue,
-            "controlBegin": beginControl.jsValue,
-            "controlIngest": ingestControl.jsValue,
-            "controlIngestBytes": ingestControlBytes.jsValue,
-            "controlTick": tickControl.jsValue,
-            "controlTeardown": teardownControl.jsValue,
-            "classifyAnnexBHex": classifyAnnexB.jsValue,
-            "classifyAnnexBBytes": classifyAnnexBTyped.jsValue,
-            "mediaAnnexBHex": mediaAnnexB.jsValue,
-            "mediaAnnexBBytes": mediaAnnexBBytes.jsValue,
-            "mediaPopDue": mediaPopDue.jsValue,
-            "mediaNotePresented": mediaNotePresented.jsValue,
-            "mediaNoteDropped": mediaNoteDropped.jsValue,
-            "mediaStats": mediaStats.jsValue,
-            "controlSendInput": sendInput.jsValue,
-            "controlClipboardSet": shareClipboard.jsValue,
-            "audioPopPacket": audioPop.jsValue,
-            "interactionStats": interactionStats.jsValue,
-        ].jsValue
+            "conductorBeatMicroseconds":
+                Double(VideoBeatConductor.Config().beatPeriodMicroseconds).jsValue,
+            "vectorNames": [FrozenEnvelopeContract.vectorName, FrozenNoiseContract.vectorName]
+                .joined(separator: "; ").jsValue,
+        ]
+        func expose(_ name: String, _ body: @escaping ([JSValue]) -> JSValue) {
+            let closure = JSClosure { body($0) }
+            closures.append(closure)
+            api[name] = closure.jsValue
+        }
+
+        // Frozen contracts and carrier proofs.
+        expose("runFrozenContracts") { _ in resultsToJS(runFrozenContracts()) }
+        expose("verifyEnvelopeHex") { args in
+            verifyEnvelopeHex(string(args, 0) ?? FrozenEnvelopeContract.datagramHex)
+        }
+        expose("verifyCarrierEcho") { args in
+            carrierResultToJS(DatagramCarrierProof.verifyEcho(
+                kind: string(args, 0) ?? "opaque",
+                sentHex: string(args, 1) ?? "",
+                recvHex: string(args, 2) ?? ""
+            ))
+        }
+        expose("classifyAnnexBBytes") { args in
+            guard let bytes = bytes(args, 0) else {
+                return ["ok": false.jsValue, "detail": "not Uint8Array".jsValue].jsValue
+            }
+            return classifyFrameBytes(bytes)
+        }
+
+        // Session drive.
+        expose("controlOpen") { args in
+            controlOpen(hostStaticHex: string(args, 0) ?? "", pin: string(args, 1) ?? "")
+        }
+        expose("controlBegin") { args in
+            withSession { session in
+                do {
+                    return stepToJS(try session.begin(nowMicros: micros(args, 0)))
+                } catch {
+                    return failureStep("begin: \(error)")
+                }
+            }
+        }
+        expose("controlIngestBatch") { args in
+            withSession { session in
+                // A malformed batch is a page bug, not session evidence.
+                guard let packed = bytes(args, 0), let datagrams = unpack(packed) else {
+                    return .null
+                }
+                let now = micros(args, 1)
+                let before = session.currentStatus
+                var merged: BrowserControlSession.Step?
+                for datagram in datagrams {
+                    let step = session.ingest(datagram: datagram, nowMicros: now)
+                    merged = merged.map { merge($0, step) } ?? step
+                }
+                guard let merged else { return .null }
+                return quietOrStep(merged, statusBefore: before)
+            }
+        }
+        expose("controlTick") { args in
+            withSession { session in
+                let before = session.currentStatus
+                return quietOrStep(session.tick(nowMicros: micros(args, 0)), statusBefore: before)
+            }
+        }
+        expose("controlTeardown") { args in
+            withSession { stepToJS($0.teardown(nowMicros: micros(args, 0))) }
+        }
+        expose("controlSendInput") { args in
+            withSession { session in
+                guard let body = inputBody(args) else { return .null }
+                return stepToJS(session.sendInput(body: body, nowMicros: micros(args, 1)))
+            }
+        }
+        expose("controlClipboardSet") { args in
+            withSession { session in
+                stepToJS(session.shareClipboard(
+                    text: string(args, 0) ?? "", nowMicros: micros(args, 1)
+                ))
+            }
+        }
+        expose("controlFacts") { _ in facts() }
+
+        // Media hand-off.
+        expose("mediaTakeAnnexB") { args in
+            guard let frame = uint32(args, 0),
+                  let bytes = session?.takeAnnexB(frameNumber: frame)
+            else { return .null }
+            return JSTypedArray<UInt8>(bytes).jsValue
+        }
+        expose("mediaPopDue") { args in
+            guard let frame = session?.popDueFrame(nowMicros: micros(args, 0)) else {
+                return .null
+            }
+            return scheduledFrameToJS(frame)
+        }
+        expose("mediaNotePresented") { args in
+            if let frame = uint32(args, 0) { session?.notePresented(frameNumber: frame) }
+            return .undefined
+        }
+        expose("mediaNoteDropped") { args in
+            if let frame = uint32(args, 0) { session?.noteDropped(frameNumber: frame) }
+            return .undefined
+        }
+        expose("mediaStats") { _ in
+            let counters = session?.videoCounters ?? BrowserVideoPlayout.Counters()
+            return [
+                "assembled": Double(counters.framesAssembled).jsValue,
+                "presented": Double(counters.framesPresented).jsValue,
+                "skippedLate": Double(counters.framesSkippedLate).jsValue,
+                "notPresentable": Double(counters.framesNotPresentable).jsValue,
+                "decodeBacklogEvicted": Double(counters.decodeBacklogEvicted).jsValue,
+                "fecImpossible": Double(counters.fecImpossible).jsValue,
+                "shardsDropped": Double(counters.shardsDropped).jsValue,
+            ].jsValue
+        }
+        expose("audioPopPacket") { _ in
+            guard let packet = session?.popAudioPacket() else { return .null }
+            return [
+                "number": Double(packet.number).jsValue,
+                "captureMicroseconds": Double(packet.captureMicroseconds).jsValue,
+                "recovered": packet.recovered.jsValue,
+                "bytes": JSTypedArray<UInt8>(packet.bytes).jsValue,
+            ].jsValue
+        }
+        expose("interactionStats") { _ in
+            var stats: [String: JSValue] = [:]
+            stats["inputsSent"] = Double(session?.inputsSent ?? 0).jsValue
+            stats["inputEchoes"] = Double(session?.inputEchoes ?? 0).jsValue
+            stats["clipboardSent"] = Double(session?.clipboardSent ?? 0).jsValue
+            stats["clipboardReceived"] = Double(session?.clipboardReceived ?? 0).jsValue
+            stats["clipboardNegotiated"] = (session?.clipboardNegotiated ?? false).jsValue
+            stats["audioAssembled"] = Double(session?.audioPacketsAssembled ?? 0).jsValue
+            stats["audioPopped"] = Double(session?.audioPacketsPopped ?? 0).jsValue
+            stats["audioDroppedStale"] = Double(session?.audioPacketsDroppedStale ?? 0).jsValue
+            stats["lastClipboardText"] = session?.lastClipboardText.map(\.jsValue) ?? .null
+            return stats.jsValue
+        }
+
+        JSObject.global["lyteBrowser"] = api.jsValue
     }
 
-    /// Paints B-1 frozen-contract results. The page JS appends B-2…B-6
-    /// lines and owns `lyteB1Passed` … `lyteB6Passed`.
+    /// Paints the frozen-contract results. Page JS owns the session proofs
+    /// and `lyteSessionPassed`.
     static func paintProofPage(results: [ContractResult]) {
         let document = JSObject.global.document
         let passed = results.allSatisfy(\.passed)
-
         if let status = document.getElementById("status").object {
             status.textContent = .string(passed ? "PASS" : "FAIL")
             status.className = .string(passed ? "pass" : "fail")
@@ -230,258 +180,169 @@ enum BrowserBridge {
         if let meta = document.getElementById("meta").object {
             meta.textContent = .string(
                 """
-                LyteClientBrowser B-6 — interaction shell over B-3…B-5
+                LyteClientBrowser — proof harness over WebTransport
                 Contracts: \(FrozenEnvelopeContract.vectorName); \(FrozenNoiseContract.vectorName)
                 Carrier: opaque WT datagrams via lyte-wt-sidecar (ciphertext only)
                 Control: Noise IK + PIN PAKE + capabilities via LyteClientSession
-                Video: corpus → assemble → Conductor → WebCodecs → WebGPU
+                Video: assemble → Conductor → WebCodecs → WebGPU
                 Input/clipboard: sealed CTRL (InputEvent/echo, ClipboardSet/Announce)
                 Audio: sealed Opus → AudioDepacketizer → WebCodecs → AudioWorklet
-                Gap: not live Direct Eye / not daily-driver remote desktop
                 """
             )
         }
-
-        JSObject.global.lyteB1Passed = .boolean(passed)
+        JSObject.global.lyteContractsPassed = .boolean(passed)
     }
 
-    /// LyteCore Annex-B classification for a JS-supplied access unit (B-4).
-    private static func classifyAnnexBHex(_ hex: String) -> JSValue {
-        guard let bytes = Hex.bytes(hex) else {
-            return [
-                "ok": false.jsValue,
-                "frameShaped": false.jsValue,
-                "containsIrap": false.jsValue,
-                "byteCount": 0.jsValue,
-                "summary": "".jsValue,
-                "detail": "malformed hex".jsValue,
-            ].jsValue
+    // MARK: Arguments (a page mistake never traps the WASM instance)
+
+    private static func number(_ args: [JSValue], _ index: Int) -> Double? {
+        guard index < args.count, let value = args[index].number, value.isFinite else {
+            return nil
         }
-        return classifyFrameBytes(bytes)
+        return value
     }
 
-    private static func classifyFrameBytes(_ bytes: [UInt8]) -> JSValue {
-        let classification = AnnexBCheck.classifyFrame(bytes)
-        let summary = AnnexBCheck.summary(of: bytes)
+    private static func string(_ args: [JSValue], _ index: Int) -> String? {
+        index < args.count ? args[index].string : nil
+    }
+
+    private static func bool(_ args: [JSValue], _ index: Int) -> Bool {
+        guard index < args.count else { return false }
+        return args[index].boolean ?? ((args[index].number ?? 0) != 0)
+    }
+
+    private static func micros(_ args: [JSValue], _ index: Int) -> UInt64 {
+        guard let value = number(args, index), value >= 0,
+              value < 9_007_199_254_740_992
+        else { return 0 }
+        return UInt64(value)
+    }
+
+    private static func uint32(_ args: [JSValue], _ index: Int) -> UInt32? {
+        guard let value = number(args, index), value >= 0,
+              value <= Double(UInt32.max), value == value.rounded()
+        else { return nil }
+        return UInt32(value)
+    }
+
+    private static func bytes(_ args: [JSValue], _ index: Int) -> [UInt8]? {
+        guard index < args.count,
+              let typed = JSTypedArray<UInt8>(from: args[index])
+        else { return nil }
+        return typed.withUnsafeBytes { Array($0) }
+    }
+
+    private static func inputBody(_ args: [JSValue]) -> InputEvent.Body? {
+        switch string(args, 0) {
+        case "pointerMotionAbsolute":
+            guard let x = number(args, 2), let y = number(args, 3) else { return nil }
+            return .pointerMotionAbsolute(x: x, y: y)
+        case "pointerMotionRelative":
+            guard let dx = number(args, 2), let dy = number(args, 3) else { return nil }
+            return .pointerMotionRelative(dx: dx, dy: dy)
+        case "pointerButton":
+            guard let button = uint32(args, 2) else { return nil }
+            return .pointerButton(button: button, pressed: bool(args, 3))
+        case "pointerAxis":
+            guard let dx = number(args, 2), let dy = number(args, 3) else { return nil }
+            return .pointerAxis(dx: dx, dy: dy, finish: bool(args, 4))
+        case "keyKeycode":
+            guard let keycode = uint32(args, 2) else { return nil }
+            return .keyKeycode(keycode: keycode, pressed: bool(args, 3))
+        default:
+            return nil
+        }
+    }
+
+    // MARK: Session
+
+    private static func controlOpen(hostStaticHex: String, pin: String) -> JSValue {
+        do {
+            let opened = try BrowserControlSession(
+                hostStaticPublicKeyHex: hostStaticHex, pin: pin
+            )
+            session = opened
+            return [
+                "ok": true.jsValue,
+                "clientStaticPublicKeyHex": opened.clientStaticPublicKeyHex.jsValue,
+                "hostStaticPublicKeyHex": opened.hostStaticPublicKeyHex.jsValue,
+            ].jsValue
+        } catch {
+            session = nil
+            return ["ok": false.jsValue, "error": String(describing: error).jsValue].jsValue
+        }
+    }
+
+    private static func withSession(
+        _ body: (BrowserControlSession) -> JSValue
+    ) -> JSValue {
+        guard let session else { return failureStep("controlOpen first") }
+        return body(session)
+    }
+
+    private static func facts() -> JSValue {
+        guard let session else { return ["status": "none".jsValue].jsValue }
+        let counters = session.counters
         return [
-            "ok": true.jsValue,
-            "frameShaped": classification.isFrameShaped.jsValue,
-            "containsIrap": classification.containsIrap.jsValue,
-            "byteCount": Double(bytes.count).jsValue,
-            "summary": summary.jsValue,
-            "detail": (
-                classification.isFrameShaped && classification.containsIrap
-                    ? "IRAP-shaped Annex-B access unit"
-                    : "not an IRAP-shaped Annex-B frame"
-            ).jsValue,
+            "status": session.currentStatus.rawValue.jsValue,
+            "handshakeCompleted": session.handshakeCompleted.jsValue,
+            "paired": session.paired.jsValue,
+            "capabilitiesAgreed": session.capabilitiesAgreed.jsValue,
+            "clipboardNegotiated": session.clipboardNegotiated.jsValue,
+            "reliableQuiescent": session.isReliableQuiescent.jsValue,
+            "closeReason": session.closeReason.map { String(describing: $0).jsValue } ?? .null,
+            "undecodableDatagrams": Double(counters.undecodableDatagrams).jsValue,
+            "unsealFailures": Double(counters.unsealFailures).jsValue,
+            "message1Transmissions": Double(counters.message1Transmissions).jsValue,
+            "idrRequestsSent": Double(counters.idrRequestsSent).jsValue,
         ].jsValue
     }
 
-    // MARK: Control session bridge
+    private static func merge(
+        _ into: BrowserControlSession.Step, _ next: BrowserControlSession.Step
+    ) -> BrowserControlSession.Step {
+        var merged = next
+        merged.outbound = into.outbound + next.outbound
+        merged.events = into.events + next.events
+        merged.scheduled = into.scheduled + next.scheduled
+        return merged
+    }
 
-    private static func controlOpen(
-        hostStaticHex: String, pin: String
+    private static func quietOrStep(
+        _ step: BrowserControlSession.Step, statusBefore: BrowserControlSession.Status
     ) -> JSValue {
-        do {
-            let session = try BrowserControlSession(
-                hostStaticPublicKeyHex: hostStaticHex, pin: pin
-            )
-            controlSession = session
-            return [
-                "ok": true.jsValue,
-                "clientStaticPublicKeyHex": session.clientStaticPublicKeyHex.jsValue,
-                "hostStaticPublicKeyHex": session.hostStaticPublicKeyHex.jsValue,
-            ].jsValue
-        } catch {
-            controlSession = nil
-            return [
-                "ok": false.jsValue,
-                "error": String(describing: error).jsValue,
-            ].jsValue
-        }
-    }
-
-    private static func controlBegin(nowMicros: UInt64) -> JSValue {
-        guard let session = controlSession else {
-            return stepToJS(
-                outbound: [], events: [], status: "failed",
-                detail: "controlOpen first", passed: false
-            )
-        }
-        do {
-            return stepToJS(try session.begin(nowMicros: nowMicros))
-        } catch {
-            return stepToJS(
-                outbound: [], events: ["FAIL  begin: \(error)"],
-                status: "failed", detail: String(describing: error),
-                passed: false
-            )
-        }
-    }
-
-    private static func controlIngest(
-        datagramHex: String, nowMicros: UInt64
-    ) -> JSValue {
-        guard let session = controlSession else {
-            return stepToJS(
-                outbound: [], events: [], status: "failed",
-                detail: "no session", passed: false
-            )
-        }
-        return stepToJS(session.ingest(
-            datagramHex: datagramHex, nowMicros: nowMicros
-        ))
-    }
-
-    private static func controlIngest(
-        datagram: [UInt8], nowMicros: UInt64
-    ) -> JSValue {
-        guard let session = controlSession else {
-            return stepToJS(
-                outbound: [], events: [], status: "failed",
-                detail: "no session", passed: false
-            )
-        }
-        return stepToJS(session.ingest(
-            datagram: datagram, nowMicros: nowMicros
-        ))
-    }
-
-    private static func controlTick(nowMicros: UInt64) -> JSValue {
-        guard let session = controlSession else {
-            return stepToJS(
-                outbound: [], events: [], status: "failed",
-                detail: "no session", passed: false
-            )
-        }
-        return stepToJS(session.tick(nowMicros: nowMicros))
-    }
-
-    private static func controlTeardown(nowMicros: UInt64) -> JSValue {
-        guard let session = controlSession else {
-            return stepToJS(
-                outbound: [], events: [], status: "failed",
-                detail: "no session", passed: false
-            )
-        }
-        return stepToJS(session.teardown(nowMicros: nowMicros))
-    }
-
-    private static func controlSendInput(_ arguments: [JSValue]) -> JSValue {
-        guard let session = controlSession else {
-            return stepToJS(
-                outbound: [], events: [], status: "failed",
-                detail: "no session", passed: false
-            )
-        }
-        let kind = arguments[0].string ?? ""
-        let now = UInt64(arguments[1].number ?? 0)
-        let body: InputEvent.Body?
-        switch kind {
-        case "pointerMotionAbsolute":
-            let x = arguments[2].number ?? 0
-            let y = arguments[3].number ?? 0
-            body = .pointerMotionAbsolute(x: x, y: y)
-        case "pointerMotionRelative":
-            let dx = arguments[2].number ?? 0
-            let dy = arguments[3].number ?? 0
-            body = .pointerMotionRelative(dx: dx, dy: dy)
-        case "pointerButton":
-            let button = UInt32(arguments[2].number ?? 0)
-            let pressed = (arguments[3].boolean ?? false)
-                || (arguments[3].number ?? 0) != 0
-            body = .pointerButton(button: button, pressed: pressed)
-        case "pointerAxis":
-            let dx = arguments[2].number ?? 0
-            let dy = arguments[3].number ?? 0
-            let finish = (arguments[4].boolean ?? false)
-                || (arguments[4].number ?? 0) != 0
-            body = .pointerAxis(dx: dx, dy: dy, finish: finish)
-        case "keyKeycode":
-            let keycode = UInt32(arguments[2].number ?? 0)
-            let pressed = (arguments[3].boolean ?? false)
-                || (arguments[3].number ?? 0) != 0
-            body = .keyKeycode(keycode: keycode, pressed: pressed)
-        default:
-            body = nil
-        }
-        guard let body else {
-            return stepToJS(
-                outbound: [], events: ["FAIL  input: unknown kind \(kind)"],
-                status: "failed", detail: "unknown input kind", passed: false
-            )
-        }
-        return stepToJS(session.sendInput(body: body, nowMicros: now))
-    }
-
-    private static func controlClipboardSet(
-        text: String, nowMicros: UInt64
-    ) -> JSValue {
-        guard let session = controlSession else {
-            return stepToJS(
-                outbound: [], events: [], status: "failed",
-                detail: "no session", passed: false
-            )
-        }
-        return stepToJS(session.shareClipboard(
-            text: text, nowMicros: nowMicros
-        ))
+        step.isQuiet && step.status == statusBefore ? .null : stepToJS(step)
     }
 
     private static func stepToJS(_ step: BrowserControlSession.Step) -> JSValue {
-        stepToJS(
-            outbound: step.outboundHex,
-            events: step.events,
-            status: step.status.rawValue,
-            detail: step.detail,
-            passed: step.passed,
-            scheduled: step.scheduled
-        )
-    }
-
-    private static func stepToJS(
-        outbound: [String],
-        events: [String],
-        status: String,
-        detail: String,
-        passed: Bool,
-        scheduled: [BrowserVideoPlayout.ScheduledFrame] = []
-    ) -> JSValue {
-        // Newline-joined hex keeps the bridge free of JSArray kit churn;
-        // page JS splits on '\n' (empty string → zero datagrams).
-        // Scheduled frames: one CSV line each for the media pump.
-        let scheduledLines = scheduled.map(scheduledLine)
-        return [
-            "outboundHex": outbound.joined(separator: "\n").jsValue,
-            "outboundCount": Double(outbound.count).jsValue,
-            "events": events.joined(separator: "\n").jsValue,
-            "status": status.jsValue,
-            "detail": detail.jsValue,
-            "passed": passed.jsValue,
-            "ready": (status == "ready").jsValue,
-            "closed": (status == "closed").jsValue,
-            "failed": (status == "failed").jsValue,
-            "scheduledLines": scheduledLines.joined(separator: "\n").jsValue,
-            "scheduledCount": Double(scheduled.count).jsValue,
+        [
+            "outbound": step.outbound.isEmpty
+                ? JSValue.null : JSTypedArray<UInt8>(pack(step.outbound)).jsValue,
+            "outboundCount": Double(step.outbound.count).jsValue,
+            "events": step.events.joined(separator: "\n").jsValue,
+            "status": step.status.rawValue.jsValue,
+            "detail": step.detail.jsValue,
+            "passed": step.passed.jsValue,
+            "ready": (step.status == .ready).jsValue,
+            "closed": (step.status == .closed).jsValue,
+            "failed": (step.status == .failed).jsValue,
+            "scheduled": step.scheduled.map(scheduledFrameToJS).jsValue,
         ].jsValue
     }
 
-    private static func scheduledLine(
-        _ frame: BrowserVideoPlayout.ScheduledFrame
-    ) -> String {
+    private static func failureStep(_ detail: String) -> JSValue {
         [
-            "\(frame.frameNumber)",
-            "\(frame.presentationMicroseconds)",
-            "\(frame.cueMicroseconds)",
-            "\(frame.pathDelayMicroseconds)",
-            "\(frame.reserveMicroseconds)",
-            "\(frame.latenessMicroseconds)",
-            frame.isRandomAccess ? "1" : "0",
-            frame.shouldPresent ? "1" : "0",
-            "\(frame.annexBByteCount)",
-            "\(frame.sourceCaptureMicroseconds)",
-            "\(frame.arrivalMicroseconds)",
-        ].joined(separator: ",")
+            "outbound": JSValue.null,
+            "outboundCount": 0.jsValue,
+            "events": "FAIL  \(detail)".jsValue,
+            "status": "failed".jsValue,
+            "detail": detail.jsValue,
+            "passed": false.jsValue,
+            "ready": false.jsValue,
+            "closed": false.jsValue,
+            "failed": true.jsValue,
+            "scheduled": [JSValue]().jsValue,
+        ].jsValue
     }
 
     private static func scheduledFrameToJS(
@@ -489,8 +350,7 @@ enum BrowserBridge {
     ) -> JSValue {
         [
             "frameNumber": Double(frame.frameNumber).jsValue,
-            "presentationMicroseconds": Double(frame.presentationMicroseconds)
-                .jsValue,
+            "presentationMicroseconds": Double(frame.presentationMicroseconds).jsValue,
             "cueMicroseconds": Double(frame.cueMicroseconds).jsValue,
             "pathDelayMicroseconds": Double(frame.pathDelayMicroseconds).jsValue,
             "reserveMicroseconds": Double(frame.reserveMicroseconds).jsValue,
@@ -498,9 +358,48 @@ enum BrowserBridge {
             "isRandomAccess": frame.isRandomAccess.jsValue,
             "shouldPresent": frame.shouldPresent.jsValue,
             "annexBByteCount": Double(frame.annexBByteCount).jsValue,
-            "sourceCaptureMicroseconds": Double(frame.sourceCaptureMicroseconds)
-                .jsValue,
+            "sourceCaptureMicroseconds": Double(frame.sourceCaptureMicroseconds).jsValue,
             "arrivalMicroseconds": Double(frame.arrivalMicroseconds).jsValue,
+        ].jsValue
+    }
+
+    // MARK: Packed datagrams
+
+    static func pack(_ datagrams: [[UInt8]]) -> [UInt8] {
+        var out: [UInt8] = []
+        out.reserveCapacity(datagrams.reduce(0) { $0 + 2 + $1.count })
+        for datagram in datagrams {
+            out.append(UInt8(truncatingIfNeeded: datagram.count >> 8))
+            out.append(UInt8(truncatingIfNeeded: datagram.count))
+            out += datagram
+        }
+        return out
+    }
+
+    static func unpack(_ packed: [UInt8]) -> [[UInt8]]? {
+        var datagrams: [[UInt8]] = []
+        var offset = 0
+        while offset < packed.count {
+            guard offset + 2 <= packed.count else { return nil }
+            let length = Int(packed[offset]) << 8 | Int(packed[offset + 1])
+            offset += 2
+            guard offset + length <= packed.count else { return nil }
+            datagrams.append(Array(packed[offset..<offset + length]))
+            offset += length
+        }
+        return datagrams
+    }
+
+    // MARK: Contracts
+
+    private static func classifyFrameBytes(_ bytes: [UInt8]) -> JSValue {
+        let classification = AnnexBCheck.classifyFrame(bytes)
+        return [
+            "ok": true.jsValue,
+            "frameShaped": classification.isFrameShaped.jsValue,
+            "containsIrap": classification.containsIrap.jsValue,
+            "byteCount": Double(bytes.count).jsValue,
+            "summary": AnnexBCheck.summary(of: bytes).jsValue,
         ].jsValue
     }
 
@@ -522,27 +421,21 @@ enum BrowserBridge {
     }
 
     private static func verifyEnvelopeHex(_ hex: String) -> JSValue {
-        if hex.filter({ !$0.isWhitespace }).lowercased()
-            == FrozenEnvelopeContract.datagramHex
-        {
+        let name = "envelope-hex/js-supplied"
+        if hex.filter({ !$0.isWhitespace }).lowercased() == FrozenEnvelopeContract.datagramHex {
             return resultsToJS([FrozenEnvelopeContract.verify()])
         }
         guard let datagram = Hex.bytes(hex) else {
             return resultsToJS([
-                ContractResult(
-                    name: "envelope-hex/js-supplied",
-                    passed: false,
-                    detail: "malformed hex from JavaScript"
-                ),
+                ContractResult(name: name, passed: false, detail: "malformed hex from JavaScript"),
             ])
         }
         do {
             let (envelope, payload) = try Envelope.decode(datagram)
-            let reencoded = try envelope.encode(payload: Array(payload))
-            let matched = reencoded == datagram
+            let matched = try envelope.encode(payload: Array(payload)) == datagram
             return resultsToJS([
                 ContractResult(
-                    name: "envelope-hex/js-supplied",
+                    name: name,
                     passed: matched,
                     detail: matched
                         ? "JS-supplied datagram round-tripped (\(datagram.count) B, chan=\(envelope.channel.rawValue))"
@@ -551,11 +444,7 @@ enum BrowserBridge {
             ])
         } catch {
             return resultsToJS([
-                ContractResult(
-                    name: "envelope-hex/js-supplied",
-                    passed: false,
-                    detail: "codec threw: \(error)"
-                ),
+                ContractResult(name: name, passed: false, detail: "codec threw: \(error)"),
             ])
         }
     }

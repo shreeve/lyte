@@ -7,18 +7,17 @@ struct LyteCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "lyte-cli",
         abstract: "Lyte development CLI — discover, pair with, and stream from Lyte-UDP hosts.",
-        subcommands: [WireListen.self, WireView.self, WireDiscover.self, WirePair.self, WireUnpair.self, DecodeProbe.self, CorpusGen.self, CorpusGate.self]
+        subcommands: [WireView.self, WireDiscover.self, WirePair.self, WireUnpair.self, DecodeProbe.self, CorpusGen.self, CorpusGate.self]
     )
 }
 
-/// Custom entry point instead of `@main LyteCLI`. AppKit UI (the `wire-view`
-/// window) requires NSApplication.run() on the raw main thread: if it runs
-/// inside a Swift-concurrency MainActor job (which is where an
-/// AsyncParsableCommand's `run()` executes), the main dispatch queue can never
-/// drain — AVSampleBufferDisplayLayer never attaches decoded frames (black
-/// window) and DispatchQueue.main work is silently dropped. So: parse
-/// synchronously, run the command as a Task, and give the main thread to
-/// AppKit (for `wire-view`) or to dispatchMain() (for everything else).
+/// Custom entry point instead of `@main`: AppKit UI requires
+/// NSApplication.run() on the raw main thread. Inside a MainActor job
+/// (where an AsyncParsableCommand's `run()` executes) the main dispatch
+/// queue never drains — the display layer shows black and
+/// DispatchQueue.main work is dropped. So: parse synchronously, run the
+/// command as a Task, and give the main thread to AppKit or
+/// dispatchMain().
 @main
 enum Main {
     static func main() {

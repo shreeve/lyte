@@ -12,9 +12,11 @@ public struct RendererFrameDescriptor: Sendable, Equatable {
     }
 }
 
-/// Bounded queue policy behind a renderer handoff. Inter frames are never
-/// discarded individually: pressure or failure discards the whole dependency
-/// episode, enters await-random-access, and asks for one recovery.
+/// Bounded queue policy behind a renderer handoff. Pressure or failure
+/// discards the whole dependency episode (never a lone inter frame), enters
+/// await-random-access, and asks for one recovery; the IRAP that ends the
+/// wait heads a new episode. Invariant: while awaiting with no IRAP
+/// pending, a recovery request is outstanding.
 public struct BoundedRendererHandoff<Element: Sendable>: Sendable {
     public struct Config: Sendable, Equatable {
         public var capacity: Int
@@ -55,13 +57,8 @@ public struct BoundedRendererHandoff<Element: Sendable>: Sendable {
         frame: RendererFrameDescriptor
     ) -> Outcome {
         let incoming = Entry(element: element, frame: frame)
-        if awaitingRandomAccess {
-            guard !randomAccessPending else {
-                return Outcome(
-                    accepted: false,
-                    recoveryRequested: false,
-                    discarded: [incoming])
-            }
+        if awaitingRandomAccess, !randomAccessPending {
+            // Nothing decodable until an IRAP opens the next episode.
             guard frame.isRandomAccess else {
                 return Outcome(
                     accepted: false,
@@ -74,6 +71,8 @@ public struct BoundedRendererHandoff<Element: Sendable>: Sendable {
                 accepted: true, recoveryRequested: false, discarded: [])
         }
 
+        // An accepted IRAP awaiting enqueue heads the queue; its inter
+        // frames queue behind it under the same capacity and deadline.
         let expired = entries.first.map {
             frame.submittedMicroseconds &- $0.frame.submittedMicroseconds
                 >= config.deadlineMicroseconds
@@ -82,14 +81,18 @@ public struct BoundedRendererHandoff<Element: Sendable>: Sendable {
             var discarded = entries
             entries.removeAll(keepingCapacity: true)
             if frame.isRandomAccess {
+                // The incoming IRAP restarts the chain itself: no recovery
+                // is needed and nothing discarded reached the renderer.
                 entries.append(incoming)
-            } else {
-                discarded.append(incoming)
-                awaitingRandomAccess = true
+                return Outcome(
+                    accepted: true,
+                    recoveryRequested: false,
+                    discarded: discarded)
             }
+            discarded.append(incoming)
             return Outcome(
-                accepted: frame.isRandomAccess,
-                recoveryRequested: true,
+                accepted: false,
+                recoveryRequested: awaitRandomAccess(),
                 discarded: discarded)
         }
 
@@ -114,12 +117,9 @@ public struct BoundedRendererHandoff<Element: Sendable>: Sendable {
     public mutating func failEpisode() -> Outcome {
         let discarded = entries
         entries.removeAll(keepingCapacity: true)
-        let startsRecovery = !awaitingRandomAccess
-        awaitingRandomAccess = true
-        randomAccessPending = false
         return Outcome(
             accepted: false,
-            recoveryRequested: startsRecovery,
+            recoveryRequested: awaitRandomAccess(),
             discarded: discarded)
     }
 
@@ -133,6 +133,16 @@ public struct BoundedRendererHandoff<Element: Sendable>: Sendable {
                 discarded: [])
         }
         return failEpisode()
+    }
+
+    /// Enters await-random-access with no IRAP in hand; returns whether
+    /// that starts a recovery. An episode still waiting for its IRAP has
+    /// already asked; one whose pending IRAP was just lost asks again.
+    private mutating func awaitRandomAccess() -> Bool {
+        let startsRecovery = !awaitingRandomAccess || randomAccessPending
+        awaitingRandomAccess = true
+        randomAccessPending = false
+        return startsRecovery
     }
 
     public mutating func reset() -> [Entry] {

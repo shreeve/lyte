@@ -5,7 +5,7 @@ import XCTest
 final class PreSessionShutdownTests: XCTestCase {
     func testAwaitClientObservesStopBeforeHandshake() throws {
         let wire = try SessionWire(
-            listenPort: 0,
+            listener: HostListener(port: 0),
             peer: nil,
             rateBitsPerSecond: 1_000_000)
         defer {

@@ -1,6 +1,5 @@
-// EyeDRM: the kernel-facing half of the direct eye — plane discovery,
-// the FB_ID import identity (milestone 1), and the scanout ticket (GETFB2 +
-// dmabuf export, milestone 2). All libdrm via the CDRM module map.
+// The kernel-facing half of the direct eye: plane discovery, the FB_ID
+// import identity, and the scanout ticket (GETFB2 + dmabuf export).
 
 #if os(Linux)
 
@@ -56,12 +55,21 @@ public func findActivePlanes(fd: Int32) -> ActivePlanes? {
     return ActivePlanes(primary: prim, cursor: cursor)
 }
 
-/// Current FB_ID of a plane — an import-cache key, not damage evidence.
-public func currentFB(fd: Int32, planeId: UInt32) -> UInt32? {
+/// A plane's FB_ID as the kernel reports it: nil when the plane cannot
+/// be read, 0 when it scans out nothing (detached or disabled).
+public func planeFramebuffer(fd: Int32, planeId: UInt32) -> UInt32? {
     guard let plane = drmModeGetPlane(fd, planeId) else { return nil }
     defer { drmModeFreePlane(plane) }
-    let framebufferId = plane.pointee.fb_id
-    return framebufferId == 0 ? nil : framebufferId
+    return plane.pointee.fb_id
+}
+
+/// Current non-zero FB_ID of a plane — an import-cache key, not damage
+/// evidence. nil covers both "unreadable" and "scans out nothing".
+public func currentFB(fd: Int32, planeId: UInt32) -> UInt32? {
+    guard let framebufferId = planeFramebuffer(fd: fd, planeId: planeId),
+          framebufferId != 0
+    else { return nil }
+    return framebufferId
 }
 
 /// One grabbed scanout frame: geometry plus per-plane dmabufs. The
@@ -79,8 +87,13 @@ public struct ScanoutTicket {
     }
 }
 
-/// GETFB2 + PRIME export (privileged). nil on a stale fb id — the
-/// compositor flipped and freed between poll and grab; caller skips.
+/// GETFB2 + PRIME export (privileged). nil on a stale fb id (freed
+/// between poll and grab); the caller skips.
+///
+/// GETFB2 opens a GEM handle per plane's buffer object; the dmabuf fds
+/// keep the BOs alive on their own, so every unique non-zero handle is
+/// closed before return on every path. An unclosed handle pins its BO for
+/// the life of the fd.
 public func grabTicket(fd: Int32, fbId: UInt32) -> ScanoutTicket? {
     guard let fb2 = drmModeGetFB2(fd, fbId) else { return nil }
     defer { drmModeFreeFB2(fb2) }
@@ -88,6 +101,7 @@ public func grabTicket(fd: Int32, fbId: UInt32) -> ScanoutTicket? {
     let handles = [fb.handles.0, fb.handles.1, fb.handles.2, fb.handles.3]
     let offsets = [fb.offsets.0, fb.offsets.1, fb.offsets.2, fb.offsets.3]
     let pitches = [fb.pitches.0, fb.pitches.1, fb.pitches.2, fb.pitches.3]
+    defer { closeGemHandles(fd: fd, handles) }
     var planes: [(fd: Int32, offset: UInt32, pitch: UInt32)] = []
     for i in 0..<4 where handles[i] != 0 {
         var primeFd: Int32 = -1
@@ -103,6 +117,23 @@ public func grabTicket(fd: Int32, fbId: UInt32) -> ScanoutTicket? {
     return ScanoutTicket(
         width: fb.width, height: fb.height, fourcc: fb.pixel_format,
         modifier: fb.modifier, planes: planes)
+}
+
+/// The distinct non-zero GEM handles among a framebuffer's planes, in
+/// first-seen order. Multi-plane formats (CCS aux planes, NV12 in one
+/// BO) repeat a handle; each handle is one reference and closes once.
+func uniqueGemHandles(_ handles: [UInt32]) -> [UInt32] {
+    var unique: [UInt32] = []
+    for handle in handles where handle != 0 && !unique.contains(handle) {
+        unique.append(handle)
+    }
+    return unique
+}
+
+private func closeGemHandles(fd: Int32, _ handles: [UInt32]) {
+    for handle in uniqueGemHandles(handles) {
+        _ = drmCloseBufferHandle(fd, handle)
+    }
 }
 
 #endif

@@ -26,8 +26,12 @@ private struct PassthroughCrypto: TransportCrypto {
 }
 
 final class UdpReceiveEndpointStopTests: XCTestCase {
+    /// Short enough that joins cost milliseconds, not the 100 ms default.
+    private static let receiveTimeout: Duration = .milliseconds(5)
+
     func testSocketUsesSharedProtectedTosAndNamedVideoServiceClass() throws {
-        let endpoint = UdpReceiveEndpoint(port: 0, crypto: PassthroughCrypto())
+        let endpoint = UdpReceiveEndpoint(port: 0, crypto: PassthroughCrypto(),
+            receiveTimeout: Self.receiveTimeout)
         try endpoint.start()
         defer { endpoint.stop() }
 
@@ -50,6 +54,37 @@ final class UdpReceiveEndpointStopTests: XCTestCase {
         XCTAssertEqual(serviceType, NET_SERVICE_TYPE_VI)
     }
 
+    func testReceiveTimeoutReachesTheSocketAndDefaultsTo100Milliseconds() throws {
+        func socketTimeout(_ endpoint: UdpReceiveEndpoint) -> timeval {
+            var tv = timeval()
+            var length = socklen_t(MemoryLayout<timeval>.size)
+            XCTAssertEqual(
+                getsockopt(endpoint.fd, SOL_SOCKET, SO_RCVTIMEO, &tv, &length), 0)
+            return tv
+        }
+        let standard = UdpReceiveEndpoint(port: 0, crypto: PassthroughCrypto())
+        try standard.bindAndHandshake()
+        defer { standard.stop() }
+        let tv = socketTimeout(standard)
+        XCTAssertEqual(tv.tv_sec, 0)
+        XCTAssertEqual(tv.tv_usec, 100_000)
+
+        let short = UdpReceiveEndpoint(
+            port: 0, crypto: PassthroughCrypto(),
+            receiveTimeout: .milliseconds(5))
+        try short.bindAndHandshake()
+        defer { short.stop() }
+        XCTAssertEqual(socketTimeout(short).tv_usec, 5_000)
+
+        // Zero would mean "block forever" to the kernel.
+        let zero = UdpReceiveEndpoint(
+            port: 0, crypto: PassthroughCrypto(), receiveTimeout: .zero)
+        try zero.bindAndHandshake()
+        defer { zero.stop() }
+        let floored = socketTimeout(zero)
+        XCTAssertTrue(floored.tv_sec > 0 || floored.tv_usec > 0)
+    }
+
     /// A datagram handler blocks mid-flight while another thread calls
     /// stop(): stop() must wait for the handler (the receive thread) to
     /// finish before returning. Pre-fix, stop() closed the fd and could
@@ -59,7 +94,8 @@ final class UdpReceiveEndpointStopTests: XCTestCase {
         let releaseHandler = DispatchSemaphore(value: 0)
         nonisolated(unsafe) var handlerFinished = false
         let endpoint = UdpReceiveEndpoint(
-            port: 0, crypto: PassthroughCrypto()
+            port: 0, crypto: PassthroughCrypto(),
+            receiveTimeout: Self.receiveTimeout
         ) { _, _ in
             handlerEntered.signal()
             releaseHandler.wait()
@@ -96,9 +132,9 @@ final class UdpReceiveEndpointStopTests: XCTestCase {
             stopReturned.signal()
         }
         // stop() must NOT return while the handler still blocks —
-        // 300 ms is three receive-timeout periods of margin.
+        // 30 ms is six receive-timeout periods of margin.
         XCTAssertEqual(
-            stopReturned.wait(timeout: .now() + 0.3), .timedOut,
+            stopReturned.wait(timeout: .now() + 0.03), .timedOut,
             "stop() returned while the receive thread was still working "
             + "— the fd number was freed under a live loop")
         XCTAssertFalse(handlerFinished)

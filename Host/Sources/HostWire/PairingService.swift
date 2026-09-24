@@ -1,34 +1,37 @@
-// PairingResponderService (HS-9): the host's half of PIN pairing —
-// drives LyteWire's PairingPakeResponder (W6 CPace) over the HS-8
-// reliable-CTRL seam, and owns the flood posture the plan assigns the
-// shell: an online-guess budget and an attempt throttle.
+// PairingResponderService: the host's half of PIN pairing. It drives
+// LyteWire's PairingPakeResponder (CPace) over reliable CTRL and owns the
+// flood posture: an online-guess budget and an attempt throttle.
 //
-// Why guesses are counted at share-B issuance, not at a failed confirm:
-// the 0x0C message carries the responder's confirmation tag Tb (the W6
-// layout — the client learns wrong-PIN one message early). A client
-// holding a PIN guess can therefore verify it against Tb and abandon
-// the run without ever sending a wrong 0x0D. Every share B issued IS
-// one online PIN test, so that is what spends an attempt. A low-order
-// share (0x0E invalid-share) spends none — it aborts before any tag
-// math and teaches the sender nothing about the PIN — but it still
-// arms the throttle.
+// Guesses are counted at share-B issuance, not at a failed confirm: 0x0C
+// carries the responder's confirmation tag Tb, so a client can test a PIN
+// guess against Tb and abandon the run without sending a wrong 0x0D.
+// Every share B issued IS one online PIN test. A low-order share
+// (0x0E invalid-share) spends no attempt — it aborts before any tag math
+// and teaches nothing about the PIN — but still arms the throttle.
 //
 // When the budget is spent the PIN BURNS: the service goes silent on
-// further pairing traffic (no oracle, no reply) and the shell exits
-// pairing mode loudly. A burned PIN is never resurrected — the
-// operator mints a fresh one by restarting pairing mode. With 6-digit
-// PINs and a 3-guess budget an online attacker's odds are 3 in 10⁶
-// per displayed PIN, and the CPace transcript yields nothing
-// offline-testable (the draft's quantum-annoying property).
+// further pairing traffic (no oracle) and is never resurrected; the
+// operator restarts pairing mode for a fresh PIN. With 6-digit PINs and
+// 3 guesses an online attacker's odds are 3 in 10⁶ per displayed PIN, and
+// the CPace transcript yields nothing offline-testable.
 //
-// Sans-IO in the house style: no clock (entry points take `now`,
-// monotonic ns), no sockets, no persistence. Replies come back as
-// encoded CTRL bodies for Session.sendReliable; pinning the paired
-// static (the keystore write) is the shell's move on `.paired`.
+// Sans-IO: entry points take `now` (monotonic ns). Replies are encoded
+// CTRL bodies for Session.sendReliable; pinning the paired static is the
+// shell's move on `.paired`.
 
 import LyteWire
 
 public final class PairingResponderService {
+    /// A fresh zero-padded 6-digit pairing PIN. Pass a CSPRNG in
+    /// production.
+    public static func mintPin(
+        using rng: inout some RandomNumberGenerator
+    ) -> String {
+        let digits = String(rng.next(upperBound: UInt32(1_000_000)))
+        let padding = PairingPin.digitCount - digits.count
+        return String(repeating: "0", count: padding) + digits
+    }
+
     public struct Config: Sendable {
         /// Share-B issuances (online PIN guesses) before the PIN burns.
         public var maxAttempts: Int
@@ -46,8 +49,7 @@ public final class PairingResponderService {
         }
     }
 
-    /// What the shell must react to. Values in delivery order, loud on
-    /// purpose — the gate's "wrong PIN fails loudly" is these lines.
+    /// What the shell must react to, in delivery order.
     public enum Event: Equatable, Sendable {
         /// A share B left: one online guess spent.
         case attemptOpened(attempt: Int, of: Int)
@@ -84,9 +86,8 @@ public final class PairingResponderService {
     private let hostStaticPublicKey: [UInt8]
     private let config: Config
 
-    /// The carrying session's identity — set at establishment, the
-    /// PairingPake binding inputs (§8.2). A re-handshake replaces it
-    /// and aborts any in-flight run: the sid changed under it.
+    /// The carrying session's PairingPake binding inputs. A re-handshake
+    /// replaces them and aborts any in-flight run.
     private var binding: (clientStatic: [UInt8], handshakeHash: [UInt8])?
     /// The in-flight CPace run, between share B and the confirm.
     private var responder: PairingPakeResponder?
@@ -101,11 +102,10 @@ public final class PairingResponderService {
     public var isBurned: Bool { burned }
 
     /// - Parameters:
-    ///   - pin: the displayed PIN's ASCII bytes (digits only — trivially
-    ///     its own RFC 8265 profile; both ends must feed CPace the same
-    ///     bytes).
-    ///   - hostStaticPublicKey: our Noise static public key — the CI's
-    ///     second identity, the key the client pins on success.
+    ///   - pin: the displayed PIN's ASCII digits (both ends must feed
+    ///     CPace the same bytes).
+    ///   - hostStaticPublicKey: our Noise static public key — the key
+    ///     the client pins on success.
     public init(
         pin: [UInt8],
         hostStaticPublicKey: [UInt8],
@@ -155,9 +155,8 @@ public final class PairingResponderService {
         guard !isPaired else { return Output() }
         if burned { return Output() } // announced once; silence after
         guard let binding else {
-            // ARQ deliveries only exist post-establishment, so a
-            // missing binding is a shell wiring bug — stay silent on
-            // the wire, loud in the event.
+            // ARQ deliveries only exist post-establishment: a missing
+            // binding is a shell wiring bug — silent on the wire.
             return Output(events: [.malformed])
         }
         if attemptsUsed >= config.maxAttempts {
@@ -191,10 +190,9 @@ public final class PairingResponderService {
                 )]
             )
         } catch PairingPakeError.invalidPeerShare {
-            // Aborted before any tag math: no PIN information left this
-            // host, so no guess is spent — but the typed reject is owed
-            // (the wire's loud-without-oracle rule) and the throttle
-            // stays armed.
+            // Aborted before any tag math: no PIN information left, so
+            // no guess is spent, but the typed reject is owed and the
+            // throttle stays armed.
             responder = nil
             return Output(
                 replies: [PairingReject(reason: .invalidShare).encode()],

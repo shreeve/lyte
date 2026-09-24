@@ -1,27 +1,11 @@
-// The client's first send path (CL-3). Until this slice the client only
-// listened; feedback (chan=3), beacon echoes, and IDR requests (CTRL) all
-// need datagrams flowing client→host, so this is the outbound mirror of
-// ReceiveDemux's discipline:
-//
-//   plaintext → envelope header (exact wire bytes, the AAD) →
-//   TransportCrypto.seal → header + wire payload → transmit
-//
-// The header is encoded once via Envelope.encode(payload: []) so the AAD
-// the seal sees is byte-identical to what the receiver's unseal will see —
-// the same rule the receive path pins (header-as-AAD, master plan §4.1).
-// Per-channel u16 seqs are allocated here, one counter per channel, so
-// every outbound channel gets the serial stream the far side's gap
-// tracking expects.
-//
-// `transmit` is injected: the CLI hands it UdpReceiveEndpoint.sendToPeer,
-// tests hand it a capture closure. Transmission failures are counted, not
-// thrown — these are all fire-and-forget telemetry-class datagrams whose
-// loss the next cadence tick supersedes (build plan §4.11).
+// The client's sealed send path: plaintext → Envelope.sealedDatagram
+// (header as AAD) → injected `transmit`. Per-channel seqs come from
+// ClientEnvelopeSequencer. Transmit failures are counted, not thrown.
 
 import Foundation
+import LyteClientSession
 import LyteWire
 
-/// Outbound counters, snapshotted for the CLI's stats lines.
 public struct TransportSenderStats: Sendable {
     public var datagramsSent: UInt64 = 0
     public var sendFailures: UInt64 = 0
@@ -32,7 +16,7 @@ public final class TransportSender: @unchecked Sendable {
     private let crypto: TransportCrypto
     private let transmit: @Sendable ([UInt8]) -> Bool
     private let lock = NSLock()
-    private var seqByChannel: [UInt8: ChannelSeq] = [:]
+    private var sequencer = ClientEnvelopeSequencer()
     private var stats = TransportSenderStats()
 
     /// - Parameter transmit: hands one encoded datagram to the socket;
@@ -45,12 +29,10 @@ public final class TransportSender: @unchecked Sendable {
         self.transmit = transmit
     }
 
-    /// Seals and sends one plaintext payload on `channel`, allocating the
-    /// next seq. `timestamp` is client monotonic µs (the envelope rule for
-    /// client-sent datagrams). `extensions` ride in the envelope's TLV
-    /// block, inside the AAD (the conn-id tag on reliable CTRL, CL-7).
-    /// Returns true when the datagram left. Envelope/budget violations
-    /// throw (a caller bug, kept loud); transmit failures only count.
+    /// Seals and sends one payload on `channel` with the next seq.
+    /// `timestamp` is client monotonic µs; `extensions` ride inside the
+    /// AAD. Returns true when the datagram left. Envelope/budget violations
+    /// throw; transmit failures only count.
     @discardableResult
     public func send(
         channel: ChannelId,
@@ -59,46 +41,29 @@ public final class TransportSender: @unchecked Sendable {
         plaintext: [UInt8],
         extensions: [WireExtension] = []
     ) throws -> Bool {
-        // Allocation and seal are ONE critical section (v1-final
-        // analysis, finding 4): NoiseTransport commits the extended
-        // counter at seal time and demands strict per-channel
-        // monotonicity, and chan 0 has three senders on three threads
-        // (ARQ service, beacon echo, IDR requester). Sealing outside
-        // the lock let a later-allocated seq commit first, so the
-        // earlier one's seal threw sendSequenceNotMonotonic — and the
-        // ARQ pass that lost the race abandoned its whole packed
-        // batch for a PTO, exactly during the loss storms where all
-        // three collide. Holding the lock across allocate→seal makes
-        // allocation order the commit order by construction; only
-        // transmit (the syscall) stays outside. Lock order is
-        // sender→crypto everywhere, so this cannot deadlock.
+        // Allocation and seal are one critical section: NoiseTransport
+        // demands strict per-channel seq monotonicity at seal time, and
+        // chan 0 has senders on several threads. Only transmit stays
+        // outside. Lock order is sender→crypto everywhere.
         lock.lock()
-        let seq = seqByChannel[channel.rawValue] ?? ChannelSeq(rawValue: 0)
-        seqByChannel[channel.rawValue] = seq.next
-
-        let envelope = Envelope(
+        let envelope = sequencer.envelope(
             channel: channel,
-            seq: seq,
             frame: frame,
             timestamp: timestamp.microseconds,
-            fec: 0,
             extensions: extensions
         )
         let datagram: [UInt8]
         do {
-            // The header bytes double as the AAD — exactly what the
-            // receiver will slice off ahead of the payload.
-            let header = try envelope.encode(payload: [])
-            let sealed: [UInt8]
-            do {
-                sealed = try crypto.seal(
-                    plaintext: plaintext[...], aad: header[...],
-                    envelope: envelope)
-            } catch {
-                stats.sealFailures += 1
-                throw error
+            datagram = try envelope.sealedDatagram(plaintext[...]) {
+                plaintext, aad in
+                do {
+                    return try crypto.seal(
+                        plaintext: plaintext, aad: aad, envelope: envelope)
+                } catch {
+                    stats.sealFailures += 1
+                    throw error
+                }
             }
-            datagram = try envelope.encode(payload: sealed)
         } catch {
             lock.unlock()
             throw error

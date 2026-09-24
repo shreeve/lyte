@@ -1,15 +1,11 @@
-// Envelope vector authoring (W0), unchanged in content — hoisted out of
-// main.swift when W1 made the tool multi-file. Run once, commit, freeze:
-// a byte difference against the committed file is a wire-contract break
-// to investigate, never a prompt to regenerate. The circularity (vectors
-// produced by the codec they test) is broken by the hand-computed anchor
-// bytes in EnvelopeTests.
+// Authors Vectors/envelope-v1.json. The hand-computed anchor bytes in
+// EnvelopeTests keep the codec from grading its own vectors.
 
 import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-func makeEnvelopeVectorFile() throws -> EnvelopeVectorFile {
+public func makeEnvelopeVectorFile() throws -> EnvelopeVectorFile {
     var vectors: [EnvelopeVector] = []
 
     func fields(_ envelope: Envelope) -> EnvelopeFields {

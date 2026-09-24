@@ -1,7 +1,6 @@
-// The ARQ frame codecs (W3): the wire format of the reliable
-// ordered-retransmit sublayer that CTRL, video-idle, and the feature
-// channels ride (decision record §8.1). Two frame types, registered in
-// the CTRL type space and used identically on every reliable channel:
+// The ARQ frame codecs: the wire format of the reliable sublayer that
+// CTRL, video-idle and the feature channels ride. Two frame types,
+// registered in the CTRL type space and used on every reliable channel:
 //
 //   0x07  data segment — one slice of one message in one group
 //   0x08  ACK — cumulative + bitmap receive state per (chan, group)
@@ -12,23 +11,15 @@
 // CTRL traffic (beacons, path messages, handshake, IDR requests) never
 // starts with these bytes, so the shell's one-byte peek routes cleanly.
 //
-// Sequencing is GROUP-SCOPED, not channel-scoped, and that is the load-
-// bearing decision: envelope seqs on a reliable channel are shared with
-// ARQ-exempt traffic, so a channel-scoped cumulative ACK could never be
-// honest. Each group numbers its own segments with a serial u16 from 0
-// (wire v1), which is also what makes groups independent — a fully-lost
-// group leaves no hole in any other group's sequence space.
+// Sequencing is GROUP-SCOPED: envelope seqs on a reliable channel are
+// shared with ARQ-exempt traffic, so a channel-scoped cumulative ACK
+// could never be honest. Each group numbers its segments with a serial
+// u16 from 0, so a fully-lost group leaves no hole in any other group.
 //
-// Retransmission discipline (refining core-plan pin §2.2): the
-// retransmission unit is the SEGMENT, re-sent byte-identical inside a
-// FRESH datagram (fresh envelope seq, fresh AEAD nonce). The pin's
-// guarantees survive intact — no plaintext is ever sealed twice under
-// one nonce, the receiver admits each segment exactly once (dedupe is
-// by group seq, not envelope seq), and ACK ambiguity cannot arise
-// because ACKs name group seqs. What the refinement buys is liveness:
-// a byte-identical DATAGRAM resend would re-enter the Noise replay
-// window under its old counter and be rejected as stale once the
-// channel had moved 64 datagrams on — a hazard, not a feature.
+// The retransmission unit is the SEGMENT, re-sent byte-identical inside
+// a FRESH datagram (fresh envelope seq, fresh AEAD nonce): no plaintext
+// is sealed twice under one nonce, dedupe is by group seq, and a resent
+// datagram can never fall behind the Noise replay window as stale.
 //
 // Segment frame, fixed 8-byte header then body, little-endian:
 //
@@ -67,7 +58,7 @@
 /// An ARQ group: 0 is the channel's long-lived ordered message stream;
 /// any other value is an independent one-shot group carrying exactly one
 /// message (a sparse idle frame, the final ratchet frame) — no group
-/// ever waits on another (decision record §8.1).
+/// ever waits on another.
 public struct ArqGroupId: RawRepresentable, Hashable, Sendable {
     public var rawValue: UInt16
 
@@ -130,6 +121,11 @@ public enum ArqBounds {
     /// datagram. This is the safe lower bound for the runtime pack ceiling.
     public static let maxAckFrameByteCount = ackHeaderByteCount
         + maxAckBlocks * (ackBlockFixedByteCount + maxAckBitmapByteCount)
+    /// Segments one send group may hold (in flight plus queued) before
+    /// `send` pushes back with `ArqSendError.queueFull` — the endpoint's
+    /// memory bound against a runaway producer.
+    public static let maxQueuedSegmentsPerGroup =
+        32_768 - maxReceiveWindowSegments
 }
 
 /// One data segment: one slice of one message in one group.
@@ -328,19 +324,16 @@ public enum ArqFrame: Hashable, Sendable {
             throw ArqFrameError.emptyPayload
         }
         var frames: [ArqFrame] = []
-        var cursor = payload.startIndex
-        while cursor < payload.endIndex {
-            switch payload[cursor] {
+        var reader = WireReader(
+            payload, truncated: ArqFrameError.truncatedFrame)
+        while let type = reader.remaining.first {
+            switch type {
             case CtrlMessageType.arqSegment:
-                let (segment, next) = try decodeSegment(payload, at: cursor)
-                frames.append(.segment(segment))
-                cursor = next
+                frames.append(.segment(try decodeSegment(&reader)))
             case CtrlMessageType.arqAck:
-                let (ack, next) = try decodeAck(payload, at: cursor)
-                frames.append(.ack(ack))
-                cursor = next
+                frames.append(.ack(try decodeAck(&reader)))
             default:
-                throw ArqFrameError.unknownFrameType(payload[cursor])
+                throw ArqFrameError.unknownFrameType(type)
             }
         }
         return frames
@@ -350,79 +343,63 @@ public enum ArqFrame: Hashable, Sendable {
         try decodeAll(payload[...])
     }
 
+    /// `type ‖ flags ‖ group u16 ‖ seq u16 ‖ bodyLen u16 ‖ body`.
     private static func decodeSegment(
-        _ payload: ArraySlice<UInt8>, at start: Int
-    ) throws -> (ArqSegment, Int) {
-        guard start + ArqBounds.segmentHeaderByteCount <= payload.endIndex else {
-            throw ArqFrameError.truncatedFrame
-        }
-        let flags = payload[start + 1]
-        let group: UInt16 = wireReadLE(payload, at: start + 2)
-        let seq: UInt16 = wireReadLE(payload, at: start + 4)
-        let bodyLen = Int(wireReadLE(payload, at: start + 6) as UInt16)
+        _ reader: inout WireReader
+    ) throws -> ArqSegment {
+        _ = try reader.u8()
+        let flags = try reader.u8()
+        let group = try reader.u16()
+        let seq = try reader.u16()
+        let bodyLen = Int(try reader.u16())
         guard bodyLen >= 1 else {
             throw ArqFrameError.zeroLengthSegmentBody
         }
-        let bodyStart = start + ArqBounds.segmentHeaderByteCount
-        guard bodyStart + bodyLen <= payload.endIndex else {
-            throw ArqFrameError.truncatedFrame
-        }
-        let segment = try ArqSegment(
+        return try ArqSegment(
             group: ArqGroupId(rawValue: group),
             seq: ArqSegmentSeq(rawValue: seq),
             endOfMessage: flags & ArqSegment.endOfMessageFlag != 0,
-            body: Array(payload[bodyStart..<bodyStart + bodyLen])
+            body: Array(try reader.bytes(bodyLen))
         )
-        return (segment, bodyStart + bodyLen)
     }
 
+    /// `type ‖ reserved ‖ blockCount`, then per block
+    /// `chan ‖ group u16 ‖ cumulative u16 ‖ bitmapLen ‖ bitmap`.
     private static func decodeAck(
-        _ payload: ArraySlice<UInt8>, at start: Int
-    ) throws -> (ArqAck, Int) {
-        guard start + ArqBounds.ackHeaderByteCount <= payload.endIndex else {
-            throw ArqFrameError.truncatedFrame
-        }
-        let blockCount = Int(payload[start + 2])
+        _ reader: inout WireReader
+    ) throws -> ArqAck {
+        _ = try reader.u8()
+        _ = try reader.u8()
+        let blockCount = Int(try reader.u8())
         guard blockCount >= 1 else {
             throw ArqFrameError.zeroAckBlocks
         }
         guard blockCount <= ArqBounds.maxAckBlocks else {
             throw ArqFrameError.tooManyAckBlocks(blockCount)
         }
-        var cursor = start + ArqBounds.ackHeaderByteCount
         var blocks: [ArqAck.Block] = []
         blocks.reserveCapacity(blockCount)
         for _ in 0..<blockCount {
-            guard cursor + ArqBounds.ackBlockFixedByteCount <= payload.endIndex else {
-                throw ArqFrameError.truncatedFrame
-            }
-            let channel = ChannelId(rawValue: payload[cursor])
-            let group: UInt16 = wireReadLE(payload, at: cursor + 1)
-            let cumulative: UInt16 = wireReadLE(payload, at: cursor + 3)
-            let bitmapLen = Int(payload[cursor + 5])
-            cursor += ArqBounds.ackBlockFixedByteCount
+            let channel = ChannelId(rawValue: try reader.u8())
+            let group = try reader.u16()
+            let cumulative = try reader.u16()
+            let bitmapLen = Int(try reader.u8())
             guard bitmapLen <= ArqBounds.maxAckBitmapByteCount else {
                 throw ArqFrameError.ackBitmapTooLong(bitmapLen)
             }
-            guard cursor + bitmapLen <= payload.endIndex else {
-                throw ArqFrameError.truncatedFrame
-            }
-            let block = try ArqAck.Block(
+            blocks.append(try ArqAck.Block(
                 channel: channel,
                 group: ArqGroupId(rawValue: group),
                 cumulative: ArqSegmentSeq(rawValue: cumulative),
-                receivedBitmap: Array(payload[cursor..<cursor + bitmapLen])
-            )
-            blocks.append(block)
-            cursor += bitmapLen
+                receivedBitmap: Array(try reader.bytes(bitmapLen))
+            ))
         }
-        return (try ArqAck(blocks: blocks), cursor)
+        return try ArqAck(blocks: blocks)
     }
 }
 
-/// Everything the ARQ frame codecs can refuse. Same doctrine as
-/// WireError: hostile bytes throw, never trap. (Hashable so the
-/// endpoint's ignore events can carry it.)
+/// Everything the ARQ frame codecs can refuse. Hostile bytes throw,
+/// never trap.
 public enum ArqFrameError: Error, Hashable, Sendable {
     /// A frame header or body runs past the payload's end.
     case truncatedFrame

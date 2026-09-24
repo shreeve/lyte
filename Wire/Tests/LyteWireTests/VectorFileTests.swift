@@ -9,20 +9,13 @@ import LyteWireTestKit
 
 final class VectorFileTests: XCTestCase {
 
-    private static let vectorsPath = packageRoot + "/Vectors/envelope-v1.json"
-
-    private static let packageRoot = WireTestPaths.packageRoot
-
     private func loadFile() throws -> EnvelopeVectorFile {
-        try EnvelopeVectorFile.load(from: Self.vectorsPath)
+        try EnvelopeVectorFile.loadCommitted()
     }
 
     func testFileIdentity() throws {
         let file = try loadFile()
-        XCTAssertEqual(file.format, EnvelopeVectorFile.expectedFormat)
-        XCTAssertEqual(file.formatVersion, 1)
-        XCTAssertEqual(file.wireVersion, Int(WireVersion.major))
-        XCTAssertFalse(file.vectors.isEmpty)
+        XCTAssertEqual(file.identityProblems, [])
         XCTAssertEqual(
             Set(file.vectors.map(\.name)).count, file.vectors.count,
             "vector names must be unique"
@@ -94,7 +87,7 @@ final class VectorFileTests: XCTestCase {
             guard let wireError = error as? WireError else {
                 return XCTFail("\(vector.name): non-WireError \(error)")
             }
-            XCTAssertEqual(wireErrorName(wireError), expected, vector.name)
+            XCTAssertEqual(vectorErrorName(wireError), expected, vector.name)
         }
     }
 
@@ -110,7 +103,7 @@ final class VectorFileTests: XCTestCase {
             guard let wireError = error as? WireError else {
                 return XCTFail("\(vector.name): non-WireError \(error)")
             }
-            XCTAssertEqual(wireErrorName(wireError), expected, vector.name)
+            XCTAssertEqual(vectorErrorName(wireError), expected, vector.name)
         }
     }
 

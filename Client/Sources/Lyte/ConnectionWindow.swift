@@ -2,7 +2,7 @@ import Foundation
 import LyteTransport
 import SwiftUI
 
-/// One window = one connection (D6). Starts in the connect state; becomes a
+/// One window = one connection. Starts in the connect state; becomes a
 /// pure stream when a session launches.
 struct ConnectionWindow: View {
     var autoconnect: String?
@@ -19,9 +19,6 @@ struct ConnectionWindow: View {
             case .pickHost, .connecting, .failed:
                 ConnectView(model: model)
             case .streaming:
-                // CL-13: the stream + its overlays (FROZEN pill, stats
-                // readout, the auto-hiding control strip) live in
-                // StreamContainer.
                 StreamContainer(model: model)
                     .task {
                         await DiagnosticBenchmark.run(model: model)
@@ -65,7 +62,7 @@ struct ConnectionWindow: View {
                     diagnosticDetail: "autoconnect preflight: \(problem)"))
                 return
             }
-            let store = PinnedHostStore.load()
+            let store = loadPinnedHosts()
             var probe = in_addr()
             let requestedIsAddress =
                 inet_pton(AF_INET, requested, &probe) == 1
@@ -74,11 +71,9 @@ struct ConnectionWindow: View {
                     || $0.address == requested
             })
             // An IP-shaped request whose address no pin remembers is a
-            // transport override — the host moved roads (Wi-Fi→wire)
-            // while the pin kept the old one. With exactly one pin
-            // there is no ambiguity about WHO we mean, and Noise still
-            // enforces the identity at the requested address; only the
-            // route differs.
+            // transport override (the host changed networks). With
+            // exactly one pin there is no ambiguity about who we mean,
+            // and Noise still enforces the identity.
             let fallback = (matched == nil && requestedIsAddress
                 && store.hosts.count == 1) ? store.hosts.values.first : nil
             guard let pinned = matched ?? fallback,
@@ -100,18 +95,10 @@ struct ConnectionWindow: View {
                 publicKeyHash: publicKeyHash))
         }
         .onDisappear {
-            // The ⌘W seam (v1-final analysis, finding 1): closing the
-            // window is the most natural macOS exit, and it was the one
-            // verb with no teardown — the receive thread, 100 ms
-            // machine beat, and feedback cadence outlived the window,
-            // no typed 0x0A left, the host kept encoding full-rate
-            // into the void, and awdl0 stayed held down until app
-            // quit. One window = one connection (D6), so the window's
-            // disappearance IS the disconnect. This modifier sits on
-            // the whole body — phase flips inside the Group never
-            // detach it, only the window going away does — and
-            // endLyteSession's guard makes the already-disconnected
-            // and app-quit paths harmless no-ops.
+            // One window = one connection, so the window going away IS
+            // the disconnect — including mid-connect, where it must
+            // invalidate the in-flight dial. The modifier sits on the
+            // whole body: phase flips inside the Group never fire it.
             model.disconnect()
         }
     }

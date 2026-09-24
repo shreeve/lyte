@@ -1,24 +1,24 @@
 import Foundation
 import Security
+import Synchronization
 
 public enum HelperClientRequirementError: Error, Equatable {
     case security(operation: String, status: OSStatus)
     case unexpectedDesignatedRequirement
 }
 
-private final class RequirementResultBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var result: Result<String, Error>?
+private final class RequirementResultBox: Sendable {
+    private let result = Mutex<Result<String, any Error>?>(nil)
 
-    func store(_ result: Result<String, Error>) {
-        lock.lock(); self.result = result; lock.unlock()
+    func store(_ result: Result<String, any Error>) {
+        self.result.withLock { $0 = result }
     }
 
-    func take() -> Result<String, Error>? {
-        lock.lock(); defer { lock.unlock() }
-        let value = result
-        result = nil
-        return value
+    func take() -> Result<String, any Error>? {
+        result.withLock { value in
+            defer { value = nil }
+            return value
+        }
     }
 }
 

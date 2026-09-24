@@ -33,20 +33,27 @@ var targets: [Target] = [
     ),
     .target(
         name: "HostSession",
-        dependencies: [.product(name: "LyteWire", package: "Wire")]
+        dependencies: [
+            .product(name: "LyteCore", package: "Common"),
+            .product(name: "LyteWire", package: "Wire"),
+        ]
     ),
     .testTarget(
         name: "HostSessionTests",
         dependencies: [
             "HostSession",
             .product(name: "LyteWire", package: "Wire"),
+            .product(name: "LyteWireTestKit", package: "Wire"),
         ]
     ),
     // Host audio codec policy in Swift over the one pinned COpus mechanism.
     // This stays platform-neutral; PipeWire capture remains a Linux C leaf.
     .target(
         name: "HostAudio",
-        dependencies: [.product(name: "COpus", package: "Common")]
+        dependencies: [
+            .product(name: "COpus", package: "Common"),
+            .product(name: "LyteWire", package: "Wire"),
+        ]
     ),
     .testTarget(
         name: "HostAudioTests",
@@ -64,10 +71,33 @@ var targets: [Target] = [
             .product(name: "LyteWire", package: "Wire"),
         ]
     ),
+    // The host's cross-platform OS adapters over HostWire's seams (the
+    // file-drop store); keeps HostWire itself IO-free.
+    .target(
+        name: "HostIO",
+        dependencies: [
+            "HostWire",
+            .product(name: "LyteCore", package: "Common"),
+            .product(name: "LyteWire", package: "Wire"),
+        ]
+    ),
+    // Test-only: a shipping Session on an outbox and virtual time, plus
+    // the settle loop every HostWire gate drives its fake client through.
+    .target(
+        name: "HostWireTestKit",
+        dependencies: [
+            "HostWire",
+            "HostSession",
+            .product(name: "LyteWire", package: "Wire"),
+            .product(name: "LyteWireTestKit", package: "Wire"),
+        ]
+    ),
     .testTarget(
         name: "HostWireTests",
         dependencies: [
             "HostWire",
+            "HostWireTestKit",
+            "HostIO",
             "HostSession",
             "HostCore",
             .product(name: "LyteCore", package: "Common"),
@@ -90,6 +120,7 @@ var targets: [Target] = [
             "HostWire",
             "HostAudio",
             .product(name: "LyteCore", package: "Common"),
+            .product(name: "LyteIO", package: "Common"),
             .product(name: "LyteWire", package: "Wire"),
         ]
     ),
@@ -99,10 +130,6 @@ var targets: [Target] = [
 products.append(.executable(name: "lyte-host", targets: ["lyte-host"]))
 products.append(.executable(name: "lyte-eye", targets: ["lyte-eye"]))
 products.append(.executable(name: "lyte-nvenc", targets: ["lyte-nvenc"]))
-
-// E5: the vendored no-reset FFmpeg is GONE — the portal path it
-// served is demolished. LYTE_FFMPEG_PREFIX is accepted-and-ignored
-// so existing build recipes keep working; nothing links libav.
 
 targets += [
     .systemLibrary(
@@ -121,7 +148,15 @@ targets += [
         name: "CPipeWireAudio",
         dependencies: ["CPipeWire"]
     ),
-    // The direct eye (docs/20260801-105800-direct-eye-plan.md, E0): libdrm
+    .testTarget(
+        name: "CPipeWireAudioTests",
+        dependencies: [
+            "CPipeWireAudio",
+            .product(name: "LyteIO", package: "Common"),
+        ],
+        linkerSettings: [.linkedLibrary("pipewire-0.3")]
+    ),
+    // The direct eye (docs/history/20260801-105800-direct-eye-plan.md, E0): libdrm
     // imported straight into Swift — a module map, no .c files. The
     // KMS identity/capture organ is Swift-first; CNetIO-style shims
     // appear only if a macro wall does.
@@ -174,8 +209,12 @@ targets += [
             // HevcSliceHeader) straight to the driver via libva.
             "CDRM", "CGBM", "CEGL", "CVA",
             "HostCore",
+            .product(name: "LyteIO", package: "Common"),
         ]
     ),
+    // Pure HostEye bookkeeping (GEM-handle and cursor-plane transitions)
+    // — unit tests that never open a device.
+    .testTarget(name: "HostEyeTests", dependencies: ["HostEye"]),
     // E0: the standalone eye — doorbell mode (milestone 1, unprivileged)
     // and capture mode (milestone 2: full loop → Annex-B file).
     .executableTarget(
@@ -249,6 +288,7 @@ targets += [
             "HostCore",
             "HostSession",
             "HostWire",
+            "HostIO",
             "CDBus",
             // HS-15: the audio leg — monitor capture + Opus encode
             // feeding the session's audio channel.
@@ -274,6 +314,9 @@ targets += [
         name: "LyteHostIntegrationTests",
         dependencies: [
             "lyte-host",
+            "CNetIO",
+            "HostIO",
+            "HostWire",
             .product(name: "LyteWire", package: "Wire"),
         ]
     ),

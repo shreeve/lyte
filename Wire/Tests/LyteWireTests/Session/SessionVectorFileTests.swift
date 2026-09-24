@@ -9,22 +9,12 @@ import LyteWireTestKit
 
 final class SessionVectorFileTests: XCTestCase {
 
-    private static let vectorsPath = packageRoot + "/Vectors/session-v1.json"
-
-    private static let packageRoot = WireTestPaths.packageRoot
-
     private func loadFile() throws -> SessionVectorFile {
-        try SessionVectorFile.load(from: Self.vectorsPath)
+        try SessionVectorFile.loadCommitted()
     }
 
     func testFileIdentity() throws {
-        let file = try loadFile()
-        XCTAssertEqual(file.format, SessionVectorFile.expectedFormat)
-        XCTAssertEqual(file.formatVersion, 1)
-        XCTAssertEqual(file.wireVersion, Int(WireVersion.major))
-        XCTAssertFalse(file.vectors.isEmpty)
-        let names = file.vectors.map(\.name)
-        XCTAssertEqual(Set(names).count, names.count, "vector names must be unique")
+        XCTAssertEqual(try loadFile().identityProblems, [])
     }
 
     func testAllSessionVectors() throws {
@@ -64,7 +54,7 @@ final class SessionVectorFileTests: XCTestCase {
                 guard let error = $0 as? PathMessageError else {
                     return XCTFail("\(vector.name): foreign error \($0)")
                 }
-                XCTAssertEqual(pathMessageErrorName(error), vector.error,
+                XCTAssertEqual(vectorErrorName(error), vector.error,
                                vector.name)
             }
         }
@@ -89,7 +79,7 @@ final class SessionVectorFileTests: XCTestCase {
                 guard let error = $0 as? PathMessageError else {
                     return XCTFail("\(vector.name): foreign error \($0)")
                 }
-                XCTAssertEqual(pathMessageErrorName(error), vector.error,
+                XCTAssertEqual(vectorErrorName(error), vector.error,
                                vector.name)
             }
         }
@@ -119,7 +109,7 @@ final class SessionVectorFileTests: XCTestCase {
                 guard let error = $0 as? IdrRequestError else {
                     return XCTFail("\(vector.name): foreign error \($0)")
                 }
-                XCTAssertEqual(idrRequestErrorName(error), vector.error,
+                XCTAssertEqual(vectorErrorName(error), vector.error,
                                vector.name)
             }
         }
@@ -150,7 +140,7 @@ final class SessionVectorFileTests: XCTestCase {
                 guard let error = $0 as? ConnectionIdError else {
                     return XCTFail("\(vector.name): foreign error \($0)")
                 }
-                XCTAssertEqual(connectionIdErrorName(error), vector.error,
+                XCTAssertEqual(vectorErrorName(error), vector.error,
                                vector.name)
             }
         }

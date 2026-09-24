@@ -1,8 +1,6 @@
-// The byte budget, per the master plan ruling (§4.2): the 24-byte envelope
-// rides as AAD outside the AEAD; the plaintext shard budget is 1112 bytes;
-// ciphertext + 16-byte tag is at most 1128; the whole datagram at most 1152.
-// 1152 is also the bridge-safe ceiling (overview §2) — DPLPMTUD may raise it
-// later as a negotiated session parameter, never per-packet.
+// The byte budget: the 24-byte envelope rides as AAD outside the AEAD; the
+// plaintext shard is at most 1112 bytes, ciphertext + 16-byte tag at most
+// 1128, the whole datagram at most 1152 (the bridge-safe ceiling).
 
 public enum WireBudget {
     /// The fixed envelope, always present, always authenticated-not-encrypted.
@@ -20,12 +18,9 @@ public enum WireBudget {
     /// identically by test/vector equipment so gate results carry over.
     public static let maxPlaintextShardByteCount = 1112
 
-    /// Plaintext available when the mandatory connection-id TLV rides
-    /// beside the envelope. The TLV block contributes its count byte, the
-    /// extension's type/length bytes, and the eight-byte id; the AEAD tag is
-    /// already reserved by the plaintext shard ceiling above. Session ARQ
-    /// uses this value from its first datagram so packing never changes after
-    /// the peer id is learned.
+    /// Plaintext left when the connection-id TLV (count, type, length, and
+    /// eight id bytes) rides beside the envelope. Session ARQ uses this from
+    /// its first datagram so packing never changes once the peer id is known.
     public static let maxConnectionIdTaggedPlaintextByteCount =
         maxPlaintextShardByteCount - 1 - 2 - ConnectionId.byteCount
 

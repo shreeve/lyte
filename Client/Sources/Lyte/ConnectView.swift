@@ -2,8 +2,8 @@ import SwiftUI
 import AppKit
 import LyteTransport
 
-/// The window's empty state (D6): discovered Lyte hosts and pairing.
-/// Melts away when the stream starts.
+/// The window's empty state: discovered Lyte hosts and pairing. Melts
+/// away when the stream starts.
 struct ConnectView: View {
     @Bindable var model: ConnectionModel
     @Environment(\.scenePhase) private var scenePhase
@@ -11,10 +11,11 @@ struct ConnectView: View {
     @State private var browsing = false
     @State private var accessProblem: LocalNetworkAccessProblem?
     @State private var rescanWhenActive = false
-    // CL-6: the pairing sheet's target, and a pinned-store snapshot for
-    // the paired badges (reloaded after every pair/unpair).
+    // The pairing sheet's target, and a pinned-store snapshot for the
+    // paired badges: read when the view appears and after every write,
+    // never per render.
     @State private var pairingTarget: DiscoveredLyteHost?
-    @State private var pinnedStore = PinnedHostStore.load()
+    @State private var pinnedStore = PinnedHostStore()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,7 +27,7 @@ struct ConnectView: View {
                 ProgressView(message)
                 // The respawn-gap hunt can run tens of seconds — the
                 // human always has the exit.
-                Button("Cancel") { model.cancelConnect() }
+                Button("Cancel") { model.disconnect() }
                     .padding(.top, 16)
                 Spacer()
             case .failed(let message):
@@ -44,6 +45,7 @@ struct ConnectView: View {
             }
             .ignoresSafeArea()
         }
+        .onAppear { pinnedStore = loadPinnedHosts() }
         .task { await browse() }
         .onChange(of: scenePhase) { _, newPhase in
             guard newPhase == .active, rescanWhenActive else { return }
@@ -52,7 +54,7 @@ struct ConnectView: View {
         }
         .sheet(item: $pairingTarget) { host in
             LytePairingSheet(host: host) { pairedNow in
-                if pairedNow { pinnedStore = PinnedHostStore.load() }
+                if pairedNow { pinnedStore = loadPinnedHosts() }
                 pairingTarget = nil
             }
         }
@@ -134,9 +136,8 @@ struct ConnectView: View {
             fileURLWithPath: "/System/Applications/System Settings.app"))
     }
 
-    /// One Lyte host row: unpaired opens the pairing sheet; paired is a
-    /// launch button — clicking it dials the pinned static with the
-    /// Keychain identity and opens the stream (CL-8's session slice).
+/// One Lyte host row: unpaired opens the pairing sheet; paired dials the
+/// pinned static with the Keychain identity and opens the stream.
     @ViewBuilder
     private func lyteHostRow(_ host: DiscoveredLyteHost) -> some View {
         let pinned = pinnedStore.host(publicKeyHash: host.publicKeyHash)
@@ -159,72 +160,68 @@ struct ConnectView: View {
         .help(lyteHostTooltip(host, paired: pinned != nil))
         .contextMenu {
             if let pinned {
-                // CL-13: the per-host session-start posture — applied
-                // at connect; the strip's toggle overrides live.
-                // CL-18: opt-out semantics — unset means muted (the
-                // flipped default), so this reads `!= false` (checked
-                // by default) and writes BOTH directions explicitly.
+                // The per-host session-start posture, applied at connect.
+                // Unset means muted, so this reads `!= false` and writes
+                // both directions explicitly.
                 Toggle("Start with Host Muted", isOn: Binding(
                     get: {
                         pinnedStore.host(publicKeyHash: host.publicKeyHash)?
                             .startHostAudioMuted != false
                     },
                     set: { muted in
-                        guard let pkh = host.publicKeyHash else { return }
-                        var store = PinnedHostStore.load()
-                        store.setStartHostAudioMuted(
-                            publicKeyHash: pkh, muted: muted)
-                        try? store.save()
-                        pinnedStore = store
+                        updatePins(host) {
+                            $0.setStartHostAudioMuted(publicKeyHash: $1, muted: muted)
+                        }
                     }
                 ))
-                // CL-15: the per-host clipboard consent — applied at
-                // connect; the strip's toggle overrides live. OFF by
-                // default (clipboards carry passwords).
+                // The per-host clipboard consent, applied at connect. Off
+                // by default (clipboards carry passwords).
                 Toggle("Share Clipboard", isOn: Binding(
                     get: {
                         pinnedStore.host(publicKeyHash: host.publicKeyHash)?
                             .shareClipboard == true
                     },
                     set: { share in
-                        guard let pkh = host.publicKeyHash else { return }
-                        var store = PinnedHostStore.load()
-                        store.setShareClipboard(
-                            publicKeyHash: pkh, share: share ? true : nil)
-                        try? store.save()
-                        pinnedStore = store
+                        updatePins(host) {
+                            $0.setShareClipboard(publicKeyHash: $1, share: share ? true : nil)
+                        }
                     }
                 ))
-                // P-1: the images rung — meaningful only with text
-                // consent on (the Off / Text only / Text + images
-                // tier); OFF by default like text.
+                // The images rung — meaningful only with text consent on;
+                // off by default like text.
                 Toggle("Share Clipboard Images", isOn: Binding(
                     get: {
                         pinnedStore.host(publicKeyHash: host.publicKeyHash)?
                             .shareClipboardImages == true
                     },
                     set: { share in
-                        guard let pkh = host.publicKeyHash else { return }
-                        var store = PinnedHostStore.load()
-                        store.setShareClipboardImages(
-                            publicKeyHash: pkh, share: share ? true : nil)
-                        try? store.save()
-                        pinnedStore = store
+                        updatePins(host) {
+                            $0.setShareClipboardImages(
+                                publicKeyHash: $1, share: share ? true : nil)
+                        }
                     }
                 ))
                 Divider()
                 Button("Unpair \(pinned.name)", role: .destructive) {
-                    var store = PinnedHostStore.load()
-                    if let pkh = host.publicKeyHash {
-                        store.unpin(publicKeyHash: pkh)
-                        try? store.save()
-                        pinnedStore = store
-                    }
+                    updatePins(host) { $0.unpin(publicKeyHash: $1) != nil }
                 }
             } else {
                 Button("Pair…") { pairingTarget = host }
             }
         }
+    }
+
+    /// Load–mutate–save for one host's pin; `mutate` returns false when
+    /// nothing changed.
+    private func updatePins(
+        _ host: DiscoveredLyteHost,
+        _ mutate: (inout PinnedHostStore, String) -> Bool
+    ) {
+        guard let pkh = host.publicKeyHash else { return }
+        var store = loadPinnedHosts()
+        guard mutate(&store, pkh) else { return }
+        try? store.save()
+        pinnedStore = store
     }
 
     @ViewBuilder

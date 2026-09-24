@@ -1,23 +1,15 @@
-// E6b: the H.265 VPS/SPS/PPS serializer — the "real project" of
-// encoder independence on the VAAPI path (direct-eye plan E6b).
-// libavcodec's one irreplaceable service to the eye was writing
-// these headers; this file writes them instead, byte-identical to
-// what hevc_vaapi emits for the Arc dialect (proven by the pinned
-// oracle in HevcParameterSetTests — a real capture's headers,
-// decoded field-by-field and mirrored here name-by-name).
+// The H.265 VPS/SPS/PPS serializer for the VAAPI path, byte-identical to
+// what hevc_vaapi emits (pinned by the oracle in HevcParameterSetTests).
 //
-// SCOPE: this is the iHD/Arc ENCODE dialect — Main profile 8-bit
-// 4:2:0, or (the Best tier, recipe.chroma444) Rext Main 4:4:4 8-bit
-// — one temporal layer, IPPP with one reference, CTB 64, no
-// tiles/PCM/scaling lists — not a general H.265 header library.
-// NVENC writes its own headers (E6a); this pen serves VAAPI alone.
+// Scope: the iHD encode dialect only — Main 8-bit 4:2:0, or Rext Main
+// 4:4:4 8-bit with recipe.chroma444 — one temporal layer, IPPP with one
+// reference, CTB 64, no tiles/PCM/scaling lists. NVENC writes its own
+// headers.
 
 import LyteCore
 
-/// What actually varies between sessions. Everything else is the
-/// dialect, fixed in the serializers below with the field names the
-/// spec uses (§7.3.2) so a byte-diff dispute reads straight back to
-/// the standard.
+/// What varies between sessions. Everything else is the dialect, fixed
+/// in the serializers below under the spec's field names (§7.3.2).
 public struct HevcHeaderRecipe: Hashable, Sendable {
     public var width: UInt32
     public var height: UInt32
@@ -29,19 +21,12 @@ public struct HevcHeaderRecipe: Hashable, Sendable {
     /// general_level_idc (30 × the level number): 150 = L5.0, which
     /// covers 2048×1280@60 with margin.
     public var levelIdc: UInt32
-    /// PPS cu_qp_delta: nil = disabled (CQP — the slice data carries
-    /// no per-CU QP syntax). Under brc rate control the driver WRITES
-    /// per-CU deltas into the slice data, so the PPS must declare them
-    /// or the decoder misparses every coefficient after the first
-    /// delta (sharp-text-yellow-wash corruption, caught by eyeball).
-    /// The value is diff_cu_qp_delta_depth; the driver dialect uses
-    /// log2_diff_max_min_luma_coding_block_size (= 3, 8x8 granularity).
+    /// PPS diff_cu_qp_delta_depth; nil disables cu_qp_delta (CQP). Under
+    /// rate control the driver writes per-CU deltas into the slice data,
+    /// so the PPS must declare them or the decoder misparses every
+    /// coefficient after the first delta. The driver uses 3 (8x8).
     public var cuQpDeltaDepth: UInt32?
-    /// The Best tier (Rext): full-chroma Main 4:4:4, 8-bit. False =
-    /// the Main 4:2:0 dialect every prior capture pinned. Probed
-    /// 2026-08-03: the Arc encodes it (VAProfileHEVCMain444
-    /// EncSlice) and the M5 hardware-decodes it (444v, production
-    /// render path).
+    /// Rext Main 4:4:4 8-bit (the Best tier); false is Main 4:2:0.
     public var chroma444: Bool
 
     public init(

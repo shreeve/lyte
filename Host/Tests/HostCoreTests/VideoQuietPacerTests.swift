@@ -61,4 +61,14 @@ final class VideoQuietPacerTests: XCTestCase {
             pacer.assess(idleSeconds: 31).announce,
             VideoQuietPacer.Announcement(quiet: true, keepaliveSeconds: 2))
     }
+
+    /// Any idle reading — astronomically large, infinite, or NaN — lands on
+    /// the ladder instead of trapping in the Double-to-Int conversion.
+    func testExtremeIdleReadingsStayOnTheLadder() {
+        let pacer = VideoQuietPacer()
+        let ceiling = UInt8(pacer.config.maxIntervalSeconds)
+        XCTAssertEqual(pacer.interval(idleSeconds: 1e300), ceiling)
+        XCTAssertEqual(pacer.interval(idleSeconds: .infinity), ceiling)
+        XCTAssertEqual(pacer.interval(idleSeconds: .nan), 1)
+    }
 }

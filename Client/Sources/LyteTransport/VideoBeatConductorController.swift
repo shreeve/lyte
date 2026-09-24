@@ -15,16 +15,14 @@ public final class VideoBeatConductorController: @unchecked Sendable {
     public func schedule(
         mappedCaptureMicroseconds: UInt64,
         arrivalMicroseconds: UInt64,
-        sourceCaptureMicroseconds: UInt64? = nil,
-        isRandomAccess: Bool = false
+        sourceCaptureMicroseconds: UInt64? = nil
     ) -> VideoBeatConductor.Decision {
         lock.lock()
         defer { lock.unlock() }
         return policy.schedule(
             mappedCaptureMicroseconds: mappedCaptureMicroseconds,
             arrivalMicroseconds: arrivalMicroseconds,
-            sourceCaptureMicroseconds: sourceCaptureMicroseconds,
-            isRandomAccess: isRandomAccess)
+            sourceCaptureMicroseconds: sourceCaptureMicroseconds)
     }
 
     public func reset() {

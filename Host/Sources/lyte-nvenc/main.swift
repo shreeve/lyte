@@ -1,20 +1,16 @@
-// lyte-nvenc (E6a milestone 1): the NVENC-native probe — Swift talks
-// to libnvidia-encode directly, no libavcodec anywhere in the path.
-// Proves the two levers that kill the vendored no-reset patch at the
-// root:
+// lyte-nvenc: the NVENC-native probe — Swift talks to libnvidia-encode
+// directly, no libavcodec. Proves two properties:
 //
-//   1. The SDK writes its OWN headers: an infinite-GOP HEVC stream
-//      whose only IDR is the demanded opening one (repeatSPSPPS off
-//      the table — headers ride the first packet, the wire's
-//      stream-startability contract).
-//   2. NvEncReconfigureEncoder changes the rate MID-STREAM with
-//      resetEncoder=0, forceIDR=0 — the very thing the vendor patch
-//      exists to fake — and the stream keeps decoding.
+//   1. The SDK writes its own headers: an infinite-GOP HEVC stream whose
+//      only IDR is the demanded opening one, headers on the first packet
+//      (the wire's stream-startability contract).
+//   2. NvEncReconfigureEncoder changes the rate mid-stream with
+//      resetEncoder=0, forceIDR=0, and the stream keeps decoding.
 //
 // Usage: lyte-nvenc [out.h265] [frames] [width] [height]
 // Gates: exactly 1 IDR across the run; reconfigure at the midpoint
 // returns success and mints NO IDR; the file decodes on the Mac via
-// `swift run lyte-cli decode-probe` (the E1 gate).
+// `swift run lyte-cli decode-probe`.
 
 #if os(Linux)
 
@@ -46,9 +42,8 @@ func check(_ status: NVENCSTATUS, _ what: String,
     }
 }
 
-// MARK: CUDA context (the session's device handle; frames ride
-// NVENC's own system-memory input buffers, so this is ALL the CUDA
-// the probe needs)
+// MARK: CUDA context (frames ride NVENC's own system-memory input
+// buffers, so a context is all the CUDA the probe needs)
 
 guard cuInit(0) == 0 else { fail("cuInit — is nvidia loaded?") }
 var driverVersion: Int32 = 0
@@ -69,13 +64,13 @@ defer { _ = cuCtxDestroy_v2(cudaContext) }
 var maxVersion: UInt32 = 0
 check(NvEncodeAPIGetMaxSupportedVersion(&maxVersion),
       "NvEncodeAPIGetMaxSupportedVersion")
-let deviceName = String(
-    decoding: nameBytes.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) },
-    as: UTF8.self)
-print("nvenc-probe: \(deviceName) — driver CUDA "
-    + "\(driverVersion / 1000).\(driverVersion % 1000 / 10), NVENC API "
-    + "\(maxVersion >> 4).\(maxVersion & 0xF) (header "
-    + "\(LYTE_NVENCAPI_VERSION & 0xFF).\(LYTE_NVENCAPI_VERSION >> 24))")
+let deviceName = String(cBuffer: nameBytes)
+print("""
+    nvenc-probe: \(deviceName) — driver CUDA \
+    \(driverVersion / 1000).\(driverVersion % 1000 / 10), NVENC API \
+    \(maxVersion >> 4).\(maxVersion & 0xF) (header \
+    \(LYTE_NVENCAPI_VERSION & 0xFF).\(LYTE_NVENCAPI_VERSION >> 24))
+    """)
 guard maxVersion >= (LYTE_NVENCAPI_VERSION & 0xFF) << 4
         | (LYTE_NVENCAPI_VERSION >> 24) else {
     fail("driver NVENC API older than the vendored 12.2 header")
@@ -120,7 +115,7 @@ config.encodeCodecConfig.hevcConfig.repeatSPSPPS = 0
 config.rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR
 config.rcParams.averageBitRate = 35_000_000
 config.rcParams.maxBitRate = 50_000_000
-// 4 frame periods at 60 fps — the E1 VBV posture.
+// 4 frame periods at 60 fps.
 config.rcParams.vbvBufferSize = 50_000_000 / 15
 
 var initParams = NV_ENC_INITIALIZE_PARAMS()
@@ -192,8 +187,7 @@ let reconfigureAt = frameCount / 2
 var reconfigured = false
 
 for frame in 0..<frameCount {
-    // The midpoint lever: halve the envelope, zero reset, zero IDR —
-    // the exact call the vendored patch fakes in libavcodec.
+    // The midpoint lever: halve the envelope, zero reset, zero IDR.
     if frame == reconfigureAt {
         config.rcParams.averageBitRate = 18_000_000
         config.rcParams.maxBitRate = 25_000_000
@@ -209,8 +203,10 @@ for frame in 0..<frameCount {
                   "nvEncReconfigureEncoder", lastError: lastError)
         }
         reconfigured = true
-        print("nvenc-probe: reconfigured 35→18 Mbps at frame \(frame) "
-            + "(resetEncoder=0, forceIDR=0)")
+        print("""
+            nvenc-probe: reconfigured 35→18 Mbps at frame \(frame) \
+            (resetEncoder=0, forceIDR=0)
+            """)
     }
 
     var lockInput = NV_ENC_LOCK_INPUT_BUFFER()
@@ -267,12 +263,15 @@ let sorted = encodeNanos.sorted()
 let p50 = Double(sorted[sorted.count / 2]) / 1e6
 let p99 = Double(sorted[min(sorted.count - 1,
                             sorted.count * 99 / 100)]) / 1e6
-print("nvenc-probe: \(frameCount) frames \(width)x\(height) → "
-    + "\(out.count) B (\(outPath)); encode p50 "
-    + String(format: "%.2f", p50) + " ms / p99 "
-    + String(format: "%.2f", p99) + " ms")
-print("nvenc-probe: IDRs at \(idrFrames), spontaneous intras "
-    + "\(intraFrames), reconfigured=\(reconfigured)")
+print("""
+    nvenc-probe: \(frameCount) frames \(width)x\(height) → \(out.count) B \
+    (\(outPath)); encode p50 \(String(format: "%.2f", p50)) ms / p99 \
+    \(String(format: "%.2f", p99)) ms
+    """)
+print("""
+    nvenc-probe: IDRs at \(idrFrames), spontaneous intras \
+    \(intraFrames), reconfigured=\(reconfigured)
+    """)
 
 guard idrFrames == [0] else {
     fail("IDR discipline broken — expected exactly [0], got \(idrFrames)"
@@ -280,8 +279,9 @@ guard idrFrames == [0] else {
             ? " (the reconfigure minted one?)" : ""))
 }
 guard reconfigured else { fail("reconfigure never ran") }
-print("nvenc-probe: PASS — one demanded IDR, mid-stream rate move "
-    + "with zero reset and zero IDR. The vendor patch's job, done "
-    + "by the front door.")
+print("""
+    nvenc-probe: PASS — one demanded IDR, mid-stream rate move with zero reset \
+    and zero IDR. The vendor patch's job, done by the front door.
+    """)
 
 #endif

@@ -23,38 +23,6 @@ import LyteWireTestKit
 
 final class SessionGateTests: XCTestCase {
 
-    func testCapabilityNegotiatorAloneOwnsDeclarationOnceState() throws {
-        let source = try sessionSource()
-
-        XCTAssertFalse(source.contains("capabilitiesDeclared"))
-        XCTAssertTrue(source.contains(
-            "guard let declaration = negotiator.start() else { return [] }"))
-    }
-
-    func testLastAdmittedFrameAloneOwnsTheVideoCursor() throws {
-        let source = try sessionSource()
-
-        XCTAssertFalse(source.contains(
-            "private var nextVideoFrameNumber ="))
-        XCTAssertFalse(source.contains("nextVideoFrameNumber ="))
-        XCTAssertTrue(source.contains(
-            "lastAdmittedVideoFrameNumber?.next ?? FrameNumber(rawValue: 0)"))
-        XCTAssertTrue(source.contains(
-            "lastAdmittedVideoFrameNumber.next.rawValue > 0"))
-        XCTAssertTrue(source.contains(
-            "frame: lastAdmittedVideoFrameNumber"))
-    }
-
-    private func sessionSource() throws -> String {
-        var components = #filePath.split(
-            separator: "/", omittingEmptySubsequences: false)
-        components.removeLast(3)
-        let packageRoot = components.joined(separator: "/")
-        return try String(
-            contentsOfFile: packageRoot + "/Sources/HostWire/Session.swift",
-            encoding: .utf8)
-    }
-
     // MARK: Corpus plumbing (the HS-5 gate's, verbatim)
 
     private static var corpusDirectory: String {
@@ -72,7 +40,7 @@ final class SessionGateTests: XCTestCase {
             .sorted()
             .map { name in
                 [UInt8](try Data(contentsOf: URL(
-                    fileURLWithPath: Self.corpusDirectory + "/" + name
+                    fileURLWithPath: Self.corpusDirectory + "/\(name)"
                 )))
             }
     }
@@ -92,6 +60,10 @@ final class SessionGateTests: XCTestCase {
         localAddress: "10.0.0.249", localPort: 47_998,
         remoteAddress: "172.16.4.9", remotePort: 40_112
     )
+    private static let tupleC = FourTuple(
+        localAddress: "10.0.0.249", localPort: 47_998,
+        remoteAddress: "203.0.113.66", remotePort: 4_444
+    )
 
     // MARK: The loopback client (LyteWire initiator + unseal side)
 
@@ -99,27 +71,17 @@ final class SessionGateTests: XCTestCase {
     /// initiator (the client role), with the host's static pinned
     /// out-of-band exactly as J-G1's debug client will hold it.
     private struct LoopbackClient {
-        var noise: NoiseSession
-        var transport: NoiseTransport?
-        var ctrlSeq: UInt16 = 0
-        let staticKeys: NoiseKeyPair
+        var peer: SealedCtrlPeer<ClientClock>
 
         init(hostStaticPublicKey: [UInt8]) throws {
-            staticKeys = NoiseKeyPair.generate()
-            noise = try NoiseSession(
-                role: .initiator,
-                staticKeys: staticKeys,
-                remoteStaticPublicKey: hostStaticPublicKey
-            )
+            peer = try SealedCtrlPeer(initiatorTo: hostStaticPublicKey)
         }
 
+        var staticKeys: NoiseKeyPair { peer.staticKeys }
+        var transport: NoiseTransport? { peer.transport }
+
         mutating func message1Datagram(clientMicros: UInt64) throws -> [UInt8] {
-            let message1 = try noise.writeMessage1()
-            return try ctrlDatagram(
-                body: [CtrlMessageType.noiseHandshake1] + message1,
-                sealed: false,
-                clientMicros: clientMicros
-            )
+            try peer.message1Datagram(timestamp: clientMicros)
         }
 
         /// One client→host CTRL datagram with the client seam's exact
@@ -130,47 +92,32 @@ final class SessionGateTests: XCTestCase {
             clientMicros: UInt64,
             extensions: [WireExtension] = []
         ) throws -> [UInt8] {
-            let envelope = Envelope(
-                channel: .ctrl,
-                seq: ChannelSeq(rawValue: ctrlSeq),
-                frame: FrameNumber(rawValue: 0),
-                timestamp: clientMicros,
-                fec: 0,
+            try peer.datagram(
+                body: body, sealed: sealed, timestamp: clientMicros,
                 extensions: extensions
             )
-            ctrlSeq &+= 1
-            guard sealed else { return try envelope.encode(payload: body) }
-            let header = try envelope.encode(payload: [])
-            let payload = try transport!.seal(
-                plaintext: body[...], aad: header[...], envelope: envelope
-            )
-            return try envelope.encode(payload: payload)
         }
 
         /// Decodes one host datagram, completing the handshake on a bare
-        /// message 2 and unsealing everything else. Returns the envelope
-        /// and the plaintext payload.
+        /// message 2 and unsealing everything else (replays throw).
+        /// Returns the envelope and the plaintext payload.
         mutating func absorb(
             _ bytes: [UInt8]
         ) throws -> (envelope: Envelope, plaintext: [UInt8]) {
-            let (envelope, payload) = try Envelope.decode(bytes)
-            if transport == nil {
-                guard envelope.channel == .ctrl,
-                      payload.first == CtrlMessageType.noiseHandshake2
-                else {
-                    XCTFail("expected bare message 2 first, got chan "
-                        + "\(envelope.channel.rawValue)")
-                    throw NoiseError.missingVersionPayload
-                }
-                _ = try noise.readMessage2(payload.dropFirst())
-                transport = try noise.makeTransport()
-                return (envelope, Array(payload))
+            if peer.isEstablished {
+                return try peer.transport!.openDatagram(bytes)
             }
-            let aad = bytes[bytes.startIndex..<payload.startIndex]
-            let plaintext = try transport!.unseal(
-                wirePayload: payload, aad: aad, envelope: envelope
-            )
-            return (envelope, plaintext)
+            let (envelope, payload) = try Envelope.decode(bytes)
+            do {
+                try peer.absorb(bytes, nowMicros: 0)
+            } catch {
+                XCTFail("""
+                    expected bare message 2 first, got chan \
+                    \(envelope.channel.rawValue)
+                    """)
+                throw error
+            }
+            return (envelope, Array(payload))
         }
     }
 
@@ -490,6 +437,21 @@ final class SessionGateTests: XCTestCase {
             clientMicros: t3 + 900_400,
             extensions: [session.connectionId.wireExtension]
         )
+        // An off-path sender who saw the plaintext conn-id cannot seal:
+        // its datagram is refused at the AEAD and never takes the one
+        // probe slot a genuine roam needs.
+        let forged = try client.ctrlDatagram(
+            body: [UInt8](repeating: 0xEE, count: 48), sealed: false,
+            clientMicros: t3 + 900_000,
+            extensions: [session.connectionId.wireExtension]
+        )
+        let forgedEvents = session.receive(
+            forged, from: Self.tupleC,
+            now: 1_099_000_000, hostMicroseconds: t4 + 899_000
+        )
+        XCTAssertEqual(forgedEvents, [.dropped(.unsealFailed(0))],
+                       "an unauthenticated datagram must not probe")
+
         let preChallengeCount = sent.count
         let roamEvents = session.receive(
             roamDatagram, from: Self.tupleB,
@@ -514,12 +476,14 @@ final class SessionGateTests: XCTestCase {
         let expectedShards = try frames.map {
             try shardCount(frameBytes: $0.count)
         }.reduce(0, +)
-        print("HS-7 gate (Noise): handshake 1-RTT, \(frames.count) corpus "
-            + "frames → \(videoDatagrams.count) sealed datagrams "
-            + "(\(expectedShards) expected shards + forced IDR "
-            + "\(forced.count)), \(units.count) frames byte-exact through "
-            + "unseal; offset \(offset) µs / rtt 10000 µs recovered exactly; "
-            + "beacon 1 mirrored the echo; challenge on \(on.remoteAddress)")
+        print("""
+            HS-7 gate (Noise): handshake 1-RTT, \(frames.count) corpus \
+            frames → \(videoDatagrams.count) sealed datagrams \
+            (\(expectedShards) expected shards + forced IDR \
+            \(forced.count)), \(units.count) frames byte-exact through \
+            unseal; offset \(offset) µs / rtt 10000 µs recovered exactly; \
+            beacon 1 mirrored the echo; challenge on \(on.remoteAddress)
+            """)
     }
 
     /// The ladder's shard count at the session's TLV-adjusted budget.
@@ -637,8 +601,10 @@ final class SessionGateTests: XCTestCase {
         ])
         XCTAssertEqual(session.clock.samples, 1)
 
-        print("HS-7 gate (test passthrough): \(units.count) frames byte-exact, "
-            + "beacon + echo through the passthrough seal")
+        print("""
+            HS-7 gate (test passthrough): \(units.count) frames byte-exact, \
+            beacon + echo through the passthrough seal
+            """)
     }
 
     // MARK: Budget boundary and mode-independent geometry
@@ -692,8 +658,10 @@ final class SessionGateTests: XCTestCase {
         let backlog = session.queuedVideoBytes
         XCTAssertGreaterThan(
             backlog, frame.count - 5_000,
-            "a just-ingested multi-quantum frame stands as backlog "
-                + "(shard bytes minus at most the burst quantum)"
+            """
+                a just-ingested multi-quantum frame stands as backlog \
+                (shard bytes minus at most the burst quantum)
+                """
         )
 
         // The pacer walks it out at its own wakes; the gate reopens.

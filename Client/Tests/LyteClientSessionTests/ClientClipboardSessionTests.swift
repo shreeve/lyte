@@ -8,6 +8,12 @@ final class ClientClipboardSessionTests: XCTestCase {
         text.declaringClipboardImages()
     }
 
+    private struct FixedDigest: ClipboardImageHasher {
+        let digest: [UInt8]
+        mutating func absorb(_ bytes: ArraySlice<UInt8>) {}
+        mutating func finish() -> [UInt8] { digest }
+    }
+
     private struct CountingRng: RandomNumberGenerator {
         var nextValue: UInt64
 
@@ -98,18 +104,18 @@ final class ClientClipboardSessionTests: XCTestCase {
 
         XCTAssertEqual(
             session.shareLocalImage(
-                data, sha256: digest, rng: &rng, agreed: images
+                data, sha256: { digest }, rng: &rng, agreed: images
             ).shareOutcome,
             .sharingDisabled)
         session.setImageSharing(true)
         XCTAssertEqual(
             session.shareLocalImage(
-                data, sha256: digest, rng: &rng, agreed: text
+                data, sha256: { digest }, rng: &rng, agreed: text
             ).shareOutcome,
             .notNegotiated)
 
         let admitted = session.shareLocalImage(
-            data, sha256: digest, rng: &rng, agreed: images)
+            data, sha256: { digest }, rng: &rng, agreed: images)
         XCTAssertEqual(admitted.shareOutcome, .shared)
         XCTAssertGreaterThanOrEqual(admitted.outboundBulk.count, 2)
         XCTAssertEqual(
@@ -125,7 +131,7 @@ final class ClientClipboardSessionTests: XCTestCase {
         XCTAssertEqual(
             session.shareLocalImage(
                 [UInt8](repeating: 1, count: 17),
-                sha256: digest,
+                sha256: { digest },
                 rng: &secondRng,
                 agreed: images
             ).shareOutcome,
@@ -139,11 +145,51 @@ final class ClientClipboardSessionTests: XCTestCase {
         XCTAssertEqual(
             fresh.shareLocalImage(
                 [UInt8](repeating: 1, count: 17),
-                sha256: [UInt8](repeating: 2, count: 32),
+                sha256: { [UInt8](repeating: 2, count: 32) },
                 rng: &secondRng,
                 agreed: images
             ).shareOutcome,
             .overBudget(17))
+    }
+
+    func testPrejudgeRefusesWithoutADigestAndPassesEverythingElse() {
+        var rng = CountingRng(nextValue: 3)
+        var session = ClientClipboardSession(
+            textSharingAtStart: true,
+            imageSharingAtStart: true,
+            imageByteCeiling: 16)
+        XCTAssertEqual(
+            session.prejudgeLocalImage(byteCount: 8, agreed: text)?
+                .shareOutcome,
+            .notNegotiated)
+        XCTAssertNil(session.prejudgeLocalImage(byteCount: 16, agreed: images),
+                     "within the ceiling the digest decides")
+        XCTAssertEqual(
+            session.prejudgeLocalImage(byteCount: 0, agreed: images)?.events,
+            [.image(.suppressed(.emptyImage))])
+        let over = session.prejudgeLocalImage(byteCount: 17, agreed: images)
+        XCTAssertEqual(over?.shareOutcome, .overBudget(17))
+        XCTAssertEqual(over?.events, [.image(.suppressed(.overBudget(17)))])
+        XCTAssertEqual(session.imageCounters.sharesSuppressed, 2)
+
+        XCTAssertEqual(
+            session.shareLocalImage(
+                [UInt8](repeating: 4, count: 12),
+                sha256: { [UInt8](repeating: 9, count: 32) },
+                rng: &rng, agreed: images
+            ).shareOutcome,
+            .shared)
+        XCTAssertEqual(
+            session.prejudgeLocalImage(byteCount: 17, agreed: images)?
+                .shareOutcome,
+            .suppressedBusy,
+            "busy outranks the ceiling, as in the channel's own order")
+        session.setImageSharing(false)
+        XCTAssertEqual(
+            session.prejudgeLocalImage(byteCount: 17, agreed: images)?
+                .shareOutcome,
+            .sharingDisabled)
+        XCTAssertEqual(session.imageCounters.sharesSuppressed, 3)
     }
 
     func testInboundImageMarkerOwnsCapabilityAndConsentJudgment() throws {
@@ -197,7 +243,9 @@ final class ClientClipboardSessionTests: XCTestCase {
             session.receiveImageCargo(cargo.encode(), agreed: images),
             ClientClipboardSessionDecision())
         XCTAssertTrue(session.claimsBulk(message))
-        let decision = session.receiveBulk(message) { _ in digest }
+        let decision = session.receiveBulk(message) {
+            FixedDigest(digest: digest)
+        }
         XCTAssertFalse(decision.outboundBulk.isEmpty)
         XCTAssertTrue(session.claimsBulk(message))
     }

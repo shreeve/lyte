@@ -1,28 +1,44 @@
-// AudioWorklet PCM ring for LyteClientBrowser B-6.
-// Main thread posts { pcm: Float32Array } interleaved stereo @ 48 kHz.
-// Never invents samples — underruns are silence.
+// AudioWorklet PCM ring fed { pcm: Float32Array } of interleaved 48 kHz
+// stereo. Underruns play silence; past the bound the oldest audio drops, so
+// clock drift cannot grow latency without limit.
+
+const MAX_QUEUED_FRAMES = 9_600; // 200 ms at 48 kHz
 
 class LyteRingProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     /** @type {Float32Array[]} */
     this.chunks = [];
-    this.offset = 0;
+    this.offset = 0; // sample index into chunks[0]
+    this.queuedFrames = 0;
     this.framesPlayed = 0;
     this.underruns = 0;
+    this.framesDropped = 0;
     this.port.onmessage = (event) => {
       const pcm = event.data?.pcm;
       if (pcm instanceof Float32Array && pcm.length >= 2) {
         this.chunks.push(pcm);
+        this.queuedFrames += pcm.length >> 1;
+        this.trim();
       } else if (event.data?.type === "stats") {
         this.port.postMessage({
           type: "stats",
           framesPlayed: this.framesPlayed,
           underruns: this.underruns,
-          queuedChunks: this.chunks.length,
+          framesDropped: this.framesDropped,
+          queuedFrames: this.queuedFrames,
         });
       }
     };
+  }
+
+  trim() {
+    while (this.queuedFrames > MAX_QUEUED_FRAMES && this.chunks.length > 1) {
+      const dropped = (this.chunks.shift().length - this.offset) >> 1;
+      this.offset = 0;
+      this.queuedFrames -= dropped;
+      this.framesDropped += dropped;
+    }
   }
 
   process(_inputs, outputs) {
@@ -30,20 +46,19 @@ class LyteRingProcessor extends AudioWorkletProcessor {
     if (!output || !output.length) return true;
     const left = output[0];
     const right = output[1] || output[0];
-    const frames = left.length;
-
-    for (let i = 0; i < frames; i++) {
-      if (!this.chunks.length) {
+    for (let i = 0; i < left.length; i++) {
+      const chunk = this.chunks[0];
+      if (!chunk) {
         left[i] = 0;
         right[i] = 0;
         this.underruns += 1;
         continue;
       }
-      const chunk = this.chunks[0];
-      left[i] = chunk[this.offset] || 0;
-      right[i] = chunk[this.offset + 1] || left[i];
+      left[i] = chunk[this.offset];
+      right[i] = chunk[this.offset + 1];
       this.offset += 2;
       this.framesPlayed += 1;
+      this.queuedFrames -= 1;
       if (this.offset + 1 >= chunk.length) {
         this.chunks.shift();
         this.offset = 0;

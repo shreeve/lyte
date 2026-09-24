@@ -65,7 +65,7 @@ if [[ "$(readlink -f -- "$gate_root")" != "$HOME/src/lyte-gates/deterministic" ]
     echo "pup gate FAILED: fixed gate root resolved outside its namespace" >&2
     exit 1
 fi
-for package in Client Common Wire Host SystemTests; do
+for package in Browser Client Common Wire Host SystemTests; do
     target="$gate_root/$package"
     if [[ -L "$target" ]]; then
         echo "pup gate FAILED: package mirror is a symlink: $target" >&2
@@ -92,7 +92,7 @@ then
 fi
 lock_acquired=1
 
-echo "==> sync Client, Common, Wire, Host, and SystemTests to $pup:$pup_gate_root"
+echo "==> sync Browser, Client, Common, Wire, Host, and SystemTests to $pup:$pup_gate_root"
 # Remove only the retired client-package paths inside the validated,
 # lock-owned deterministic mirror. They must not survive as a second package.
 ssh "$pup" 'bash -se' <<'RETIRE_ROOT_CLIENT'
@@ -136,6 +136,8 @@ for directory in "$gate_root/Sources" "$gate_root/Tests"; do
     fi
 done
 RETIRE_ROOT_CLIENT
+rsync -a --delete --exclude .build --exclude .serve \
+    Browser/ "$pup:$pup_gate_root/Browser/"
 rsync -a --delete --exclude .build Client/ "$pup:$pup_gate_root/Client/"
 rsync -a --delete --exclude .build Common/ "$pup:$pup_gate_root/Common/"
 rsync -a --delete --exclude .build Wire/ "$pup:$pup_gate_root/Wire/"
@@ -154,6 +156,8 @@ rsync -a Scripts/Tests/test-host-package-image.sh \
     "$pup:$pup_gate_root/Scripts/Tests/test-host-package-image.sh"
 rsync -a Scripts/Tests/test-host-installer.sh \
     "$pup:$pup_gate_root/Scripts/Tests/test-host-installer.sh"
+rsync -a Scripts/Tests/test-host-deploy.sh \
+    "$pup:$pup_gate_root/Scripts/Tests/test-host-deploy.sh"
 
 ssh "$pup" 'bash -se' <<'REMOTE'
 set -euo pipefail
@@ -162,24 +166,36 @@ export LD_LIBRARY_PATH="$HOME/.local/lib/swift-compat${LD_LIBRARY_PATH:+:$LD_LIB
 gate_root="$HOME/src/lyte-gates/deterministic"
 package_image_parent=""
 
+# Identity, the service's knobs, the deployed version and the installed unit
+# must be byte-identical after the gate. The XDG identity and host.conf are
+# required; pre-XDG copies are covered whenever they exist.
 protected_state_fingerprint() {
-    local config="$HOME/.config/lyte-host"
-    test -f "$config/portal_token"
+    local config="$HOME/.config/lyte" file
     test -f "$config/noise_static.key"
     test -f "$config/paired_clients"
-    sudo -n test -f /etc/lyte/lyte-host.conf
+    test -f "$config/host.conf"
 
     {
-        sha256sum \
-            "$config/portal_token" \
+        for file in \
             "$config/noise_static.key" \
-            "$config/paired_clients"
-        stat -c '%n %a %U %G %s' \
-            "$config/portal_token" \
-            "$config/noise_static.key" \
-            "$config/paired_clients"
-        sudo -n sha256sum /etc/lyte/lyte-host.conf
-        sudo -n stat -c '%n %a %U %G %s' /etc/lyte/lyte-host.conf
+            "$config/paired_clients" \
+            "$config/host.conf" \
+            "$HOME/.config/lyte-host/noise_static.key" \
+            "$HOME/.config/lyte-host/paired_clients" \
+            /etc/lyte/lyte-host.conf \
+            /etc/systemd/system/lyte-host.service
+        do
+            if [[ ! -e "$file" ]]; then
+                echo "absent $file"
+            elif [[ -r "$file" ]]; then
+                sha256sum "$file"
+                stat -c '%n %a %U %G %s' "$file"
+            else
+                sudo -n sha256sum "$file"
+                sudo -n stat -c '%n %a %U %G %s' "$file"
+            fi
+        done
+        echo "link $(readlink -- "$HOME/.local/bin/lyte-host" || echo absent)"
     } | sha256sum | awk '{print $1}'
 }
 
@@ -225,19 +241,19 @@ build_graph_hash="$({
         "$gate_root/Host/Package.swift" \
         "$gate_root/Host/Package.resolved" \
         "$gate_root/SystemTests/Package.swift" \
-        "$gate_root/SystemTests/Package.resolved"
+        "$gate_root/SystemTests/Package.resolved" \
+        "$gate_root/Browser/Package.swift" \
+        "$gate_root/Browser/Package.resolved"
     do
         if [[ -f "$manifest" ]]; then
             sha256sum "$manifest"
         fi
     done
 
-    # A source-only layout change leaves Package.swift untouched, but old
-    # SwiftPM workspaces can still name the removed dependency paths. Include
-    # the structural source graph so the shared Linux mirror invalidates that
-    # stale state before testing dependents.
+    # Include the source graph so a layout change invalidates stale SwiftPM
+    # workspaces that still name removed dependency paths.
     cd "$gate_root"
-    for package_root in Client Common Wire Host SystemTests; do
+    for package_root in Client Common Wire Host SystemTests Browser; do
         for tree in Sources Tests Plugins; do
             source_root="$package_root/$tree"
             if [[ -d "$source_root" ]]; then
@@ -309,8 +325,9 @@ LYTE_REPOSITORY_ROOT="$gate_root" \
     "$gate_root/Host/Scripts/stage-host-image.sh" "$package_image"
 "$gate_root/Scripts/Tests/test-host-package-image.sh" "$package_image"
 "$gate_root/Scripts/Tests/test-host-installer.sh" "$package_image"
+"$gate_root/Scripts/Tests/test-host-installer.sh" --self-test
 "$gate_root/test-hermetic-linkage.sh" \
-    "$package_image/usr/local/bin/lyte-host"
+    "$package_image/bin/lyte-host"
 find "$package_image_parent" -xdev -depth -delete
 package_image_parent=""
 

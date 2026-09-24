@@ -1,26 +1,12 @@
-// Input messages (HS-13 → CL-9, promoted home by the second
-// codec-promotion slice — the bytes never changed): the wire shapes of
-// the input-injection path. The client captures an event, stamps it,
-// sequences it, and sends it on the sealed reliable CTRL stream; the
-// host injects it into the desktop session and answers with echo tuples
-// so the client can close the per-keystroke input-to-photon loop
-// (master plan HS-13/CL-9 rows; overview: "input events
-// (client-timestamped, sequenced) ride CTRL; the host injects, echoes
-// (seq, rx ts, inject ts), and stamps lastInputSeq into the next
-// frame").
+// Input messages: the client captures an event, stamps it, sequences it
+// and sends it on the sealed ARQ ordered stream; the host injects it and
+// answers with echo tuples (seq, rx µs, inject µs), and stamps
+// lastInputSeq into the next frame, closing the input-to-photon loop.
 //
-// Carriage: BOTH types ride the ARQ ordered stream (group 0) — the
-// transport pillar pins CTRL as reliable/ordered and lists input on it,
-// and typing is the one traffic class where a lost or reordered event is
-// corruption, not weather. Latency lives in the priority order
-// (CTRL/input outranks everything, HS-6's strict pacer classes), not in
-// datagram fire-and-forget. Echo tuples carry TIMESTAMPS, not freshness:
-// a late echo still reports the true rx/inject instants, so reliable
-// carriage costs the accounting nothing.
-//
-// Type bytes 0x16/0x17 and the lastInputSeq TLV type 0x03 were pinned
-// host-side first, byte-mirrored client-side at CL-9, and land in the
-// registries here — the numbers carried verbatim.
+// Both types ride the ordered stream: a lost or reordered keystroke is
+// corruption, not weather. Latency comes from pacer priority (CTRL/input
+// outranks everything). Echo tuples carry timestamps, not freshness, so a
+// late echo still reports the true instants.
 //
 // InputEvent (0x16), client→host. Layout, multi-byte fields LE:
 //
@@ -33,7 +19,7 @@
 //                             the client owns mapping it)
 //   13     1    kind          see below
 //   14     …    body          kind-determined, exact length (trailing
-//                             bytes reject — loud, per the W2 rule)
+//                             bytes reject)
 //
 // Kinds and bodies (coordinates are f64 IEEE-754 bit patterns, LE):
 //
@@ -48,11 +34,9 @@
 //                               flags u8 (bit0 = finish; rest reserved,
 //                               must be 0)
 //
-// Evdev keycodes on purpose (plan risk table): the host session's XKB
-// map owns layout; the client sends position codes and never guesses
-// keysyms. Unknown kinds and nonzero reserved bits REJECT — input rides
-// a reliable ordered stream between capability-negotiated peers, so a
-// foreign kind is a protocol break to surface, not weather to skip.
+// Evdev keycodes on purpose: the host session's XKB map owns layout; the
+// client sends position codes and never guesses keysyms. Unknown kinds
+// and nonzero reserved bits reject as a protocol break.
 //
 // InputEcho (0x17), host→client. Layout:
 //
@@ -69,7 +53,7 @@
 // disagrees with count all reject. Never traps on hostile bytes.
 
 /// One client input event (type 0x16).
-public struct InputEvent: Hashable, Sendable {
+public struct InputEvent: Hashable, Sendable, SliceDecodable {
     public enum Body: Hashable, Sendable {
         case keyKeycode(keycode: UInt32, pressed: Bool)
         /// Pixels in the host's recorded-monitor coordinate space.
@@ -106,29 +90,29 @@ public struct InputEvent: Hashable, Sendable {
         var out = [UInt8]()
         out.reserveCapacity(Self.headerByteCount + 17)
         out.append(CtrlMessageType.inputEvent)
-        appendLE(&out, seq)
-        appendLE(&out, clientMicroseconds)
+        wireAppendLE(seq, to: &out)
+        wireAppendLE(clientMicroseconds, to: &out)
         switch body {
         case .keyKeycode(let keycode, let pressed):
             out.append(Self.kindKeyKeycode)
-            appendLE(&out, keycode)
+            wireAppendLE(keycode, to: &out)
             out.append(pressed ? 1 : 0)
         case .pointerMotionAbsolute(let x, let y):
             out.append(Self.kindPointerMotionAbsolute)
-            appendLE(&out, x.bitPattern)
-            appendLE(&out, y.bitPattern)
+            wireAppendLE(x.bitPattern, to: &out)
+            wireAppendLE(y.bitPattern, to: &out)
         case .pointerMotionRelative(let dx, let dy):
             out.append(Self.kindPointerMotionRelative)
-            appendLE(&out, dx.bitPattern)
-            appendLE(&out, dy.bitPattern)
+            wireAppendLE(dx.bitPattern, to: &out)
+            wireAppendLE(dy.bitPattern, to: &out)
         case .pointerButton(let button, let pressed):
             out.append(Self.kindPointerButton)
-            appendLE(&out, button)
+            wireAppendLE(button, to: &out)
             out.append(pressed ? 1 : 0)
         case .pointerAxis(let dx, let dy, let finish):
             out.append(Self.kindPointerAxis)
-            appendLE(&out, dx.bitPattern)
-            appendLE(&out, dy.bitPattern)
+            wireAppendLE(dx.bitPattern, to: &out)
+            wireAppendLE(dy.bitPattern, to: &out)
             out.append(finish ? 1 : 0)
         }
         return out
@@ -146,8 +130,8 @@ public struct InputEvent: Hashable, Sendable {
         guard payload[base] == CtrlMessageType.inputEvent else {
             throw InputMessageError.unexpectedType(payload[base])
         }
-        let seq: UInt32 = readLE(payload, at: base + 1)
-        let clientMicros: UInt64 = readLE(payload, at: base + 5)
+        let seq: UInt32 = wireReadLE(payload, at: base + 1)
+        let clientMicros: UInt64 = wireReadLE(payload, at: base + 5)
         let kind = payload[base + 13]
         let body = payload[(base + headerByteCount)...]
         let decoded: Body
@@ -159,7 +143,7 @@ public struct InputEvent: Hashable, Sendable {
                 )
             }
             decoded = .keyKeycode(
-                keycode: readLE(body, at: body.startIndex),
+                keycode: wireReadLE(body, at: body.startIndex),
                 pressed: try flag(body[body.startIndex + 4])
             )
         case kindPointerMotionAbsolute, kindPointerMotionRelative:
@@ -168,8 +152,8 @@ public struct InputEvent: Hashable, Sendable {
                     kind: kind, byteCount: body.count
                 )
             }
-            let a = Double(bitPattern: readLE(body, at: body.startIndex))
-            let b = Double(bitPattern: readLE(body, at: body.startIndex + 8))
+            let a = Double(bitPattern: wireReadLE(body, at: body.startIndex))
+            let b = Double(bitPattern: wireReadLE(body, at: body.startIndex + 8))
             decoded = kind == kindPointerMotionAbsolute
                 ? .pointerMotionAbsolute(x: a, y: b)
                 : .pointerMotionRelative(dx: a, dy: b)
@@ -180,7 +164,7 @@ public struct InputEvent: Hashable, Sendable {
                 )
             }
             decoded = .pointerButton(
-                button: readLE(body, at: body.startIndex),
+                button: wireReadLE(body, at: body.startIndex),
                 pressed: try flag(body[body.startIndex + 4])
             )
         case kindPointerAxis:
@@ -194,8 +178,8 @@ public struct InputEvent: Hashable, Sendable {
                 throw InputMessageError.reservedBitsSet(flags)
             }
             decoded = .pointerAxis(
-                dx: Double(bitPattern: readLE(body, at: body.startIndex)),
-                dy: Double(bitPattern: readLE(body, at: body.startIndex + 8)),
+                dx: Double(bitPattern: wireReadLE(body, at: body.startIndex)),
+                dy: Double(bitPattern: wireReadLE(body, at: body.startIndex + 8)),
                 finish: flags & 0x01 != 0
             )
         default:
@@ -204,10 +188,6 @@ public struct InputEvent: Hashable, Sendable {
         return InputEvent(
             seq: seq, clientMicroseconds: clientMicros, body: decoded
         )
-    }
-
-    public static func decode(_ payload: [UInt8]) throws -> InputEvent {
-        try decode(payload[...])
     }
 
     private static func flag(_ byte: UInt8) throws -> Bool {
@@ -239,7 +219,7 @@ public struct InputEchoTuple: Hashable, Sendable {
 }
 
 /// The input echo message (type 0x17): 1–`maxTupleCount` tuples.
-public struct InputEcho: Hashable, Sendable {
+public struct InputEcho: Hashable, Sendable, SliceDecodable {
     public var tuples: [InputEchoTuple]
 
     /// Bounds one message well inside the session's 1093 B clamped ARQ
@@ -264,9 +244,9 @@ public struct InputEcho: Hashable, Sendable {
         out.append(CtrlMessageType.inputEcho)
         out.append(UInt8(tuples.count))
         for tuple in tuples {
-            appendLE(&out, tuple.seq)
-            appendLE(&out, tuple.receivedMicroseconds)
-            appendLE(&out, tuple.injectedMicroseconds)
+            wireAppendLE(tuple.seq, to: &out)
+            wireAppendLE(tuple.receivedMicroseconds, to: &out)
+            wireAppendLE(tuple.injectedMicroseconds, to: &out)
         }
         return out
     }
@@ -296,17 +276,13 @@ public struct InputEcho: Hashable, Sendable {
         var cursor = base + 2
         for _ in 0..<count {
             tuples.append(InputEchoTuple(
-                seq: readLE(payload, at: cursor),
-                receivedMicroseconds: readLE(payload, at: cursor + 4),
-                injectedMicroseconds: readLE(payload, at: cursor + 12)
+                seq: wireReadLE(payload, at: cursor),
+                receivedMicroseconds: wireReadLE(payload, at: cursor + 4),
+                injectedMicroseconds: wireReadLE(payload, at: cursor + 12)
             ))
             cursor += tupleByteCount
         }
         return InputEcho(tuples: tuples)
-    }
-
-    public static func decode(_ payload: [UInt8]) throws -> InputEcho {
-        try decode(payload[...])
     }
 }
 
@@ -320,28 +296,25 @@ public enum LastInputSeqTlv {
     /// Cannot fail: a 4-byte value always fits the length prefix.
     public static func wireExtension(seq: UInt32) -> WireExtension {
         var value = [UInt8]()
-        appendLE(&value, seq)
+        wireAppendLE(seq, to: &value)
         return try! WireExtension(
             type: WireExtension.ReservedType.lastInputSeq, value: value
         )
     }
 
     /// Nil when absent (every pre-input frame); throws on a duplicate
-    /// or a malformed value, per the conn-id TLV's loud-decode rule.
+    /// or a malformed value.
     public static func decode(extensions: [WireExtension]) throws -> UInt32? {
-        let matches = extensions.filter {
-            $0.type == WireExtension.ReservedType.lastInputSeq
-        }
-        guard let match = matches.first else { return nil }
-        guard matches.count == 1 else {
-            throw InputMessageError.duplicateLastInputSeqTlv
-        }
-        guard match.value.count == valueByteCount else {
+        guard let value = try WireExtension.uniqueValue(
+            ofType: WireExtension.ReservedType.lastInputSeq, in: extensions,
+            duplicate: InputMessageError.duplicateLastInputSeqTlv
+        ) else { return nil }
+        guard value.count == valueByteCount else {
             throw InputMessageError.malformedLastInputSeqTlv(
-                byteCount: match.value.count
+                byteCount: value.count
             )
         }
-        return readLE(match.value[...], at: match.value.startIndex)
+        return wireReadLE(value[...], at: 0)
     }
 }
 
@@ -355,34 +328,4 @@ public enum InputMessageError: Error, Equatable, Sendable {
     case malformedTupleCount(UInt8)
     case duplicateLastInputSeqTlv
     case malformedLastInputSeqTlv(byteCount: Int)
-}
-
-// MARK: Little-endian plumbing (file-private, the IdleFrame idiom)
-
-private func appendLE(_ out: inout [UInt8], _ value: UInt32) {
-    for shift in stride(from: 0, to: 32, by: 8) {
-        out.append(UInt8(truncatingIfNeeded: value >> shift))
-    }
-}
-
-private func appendLE(_ out: inout [UInt8], _ value: UInt64) {
-    for shift in stride(from: 0, to: 64, by: 8) {
-        out.append(UInt8(truncatingIfNeeded: value >> shift))
-    }
-}
-
-private func readLE(_ bytes: ArraySlice<UInt8>, at index: Int) -> UInt32 {
-    var value: UInt32 = 0
-    for i in 0..<4 {
-        value |= UInt32(bytes[index + i]) << (8 * i)
-    }
-    return value
-}
-
-private func readLE(_ bytes: ArraySlice<UInt8>, at index: Int) -> UInt64 {
-    var value: UInt64 = 0
-    for i in 0..<8 {
-        value |= UInt64(bytes[index + i]) << (8 * i)
-    }
-    return value
 }

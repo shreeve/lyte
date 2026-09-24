@@ -1,6 +1,5 @@
-// One shared HEVC Annex-B vocabulary and walker for every Lyte endpoint.
-// Pure Swift, allocation-free when classifying a borrowed byte collection,
-// and deliberately independent of files, sockets, clocks, and Foundation.
+// One shared HEVC Annex-B vocabulary and walker: allocation-free when
+// classifying a borrowed byte collection, and free of Foundation and IO.
 
 public enum HevcNalType {
     public static let trailN: UInt8 = 0
@@ -73,15 +72,16 @@ public struct AnnexBFrameClassification: Hashable, Sendable {
     }
 }
 
+/// The Annex-B walker. Every entry point borrows its bytes contiguously and
+/// runs one non-generic raw-buffer scan compiled inside LyteCore; only a
+/// non-contiguous collection is copied.
 public enum AnnexBCheck {
     public static func nalUnits(in data: ArraySlice<UInt8>) -> [HevcNalUnit] {
-        var units: [HevcNalUnit] = []
-        walkNalUnits(in: data) { units.append($0) }
-        return units
+        data.withUnsafeBufferPointer(nalUnitsRaw)
     }
 
     public static func nalUnits(in data: [UInt8]) -> [HevcNalUnit] {
-        nalUnits(in: data[...])
+        data.withUnsafeBufferPointer(nalUnitsRaw)
     }
 
     public static func leadingStartCodeLength<C>(_ data: C) -> Int?
@@ -97,10 +97,65 @@ public enum AnnexBCheck {
         return nil
     }
 
+    @inlinable
     public static func classifyFrame<C>(
         _ data: C
     ) -> AnnexBFrameClassification
     where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
+        if let classification = data.withContiguousStorageIfAvailable(
+            classifyRaw) {
+            return classification
+        }
+        return Array(data).withUnsafeBufferPointer(classifyRaw)
+    }
+
+    public static func classifyFrame(_ data: [UInt8]) -> AnnexBFrameClassification {
+        data.withUnsafeBufferPointer(classifyRaw)
+    }
+
+    public static func isFrameShaped(_ data: ArraySlice<UInt8>) -> Bool {
+        classifyFrame(data).isFrameShaped
+    }
+
+    public static func isFrameShaped(_ data: [UInt8]) -> Bool {
+        classifyFrame(data).isFrameShaped
+    }
+
+    public static func containsIrap(_ data: ArraySlice<UInt8>) -> Bool {
+        classifyFrame(data).containsIrap
+    }
+
+    public static func containsIrap(_ data: [UInt8]) -> Bool {
+        classifyFrame(data).containsIrap
+    }
+
+    public static func startsWithParameterSetsAndIrap(_ data: [UInt8]) -> Bool {
+        var types = Set<UInt8>()
+        var hasIrap = false
+        data.withUnsafeBufferPointer { buffer in
+            walkNalUnits(in: buffer) { unit in
+                types.insert(unit.type)
+                hasIrap = hasIrap || HevcNalType.isIrap(unit.type)
+            }
+        }
+        return types.contains(HevcNalType.vps)
+            && types.contains(HevcNalType.sps)
+            && types.contains(HevcNalType.pps)
+            && hasIrap
+    }
+
+    public static func summary(of data: ArraySlice<UInt8>) -> String {
+        nalUnits(in: data).map { HevcNalType.name($0.type) }.joined(separator: " ")
+    }
+
+    public static func summary(of data: [UInt8]) -> String {
+        summary(of: data[...])
+    }
+
+    @usableFromInline
+    static func classifyRaw(
+        _ data: UnsafeBufferPointer<UInt8>
+    ) -> AnnexBFrameClassification {
         let opensOnStartCode = leadingStartCodeLength(data) != nil
         var hasVcl = false
         var hasIrap = false
@@ -114,79 +169,54 @@ public enum AnnexBCheck {
         )
     }
 
-    public static func classifyFrame(_ data: [UInt8]) -> AnnexBFrameClassification {
-        classifyFrame(data[...])
+    private static func nalUnitsRaw(
+        _ data: UnsafeBufferPointer<UInt8>
+    ) -> [HevcNalUnit] {
+        var units: [HevcNalUnit] = []
+        walkNalUnits(in: data) { units.append($0) }
+        return units
     }
 
-    public static func isFrameShaped(_ data: ArraySlice<UInt8>) -> Bool {
-        classifyFrame(data).isFrameShaped
-    }
-
-    public static func isFrameShaped(_ data: [UInt8]) -> Bool {
-        isFrameShaped(data[...])
-    }
-
-    public static func containsIrap(_ data: ArraySlice<UInt8>) -> Bool {
-        classifyFrame(data).containsIrap
-    }
-
-    public static func containsIrap(_ data: [UInt8]) -> Bool {
-        containsIrap(data[...])
-    }
-
-    public static func startsWithParameterSetsAndIrap(_ data: [UInt8]) -> Bool {
-        let units = nalUnits(in: data)
-        let types = Set(units.map(\.type))
-        return types.contains(HevcNalType.vps)
-            && types.contains(HevcNalType.sps)
-            && types.contains(HevcNalType.pps)
-            && units.contains { HevcNalType.isIrap($0.type) }
-    }
-
-    public static func summary(of data: ArraySlice<UInt8>) -> String {
-        nalUnits(in: data).map { HevcNalType.name($0.type) }.joined(separator: " ")
-    }
-
-    public static func summary(of data: [UInt8]) -> String {
-        summary(of: data[...])
-    }
-
-    private static func walkNalUnits<C>(
-        in data: C,
+    /// Visits every NAL unit of length ≥ 2 in order. A start code is
+    /// `00 00 01`; a zero byte before it (a four-byte start code) is not
+    /// part of the preceding unit. Offsets are relative to `data`.
+    private static func walkNalUnits(
+        in data: UnsafeBufferPointer<UInt8>,
         _ visit: (HevcNalUnit) -> Void
-    ) where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
-        let base = data.startIndex
+    ) {
+        let count = data.count
         var pendingStart: Int?
-        var i = base
-        while i + 2 < data.endIndex {
+        var i = 0
+        while i + 2 < count {
+            // Skip three bytes whenever the third cannot end a start code.
             if data[i + 2] > 1 {
                 i += 3
             } else if data[i] == 0, data[i + 1] == 0, data[i + 2] == 1 {
                 let nextStart = i + 3
                 if let start = pendingStart {
-                    var end = nextStart - 3
+                    var end = i
                     if end > start, data[end - 1] == 0 { end -= 1 }
                     let length = end - start
                     if length >= 2 {
                         visit(HevcNalUnit(
-                            offset: start - base,
+                            offset: start,
                             length: length,
                             type: (data[start] >> 1) & 0x3F
                         ))
                     }
                 }
                 pendingStart = nextStart
-                i += 3
+                i = nextStart
             } else {
                 i += 1
             }
         }
 
         if let start = pendingStart {
-            let length = data.endIndex - start
+            let length = count - start
             if length >= 2 {
                 visit(HevcNalUnit(
-                    offset: start - base,
+                    offset: start,
                     length: length,
                     type: (data[start] >> 1) & 0x3F
                 ))

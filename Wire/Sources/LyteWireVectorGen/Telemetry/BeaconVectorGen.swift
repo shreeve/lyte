@@ -1,15 +1,11 @@
-// Beacon/feedback vector authoring (W4a). Run once, commit, freeze: a
-// byte difference against the committed file is a wire-contract break to
-// investigate, never a prompt to regenerate. The circularity (vectors
-// produced by the codecs they test) is broken by the hand-computed anchor
-// bytes in ClockBeaconTests/FeedbackReportTests, which pin the same
-// nominal messages this file carries.
+// Authors Vectors/beacon-v1.json. The hand-computed anchor bytes in
+// ClockBeaconTests / FeedbackReportTests pin the same nominal messages.
 
 import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-func makeBeaconVectorFile() throws -> BeaconVectorFile {
+public func makeBeaconVectorFile() throws -> BeaconVectorFile {
     var beaconVectors: [BeaconVector] = []
     var feedbackVectors: [FeedbackVector] = []
 
@@ -135,7 +131,7 @@ func makeBeaconVectorFile() throws -> BeaconVectorFile {
                 name: name, description: description,
                 kind: .decodeReject, decoder: decoder,
                 messageHex: Hex.string(bytes),
-                error: beaconErrorName(error)
+                error: vectorErrorName(error)
             )
         )
     }
@@ -320,7 +316,7 @@ func makeBeaconVectorFile() throws -> BeaconVectorFile {
             FeedbackVector(
                 name: name, description: description, kind: .encodeReject,
                 report: FeedbackFields(from: report),
-                error: feedbackErrorName(error)
+                error: vectorErrorName(error)
             )
         )
     }
@@ -395,7 +391,7 @@ func makeBeaconVectorFile() throws -> BeaconVectorFile {
             FeedbackVector(
                 name: name, description: description, kind: .decodeReject,
                 reportHex: Hex.string(bytes),
-                error: feedbackErrorName(error)
+                error: vectorErrorName(error)
             )
         )
     }

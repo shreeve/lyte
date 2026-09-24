@@ -1,28 +1,16 @@
-// CL-10: the client's model of the host clock (timing pillar §2, client
-// plan CL-10). BeaconEchoResponder retains raw (offset, rtt) samples; this
-// model turns them into the one host↔client mapping the session shares:
-// a min-RTT-gated offset plus a linear-regression skew term over a sliding
-// window of client time.
+// The client's model of the host clock: the one host↔client mapping the
+// session shares, from BeaconEchoResponder's (offset, rtt) samples — a
+// min-RTT-gated offset plus a linear-regression skew over a sliding window.
 //
-// Why min-gating: queuing delay only ever ADDS, so the min-RTT edge of the
-// window tracks the true path. On the reference Wi-Fi path the floor is
-// 5–10 ms while power-save spikes run 55–100 ms — and a spiked sample's
-// offset is polluted by tens of ms of one-sided queuing. Samples within
-// `rttGateMicroseconds` of the window's min RTT are trusted for the fit;
-// the rest stay in the window only to keep the min honest.
-//
-// Why regression: consumer clocks skew ~50 ppm ≈ 3 ms/min (audio doc §1).
-// A 30 s window fits that to well under the T gate's 1 ms residual. The
-// two consumers — the M7 audio rate-correction term and the CL-12 video
-// presentation mapper — must read the SAME instance; divergent estimates
-// are an A/V sync error by definition (timing pillar §2).
-//
-// No clock is read here: time advances only through the samples' own
-// client-monotonic coordinates, so tests replay synthetic traces
-// deterministically and the model is ready from its very first sample
-// (frame 1 after idle must be mappable without a warm-up wait).
+// Queuing delay only adds, so only samples within `rttGateMicroseconds` of
+// the window's min RTT join the fit. Regression absorbs ~50 ppm consumer
+// clock skew. All consumers must read the same instance; divergent
+// estimates are an A/V sync error. No clock is read here: time advances
+// through the samples' own coordinates, and the model is usable from its
+// first sample.
 
 import Foundation
+import LyteClientSession
 import LyteWire
 
 public final class HostClockModel: @unchecked Sendable {
@@ -31,9 +19,7 @@ public final class HostClockModel: @unchecked Sendable {
         public var windowMicroseconds: Int64
         /// A sample joins the fit iff rtt ≤ (window min RTT) + this gate.
         public var rttGateMicroseconds: Int64
-        /// Fewer accepted samples than this (or zero time spread) degrades
-        /// the fit to offset-only: skew is left at 0 rather than fit to
-        /// noise.
+        /// Fewer accepted samples (or zero time spread) leaves skew at 0.
         public var minimumSamplesForSkew: Int
 
         public init(
@@ -47,22 +33,16 @@ public final class HostClockModel: @unchecked Sendable {
         }
     }
 
-    /// One coherent snapshot of the fit. `map` lives here so a consumer
-    /// holding an Estimate maps many timestamps against ONE fit instead of
-    /// racing the model's window between calls.
+    /// One coherent snapshot of the fit, so many mappings use one fit.
     public struct Estimate: Sendable {
-        /// client − host µs at `anchor` (clientTime ≈ hostTime + offset).
-        /// Huge-but-stable values are normal: CLOCK_MONOTONIC epochs
-        /// differ across ends by boot time.
+        /// client − host µs at `anchor`. Huge values are normal: the
+        /// monotonic epochs differ by boot time.
         public var offsetMicroseconds: Int64
-        /// The newest accepted sample's client time — the fit's origin, so
-        /// mapping near "now" extrapolates over milliseconds, not the
-        /// whole window.
+        /// The newest accepted sample's client time: the fit's origin.
         public var anchor: ClientTimestamp
         /// d(offset)/d(clientTime) × 10⁶; 0 when the fit is offset-only.
         public var skewPartsPerMillion: Double
-        /// RMS deviation of the accepted samples about the fit — the
-        /// telemetry the T gate reads (< 1 ms after 30 s).
+        /// RMS deviation of the accepted samples about the fit.
         public var residualRmsMicroseconds: Double
         /// Worst single accepted-sample deviation from the fit.
         public var residualMaxMicroseconds: Double
@@ -70,16 +50,11 @@ public final class HostClockModel: @unchecked Sendable {
         public var acceptedSamples: Int
         /// Total samples currently in the window (gated ones included).
         public var windowSamples: Int
-        /// The window's min RTT — the gate's edge.
+        /// The window's min RTT.
         public var minRttMicroseconds: Int64
 
-        /// Host media/capture timestamp → predicted client-monotonic
-        /// instant (the CL-12 presentation mapper's primitive).
-        ///
-        /// offset(tc) = offset + b·(tc − anchor) with b = skew, and the
-        /// mapping solves tc = th + offset(tc) for tc. b is parts-per-
-        /// million, so the division is a formality, but it keeps the
-        /// solution exact instead of one-Newton-step approximate.
+        /// Host timestamp → predicted client-monotonic instant: solves
+        /// tc = th + offset + b·(tc − anchor) exactly for tc.
         public func map(_ host: HostTimestamp) -> ClientTimestamp {
             let approximate = host.microseconds
                 &+ UInt64(bitPattern: offsetMicroseconds)
@@ -96,18 +71,19 @@ public final class HostClockModel: @unchecked Sendable {
     private let lock = NSLock()
     private var window: [ClockSample] = []
     private var newestMicroseconds: UInt64 = 0
+    /// The fit of the current window; ingest invalidates it.
+    private var cachedEstimate: Estimate??
 
     public init(config: Config = Config()) {
         self.config = config
     }
 
-    /// Feeds one raw sample (BeaconEchoResponder's onClockSample in
-    /// production). Samples whose coordinate has fallen out of the window
-    /// evict here; mild reordering (the mirror can arrive late) is
-    /// harmless because eviction keys on the newest coordinate seen.
+    /// Feeds one raw sample. Eviction keys on the newest coordinate seen,
+    /// so mild reordering is harmless.
     public func ingest(_ sample: ClockSample) {
         lock.lock()
         defer { lock.unlock() }
+        cachedEstimate = nil
         window.append(sample)
         if sample.measuredAt.microseconds > newestMicroseconds {
             newestMicroseconds = sample.measuredAt.microseconds
@@ -118,12 +94,27 @@ public final class HostClockModel: @unchecked Sendable {
         }
     }
 
-    /// The current fit, or nil before the first sample. Cheap at beacon
-    /// cadence: the window holds ≤ ~30 samples at 1 Hz.
+    /// The newest `limit` samples still in the window, in arrival order.
+    public func recentSamples(_ limit: Int) -> [ClockSample] {
+        lock.lock()
+        defer { lock.unlock() }
+        return Array(window.suffix(max(0, limit)))
+    }
+
+    /// The current fit, or nil before the first sample; cached per window
+    /// change.
     public func estimate() -> Estimate? {
         lock.lock()
-        let samples = window
-        lock.unlock()
+        defer { lock.unlock() }
+        if let cachedEstimate { return cachedEstimate }
+        let fit = Self.fit(window, config: config)
+        cachedEstimate = .some(fit)
+        return fit
+    }
+
+    private static func fit(
+        _ samples: [ClockSample], config: Config
+    ) -> Estimate? {
         guard !samples.isEmpty else { return nil }
 
         let minRtt = samples.lazy.map(\.rttMicroseconds).min()!
@@ -135,12 +126,8 @@ public final class HostClockModel: @unchecked Sendable {
         }!
         let anchor = anchorSample.measuredAt
 
-        // Center the regression at the anchor's x AND the anchor's y —
-        // the SAME sample for both (A-27: `.last` paired a different
-        // sample's offset whenever ingest arrived out of order; the
-        // centering constant cancels algebraically, but mismatched
-        // pairing made the float rounding ingest-order-dependent).
-        // Offsets are ~10¹¹ µs when boot epochs differ, and centering
+        // Center x and y on the same anchor sample so rounding is
+        // ingest-order-independent; offsets are ~10¹¹ µs and centering
         // keeps every Double exact.
         let offset0 = anchorSample.offsetMicroseconds
         let xs = accepted.map { Double($0.measuredAt.microseconds(since: anchor)) }

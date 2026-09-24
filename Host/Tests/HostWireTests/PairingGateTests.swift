@@ -2,6 +2,7 @@ import XCTest
 import HostCore
 import HostSession
 import HostWire
+import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
@@ -27,14 +28,10 @@ final class PairingGateTests: XCTestCase {
         remoteAddress: "10.0.0.23", remotePort: 61_000
     )
 
-    // MARK: The pairing-capable loopback client (the CL-6 shape)
+    // MARK: The pairing-capable loopback client
 
-    private struct PakeClient {
-        var noise: NoiseSession
-        var transport: NoiseTransport?
-        var ctrlSeq: UInt16 = 0
-        var arq = ArqEndpoint<ClientClock>(channel: .ctrl)
-        let staticKeys: NoiseKeyPair
+    private struct PakeClient: PeerBackedClient {
+        var peer: SealedCtrlPeer<ClientClock>
         let hostStaticPublicKey: [UInt8]
 
         /// ARQ-delivered CTRL messages, minus what the pairing driver
@@ -46,42 +43,11 @@ final class PairingGateTests: XCTestCase {
         var pakeFailure: PairingPakeError?
 
         init(hostStaticPublicKey: [UInt8]) throws {
-            staticKeys = NoiseKeyPair.generate()
             self.hostStaticPublicKey = hostStaticPublicKey
-            noise = try NoiseSession(
-                role: .initiator,
-                staticKeys: staticKeys,
-                remoteStaticPublicKey: hostStaticPublicKey
-            )
+            peer = try SealedCtrlPeer(initiatorTo: hostStaticPublicKey)
         }
 
-        mutating func message1Datagram(clientMicros: UInt64) throws -> [UInt8] {
-            let message1 = try noise.writeMessage1()
-            return try ctrlDatagram(
-                body: [CtrlMessageType.noiseHandshake1] + message1,
-                sealed: false,
-                clientMicros: clientMicros
-            )
-        }
-
-        mutating func ctrlDatagram(
-            body: [UInt8], sealed: Bool, clientMicros: UInt64
-        ) throws -> [UInt8] {
-            let envelope = Envelope(
-                channel: .ctrl,
-                seq: ChannelSeq(rawValue: ctrlSeq),
-                frame: FrameNumber(rawValue: 0),
-                timestamp: clientMicros,
-                fec: 0
-            )
-            ctrlSeq &+= 1
-            guard sealed else { return try envelope.encode(payload: body) }
-            let header = try envelope.encode(payload: [])
-            let payload = try transport!.seal(
-                plaintext: body[...], aad: header[...], envelope: envelope
-            )
-            return try envelope.encode(payload: payload)
-        }
+        var staticKeys: NoiseKeyPair { peer.staticKeys }
 
         /// Starts the CPace run: binds to this session's transcript and
         /// statics, queues the 0x0B on the reliable stream.
@@ -100,37 +66,23 @@ final class PairingGateTests: XCTestCase {
         }
 
         mutating func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
-            let (envelope, payload) = try Envelope.decode(bytes)
-            XCTAssertEqual(envelope.channel, .ctrl)
-            if transport == nil {
-                XCTAssertEqual(payload.first, CtrlMessageType.noiseHandshake2)
-                _ = try noise.readMessage2(payload.dropFirst())
-                transport = try noise.makeTransport()
+            XCTAssertEqual(try Envelope.decode(bytes).0.channel, .ctrl)
+            switch try peer.absorb(bytes, nowMicros: nowMicros) {
+            case .handshakeCompleted:
                 return
-            }
-            let aad = bytes[bytes.startIndex..<payload.startIndex]
-            let plaintext: [UInt8]
-            do {
-                plaintext = try transport!.unseal(
-                    wirePayload: payload, aad: aad, envelope: envelope
-                )
-            } catch NoiseError.replayedSequence, NoiseError.staleSequence {
+            case .duplicate:
                 return // network duplicate; routine
-            }
-            switch plaintext.first {
-            case CtrlMessageType.arqSegment, CtrlMessageType.arqAck:
-                for event in arq.ingest(
-                    payload: plaintext,
-                    now: ClientTimestamp(microseconds: nowMicros)
-                ) {
-                    if case .message(_, let bytes) = event {
-                        delivered.append(bytes)
-                    }
+            case .reliable(_, _, let events):
+                for case .message(_, let bytes) in events {
+                    delivered.append(bytes)
                 }
-            case CtrlMessageType.clockBeacon:
+            case .plain(_, let plaintext)
+                where plaintext.first == CtrlMessageType.clockBeacon:
                 break // 1 Hz weather
-            default:
+            case .plain(_, let plaintext):
                 XCTFail("unexpected host CTRL type \(plaintext.first ?? 0)")
+            case .unopened:
+                break
             }
             try drivePairing(nowMicros: nowMicros)
         }
@@ -175,14 +127,6 @@ final class PairingGateTests: XCTestCase {
             delivered = rest
         }
 
-        mutating func pollOut(nowMicros: UInt64) throws -> [[UInt8]] {
-            let (payloads, _) = arq.poll(
-                now: ClientTimestamp(microseconds: nowMicros)
-            )
-            return try payloads.map {
-                try ctrlDatagram(body: $0, sealed: true, clientMicros: nowMicros)
-            }
-        }
     }
 
     // MARK: The host shell (SessionWire's dispatch, in miniature)
@@ -416,10 +360,12 @@ final class PairingGateTests: XCTestCase {
         XCTAssertEqual(shell.replyFailures, 0)
         XCTAssertNil(client.sawReject)
 
-        print("HS-9 gate: paired through 5% loss / 2% dup / 4 ms jitter "
-            + "(\(net.lostCount) lost, \(net.duplicatedCount) duplicated of "
-            + "\(net.sentCount); converged at \(converged.map(String.init) ?? "-") "
-            + "µs virtual)")
+        print("""
+            HS-9 gate: paired through 5% loss / 2% dup / 4 ms jitter \
+            (\(net.lostCount) lost, \(net.duplicatedCount) duplicated of \
+            \(net.sentCount); converged at \(converged.map(String.init) ?? "-") \
+            µs virtual)
+            """)
     }
 
     // MARK: Wrong PIN — loud, oracle-free, nothing pinned

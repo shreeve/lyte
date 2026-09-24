@@ -1,23 +1,18 @@
-// EyeCursor: the cursor half of the direct eye (E3). The hardware
-// cursor plane never touches the encoded frames — by design (cursor
-// motion produces zero video frames). This watcher polls the plane's
-// FB_ID exactly like the primary doorbell; on change it reads the
-// LINEAR ARGB8888 cursor buffer (GETFB2 + PRIME + mmap — CPU-readable,
-// unlike the primary's CCS scanout), crops it to the content box
-// (cursor buffers are mostly transparent padding), and hands the
-// tight BGRA image up. Hotspot derivation lives in HostCore.CursorHotspot:
-// i915 exposes no HOTSPOT_X/Y plane props, so the hotspot is recovered
-// from (last injected pointer − plane CRTC − crop). CRTC_X/Y require
-// DRM_CLIENT_CAP_ATOMIC on the shared DRM fd.
+// The cursor half of the direct eye. The hardware cursor plane never
+// touches encoded frames (cursor motion produces zero video frames).
+// This watcher polls the plane's FB_ID like the primary doorbell; on
+// change it reads the LINEAR ARGB8888 cursor buffer (GETFB2 + PRIME +
+// mmap), crops it to the content box and hands the BGRA image up.
+// HostCore.CursorHotspot recovers the hotspot (i915 exposes no
+// HOTSPOT_X/Y). CRTC_X/Y require DRM_CLIENT_CAP_ATOMIC on the DRM fd.
 
 #if os(Linux)
 
 import CDRM
 import Glibc
 
-/// A named property's current value on a plane (the planeType read,
-/// generalized). Values are raw UInt64 — CRTC_X/CRTC_Y carry signed
-/// positions, bit-cast by the caller.
+/// A named property's current value on a plane. Values are raw UInt64;
+/// CRTC_X/CRTC_Y carry signed positions, bit-cast by the caller.
 func planePropValue(
     fd: Int32, planeId: UInt32, name: String
 ) -> UInt64? {
@@ -47,18 +42,16 @@ public struct CursorFrame {
     /// The content box's origin inside the full cursor buffer.
     public var cropX: Int
     public var cropY: Int
-    /// The PLANE's position on the CRTC when grabbed (device pixels;
-    /// negative when the cursor overhangs the top-left edge). `nil`
-    /// when CRTC_X/Y props are absent — the caller must not invent
-    /// `(0,0)`, which is indistinguishable from a real origin park
-    /// and was the E3 tip/hotspot mismatch.
+    /// The plane's position on the CRTC when grabbed (device pixels;
+    /// negative when overhanging the top-left edge). `nil` when CRTC_X/Y
+    /// props are absent; never substitute `(0,0)`, a real position.
     public var planeCrtc: (x: Int, y: Int)?
     /// width*height*4 BGRA bytes, rows top-to-bottom, tightly packed.
     public var pixels: [UInt8]
 }
 
 public enum CursorPoll {
-    /// Same fb as last poll — nothing to do (the steady state).
+    /// Same fb as last poll.
     case unchanged
     /// The plane holds fb 0 (or the buffer is fully transparent).
     case hidden
@@ -67,17 +60,43 @@ public enum CursorPoll {
     case failed(String)
 }
 
-/// Watches one cursor plane. Poll at the doorbell cadence — the
-/// steady-state cost is the same single drmModeGetPlane read as the
-/// primary doorbell (~4 µs).
+/// The cursor plane's framebuffer transitions, separated from the
+/// reads. Each transition reports once: fb 0 (the plane disabled — a
+/// hidden pointer or a software-cursor fallback) is `.hidden`, a new
+/// non-zero fb is `.read` and latches only when the caller's read
+/// succeeds (a failed read retries on the next poll). An unreadable
+/// plane changes nothing.
+struct CursorFramebufferLatch {
+    enum Step: Equatable {
+        case unchanged
+        case hidden
+        case read(UInt32)
+    }
+
+    private(set) var last: UInt32?
+
+    mutating func observe(_ framebuffer: UInt32?) -> Step {
+        guard let framebuffer, framebuffer != last else { return .unchanged }
+        if framebuffer == 0 {
+            last = 0
+            return .hidden
+        }
+        return .read(framebuffer)
+    }
+
+    mutating func latch(_ framebuffer: UInt32) { last = framebuffer }
+}
+
+/// Watches one cursor plane. Poll at the doorbell cadence; the steady
+/// state costs one drmModeGetPlane read.
 public final class EyeCursorWatcher {
     private let fd: Int32
     public let planeId: UInt32
-    private var lastFB: UInt32?
+    private var latch = CursorFramebufferLatch()
 
-    /// Finds the cursor plane (type CURSOR, preferring one live on a
-    /// CRTC — an inactive plane still watches correctly: its first
-    /// nonzero fb is the first shape). nil when the device has none.
+    /// Finds the cursor plane, preferring one live on a CRTC (an
+    /// inactive plane's first nonzero fb is its first shape). nil when
+    /// the device has none.
     public init?(fd: Int32) {
         self.fd = fd
         guard let planeRes = drmModeGetPlaneResources(fd) else {
@@ -102,11 +121,9 @@ public final class EyeCursorWatcher {
         self.planeId = cursor.id
     }
 
-    /// The plane's current CRTC position (atomic property state —
-    /// drmModeGetPlane's crtc_x/y fields are NOT filled by the legacy
-    /// ioctl). Requires `DRM_CLIENT_CAP_ATOMIC` on the fd; without it
-    /// the props are absent and this returns nil. nil must stay nil —
-    /// collapsing to `(0,0)` is the tip/hotspot mismatch.
+    /// The plane's current CRTC position from atomic property state
+    /// (the legacy ioctl does not fill crtc_x/y). Requires
+    /// `DRM_CLIENT_CAP_ATOMIC`; nil without it, never `(0,0)`.
     public func planeCrtcPosition() -> (x: Int, y: Int)? {
         guard let rawX = planePropValue(
                   fd: fd, planeId: planeId, name: "CRTC_X"),
@@ -120,17 +137,15 @@ public final class EyeCursorWatcher {
     /// One doorbell-cadence poll. Reports each fb transition once; a
     /// failed grab does not latch the fb, so the next poll retries.
     public func poll() -> CursorPoll {
-        guard let fb = currentFB(fd: fd, planeId: planeId) else {
-            return .unchanged
-        }
-        guard fb != lastFB else { return .unchanged }
-        if fb == 0 {
-            lastFB = 0
-            return .hidden
+        let fb: UInt32
+        switch latch.observe(planeFramebuffer(fd: fd, planeId: planeId)) {
+        case .unchanged: return .unchanged
+        case .hidden: return .hidden
+        case .read(let framebuffer): fb = framebuffer
         }
         switch readCursorFB(fb) {
         case .success(let frame):
-            lastFB = fb
+            latch.latch(fb)
             // A buffer of pure transparent padding IS the hidden
             // state (some themes "hide" by uploading empty).
             return frame.map(CursorPoll.shape) ?? .hidden
@@ -144,9 +159,8 @@ public final class EyeCursorWatcher {
         case failure(String)
     }
 
-    /// GETFB2 → PRIME → mmap → crop. Cursor buffers are LINEAR
-    /// ARGB8888 (the KMS cursor contract on i915); anything else is a
-    /// loud failure, not a guess.
+    /// GETFB2 → PRIME → mmap → crop. Anything but LINEAR ARGB8888 fails
+    /// loudly.
     private func readCursorFB(_ fb: UInt32) -> ReadResult {
         guard let ticket = grabTicket(fd: fd, fbId: fb) else {
             return .failure("GETFB2/PRIME failed for cursor fb \(fb)")
@@ -157,8 +171,10 @@ public final class EyeCursorWatcher {
         guard ticket.fourcc == AR24, ticket.modifier == 0,
               let plane = ticket.planes.first else {
             return .failure(String(
-                format: "cursor fb %u is not linear ARGB8888 "
-                    + "(fourcc %08x, modifier %llx)",
+                format: """
+                    cursor fb %u is not linear ARGB8888 \
+                    (fourcc %08x, modifier %llx)
+                    """,
                 fb, ticket.fourcc, ticket.modifier))
         }
         let width = Int(ticket.width), height = Int(ticket.height)
@@ -167,8 +183,7 @@ public final class EyeCursorWatcher {
         guard let base = mmap(
             nil, mapLength, PROT_READ, MAP_SHARED, plane.fd, 0),
             base != MAP_FAILED else {
-            return .failure("mmap of cursor dmabuf failed "
-                + "(errno \(errno))")
+            return .failure("mmap of cursor dmabuf failed (errno \(errno))")
         }
         defer { munmap(base, mapLength) }
         dmabufSync(plane.fd, start: true)
@@ -207,9 +222,7 @@ public final class EyeCursorWatcher {
             pixels: pixels))
     }
 
-    /// DMA_BUF_IOCTL_SYNC bracketing for the CPU read — best-effort
-    /// (cursor buffers are CPU-uploaded and coherent on this
-    /// hardware; the sync is correctness insurance, not a gate).
+    /// Best-effort DMA_BUF_IOCTL_SYNC bracketing for the CPU read.
     private func dmabufSync(_ fd: Int32, start: Bool) {
         // _IOW('b', 0, __u64): dir=write(1)<<30 | size 8<<16 |
         // 'b'(0x62)<<8 | nr 0.

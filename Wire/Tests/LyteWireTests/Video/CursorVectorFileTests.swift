@@ -9,23 +9,12 @@ import LyteWireTestKit
 
 final class CursorVectorFileTests: XCTestCase {
 
-    private static let vectorsPath = packageRoot + "/Vectors/cursor-v1.json"
-
-    private static let packageRoot = WireTestPaths.packageRoot
-
     private func loadFile() throws -> CursorVectorFile {
-        try CursorVectorFile.load(from: Self.vectorsPath)
+        try CursorVectorFile.loadCommitted()
     }
 
     func testFileIdentity() throws {
-        let file = try loadFile()
-        XCTAssertEqual(file.format, CursorVectorFile.expectedFormat)
-        XCTAssertEqual(file.formatVersion, 1)
-        XCTAssertEqual(file.wireVersion, Int(WireVersion.major))
-        XCTAssertFalse(file.vectors.isEmpty)
-        let names = file.vectors.map(\.name)
-        XCTAssertEqual(Set(names).count, names.count,
-                       "vector names must be unique")
+        XCTAssertEqual(try loadFile().identityProblems, [])
     }
 
     /// The file's coverage discipline: the codec carries roundtrips
@@ -118,7 +107,7 @@ final class CursorVectorFileTests: XCTestCase {
                 guard let error = $0 as? CursorMessageError else {
                     return XCTFail("\(vector.name): foreign error \($0)")
                 }
-                XCTAssertEqual(cursorMessageErrorName(error),
+                XCTAssertEqual(vectorErrorName(error),
                                vector.error, vector.name)
             }
         }

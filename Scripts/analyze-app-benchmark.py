@@ -8,22 +8,16 @@ import sys
 from pathlib import Path
 
 
-# Commissioning floors for the native-seat witness, PER CHROMA TIER
-# (the sample's streamChroma is the SPS-audit truth of what the wire
-# carried; absent = a pre-tier recording, graded 4:2:0).
+# Native-seat witness floors per chroma tier (streamChroma is the SPS-audit
+# truth; absent = graded 4:2:0).
 #
-# 4:2:0 (2026-08-02 baseline: min-channel 31.2 dB, G 40.6, SSIM
-# 0.9991): the motion-definition pattern is chroma-adversarial by
-# design — thin saturated lines pin R/B near 31 dB at 4:2:0
-# regardless of encoder health — so the floors sit below the measured
-# baseline to catch regressions (colorimetry swaps, encoder faults)
-# rather than assert headroom the chroma format cannot give.
+# 4:2:0 (baseline min-channel 31.2 dB, G 40.6, SSIM 0.9991): the motion
+# pattern's thin saturated lines pin R/B near 31 dB regardless of encoder
+# health, so the floors sit below baseline to catch regressions
+# (colorimetry swaps, encoder faults), not to assert headroom.
 #
-# 4:4:4 (Rext Best tier, commissioned 2026-08-03: static 57.6 /
-# motion 56.8 dB min-channel, SSIM 0.99999, converged from the FIRST
-# observation — the VBR envelope at keepalive cadence already floors
-# QP on stills, no explicit ratchet required): floors at 45/50 dB and
-# SSIM 0.9995 hold the visually-lossless standard with margin for
+# 4:4:4 (baseline static 57.6 / motion 56.8 dB min-channel, SSIM 0.99999):
+# floors at 45/50 dB and SSIM 0.9995 hold visually-lossless with margin for
 # pattern/driver drift.
 QUALITY_FLOORS = {
     "4:2:0": {"active": 28.0, "converged": 30.0, "ssim": 0.995},
@@ -55,10 +49,9 @@ def motion_cadence_analysis(source, observations):
         abs(frame["presentationLatenessMilliseconds"]) for frame in fresh
         if frame.get("presentationLatenessMilliseconds") is not None
     ]
-    # The source's warm-up catch-up sprint presents late by
-    # construction; judge presentation lateness on steady state (same
-    # 3 s split as the audio and source gates), falling back to the
-    # whole run when the timeline is too short to split.
+    # Warm-up catch-up presents late by construction: judge lateness on
+    # steady state (the same 3 s split as the audio and source checks), or
+    # the whole run when the timeline is too short to split.
     timeline_start = next(
         (frame["scheduledPresentationMicroseconds"] for frame in fresh
          if frame.get("scheduledPresentationMicroseconds") is not None),
@@ -103,13 +96,19 @@ def motion_cadence_analysis(source, observations):
             or percentile(capture_gaps, 99) > 25:
         first_boundary = "pipewire_capture"
         failure = "motion_capture_cadence_failed"
-    elif (percentile(transit, 99) or 0) > 8:
-        # Endpoint captures localize the recurring live tail after Host
-        # interface capture and before client packet delivery. The flight
-        # metric remains broader in synthetic/unit fixtures, so name the
-        # observed boundary without falsely assigning it to the encoder.
+    elif percentile(transit, 99) is None:
+        # Missing evidence is a failure, never a pass.
+        first_boundary = "host_to_client_delivery"
+        failure = "motion_transport_evidence_missing"
+    elif percentile(transit, 99) > 8:
+        # Endpoint captures localize the live tail between host interface
+        # capture and client packet delivery; name that boundary without
+        # assigning it to the encoder.
         first_boundary = "host_to_client_delivery"
         failure = "motion_transport_burst"
+    elif not presentations:
+        first_boundary = "client_presentation"
+        failure = "motion_presentation_evidence_missing"
     elif (
         (percentile(queue_wait, 99) or 0) > 8
         or (percentile(gated_lateness, 99) or 0) > 8
@@ -145,7 +144,6 @@ def audio_interval_analysis(samples, warmup_seconds=3.0):
         "recenterEvents",
         "packetsDroppedInRecenter",
         "underrunFrames",
-        "declickProtectedUnderrunFrames",
         "decodeFailures",
         "routeChangeFailures",
     )
@@ -159,15 +157,9 @@ def audio_interval_analysis(samples, warmup_seconds=3.0):
         audio = sample_record["audio"]
         end = float(sample_record["elapsedSeconds"])
         phase = "warmup" if end <= warmup_seconds else "steadyState"
-        current = {
-            key: audio.get(
-                key,
-                audio.get("underrunFrames", 0)
-                if key == "declickProtectedUnderrunFrames"
-                else 0,
-            )
-            for key in keys
-        }
+        # declickProtectedUnderrunFrames (older runs) always equalled
+        # underrunFrames and is ignored.
+        current = {key: audio.get(key, 0) for key in keys}
         delta = {
             key: max(0, current[key] - previous[key]) for key in keys
         }
@@ -199,18 +191,14 @@ def audio_interval_analysis(samples, warmup_seconds=3.0):
         )
     ]
     def announced_quiet_stillness(interval):
-        # The host declared quiet (0x25): silence is intentional.
-        # Underruns must all ride the declick path; PLC stays bounded
-        # to the one-time ring drain at the gate boundary (≤ 200 ms of
-        # 5 ms packets); and a few boundary stragglers — near-silent
-        # tail packets arriving after the ring re-based — may drop
-        # late (≤ 40 ms). Sustained late drops still fail.
+        # The host declared quiet (0x25): silence is intentional. PLC stays
+        # bounded to the one-time ring drain at the boundary (≤ 200 ms of
+        # 5 ms packets), and a few near-silent stragglers after the ring
+        # re-based may drop late (≤ 40 ms). Sustained late drops still fail.
         return (
             interval["hostAnnouncedQuiet"]
             and interval["latePacketsDropped"] <= 8
             and interval["plcInvocations"] <= 40
-            and interval["declickProtectedUnderrunFrames"]
-                == interval["underrunFrames"]
         )
 
     steady_state_mitigated = all(
@@ -227,8 +215,6 @@ def audio_interval_analysis(samples, warmup_seconds=3.0):
             )
             and interval["plcInvocations"] <= 20
             and interval["underrunFrames"] <= 4_800
-            and interval["declickProtectedUnderrunFrames"]
-                == interval["underrunFrames"]
         )
         for interval in steady_events
     )
@@ -354,10 +340,9 @@ def quality_analysis(samples, elapsed):
         "p50RGBPSNRDB": percentile(psnrs, 50),
         "minLumaSSIM": min(ssims) if ssims else None,
         "p50LumaSSIM": percentile(ssims, 50),
-        # Vacuously true when the probe has no clean warm-up frame: an
-        # unavailable warm-up readback is retained as telemetry, while a
-        # missing steady window fails the exact readback-gap gate. An empty
-        # warm-up is therefore not itself a failure.
+        # Vacuously true without a clean warm-up frame: an unavailable
+        # warm-up readback is telemetry, while a missing steady window fails
+        # the readback-gap check.
         "warmupPass": all(
             item["psnrMinDB"] >= floors["active"] for item in warmup
         ),
@@ -501,13 +486,11 @@ def analyze(path):
     warmup_mitigated = (
         warmup_audio["plcInvocations"] <= 40
         and warmup_audio["underrunFrames"] <= 9_600
-        and warmup_audio["declickProtectedUnderrunFrames"]
-        == warmup_audio["underrunFrames"]
     )
     if audio["packetsUnrecoverable"]:
         hard_failures.append("audio_wire_loss")
     if not warmup_mitigated:
-        hard_failures.append("audio_warmup_not_bounded_or_declicked")
+        hard_failures.append("audio_warmup_not_bounded")
     steady_has_continuity_event = (
         steady_audio["plcInvocations"]
         or steady_audio["latePacketsDropped"]
@@ -520,11 +503,9 @@ def analyze(path):
         hard_failures.append("audio_plc_feed_mismatch")
     if audio["decodeFailures"] or audio["routeChangeFailures"]:
         hard_failures.append("audio_output_failure")
-    # The native-seat quality witness: both witness legs decode the
-    # motion presenter's marker, regenerate the authored frame from the
-    # client twin (SyntheticMotionReference, pinned byte-exact to the
-    # presenter by shared SHA fixtures), and PSNR/SSIM the GPU readback
-    # of the displayed buffer against it.
+    # The native-seat quality witness: decode the presenter's marker,
+    # regenerate the authored frame from the client twin, and PSNR/SSIM the
+    # GPU readback of the displayed buffer against it.
     if workload in ("motion", "quality-static"):
         if quality["referenceName"] != "motion-definition-v1":
             hard_failures.append("quality_reference_not_controlled_corpus")
@@ -534,12 +515,10 @@ def analyze(path):
             hard_failures.append("quality_readback_gap")
         if not quality["dimensionsExact"]:
             hard_failures.append("quality_dimension_or_scaling_mismatch")
-        # A readback may race the first displayed buffer during the
-        # explicitly excluded three-second warm-up. That is neither an
-        # ambiguous corpus phase nor a steady-state gap. Once pixels exist,
-        # however, every warm-up and steady observation must still name and
-        # match the authored frame; steady readback errors remain covered by
-        # the exact expectedSteadyObservations count above.
+        # A readback may race the first displayed buffer during the excluded
+        # three-second warm-up; once pixels exist every observation must
+        # name and match the authored frame (steady errors are covered by
+        # expectedSteadyObservations above).
         if any(
             item.get("error") is None
             and (

@@ -1,28 +1,21 @@
-// The crypto seam W5 filled. The envelope header (fixed 24 bytes + any TLV
-// block) is AAD-shaped already: `unseal` receives the exact received header
-// bytes as `aad` and the envelope for nonce material (chan, seq feed the
-// extended-counter nonce per the master plan §4.1), so the Noise impl
-// (NoiseTransportCrypto.swift) slots in without touching the receive path.
+// The transport crypto seam: the exact envelope header bytes are the AAD,
+// and the envelope's (chan, seq) feed the nonce.
 
 import LyteWire
 
 public enum TransportCryptoError: Error, Equatable, Sendable {
-    /// The `--host-key` argument (or a config key) is not a 32-byte hex
-    /// X25519 public key.
+    /// Not a 32-byte hex X25519 public key.
     case invalidHostKey(String)
     /// The Noise IK handshake could not complete (no answer, message 2
     /// rejected, transport used before open).
     case handshakeFailed(String)
-    /// AEAD open failed (tag mismatch, replay, stale sequence).
+    /// A payload was refused by a crypto seam without a typed error of
+    /// its own. The Noise seam rethrows the Wire transport's typed error.
     case unsealFailed(String)
 }
 
-/// Both directions of one transport session's crypto. `open()` is the
-    /// transport-open step: it must complete before any payload is accepted.
-    /// `unseal` maps a wire payload (ciphertext + 16 B tag) to
-/// plaintext; `seal` is the mirror the CL-3 send path added — same AAD
-/// discipline, same envelope-derived nonce material, so W5's Noise slots
-/// into both directions without touching either path.
+/// Both directions of one transport session's crypto. `open()` must
+/// complete before any payload is accepted.
 public protocol TransportCrypto: Sendable {
     /// Human-readable mode label for logs and the CLI banner.
     var modeDescription: String { get }
@@ -31,21 +24,15 @@ public protocol TransportCrypto: Sendable {
     func open() throws
 
     /// Unseals one received payload. `aad` is the exact header bytes as
-    /// received (fixed envelope + TLV block) — the AEAD associated data.
-    /// `envelope` carries the decoded (chan, seq, frame) the nonce derives
-    /// from. Returns the plaintext shard as an owned array — the AEAD
-    /// builds a fresh buffer anyway, and returning it whole spares the
-    /// demux a second full-payload copy per datagram.
+    /// received; `envelope` carries the nonce material.
     func unseal(
         wirePayload: ArraySlice<UInt8>,
         aad: ArraySlice<UInt8>,
         envelope: Envelope
     ) throws -> [UInt8]
 
-    /// Seals one outbound plaintext shard. `aad` is the exact header bytes
-    /// that will precede the payload on the wire (fixed envelope + TLV
-    /// block); `envelope` carries the (chan, seq, frame) the nonce derives
-    /// from. Returns the wire payload (ciphertext + authentication tag).
+    /// Seals one outbound shard; `aad` is the exact header bytes that will
+    /// precede it. Returns ciphertext + authentication tag.
     func seal(
         plaintext: ArraySlice<UInt8>,
         aad: ArraySlice<UInt8>,

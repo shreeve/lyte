@@ -1,19 +1,23 @@
 // The lifecycle-codec vector-file model and loader:
-// `Wire/Vectors/lifecycle-v1.json` — the W4b session-lifecycle CTRL
-// messages (mode transition 0x09, session teardown 0x0A). Same doctrine
-// as the other loaders: TestKit may import Foundation, LyteWire may not.
+// `Wire/Vectors/lifecycle-v1.json` — mode transition 0x09 and session
+// teardown 0x0A.
 
 import Foundation
 import LyteWire
 
 /// One vector file: `Wire/Vectors/lifecycle-v1.json`.
-public struct LifecycleVectorFile: Codable, Sendable {
+public struct LifecycleVectorFile: FrozenVectorFile {
     public var format: String
     public var formatVersion: Int
     public var wireVersion: Int
     public var vectors: [LifecycleVector]
 
     public static let expectedFormat = "lyte-wire-lifecycle-vectors"
+    public static let fileName = "lifecycle-v1.json"
+
+    public var vectorNameGroups: [[String]] {
+        [vectors.map(\.name)]
+    }
 
     public init(
         format: String,
@@ -27,10 +31,6 @@ public struct LifecycleVectorFile: Codable, Sendable {
         self.vectors = vectors
     }
 
-    public static func load(from path: String) throws -> LifecycleVectorFile {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(LifecycleVectorFile.self, from: data)
-    }
 }
 
 /// One lifecycle-codec vector. `codec` names the codec under test;
@@ -73,17 +73,5 @@ public struct LifecycleVector: Codable, Sendable {
         self.messageHex = messageHex
         self.value = value
         self.error = error
-    }
-}
-
-/// Stable names for `LifecycleMessageError` cases, as they appear in
-/// vectors.
-public func lifecycleMessageErrorName(_ error: LifecycleMessageError) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .trailingBytes: return "trailingBytes"
-    case .unexpectedType: return "unexpectedType"
-    case .unknownMode: return "unknownMode"
-    case .unknownReason: return "unknownReason"
     }
 }

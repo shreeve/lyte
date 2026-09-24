@@ -1,11 +1,7 @@
-// SniffFormat: the header dissector behind `lyte-host sniff` (HS-5).
-// One received datagram → one text line of decoded envelope + fec fields.
-// The envelope rides as cleartext AAD by design (overview §2), so this
-// formatter stays honest when Noise lands at HS-7 — only the payload
-// bytes go dark, and payload decryption behind a key flag is explicitly
-// a later slice (master plan's deferred list). Pure formatting, no IO:
-// the Linux-only socket loop lives in lyte-host; this part runs (and is
-// tested) on the Mac.
+// SniffFormat: the header dissector behind `lyte-host sniff`. One
+// received datagram → one text line of decoded envelope + fec fields. The
+// envelope is cleartext AAD, so only the payload is opaque. Pure
+// formatting; the socket loop lives in lyte-host.
 
 import LyteCore
 import LyteWire
@@ -42,7 +38,7 @@ public enum SniffFormat {
         envelope: Envelope, payloadByteCount: Int, datagramByteCount: Int
     ) -> String {
         var fields = [
-            "chan=\(envelope.channel.rawValue)(\(channelName(envelope.channel)))",
+            "chan=\(envelope.channel.rawValue)(\(envelope.channel))",
             "seq=\(zeroPadded(envelope.seq.rawValue, width: 5))",
             "frame=\(envelope.frame.rawValue)",
             "ts=\(envelope.timestamp)us",
@@ -61,20 +57,6 @@ public enum SniffFormat {
 
     // MARK: - Interior
 
-    static func channelName(_ channel: ChannelId) -> String {
-        switch channel {
-        case .ctrl: return "ctrl"
-        case .audio: return "audio"
-        case .videoActive: return "video-active"
-        case .feedback: return "feedback"
-        case .videoIdle: return "video-idle"
-        default:
-            if channel.isReserved { return "reserved" }
-            if channel.isFeature { return "feature" }
-            return "unknown"
-        }
-    }
-
     static func fecDescription(_ raw: UInt64) -> String {
         let field: FecField
         do {
@@ -86,9 +68,11 @@ public enum SniffFormat {
         case .none:
             return "fec=none"
         case .reedSolomon(let shardIndex, let geometry):
-            return "fec=rs idx=\(shardIndex)/\(geometry.totalShards) "
-                + "k=\(geometry.dataShards) m=\(geometry.parityShards) "
-                + "group=\(geometry.groupByteCount)B"
+            return """
+                fec=rs idx=\(shardIndex)/\(geometry.totalShards) \
+                k=\(geometry.dataShards) m=\(geometry.parityShards) \
+                group=\(geometry.groupByteCount)B
+                """
         }
     }
 

@@ -5,7 +5,7 @@ import XCTest
 final class ScreenSourceRatchetTests: XCTestCase {
     private let sourceTree = RepositorySourceTree()
 
-    func testBothCaptureConsumersUseTheOneSource() throws {
+    func testCaptureConsumersNeverRebuildTheRetiredLoop() throws {
         let paths = [
             "Host/Sources/lyte-host/DirectEyeLeg.swift",
             "Host/Sources/lyte-eye/EyeCapture.swift",
@@ -19,9 +19,6 @@ final class ScreenSourceRatchetTests: XCTestCase {
 
         for path in paths {
             let body = try source(path)
-            XCTAssertTrue(body.contains("DirectScreenSource"), path)
-            XCTAssertTrue(body.contains("ScreenSamplingCadence()"), path)
-            XCTAssertTrue(body.contains("scanoutChanged("), path)
             XCTAssertFalse(body.contains("screen.poll()"), path)
             for call in retiredCalls {
                 XCTAssertFalse(
@@ -50,9 +47,21 @@ final class ScreenSourceRatchetTests: XCTestCase {
                 + violations.joined(separator: "\n"))
     }
 
+    /// The fingerprint, blit and encode are one pipeline: the GL context
+    /// and the VAAPI encoder are built only inside EyePipeline, so the
+    /// production leg and lyte-eye cannot grow a second scanout path.
+    func testEyePipelineAloneBuildsTheGLContextAndEncoder() throws {
+        let violations = try sourceTree.violations(
+            containing: ["EyeGL(", "EyeVaapiEncoder("],
+            excludingRelativePaths: ["Host/Sources/HostEye/EyePipeline.swift"])
+        XCTAssertTrue(
+            violations.isEmpty,
+            "a second eye pipeline was built:\n"
+                + violations.joined(separator: "\n"))
+    }
+
     private func source(_ path: String) throws -> String {
-        try String(
-            contentsOf: sourceTree.repositoryRoot.appendingPathComponent(path),
-            encoding: .utf8)
+        try sourceTree.source(
+            of: sourceTree.repositoryRoot.appendingPathComponent(path))
     }
 }

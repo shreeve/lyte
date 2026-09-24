@@ -1,49 +1,30 @@
-// AudioReceiver (CL-11): the sans-IO audio-path core the session owns —
-// depacketizer (HS-15's byte mirror + FEC recovery) feeding the
-// adaptive jitter buffer, one lock over both, plus the latency books.
-// The production shell's LyteAudioPlayer pulls verdicts from here;
-// tests drive the identical object in virtual time.
-//
-// Clock domains, stated once: `now` is the session's client-monotonic
-// µs, used for the buffer's clocks and adaptation. Capture stamps are
-// the host's PipeWire GRAPH clock (samples since graph start — never
-// wall clock, audio-continuity §4.3), an epoch the client cannot map
-// absolutely; the latency books therefore measure ABOVE THE SESSION
-// FLOOR (min capture→feed delta), which cancels both unknown epochs —
-// see AudioReceiverStats.captureToFeed. The kernel arrival stamp the
-// endpoint collects stays with the feedback dispersion path; at 5 ms
-// granularity the receive thread's wakeup jitter is noise the
-// adaptation window absorbs.
+// AudioReceiver: the session's audio-path policy — depacketizer and FEC
+// recovery feeding the adaptive jitter buffer, plus the latency books —
+// behind one lock (the receive thread feeds it, the player's pump pulls).
+// `now` is client-monotonic µs; capture stamps are the host's audio graph
+// clock, so latency is measured above the session floor.
 
 import Foundation
+import LyteClientCore
 import LyteCore
 import LyteWire
 
 public struct AudioReceiverStats: Sendable {
     public var depacketizer = AudioDepacketizerStats()
     public var jitter = AudioJitterStats()
-    /// Capture stamp → decode-feed, µs ABOVE THE SESSION FLOOR (the
-    /// fastest capture→feed packet observed). Epoch-free by
-    /// construction: the host stamps audio with the PipeWire GRAPH
-    /// clock (samples since graph start — audio-continuity §4.3),
-    /// whose offset to the beacon-fed monotonic domain is unknowable
-    /// client-side; subtracting the running minimum cancels every
-    /// constant offset (graph epoch AND host↔client offset), leaving
-    /// exactly the receive pipeline's added delay. Absolute
-    /// capture→render = this + the path floor (≲ the beacon min RTT).
-    public var captureToFeed = Histogram<UInt64>(retention: .rolling)
-    /// The same edge extended by the caller-reported render pipeline
-    /// (PCM ring depth + device latency at feed time) — the honest
-    /// capture→render-above-floor estimate.
-    public var captureToRender = Histogram<UInt64>(retention: .rolling)
-    /// TOTAL buffered audio at each pull, in packets: jitter-buffer
-    /// pending + whatever the caller reports still queued toward the
-    /// speaker — the gate's "buffer depth" figure.
+    /// Capture → decode-feed µs above the session floor (the fastest
+    /// packet seen). Subtracting the running minimum cancels the unknown
+    /// graph-clock and host↔client offsets.
+    public var captureToFeed = Histogram<UInt64>(
+        capacity: 600, retention: .rolling)
+    /// The same edge plus the caller-reported render pipeline.
+    public var captureToRender = Histogram<UInt64>(
+        capacity: 600, retention: .rolling)
+    /// Total buffered audio at each pull, in packets: jitter buffer plus
+    /// the caller's reported pipeline.
     public var bufferDepthPackets = Histogram<UInt64>(
         capacity: 600, retention: .rolling)
-    /// CL-17: times the depth-vs-target hysteresis flipped accelerate
-    /// ON (engage at target + accelerateEngagePackets, release at
-    /// target).
+    /// Times accelerate engaged.
     public var accelerateEngagements: UInt64 = 0
     /// Pulls answered while accelerate was engaged.
     public var pullsAccelerated: UInt64 = 0
@@ -51,10 +32,8 @@ public struct AudioReceiverStats: Sendable {
     public init() {}
 }
 
-/// One pump step's verdict pair (CL-17): what to feed the decoder AND
-/// whether its output should ride the WSOLA accelerate path — the
-/// NetEQ normal/accelerate/expand triple in CL-11's vocabulary
-/// (conceal = expand).
+/// One pump step: what to feed the decoder, and whether its output
+/// rides the WSOLA accelerate path.
 public struct AudioPullDecision: Sendable {
     public let verdict: AudioPullVerdict
     public let accelerate: Bool
@@ -62,18 +41,18 @@ public struct AudioPullDecision: Sendable {
 
 public final class AudioReceiver: @unchecked Sendable {
     private let lock = NSLock()
-    private let depacketizer: AudioDepacketizer
+    private var depacketizer: AudioDepacketizer
     private let buffer: AudioJitterBuffer
 
-    private var captureToFeed = Histogram<UInt64>(retention: .rolling)
-    private var captureToRender = Histogram<UInt64>(retention: .rolling)
+    private var captureToFeed = Histogram<UInt64>(
+        capacity: 600, retention: .rolling)
+    private var captureToRender = Histogram<UInt64>(
+        capacity: 600, retention: .rolling)
     private var bufferDepthPackets = Histogram<UInt64>(
         capacity: 600, retention: .rolling)
-    /// The floor: the smallest capture→feed delta seen (signed —
-    /// graph-clock and client epochs differ arbitrarily).
+    /// The smallest capture→feed delta seen (signed).
     private var minFeedDelta: Int64?
-    /// CL-17 hysteresis state: accelerate stays engaged from
-    /// target + engage down to target, so the drain never flaps.
+    /// Accelerate hysteresis: engaged from target + engage down to target.
     private var accelerating = false
     private var accelerateEngagements: UInt64 = 0
     private var pullsAccelerated: UInt64 = 0
@@ -83,7 +62,7 @@ public final class AudioReceiver: @unchecked Sendable {
         self.buffer = AudioJitterBuffer(config: jitterConfig)
     }
 
-    /// Feeds one accepted chan-1 datagram (the session's ingest hook).
+    /// Feeds one accepted chan-1 datagram.
     public func ingest(
         envelope: Envelope, payload: [UInt8], now: ClientTimestamp
     ) {
@@ -94,23 +73,17 @@ public final class AudioReceiver: @unchecked Sendable {
         }
     }
 
-    /// Tripwire: the host announced audio-quiet (0x25). Rest the
-    /// jitter adaptation — the lattice re-bases on the wake burst —
-    /// without touching the earned target.
+    /// The host announced audio-quiet (0x25): rest adaptation without
+    /// touching the earned target.
     public func noteAnnouncedQuiet() {
         lock.lock()
         defer { lock.unlock() }
         buffer.noteIntentionalGap()
     }
 
-    /// One playout decision for the pump. `renderPipelineMicroseconds`
-    /// is what still sits between this feed and the speaker (ring
-    /// depth + the accelerator's gather + device latency) so the
-    /// capture→render estimate AND the accelerate depth judgment stay
-    /// honest. The accelerate half (CL-17): total depth = jitter
-    /// pending + reported pipeline; engage past target + engage
-    /// packets, release at target — the pump feeds decoded PCM through
-    /// the WSOLA path exactly while this says so.
+    /// One playout decision for the pump. `renderPipelineMicroseconds` is
+    /// what still sits between this feed and the speaker; it counts toward
+    /// the latency books and the accelerate depth judgment.
     public func pullDecision(
         now: ClientTimestamp,
         urgent: Bool = false,
@@ -150,31 +123,14 @@ public final class AudioReceiver: @unchecked Sendable {
         return AudioPullDecision(verdict: verdict, accelerate: accelerating)
     }
 
-    /// The CL-11 surface, kept verbatim for callers that only want the
-    /// verdict (the accelerate judgment still runs — one decision
-    /// path, two views of it).
-    public func pull(
-        now: ClientTimestamp,
-        urgent: Bool = false,
-        renderPipelineMicroseconds: UInt64 = 0
-    ) -> AudioPullVerdict {
-        pullDecision(
-            now: now, urgent: urgent,
-            renderPipelineMicroseconds: renderPipelineMicroseconds
-        ).verdict
-    }
-
-    /// The adaptive delay target, in packets — what the pump sizes the
-    /// PCM ring against.
+    /// The adaptive delay target, in packets.
     public var targetDepthPackets: Int {
         lock.lock()
         defer { lock.unlock() }
         return buffer.targetPackets
     }
 
-    /// Packets queued in the jitter buffer right now (CL-17: the
-    /// upstream half of the depth figure; the caller adds what it
-    /// holds ringside).
+    /// Packets queued in the jitter buffer right now.
     public var pendingPackets: Int {
         lock.lock()
         defer { lock.unlock() }

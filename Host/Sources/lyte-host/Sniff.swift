@@ -1,15 +1,11 @@
-// `lyte-host sniff` (HS-5): the live Lyte-UDP header dissector. Binds a
-// UDP port through CNetIO and prints one decoded line per datagram —
-// envelope fields plus the fec interior (chan/seq/frame/ts/k/m/idx) —
-// via HostWire.SniffFormat, whose output format is pinned by the macOS
-// tests. The envelope is cleartext AAD by design, so this keeps working
-// unchanged once Noise (HS-7) seals payloads; payload decryption behind
-// a key flag is an explicitly deferred slice.
+// `lyte-host sniff`: the live Lyte-UDP header dissector. Binds a UDP port
+// through CNetIO and prints one line per datagram — envelope fields plus
+// the fec interior — via HostWire.SniffFormat. The envelope is cleartext
+// AAD, so this works on sealed traffic; payloads are not decrypted.
 
 import LyteIO
 import LyteCore
 import CNetIO // lyte_stdout_linebuf
-import CNetIO
 import Foundation
 import HostWire
 
@@ -71,7 +67,7 @@ func sniffMain(_ args: [String]) -> Never {
     var err = [CChar](repeating: 0, count: 256)
     guard let rx = lyte_netio_new("0.0.0.0", port, &err, err.count) else {
         FileHandle.standardError.write(Data(
-            "lyte-host sniff: bind 0.0.0.0:\(port) failed: \(errString(err))\n"
+            "lyte-host sniff: bind 0.0.0.0:\(port) failed: \(String(cBuffer: err))\n"
                 .utf8))
         exit(1)
     }
@@ -99,7 +95,7 @@ func sniffMain(_ args: [String]) -> Never {
                                         &err, err.count)
         if got < 0 {
             FileHandle.standardError.write(Data(
-                "lyte-host sniff: recv failed: \(errString(err))\n".utf8))
+                "lyte-host sniff: recv failed: \(String(cBuffer: err))\n".utf8))
             exit(1)
         }
         if got == 0 {

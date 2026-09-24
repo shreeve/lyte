@@ -13,7 +13,6 @@ public enum PercentileRank: Sendable {
     /// The conventional nearest-rank index: `ceil(q * count) - 1`.
     case nearest
     /// Promote exact boundaries to the next sample: `floor(q * count)`.
-    /// This preserves the delivery gauge's established boundary behavior.
     case upperBoundary
 }
 
@@ -23,6 +22,10 @@ public enum PercentileRank: Sendable {
 /// describe the whole recording lifetime. `saturated` distinguishes a pool
 /// that has crossed its retention boundary from one that still contains every
 /// sample recorded.
+///
+/// The defaults (65,536 samples, `.prefix`) freeze the percentiles once the
+/// pool fills; a gauge that describes "now" wants `.rolling` sized to its
+/// window. Each query sorts the whole retained pool.
 public struct Histogram<Value: Comparable & Sendable>: Sendable {
     public private(set) var count = 0
     public private(set) var minValue: Value?
@@ -41,7 +44,9 @@ public struct Histogram<Value: Comparable & Sendable>: Sendable {
         precondition(capacity > 0)
         self.capacity = capacity
         self.retention = retention
-        samples.reserveCapacity(capacity)
+        // The pool grows on demand: a snapshot or a short-lived default
+        // must not reserve the whole capacity up front.
+        samples.reserveCapacity(Swift.min(capacity, 256))
     }
 
     public var isEmpty: Bool { samples.isEmpty }
@@ -90,8 +95,6 @@ public struct Histogram<Value: Comparable & Sendable>: Sendable {
     }
 
     /// Apply the same percentile contract to an already-owned sample set.
-    /// This lets records with several measured fields share the ordering law
-    /// without allocating a second persistent histogram for every field.
     public static func percentile(
         of values: [Value],
         _ q: Double,
@@ -112,12 +115,21 @@ public struct Histogram<Value: Comparable & Sendable>: Sendable {
         rank: PercentileRank
     ) -> Int {
         let clamped = Swift.min(Swift.max(q, 0), 1)
+        // q·count lands a binary hair off an exact integer rank for many
+        // decimal q (0.07 × 100 = 7.000000000000001). Snap such products to
+        // the integer so a boundary rank never rounds the wrong way.
+        var product = clamped * Double(count)
+        let nearestInteger = product.rounded()
+        if (product - nearestInteger).magnitude
+            <= 1e-9 * Swift.max(1, nearestInteger) {
+            product = nearestInteger
+        }
         switch rank {
         case .nearest:
-            let nearest = Int((clamped * Double(count)).rounded(.up)) - 1
+            let nearest = Int(product.rounded(.up)) - 1
             return Swift.min(count - 1, Swift.max(0, nearest))
         case .upperBoundary:
-            let upper = Int((clamped * Double(count)).rounded(.down))
+            let upper = Int(product.rounded(.down))
             return Swift.min(count - 1, Swift.max(0, upper))
         }
     }

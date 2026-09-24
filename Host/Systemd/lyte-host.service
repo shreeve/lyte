@@ -1,27 +1,31 @@
-# lyte-host.service — E4: the host as a first-class service.
+# lyte-host.service — the Lyte host as a system service that runs as the
+# seat user. Host/Scripts/install-host.sh fills every @...@ token below from
+# the installing user (systemd's %h would name /root in a system unit) and
+# installs the result as /etc/systemd/system/lyte-host.service.
 #
 # Why a SYSTEM unit with User= instead of a user unit: ambient
-# capabilities are granted by the service manager, and only pid 1
-# has them to give — a user manager cannot confer CAP_SYS_ADMIN.
-# AmbientCapabilities makes the direct eye's DRM ticket a property
-# of the SERVICE, not of the binary file. Installed upgrades therefore
-# need no file capability mutation.
+# capabilities are granted by the service manager, and only pid 1 has
+# them to give — a user manager cannot confer CAP_SYS_ADMIN. The direct
+# eye's DRM ticket is therefore a property of the SERVICE, not of the
+# binary file, and deploying a new binary needs no setcap.
+#
+# Everything else is the user's:
+#   @CONFIG_HOME@/lyte/host.conf         LYTE_HOST_ARGS (EnvironmentFile)
+#   @CONFIG_HOME@/lyte/noise_static.key  host identity (lyte-host owns it)
+#   @HOME@/.local/bin/lyte-host          symlink to the active version
+#                                        (Host/Scripts/deploy-host.sh)
+#   @STATE_HOME@/lyte/host.log           the host's own output, 0600
+#
+# The log is bounded: a host.log over 64 MiB becomes host.log.1 (replacing
+# the previous one) before the host execs, and the running host does the
+# same to its own output at every session boundary and once a minute
+# during a session (HostLog), so the files hold at most two generations
+# however long the service runs. The journal keeps the unit lifecycle.
 #
 # The seat user's session environment (XDG_RUNTIME_DIR + the session
-# bus) rides along because two organs still need it: the clipboard
-# leaf's Mutter RemoteDesktop session (D-Bus) and audio capture
-# (PipeWire's per-user socket). The video path needs neither — the
-# direct eye reads the scanout from DRM alone.
-#
-# Output appends to /tmp/lyte-host-session.log — the rig's standing
-# recipes (observation books, chroma lines, session forensics) all grep
-# that file; the journal keeps the unit lifecycle. The redirect
-# lives INSIDE the shell (which runs as the seat user) because
-# Ubuntu's fs.protected_regular forbids root — i.e. systemd's own
-# StandardOutput=append: — from opening another user's file in
-# sticky /tmp.
-#
-# Install (idempotent): Host/Scripts/install-host.sh
+# bus) rides along for the clipboard leaf (Mutter RemoteDesktop over
+# D-Bus) and audio capture (PipeWire's per-user socket); the video path
+# needs neither.
 
 [Unit]
 Description=Lyte host — direct eye (GPU pixel observation, EGL blit, native VAAPI pens)
@@ -30,15 +34,20 @@ Wants=graphical.target
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/lyte/lyte-host.conf
-User=lyte-seat-user-set-by-installer
-Environment=XDG_RUNTIME_DIR=/run/user/lyte-seat-uid-set-by-installer
-Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/lyte-seat-uid-set-by-installer/bus
-ExecStart=/bin/sh -c 'exec /usr/local/bin/lyte-host $LYTE_HOST_ARGS >> /tmp/lyte-host-session.log 2>&1'
+User=@USER@
+EnvironmentFile=@CONFIG_HOME@/lyte/host.conf
+Environment=XDG_CONFIG_HOME=@CONFIG_HOME@
+Environment=XDG_STATE_HOME=@STATE_HOME@
+Environment=XDG_RUNTIME_DIR=/run/user/@UID@
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/@UID@/bus
+# "$$" is systemd's escape for a literal "$": the shell, not systemd,
+# expands these. LYTE_HOST_ARGS stays unquoted so it splits into words.
+ExecStart=/bin/sh -c 'log=@STATE_HOME@/lyte/host.log; mkdir -p -m 0700 @STATE_HOME@/lyte || exit 1; [ -z "$$(find "$$log" -size +65536k 2>/dev/null)" ] || mv -f "$$log" "$$log.1"; (umask 077; : >> "$$log") || exit 1; exec @HOME@/.local/bin/lyte-host $$LYTE_HOST_ARGS >> "$$log" 2>&1'
 AmbientCapabilities=CAP_SYS_ADMIN
 CapabilityBoundingSet=CAP_SYS_ADMIN
-# The 2 h leg ends by design (--seconds in LYTE_HOST_ARGS) and a
-# session teardown exits the process; both are normal — respawn.
+# The service serves sessions in turn and exits only on SIGTERM, a
+# failure, or a display mode change (or, with --seconds in
+# LYTE_HOST_ARGS, after its one session); any exit respawns.
 Restart=always
 RestartSec=2
 StandardOutput=journal

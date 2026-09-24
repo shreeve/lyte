@@ -147,9 +147,18 @@ then
     exit 1
 fi
 
-bash -n "$benchmark" "$benchmark_netem" "$pup_gate"
-sh -n "$benchmark_process"
-sh -n "$netem" "$build_cli" "$make_app"
+# `bash -n a b` checks only `a`; check each file on its own.
+for script in "$benchmark" "$benchmark_netem" "$pup_gate" \
+    "$benchmark_process" "$repo_root/Scripts/lib/pup.sh"
+do
+    bash -n "$script"
+done
+for script in "$netem" "$build_cli" "$make_app" \
+    "$repo_root/Scripts/lib/source-fingerprint.sh" \
+    "$repo_root/Scripts/lib/wasm-toolchain.sh"
+do
+    sh -n "$script"
+done
 
 # User-facing artifacts stay in the repository-root .build directory. The
 # deterministic test gate deliberately does not: SwiftPM `clean` owns its
@@ -158,10 +167,9 @@ grep -Fq -- '--package-path Client' "$build_cli"
 grep -Fq -- '--scratch-path .build' "$build_cli"
 grep -Fq -- '--package-path Client' "$make_app"
 grep -Fq -- '--scratch-path .build' "$make_app"
-grep -Fq 'Client/Package.swift Client/Package.resolved Client/Sources' \
-    "$make_app"
-grep -Fq 'Client/Package.swift Client/Package.resolved Client/Sources' \
-    "$benchmark"
+# The app records and the benchmark checks one client source identity.
+grep -Fq 'lyte_source_fingerprint "$ROOT" $LYTE_CLIENT_SOURCE_PATHS' "$make_app"
+grep -Fq 'lyte_source_fingerprint "$ROOT" $LYTE_CLIENT_SOURCE_PATHS' "$benchmark"
 grep -Fq 'run_package_tests "client" "$repo_root/Client" "$repo_root/Client/.build"' \
     "$macos_gate"
 if grep -Fq 'case .notRegistered, .notFound:' \
@@ -289,13 +297,160 @@ grep -Fq "match ip sport" "$netem"
 grep -Fq "match ip dst" "$netem"
 grep -Fq 'LYTE_BENCHMARK_PORT' "$benchmark_netem"
 grep -Fq 'LYTE_BENCHMARK_ALLOW_STANDING_PORT' "$benchmark_netem"
-if "$benchmark_netem" moderate >/dev/null 2>&1; then
+# benchmark-netem runs against a simulated pup: ssh executes the remote
+# command locally, with tc/ip/systemctl/ss/sudo replaced by fakes, and the
+# real port-netem.sh driving the fake tc. Nothing leaves this machine. The
+# caller's benchmark environment is cleared so a unit test can never reach a
+# real host.
+netem_env=(env -u LYTE_BENCHMARK_PORT -u LYTE_BENCHMARK_ALLOW_STANDING_PORT
+    -u PUP -u LYTE_BENCHMARK_PUP -u LYTE_BENCHMARK_HOST
+    LYTE_PUP_HOST=fake-pup.invalid)
+fake_pup="$test_root/fake-pup"
+mkdir -p "$fake_pup"
+ln -s "$fake_tc" "$fake_pup/tc"
+cat > "$fake_pup/ssh" <<'EOF'
+#!/bin/bash
+# Simulated pup: drop ssh options and the destination, run the command here.
+while [[ "$1" == -o ]]; do shift 2; done
+shift
+command="$*"
+printf '%s\n' "$command" >> "$FAKE_SSH_LOG"
+if [[ "$command" == *" apply "* ]]; then
+    sh -c "$command"
+    status=$?
+    case "${FAKE_SSH_AFTER_APPLY:-ok}" in
+        drop) exit 255 ;;
+        hang) echo $$ > "$FAKE_SSH_HANG_PID"; while :; do sleep 0.05; done ;;
+    esac
+    exit "$status"
+fi
+exec sh -c "$command"
+EOF
+cat > "$fake_pup/sudo" <<'EOF'
+#!/bin/sh
+[ "$1" = -n ] && shift
+exec "$@"
+EOF
+cat > "$fake_pup/rsync" <<'EOF'
+#!/bin/sh
+eval "last=\${$#}"
+cp "$(eval "echo \${$(($# - 1))}")" "${last#*:}"
+EOF
+cat > "$fake_pup/route" <<'EOF'
+#!/bin/sh
+echo "  interface: en-fake"
+EOF
+cat > "$fake_pup/ipconfig" <<'EOF'
+#!/bin/sh
+echo 10.0.0.44
+EOF
+cat > "$fake_pup/ip" <<'EOF'
+#!/bin/sh
+echo "10.0.0.44 dev en-test0 src 10.0.0.232 uid 1000"
+EOF
+cat > "$fake_pup/systemctl" <<'EOF'
+#!/bin/sh
+case "$1" in
+    is-active) exit 0 ;;
+    show) echo 4242 ;;
+esac
+EOF
+cat > "$fake_pup/ss" <<'EOF'
+#!/bin/sh
+case "$*" in
+    *":$FAKE_OWNED_PORT'"*|*":$FAKE_OWNED_PORT") echo "UNCONN 0 0 *:$FAKE_OWNED_PORT *:* users:((\"lyte-host\",pid=4242,fd=3))" ;;
+esac
+EOF
+chmod +x "$fake_pup"/*
+
+# `! cmd` never trips set -e, so negative checks fail explicitly.
+refute_logged() {
+    if grep -Fq -- "$1" "$test_root/ssh.log"; then
+        echo "benchmark-netem unexpectedly ran: $1" >&2
+        exit 1
+    fi
+}
+run_netem() {
+    : > "$test_root/ssh.log"
+    "${netem_env[@]}" PATH="$fake_pup:$PATH" \
+        FAKE_SSH_LOG="$test_root/ssh.log" \
+        FAKE_SSH_HANG_PID="$test_root/ssh.pid" \
+        FAKE_OWNED_PORT="${FAKE_OWNED_PORT:-41151}" \
+        LYTE_BENCHMARK_OUT_DIR="$test_root/netem-runs" \
+        "$@" "$benchmark_netem" moderate \
+        >"$test_root/netem.stdout" 2>"$test_root/netem.stderr"
+}
+printf '%s\n' default > "$LYTE_FAKE_TC_STATE"
+: > "$LYTE_FAKE_TC_LOG"
+
+if run_netem; then
     echo "benchmark-netem accepted a missing LYTE_BENCHMARK_PORT" >&2
     exit 1
 fi
-if LYTE_BENCHMARK_PORT=41151 "$benchmark_netem" moderate >/dev/null 2>&1; then
+if run_netem LYTE_BENCHMARK_PORT=41151; then
     echo "benchmark-netem accepted standing 41151 without allow flag" >&2
     exit 1
 fi
+if run_netem PUP=elsewhere LYTE_BENCHMARK_PORT=41151 \
+    LYTE_BENCHMARK_ALLOW_STANDING_PORT=1
+then
+    echo "benchmark-netem accepted a retired pup variable" >&2
+    exit 1
+fi
+grep -Fq 'set LYTE_PUP_HOST instead' "$test_root/netem.stderr"
+
+# A port the standing service does not own would be impaired while the
+# benchmark measured clean air: refused before any qdisc change.
+if FAKE_OWNED_PORT=41151 run_netem LYTE_BENCHMARK_PORT=41999; then
+    echo "benchmark-netem impaired a port lyte-host does not own" >&2
+    exit 1
+fi
+grep -Fq 'does not own UDP 41999' "$test_root/netem.stderr"
+refute_logged ' apply '
+[[ "$(<"$LYTE_FAKE_TC_STATE")" == default ]]
+
+# The ssh link drops after pup applied the qdisc: cleanup still removes it.
+if run_netem LYTE_BENCHMARK_PORT=41151 LYTE_BENCHMARK_ALLOW_STANDING_PORT=1 \
+    FAKE_SSH_AFTER_APPLY=drop
+then
+    echo "benchmark-netem ignored a failed apply" >&2
+    exit 1
+fi
+grep -Fq "apply 'en-test0' '10.0.0.44' '41151' '20' '10' '1'" "$test_root/ssh.log"
+grep -Fq "remove 'en-test0'" "$test_root/ssh.log"
+[[ "$(<"$LYTE_FAKE_TC_STATE")" == default ]]
+
+# A signal during the run removes the qdisc and exits 128+signal.
+rm -f "$test_root/ssh.pid"
+run_netem LYTE_BENCHMARK_PORT=41151 LYTE_BENCHMARK_ALLOW_STANDING_PORT=1 \
+    FAKE_SSH_AFTER_APPLY=hang &
+netem_pid=$!
+for _ in {1..200}; do
+    [[ -s "$test_root/ssh.pid" ]] && break
+    sleep 0.05
+done
+[[ -s "$test_root/ssh.pid" ]]
+[[ "$(<"$LYTE_FAKE_TC_STATE")" == owned ]]
+netem_script_pid="$(pgrep -P "$netem_pid" -f benchmark-netem.sh || echo "$netem_pid")"
+kill -TERM "$netem_script_pid"
+kill "$(<"$test_root/ssh.pid")"
+netem_status=0
+wait "$netem_pid" || netem_status=$?
+[[ "$netem_status" -eq 143 ]] || {
+    echo "benchmark-netem exited $netem_status on TERM; want 143" >&2
+    exit 1
+}
+grep -Fq "remove 'en-test0'" "$test_root/ssh.log"
+[[ "$(<"$LYTE_FAKE_TC_STATE")" == default ]]
+
+# A stranded helper qdisc from an earlier run is never adopted or stacked.
+printf '%s\n' owned > "$LYTE_FAKE_TC_STATE"
+if run_netem LYTE_BENCHMARK_PORT=41151 LYTE_BENCHMARK_ALLOW_STANDING_PORT=1; then
+    echo "benchmark-netem ran over an existing port-netem qdisc" >&2
+    exit 1
+fi
+refute_logged ' apply '
+refute_logged ' remove '
+printf '%s\n' default > "$LYTE_FAKE_TC_STATE"
 
 echo "benchmark safety tests PASSED"

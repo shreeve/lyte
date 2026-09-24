@@ -20,13 +20,9 @@ final class HelperClient {
     private(set) var engaged = false
     private var promptedThisRun = false
 
-    var status: SMAppService.Status { service.status }
-
-    /// The ground truth the watchdog trusts: awdl0's own UP flag, read
-    /// directly via getifaddrs (no privileges needed). The XPC call is
-    /// fire-and-forget — a daemon that failed to spawn produces no
-    /// error, only an interface that never went down; asking the
-    /// interface is the only claim that cannot lie.
+    /// awdl0's own UP flag, read via getifaddrs (no privileges needed).
+    /// The XPC call is fire-and-forget, so a daemon that failed to spawn
+    /// shows only as an interface that never went down.
     nonisolated static func awdlIsUp() -> Bool {
         var addrs: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&addrs) == 0 else { return false }
@@ -43,28 +39,13 @@ final class HelperClient {
         return false
     }
 
-    var statusDescription: String {
-        switch service.status {
-        case .notRegistered: return "notRegistered — registration didn't stick"
-        case .enabled: return "enabled — daemon ready"
-        case .requiresApproval: return "requiresApproval — waiting for System Settings → Login Items"
-        case .notFound: return "notFound — plist/binary missing from bundle or registration rejected"
-        @unknown default: return "unknown (\(service.status.rawValue))"
-        }
-    }
-
-    /// App-launch refresh: EVERY rebuild re-signs the helper, and the
-    /// lightweight code requirement (LWCR) BTM stored at registration
-    /// goes stale — launchd then refuses the spawn with EX_CONFIG
-    /// forever ("needs LWCR update" in launchctl print; found live
-    /// 2026-07-30 after 28,916 silent crash-loops). Unregister +
-    /// re-register refreshes the LWCR; BTM keys the user's approval
-    /// by identifier, so the toggle normally survives the cycle.
+    /// App-launch refresh: every rebuild re-signs the helper and stales
+    /// the code requirement BTM stored at registration (launchd then
+    /// refuses the spawn with EX_CONFIG). Unregister + re-register
+    /// refreshes it; the user's approval normally survives the cycle.
     nonisolated static func refreshRegistration() {
-        // SMAppService performs synchronous BTM/XPC work and emits Apple's
-        // main-thread performance diagnostic when called from app launch.
-        // Registration is process-global; a local service handle keeps this
-        // blocking refresh completely outside the MainActor.
+        // SMAppService does synchronous BTM/XPC work; keep it off the
+        // MainActor with a local service handle.
         let refreshService = SMAppService.daemon(
             plistName: LyteHelper.plistName)
         try? refreshService.unregister()
@@ -78,35 +59,13 @@ final class HelperClient {
         }
     }
 
-    /// Explicit registration entry point used by the headless maintenance
-    /// command. Normal app launches use `refreshRegistration()` instead.
-    /// A missing service means the app bundle is incomplete or disappeared;
-    /// asking ServiceManagement to register that state crashes inside
-    /// `_load_plist_from_bundle` on macOS 26.6, so it must fail soft here.
-    func registerIfNeeded() {
-        switch service.status {
-        case .notRegistered:
-            do {
-                try service.register()   // may flip straight to enabled or requiresApproval
-                NSLog("lyte helper: registered, status now \(service.status.rawValue)")
-            } catch {
-                NSLog("lyte helper: register FAILED — \(error.localizedDescription)")
-            }
-        case .notFound:
-            NSLog("lyte helper: unavailable — embedded service is missing")
-        default:
-            NSLog("lyte helper: status \(service.status.rawValue) (0=notReg 1=enabled 2=requiresApproval 3=notFound)")
-        }
-    }
-
     /// Called when a stream starts. Returns a user-facing hint when the
     /// helper needs approval, nil otherwise.
     func streamBegan(
         registration: RegistrationPosture = .ensure
     ) -> String? {
-        // Registration is app-lifecycle work, never stream-lifecycle work.
-        // A stream may begin after an external build has removed the running
-        // bundle from disk; querying status is safe, but registration is not.
+        // Registration is app-lifecycle work: a stream may begin after an
+        // external build removed the running bundle, so only query here.
         switch service.status {
         case .enabled:
             proxy()?.streamBegan()
@@ -118,7 +77,7 @@ final class HelperClient {
                 promptedThisRun = true
                 SMAppService.openSystemSettingsLoginItems()
             }
-            return "Approve the Lyte helper in System Settings → Login Items to auto-quiet AWDL (+~50 ms smoother audio)"
+            return "Approve the Lyte helper in System Settings → Login Items to quiet AWDL while streaming (smoother audio)"
         default:
             return nil
         }
@@ -135,22 +94,25 @@ final class HelperClient {
             let c = NSXPCConnection(machServiceName: LyteHelper.machServiceName,
                                     options: .privileged)
             c.remoteObjectInterface = NSXPCInterface(with: LyteHelperCommands.self)
-            c.invalidationHandler = { [weak self] in
-                Task { @MainActor in
-                    self?.connection = nil
-                    self?.engaged = false
-                }
+            // Both handlers hop to the MainActor later; by then the
+            // watchdog may have minted a newer connection, which a stale
+            // handler must not clear.
+            c.invalidationHandler = { [weak self, weak c] in
+                Task { @MainActor in self?.forget(c) }
             }
             c.interruptionHandler = { [weak self, weak c] in
                 c?.invalidate()
-                Task { @MainActor in
-                    self?.connection = nil
-                    self?.engaged = false
-                }
+                Task { @MainActor in self?.forget(c) }
             }
             c.resume()
             connection = c
         }
         return connection?.remoteObjectProxy as? LyteHelperCommands
+    }
+
+    private func forget(_ dead: NSXPCConnection?) {
+        guard let dead, connection === dead else { return }
+        connection = nil
+        engaged = false
     }
 }

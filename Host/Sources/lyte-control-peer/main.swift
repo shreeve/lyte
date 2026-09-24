@@ -1,4 +1,4 @@
-// lyte-control-peer — DRM-free HostWire UDP peer for browser B-3…B-6.
+// lyte-control-peer — DRM-free HostWire UDP peer for the browser client.
 //
 // Speaks the real host Noise / pairing / capabilities / teardown path via
 // HostWire.Session over plain UDP. Optional `--emit-corpus` replays the
@@ -8,13 +8,18 @@
 // announce loop prove sealed CTRL features without Direct Eye / DRM /
 // Wayland clipboard. Safe beside a standing lyte-host on 41151. Chrome
 // reaches this peer through lyte-wt-sidecar --udp-peer. Does not touch
-// ~/.config/lyte-host identity.
+// the host identity files.
+//
+// `--sessions N` serves N sessions in turn (0 = until killed), each with
+// a fresh HostWire Session and pairing responder under the one PIN, so a
+// page's Connect / Re-run can dial again without restarting the peer.
 
 import Foundation
 import HostAudio
 import HostSession
 import HostWire
 import LyteCore
+import LyteIO
 import LyteWire
 
 #if canImport(Darwin)
@@ -37,16 +42,18 @@ struct Options {
     var bindHost = "127.0.0.1"
     var pin: String?
     var seconds: Double = 60
+    /// Sessions to serve before exiting; 0 serves until killed.
+    var sessions = 1
     var metaOut: String?
     var hostStaticHex: String?
     /// Directory with frame-000-idr.annexb … frame-009-p.annexb, or nil.
     var emitCorpusDir: String?
 }
 
-/// Emit pacing is slower than the 60 Hz score so the browser WT reader is
-/// not starved by FEC bursts. Capture stamps follow wall time at emit
-/// (not a synthetic 60 Hz ladder) so Conductor path delay stays honest.
-// ~3 Conductor beats between frames — headroom for Chrome+WASM FEC drain.
+/// ~3 Conductor beats between frames: slower than 60 Hz so the browser's
+/// WebTransport reader and WASM FEC drain are not starved by bursts.
+/// Capture stamps follow wall time at emit so Conductor path delay stays
+/// honest.
 let corpusEmitIntervalNS: UInt64 = 50_001_000
 /// 5 ms Opus cadence (AudioWire.packetDuration).
 let tonePacketIntervalNS: UInt64 = 5_000_000
@@ -80,6 +87,12 @@ func parseArgs(_ argv: [String]) throws -> Options {
                 throw PeerError.message("--seconds needs a number")
             }
             opts.seconds = s
+        case "--sessions":
+            i += 1
+            guard i < argv.count, let n = Int(argv[i]), n >= 0 else {
+                throw PeerError.message("--sessions needs a count (0 = unlimited)")
+            }
+            opts.sessions = n
         case "--meta-out":
             i += 1
             guard i < argv.count else { throw PeerError.message("--meta-out needs a path") }
@@ -99,16 +112,21 @@ func parseArgs(_ argv: [String]) throws -> Options {
         case "--help", "-h":
             print(
                 """
-                lyte-control-peer — DRM-free HostWire peer (browser B-3…B-6)
+                lyte-control-peer — DRM-free HostWire peer for the browser proof
 
                   --listen P          UDP port (default 41234; never 41151)
                   --bind HOST         bind address (default 127.0.0.1)
                   --pin DIGITS        enable CPace pairing with this PIN
-                  --seconds N         hold after establish (default 60)
+                  --seconds N         hold each session at most N s after
+                                      its first datagram (default 60)
+                  --sessions N        serve N sessions in turn, then exit
+                                      (default 1; 0 = until killed). A
+                                      single session must arrive within
+                                      30 s; with more, the peer waits.
                   --meta-out PATH     write JSON (port, host static, pin)
                   --emit-corpus DIR   after ready, seal/pace video-corpus-v1
-                                      frames 000–009 + Opus tone (B-5/B-6;
-                                      no DRM). Declares clipboardText;
+                                      frames 000–009 + Opus tone (no
+                                      DRM). Declares clipboardText;
                                       echoes input; in-memory clipboard ack.
 
                 Safe beside standing lyte-host on 41151 — no Direct Eye / DRM.
@@ -155,19 +173,9 @@ func loadCorpusFrames(from directory: String) throws -> [[UInt8]] {
     return frames
 }
 
-func nowNS() -> UInt64 {
-#if canImport(Darwin)
-    return clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-#else
-    var ts = timespec()
-    clock_gettime(CLOCK_MONOTONIC, &ts)
-    return UInt64(ts.tv_sec) * 1_000_000_000 + UInt64(ts.tv_nsec)
-#endif
-}
-
 func logPeer(_ message: String) {
     print(message)
-    fflush(stdout)
+    fflush(nil)
 }
 
 final class UdpSocket: @unchecked Sendable {
@@ -176,7 +184,12 @@ final class UdpSocket: @unchecked Sendable {
     let localPort: UInt16
 
     init(host: String, port: UInt16) throws {
-        let fd = socket(AF_INET, SOCK_DGRAM, 0)
+        #if canImport(Darwin)
+        let datagram = SOCK_DGRAM
+        #else
+        let datagram = Int32(SOCK_DGRAM.rawValue)
+        #endif
+        let fd = socket(AF_INET, datagram, 0)
         guard fd >= 0 else { throw PeerError.message("socket() failed") }
         var yes: Int32 = 1
         _ = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout.size(ofValue: yes)))
@@ -260,18 +273,6 @@ final class UdpSocket: @unchecked Sendable {
     }
 }
 
-func looksLikeHandshakeInitiation(_ datagram: [UInt8]) -> Bool {
-    guard let (envelope, payload) = try? Envelope.decode(datagram),
-          envelope.channel == .ctrl
-    else { return false }
-    return payload.first == CtrlMessageType.noiseHandshake1
-        || payload.first == CtrlMessageType.retryHandshake1
-}
-
-func mintPin() -> String {
-    String(format: "%06d", Int.random(in: 0...999_999))
-}
-
 func loadHostStatic(hex: String?) throws -> NoiseKeyPair {
     if let hex {
         guard let bytes = Hex.bytes(hex), bytes.count == 32 else {
@@ -291,18 +292,30 @@ func writeMeta(_ path: String, body: [String: Any]) throws {
     try out.write(to: URL(fileURLWithPath: path))
 }
 
-final class ControlPeer {
-    let sock: UdpSocket
-    let hostStatic: NoiseKeyPair
-    let pairing: PairingResponderService
-    let pin: String
-    let seconds: Double
-    let corpusFrames: [[UInt8]]?
+/// The sealed datagrams a Session released since the last flush. A box so
+/// the Session's send sink can hold it before the owning PeerSession is
+/// fully initialized.
+final class Outbox {
+    var datagrams: [VideoChannelDatagram] = []
+}
 
-    var outbox: [VideoChannelDatagram] = []
-    var session: Session?
-    var peerHost: String?
-    var peerPort: UInt16?
+/// How one served session ended.
+enum SessionVerdict {
+    case pass(String)
+    case fail(String)
+}
+
+/// One client's session: a fresh HostWire Session, pairing responder and
+/// media emitters, opened by a message 1 and bound to the client that
+/// completes the handshake (the Session's primary path).
+final class PeerSession {
+    let session: Session
+    let pairing: PairingResponderService
+    let sock: UdpSocket
+    let corpusFrames: [[UInt8]]?
+    let toneEncoder: HostOpusEncoder?
+    let outbox = Outbox()
+
     var established = false
     var paired = false
     var capabilitiesAgreed = false
@@ -313,83 +326,116 @@ final class ControlPeer {
     var toneIndex = 0
     var toneNextEmitNS: UInt64 = 0
     var toneEmitFinished = false
-    var toneEncoder: HostOpusEncoder?
     var inputEventsEchoed = 0
     var clipboardSetsAcked = 0
 
-    init(opts: Options) throws {
-        if opts.listenPort == 41151 {
-            throw PeerError.message("refusing standing host UDP 41151")
-        }
-        hostStatic = try loadHostStatic(hex: opts.hostStaticHex)
-        pin = opts.pin ?? mintPin()
+    init(
+        latching packet: UdpSocket.Packet,
+        sock: UdpSocket,
+        hostStatic: NoiseKeyPair,
+        pin: String,
+        corpusFrames: [[UInt8]]?,
+        now: UInt64
+    ) throws {
+        self.sock = sock
+        self.corpusFrames = corpusFrames
         pairing = PairingResponderService(
             pin: Array(pin.utf8),
             hostStaticPublicKey: hostStatic.publicKey
         )
-        sock = try UdpSocket(host: opts.bindHost, port: opts.listenPort)
-        seconds = opts.seconds
-        if let dir = opts.emitCorpusDir {
-            corpusFrames = try loadCorpusFrames(from: dir)
+        if corpusFrames != nil {
             toneEncoder = try HostOpusEncoder(bitrate: 96_000)
         } else {
-            corpusFrames = nil
+            toneEncoder = nil
             toneEmitFinished = true
         }
-
-        let shape = corpusFrames == nil
-            ? "hostwire-control-only-udp"
-            : "hostwire-control-plus-corpus-video-audio"
-        print("lyte-control-peer — DRM-free HostWire peer (B-3…B-6)")
-        print("listen: \(sock.localHost):\(sock.localPort)")
-        print("noise: host static public key \(Hex.string(hostStatic.publicKey))")
-        print("pairing: PIN \(pin) — enter it in the browser client")
-        if let frames = corpusFrames {
-            print(
-                "corpus: will emit \(frames.count) sealed frames + "
-                    + "\(tonePacketCount) Opus tone packets after ready "
-                    + "(no Direct Eye)"
+        let tuple = FourTuple(
+            localAddress: sock.localHost,
+            localPort: sock.localPort,
+            remoteAddress: packet.host,
+            remotePort: packet.port
+        )
+        // Corpus→WT needs a modest pace: 50 Mbps blasts the
+        // sidecar/Chrome datagram path and FEC-impossibles.
+        // Control-only keeps the native-like ceiling.
+        let pace = corpusFrames == nil ? 50_000_000 : 3_000_000
+        // The browser sends no chan-3 feedback, so the default 350 ms
+        // blackout would freeze video after ~3 frames and suppress the
+        // rest of the corpus. Widen silence for corpus emit only.
+        let lifecycle = corpusFrames == nil
+            ? SessionMachineConfig()
+            : SessionMachineConfig(
+                blackoutSilenceMicroseconds: 30_000_000,
+                recoveryBlackoutSilenceMicroseconds: 30_000_000
             )
+        let outbox = self.outbox
+        session = Session(
+            config: SessionConfig(
+                crypto: .noise(hostStatic: hostStatic),
+                rateBitsPerSecond: pace,
+                capabilities: .wireDefault.declaringClipboardText(),
+                lifecycle: lifecycle
+            ),
+            clientTuple: tuple,
+            now: now,
+            rng: SystemRandomNumberGenerator()
+        ) { datagram in
+            outbox.datagrams.append(datagram)
         }
-        print("features: input echo + in-memory clipboardText (not Wayland OS)")
-        print("note: no Direct Eye; safe beside standing UDP 41151")
-
-        if let metaOut = opts.metaOut {
-            var body: [String: Any] = [
-                "adapter": "lyte-control-peer",
-                "bindHost": sock.localHost,
-                "listenPort": Int(sock.localPort),
-                "hostStaticPublicKeyHex": Hex.string(hostStatic.publicKey),
-                "pin": pin,
-                "seconds": opts.seconds,
-                "shape": shape,
-                "clipboardText": true,
-            ]
-            if let frames = corpusFrames {
-                body["corpusFrameCount"] = frames.count
-                body["emitCorpus"] = true
-                body["tonePacketCount"] = tonePacketCount
-            }
-            try writeMeta(metaOut, body: body)
-        }
+        print("session: latched \(packet.host):\(packet.port)")
     }
 
     var mediaReady: Bool {
         established && paired && capabilitiesAgreed
     }
 
-    /// Pace one corpus frame when the video channel is idle. Called from
-    /// the receive/pump loop with wall monotonic time.
+    /// One inbound datagram, then the emitters and a flush.
+    func receive(_ packet: UdpSocket.Packet, now: UInt64) {
+        let tuple = FourTuple(
+            localAddress: sock.localHost,
+            localPort: sock.localPort,
+            remoteAddress: packet.host,
+            remotePort: packet.port
+        )
+        handleEvents(
+            session.receive(
+                packet.bytes, from: tuple,
+                now: now, hostMicroseconds: now / 1_000
+            ),
+            now: now
+        )
+        service(now: now)
+    }
+
+    /// A timer pass with no datagram.
+    func tick(now: UInt64) {
+        handleEvents(
+            session.advance(now: now, hostMicroseconds: now / 1_000),
+            now: now
+        )
+        service(now: now)
+    }
+
+    private func service(now: UInt64) {
+        maybeEmitTone(now: now)
+        maybeEmitCorpus(now: now)
+        session.pump(now: now)
+        flushOutbox()
+    }
+
+    /// Pace one corpus frame when the video channel is idle.
     func maybeEmitCorpus(now: UInt64) {
-        guard let frames = corpusFrames, let session, mediaReady,
+        guard let frames = corpusFrames, mediaReady,
               !corpusEmitFinished, !closed
         else { return }
         if corpusIndex >= frames.count {
             if session.isIdle {
                 corpusEmitFinished = true
                 print(
-                    "corpus: emitted \(frames.count) frames "
-                        + "(sealed Lyte-UDP video; not live Direct Eye)"
+                    """
+                        corpus: emitted \(frames.count) frames \
+                        (sealed Lyte-UDP video; not live Direct Eye)
+                        """
                 )
             }
             return
@@ -421,14 +467,16 @@ final class ControlPeer {
 
     /// Pace sealed Opus tone packets (440 Hz sine) for the browser audio organ.
     func maybeEmitTone(now: UInt64) {
-        guard corpusFrames != nil, let session, let encoder = toneEncoder,
+        guard let encoder = toneEncoder,
               mediaReady, !toneEmitFinished, !closed
         else { return }
         if toneIndex >= tonePacketCount {
             toneEmitFinished = true
             print(
-                "tone: emitted \(tonePacketCount) Opus packets "
-                    + "(\(toneHz) Hz; sealed chan-1; not live host audio)"
+                """
+                    tone: emitted \(tonePacketCount) Opus packets \
+                    (\(toneHz) Hz; sealed chan-1; not live host audio)
+                    """
             )
             return
         }
@@ -469,14 +517,17 @@ final class ControlPeer {
         }
     }
 
+    /// Sends what the Session released: to the datagram's own
+    /// destination when it names one (a path challenge), else to the
+    /// primary path.
     func flushOutbox() {
-        guard let peerHost, let peerPort else { return }
-        for datagram in outbox {
-            let destHost = datagram.destination?.remoteAddress ?? peerHost
-            let destPort = datagram.destination?.remotePort ?? peerPort
-            sock.send(datagram.bytes, host: destHost, port: destPort)
+        for datagram in outbox.datagrams {
+            let tuple = datagram.destination ?? session.validator.primary.tuple
+            sock.send(
+                datagram.bytes, host: tuple.remoteAddress, port: tuple.remotePort
+            )
         }
-        outbox.removeAll(keepingCapacity: true)
+        outbox.datagrams.removeAll(keepingCapacity: true)
     }
 
     func handleEvents(_ events: [SessionEvent], now: UInt64) {
@@ -485,7 +536,7 @@ final class ControlPeer {
             case .handshakeCompleted(let remote):
                 established = true
                 print("noise: handshake completed — client static \(Hex.string(remote))")
-                if let hash = session?.handshakeHash {
+                if let hash = session.handshakeHash {
                     pairing.sessionEstablished(
                         clientStaticPublicKey: remote,
                         noiseHandshakeHash: hash
@@ -495,7 +546,7 @@ final class ControlPeer {
                 if let output = pairing.handleReliableCtrl(message, now: now) {
                     for reply in output.replies {
                         do {
-                            try session?.sendReliable(
+                            try session.sendReliable(
                                 reply, now: now, hostMicroseconds: now / 1_000
                             )
                         } catch {
@@ -525,16 +576,18 @@ final class ControlPeer {
             case .capabilitiesAgreed(let caps):
                 capabilitiesAgreed = true
                 print(
-                    "capabilities: agreed codecs=\(caps.videoCodecs) "
-                        + "chroma=\(caps.chromaModes) maxDatagram=\(caps.maxDatagramBytes)"
-                        + " clipboardText=\(caps.clipboardText)"
+                    """
+                        capabilities: agreed codecs=\(caps.videoCodecs) \
+                        chroma=\(caps.chromaModes) maxDatagram=\(caps.maxDatagramBytes)\
+                         clipboardText=\(caps.clipboardText)
+                        """
                 )
             case .capabilitiesFailed(let why):
                 print("capabilities: FAILED — \(why)")
             case .inputReceived(let event, let receivedAt):
                 // No uinput / Direct Eye — report inject-at-receive so the
                 // browser can close the sealed InputEcho loop honestly.
-                session?.noteInputInjected(
+                session.noteInputInjected(
                     seq: event.seq,
                     receivedAtMicroseconds: receivedAt,
                     injectedAtMicroseconds: receivedAt
@@ -542,31 +595,33 @@ final class ControlPeer {
                 inputEventsEchoed += 1
                 if inputEventsEchoed <= 3 || inputEventsEchoed % 25 == 0 {
                     logPeer(
-                        "input: echoed seq=\(event.seq) "
-                            + "(total \(inputEventsEchoed); no OS inject)"
+                        """
+                            input: echoed seq=\(event.seq) \
+                            (total \(inputEventsEchoed); no OS inject)
+                            """
                     )
                 }
             case .clipboardSetReceived(let text):
                 // In-memory ack announce — not Wayland/GNOME host clipboard.
                 // Distinct text avoids ClipboardSyncBook loop-echo suppress.
                 let ack = "lyte-peer-ack:\(text.utf8.count)"
-                if let session {
-                    for ev in session.noteHostClipboardChanged(
-                        ack, now: now, hostMicroseconds: now / 1_000
-                    ) {
-                        if case .clipboardAnnounceSent(let n) = ev {
-                            logPeer("clipboard: announce sent (\(n) B)")
-                        } else if case .clipboardAnnounceSuppressed(let why) = ev {
-                            logPeer("clipboard: announce suppressed (\(why))")
-                        } else if case .sendFailed(let why) = ev {
-                            logPeer("clipboard: announce send failed: \(why)")
-                        }
+                for ev in session.noteHostClipboardChanged(
+                    ack, now: now, hostMicroseconds: now / 1_000
+                ) {
+                    if case .clipboardAnnounceSent(let n) = ev {
+                        logPeer("clipboard: announce sent (\(n) B)")
+                    } else if case .clipboardAnnounceSuppressed(let why) = ev {
+                        logPeer("clipboard: announce suppressed (\(why))")
+                    } else if case .sendFailed(let why) = ev {
+                        logPeer("clipboard: announce send failed: \(why)")
                     }
                 }
                 clipboardSetsAcked += 1
                 logPeer(
-                    "clipboard: set \(text.utf8.count) B → announce ack "
-                        + "(in-memory; not OS clipboard)"
+                    """
+                        clipboard: set \(text.utf8.count) B → announce ack \
+                        (in-memory; not OS clipboard)
+                        """
                 )
             case .clipboardAnnounceSent(let byteCount):
                 logPeer("clipboard: announce sent (\(byteCount) B)")
@@ -584,137 +639,205 @@ final class ControlPeer {
         }
     }
 
-    func run() throws {
-        let deadline = nowNS() + UInt64(seconds * 1e9)
-        let handshakeDeadline = nowNS() + 30_000_000_000
-        print("noise: awaiting client handshake…")
-
-        while nowNS() < deadline && !closed {
-            let now = nowNS()
-            if let packet = sock.recv() {
-                if session == nil {
-                    guard looksLikeHandshakeInitiation(packet.bytes) else { continue }
-                    peerHost = packet.host
-                    peerPort = packet.port
-                    let tuple = FourTuple(
-                        localAddress: sock.localHost,
-                        localPort: sock.localPort,
-                        remoteAddress: packet.host,
-                        remotePort: packet.port
-                    )
-                    // Corpus→WT needs a modest pace: 50 Mbps blasts the
-                    // sidecar/Chrome datagram path and FEC-impossibles.
-                    // Control-only keeps the native-like ceiling.
-                    let pace = corpusFrames == nil ? 50_000_000 : 3_000_000
-                    // Browser B-5 has no chan-3 feedback yet; the default
-                    // 350 ms blackout freezes video after ~3 frames and
-                    // suppresses the rest of the corpus. Widen silence
-                    // for corpus emit only — production lyte-host untouched.
-                    let lifecycle = corpusFrames == nil
-                        ? SessionMachineConfig()
-                        : SessionMachineConfig(
-                            blackoutSilenceMicroseconds: 30_000_000,
-                            recoveryBlackoutSilenceMicroseconds: 30_000_000
-                        )
-                    session = Session(
-                        config: SessionConfig(
-                            crypto: .noise(hostStatic: hostStatic),
-                            rateBitsPerSecond: pace,
-                            capabilities: .wireDefault.declaringClipboardText(),
-                            lifecycle: lifecycle
-                        ),
-                        clientTuple: tuple,
-                        now: now
-                    ) { [weak self] datagram in
-                        self?.outbox.append(datagram)
-                    }
-                    print("session: latched \(packet.host):\(packet.port)")
-                }
-                guard let session else { continue }
-                let tuple = FourTuple(
-                    localAddress: sock.localHost,
-                    localPort: sock.localPort,
-                    remoteAddress: packet.host,
-                    remotePort: packet.port
+    /// Judges the session and, unless the client already closed it,
+    /// tears it down.
+    func finish(now: UInt64) -> SessionVerdict {
+        defer {
+            if !closed {
+                handleEvents(
+                    session.beginTeardown(
+                        reason: .shuttingDown,
+                        now: now,
+                        hostMicroseconds: now / 1_000
+                    ),
+                    now: now
                 )
-                let events = session.receive(
-                    packet.bytes,
-                    from: tuple,
-                    now: now,
-                    hostMicroseconds: now / 1_000
-                )
-                handleEvents(events, now: now)
-                maybeEmitTone(now: now)
-                maybeEmitCorpus(now: now)
                 session.pump(now: now)
                 flushOutbox()
-                continue
             }
-
-            if let session {
-                let advanced = session.advance(
-                    now: now, hostMicroseconds: now / 1_000
-                )
-                handleEvents(advanced, now: now)
-                maybeEmitTone(now: now)
-                maybeEmitCorpus(now: now)
-                session.pump(now: now)
-                flushOutbox()
-            } else if now > handshakeDeadline {
-                throw PeerError.message("no handshake within 30s")
-            }
-
-            usleep(2_000)
         }
-
         guard established && paired && capabilitiesAgreed else {
-            throw PeerError.message(
-                "incomplete (established=\(established) paired=\(paired) caps=\(capabilitiesAgreed))"
-            )
+            return .fail("""
+                incomplete (established=\(established) paired=\(paired) \
+                caps=\(capabilitiesAgreed))
+                """)
         }
         if let frames = corpusFrames, !corpusEmitFinished {
-            if closed {
-                print(
-                    "WARN — corpus emit incomplete after client close "
-                        + "(index=\(corpusIndex)/\(frames.count))"
-                )
-            } else {
-                throw PeerError.message(
+            guard closed else {
+                return .fail(
                     "corpus emit incomplete (index=\(corpusIndex)/\(frames.count))"
                 )
             }
+            print(
+                """
+                    WARN — corpus emit incomplete after client close \
+                    (index=\(corpusIndex)/\(frames.count))
+                    """
+            )
         }
         if corpusFrames != nil, !toneEmitFinished, !closed {
             print(
-                "WARN — tone emit incomplete "
-                    + "(index=\(toneIndex)/\(tonePacketCount))"
+                """
+                    WARN — tone emit incomplete \
+                    (index=\(toneIndex)/\(tonePacketCount))
+                    """
             )
         }
-        if corpusFrames != nil, corpusEmitFinished {
-            print(
-                "PASS — control + corpus video + tone "
-                    + "(Noise + pair + capabilities + \(corpusIndex) frames "
-                    + "+ \(toneIndex) Opus; inputEchoed=\(inputEventsEchoed) "
-                    + "clipboardAcked=\(clipboardSetsAcked))"
-            )
-        } else if corpusFrames == nil {
-            print("PASS — control-only session (Noise + pair + capabilities)")
-        } else {
-            print(
-                "PASS — control session (corpus partial "
-                    + "\(corpusIndex)/\(corpusFrames?.count ?? 0))"
+        guard let frames = corpusFrames else {
+            return .pass("PASS — control-only session (Noise + pair + capabilities)")
+        }
+        guard corpusEmitFinished else {
+            return .pass(
+                "PASS — control session (corpus partial \(corpusIndex)/\(frames.count))"
             )
         }
-        if let session, !closed {
-            let now = nowNS()
-            let events = session.beginTeardown(
-                reason: .shuttingDown,
-                now: now,
-                hostMicroseconds: now / 1_000
+        return .pass(
+            """
+                PASS — control + corpus video + tone \
+                (Noise + pair + capabilities + \(corpusIndex) frames \
+                + \(toneIndex) Opus; inputEchoed=\(inputEventsEchoed) \
+                clipboardAcked=\(clipboardSetsAcked))
+                """
+        )
+    }
+}
+
+final class ControlPeer {
+    let sock: UdpSocket
+    let hostStatic: NoiseKeyPair
+    let pin: String
+    let seconds: Double
+    let sessions: Int
+    let corpusFrames: [[UInt8]]?
+
+    init(opts: Options) throws {
+        if opts.listenPort == 41151 {
+            throw PeerError.message("refusing standing host UDP 41151")
+        }
+        hostStatic = try loadHostStatic(hex: opts.hostStaticHex)
+        var rng = SystemRandomNumberGenerator()
+        pin = opts.pin ?? PairingResponderService.mintPin(using: &rng)
+        sock = try UdpSocket(host: opts.bindHost, port: opts.listenPort)
+        seconds = opts.seconds
+        sessions = opts.sessions
+        corpusFrames = try opts.emitCorpusDir.map(loadCorpusFrames(from:))
+
+        let shape = corpusFrames == nil
+            ? "hostwire-control-only-udp"
+            : "hostwire-control-plus-corpus-video-audio"
+        print("lyte-control-peer — DRM-free HostWire peer for the browser proof")
+        print("listen: \(sock.localHost):\(sock.localPort)")
+        print("noise: host static public key \(Hex.string(hostStatic.publicKey))")
+        print("pairing: PIN \(pin) — enter it in the browser client")
+        print("sessions: \(sessions == 0 ? "until killed" : "\(sessions)")")
+        if let frames = corpusFrames {
+            print(
+                """
+                    corpus: will emit \(frames.count) sealed frames + \
+                    \(tonePacketCount) Opus tone packets after ready \
+                    (no Direct Eye)
+                    """
             )
-            handleEvents(events, now: now)
-            session.pump(now: now)
-            flushOutbox()
+        }
+        print("features: input echo + in-memory clipboardText (not Wayland OS)")
+        print("note: no Direct Eye; safe beside standing UDP 41151")
+
+        if let metaOut = opts.metaOut {
+            var body: [String: Any] = [
+                "adapter": "lyte-control-peer",
+                "bindHost": sock.localHost,
+                "listenPort": Int(sock.localPort),
+                "hostStaticPublicKeyHex": Hex.string(hostStatic.publicKey),
+                "pin": pin,
+                "seconds": opts.seconds,
+                "sessions": opts.sessions,
+                "shape": shape,
+                "clipboardText": true,
+            ]
+            if let frames = corpusFrames {
+                body["corpusFrameCount"] = frames.count
+                body["emitCorpus"] = true
+                body["tonePacketCount"] = tonePacketCount
+            }
+            try writeMeta(metaOut, body: body)
+        }
+    }
+
+    /// Serves sessions one at a time. A session ends when the client
+    /// closes it, when no handshake completed 30 s after its first
+    /// datagram, or `seconds` after that datagram; then the peer waits
+    /// for the next message 1. A single-session run must see its
+    /// handshake within 30 s and fails the process when the session
+    /// fails; a multi-session run logs a failed session and keeps serving.
+    func run() throws {
+        let start = SystemMonotonicClock.nowNanoseconds
+        let handshakeDeadline: UInt64? =
+            sessions == 1 ? start + 30_000_000_000 : nil
+        var current: PeerSession?
+        var sessionDeadline: UInt64 = 0
+        var establishDeadline: UInt64 = 0
+        var served = 0
+        var failed = 0
+        print("noise: awaiting client handshake…")
+
+        while true {
+            let now = SystemMonotonicClock.nowNanoseconds
+            if let peer = current,
+               peer.closed || now >= sessionDeadline
+                || (!peer.established && now >= establishDeadline) {
+                current = nil
+                served += 1
+                switch peer.finish(now: now) {
+                case .pass(let line):
+                    print(line)
+                case .fail(let why):
+                    guard sessions != 1 else { throw PeerError.message(why) }
+                    failed += 1
+                    print("FAIL — session \(served): \(why)")
+                }
+                if peer.pairing.isBurned {
+                    throw PeerError.message(
+                        "PIN burned — restart the peer for a fresh PIN"
+                    )
+                }
+                if sessions != 0 && served >= sessions {
+                    if failed > 0 {
+                        throw PeerError.message(
+                            "\(failed) of \(served) sessions failed"
+                        )
+                    }
+                    return
+                }
+                print("noise: awaiting client handshake… (session \(served + 1))")
+                continue
+            }
+
+            if let packet = sock.recv() {
+                if current == nil {
+                    guard Session.looksLikeHandshakeInitiation(packet.bytes)
+                    else { continue }
+                    current = try PeerSession(
+                        latching: packet,
+                        sock: sock,
+                        hostStatic: hostStatic,
+                        pin: pin,
+                        corpusFrames: corpusFrames,
+                        now: now
+                    )
+                    sessionDeadline = now + UInt64(seconds * 1e9)
+                    establishDeadline = now + 30_000_000_000
+                }
+                current?.receive(packet, now: now)
+                continue
+            }
+
+            if let peer = current {
+                peer.tick(now: now)
+            } else if served == 0, let handshakeDeadline,
+                      now > handshakeDeadline {
+                throw PeerError.message("no handshake within 30s")
+            }
+            usleep(2_000)
         }
     }
 }
@@ -725,6 +848,6 @@ do {
     try peer.run()
     exit(0)
 } catch {
-    fputs("lyte-control-peer: \(error)\n", stderr)
+    FileHandle.standardError.write(Data("lyte-control-peer: \(error)\n".utf8))
     exit(1)
 }

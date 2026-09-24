@@ -64,4 +64,18 @@ final class HevcBitsTests: XCTestCase {
         XCTAssertEqual(HevcRbsp.unescaped([0, 0, 3]), [0, 0, 3])
         XCTAssertEqual(HevcRbsp.unescaped([0, 0, 3, 4]), [0, 0, 3, 4])
     }
+
+    /// The writer's range is exactly the reader's: the widest codes
+    /// round-trip rather than silently writing nothing.
+    func testExpGolombExtremesRoundTrip() {
+        var writer = HevcBitWriter()
+        writer.ue(UInt32.max - 1)
+        writer.se(Int32.max)
+        writer.se(-Int32.max)
+        writer.rbspTrailingBits()
+        var reader = HevcBitReader(rbsp: writer.rbsp)
+        XCTAssertEqual(reader.readUe(), UInt32.max - 1)
+        XCTAssertEqual(reader.readSe(), Int32.max)
+        XCTAssertEqual(reader.readSe(), -Int32.max)
+    }
 }

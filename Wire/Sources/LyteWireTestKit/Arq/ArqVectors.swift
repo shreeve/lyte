@@ -1,20 +1,23 @@
 // The ARQ frame vector-file model and loader: `Wire/Vectors/arq-v1.json`
-// — the W3 wire formats (data segment 0x07, ACK 0x08, and the
-// frame-sequence payload rule). Same doctrine as the other loaders:
-// TestKit may import Foundation, LyteWire may not.
+// (data segment 0x07, ACK 0x08, and the frame-sequence payload rule).
 
 import LyteCore
 import Foundation
 import LyteWire
 
 /// One vector file: `Wire/Vectors/arq-v1.json`.
-public struct ArqVectorFile: Codable, Sendable {
+public struct ArqVectorFile: FrozenVectorFile {
     public var format: String
     public var formatVersion: Int
     public var wireVersion: Int
     public var vectors: [ArqVector]
 
     public static let expectedFormat = "lyte-wire-arq-vectors"
+    public static let fileName = "arq-v1.json"
+
+    public var vectorNameGroups: [[String]] {
+        [vectors.map(\.name)]
+    }
 
     public init(
         format: String,
@@ -28,10 +31,6 @@ public struct ArqVectorFile: Codable, Sendable {
         self.vectors = vectors
     }
 
-    public static func load(from path: String) throws -> ArqVectorFile {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(ArqVectorFile.self, from: data)
-    }
 }
 
 /// One ARQ vector. `payloadHex` is a whole reliable-channel datagram
@@ -124,22 +123,6 @@ public struct ArqVector: Codable, Sendable {
         self.payloadHex = payloadHex
         self.frames = frames
         self.error = error
-    }
-}
-
-/// Stable names for `ArqFrameError` cases, as they appear in vectors.
-public func arqFrameErrorName(_ error: ArqFrameError) -> String {
-    switch error {
-    case .truncatedFrame: return "truncatedFrame"
-    case .unknownFrameType: return "unknownFrameType"
-    case .emptyPayload: return "emptyPayload"
-    case .zeroLengthSegmentBody: return "zeroLengthSegmentBody"
-    case .segmentBodyOverBudget: return "segmentBodyOverBudget"
-    case .zeroAckBlocks: return "zeroAckBlocks"
-    case .tooManyAckBlocks: return "tooManyAckBlocks"
-    case .ackBitmapTooLong: return "ackBitmapTooLong"
-    case .nonCanonicalAckBitmap: return "nonCanonicalAckBitmap"
-    case .payloadOverBudget: return "payloadOverBudget"
     }
 }
 

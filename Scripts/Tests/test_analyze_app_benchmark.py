@@ -70,7 +70,6 @@ def sample(workload, apple_drops, provenances):
             "latePacketsDropped": 0,
             "packetsUnrecoverable": 0,
             "underrunFrames": 0,
-            "declickProtectedUnderrunFrames": 0,
             "decodeFailures": 0,
             "routeChangeFailures": 0,
         },
@@ -207,6 +206,22 @@ class AnalyzerTests(unittest.TestCase):
             result["motion"]["firstJaggedBoundary"],
             "host_to_client_delivery")
 
+    def test_motion_without_transit_evidence_fails(self):
+        fixture = sample("motion", 0, ["freshCapture"] * 4)
+        for frame in fixture["frames"]:
+            frame.pop("transitStretchMilliseconds", None)
+        result = self.analyze(fixture)
+        self.assertIn(
+            "motion_transport_evidence_missing", result["failures"])
+
+    def test_motion_without_presentation_evidence_fails(self):
+        fixture = sample("motion", 0, ["freshCapture"] * 4)
+        for frame in fixture["frames"]:
+            frame.pop("scheduledPresentationMicroseconds", None)
+        result = self.analyze(fixture)
+        self.assertIn(
+            "motion_presentation_evidence_missing", result["failures"])
+
     def test_motion_client_presentation_jitter_is_first_boundary(self):
         fixture = sample("motion", 0, ["freshCapture"] * 4)
         fixture["frames"][-1]["presentationLatenessMilliseconds"] = 12.0
@@ -226,12 +241,11 @@ class AnalyzerTests(unittest.TestCase):
     def test_no_connection_and_audio_underrun_fail_loudly(self):
         fixture = sample("static", 0, ["freshCapture"])
         fixture["audio"]["underrunFrames"] = 48
-        fixture["audio"]["declickProtectedUnderrunFrames"] = 48
         result = self.analyze(fixture, ever_streaming=False)
         self.assertIn("no_connection", result["failures"])
         self.assertIn("audio_steady_state_late_or_plc", result["failures"])
 
-    def test_bounded_declicked_warmup_passes_when_steady_state_is_clean(self):
+    def test_bounded_warmup_passes_when_steady_state_is_clean(self):
         warmup = sample("static", 0, ["freshCapture"])
         warmup["elapsedSeconds"] = 2.0
         warmup["audio"]["packetsPlayed"] = 300
@@ -239,7 +253,6 @@ class AnalyzerTests(unittest.TestCase):
         warmup["audio"]["plcPacketsFed"] = 4
         warmup["audio"]["latePacketsDropped"] = 4
         warmup["audio"]["underrunFrames"] = 960
-        warmup["audio"]["declickProtectedUnderrunFrames"] = 960
         steady = json.loads(json.dumps(warmup))
         steady["elapsedSeconds"] = 30.0
         steady["audio"]["packetsPlayed"] = 5_000
@@ -277,12 +290,29 @@ class AnalyzerTests(unittest.TestCase):
         steady["audio"]["plcPacketsFed"] = 3
         steady["audio"]["latePacketsDropped"] = 3
         steady["audio"]["underrunFrames"] = 960
-        steady["audio"]["declickProtectedUnderrunFrames"] = 960
         result = self.analyze(steady, samples=[warmup, steady])
         self.assertEqual(result["verdict"], "PASS")
         self.assertEqual(
             result["audio"]["continuityClassification"],
             "bounded_path_tail_concealed",
+        )
+
+    def test_legacy_declick_counter_is_ignored(self):
+        # Older app builds also emitted declickProtectedUnderrunFrames.
+        # The verdict reads underrunFrames alone; only the raw final
+        # counters are echoed.
+        warmup = sample("static", 0, ["freshCapture"])
+        warmup["elapsedSeconds"] = 2.0
+        warmup["audio"]["declickProtectedUnderrunFrames"] = 0
+        steady = json.loads(json.dumps(warmup))
+        steady["elapsedSeconds"] = 30.0
+        steady["audio"]["packetsPlayed"] = 5_000
+        steady["audio"]["declickProtectedUnderrunFrames"] = 9_999
+        result = self.analyze(steady, samples=[warmup, steady])
+        self.assertEqual(result["verdict"], "PASS")
+        self.assertNotIn(
+            "declickProtectedUnderrunFrames",
+            json.dumps(result["audio"]["intervalAnalysis"]),
         )
 
     def test_idle_floor_static_quality_scores_native_pixels_over_time(self):
@@ -449,7 +479,6 @@ class AnalyzerTests(unittest.TestCase):
         steady["audio"]["plcInvocations"] = 20
         steady["audio"]["plcPacketsFed"] = 20
         steady["audio"]["underrunFrames"] = 15_070
-        steady["audio"]["declickProtectedUnderrunFrames"] = 15_070
         result = self.analyze(steady, samples=[warmup, steady])
         self.assertEqual(result["verdict"], "PASS")
         self.assertEqual(
@@ -463,7 +492,6 @@ class AnalyzerTests(unittest.TestCase):
         steady["audio"]["plcInvocations"] = 20
         steady["audio"]["plcPacketsFed"] = 20
         steady["audio"]["underrunFrames"] = 15_070
-        steady["audio"]["declickProtectedUnderrunFrames"] = 15_070
         result = self.analyze(steady, samples=[warmup, steady])
         self.assertIn("audio_steady_state_late_or_plc", result["failures"])
 
@@ -475,7 +503,6 @@ class AnalyzerTests(unittest.TestCase):
         steady["audio"]["plcPacketsFed"] = 20
         steady["audio"]["latePacketsDropped"] = 12
         steady["audio"]["underrunFrames"] = 15_070
-        steady["audio"]["declickProtectedUnderrunFrames"] = 15_070
         result = self.analyze(steady, samples=[warmup, steady])
         self.assertIn("audio_steady_state_late_or_plc", result["failures"])
 

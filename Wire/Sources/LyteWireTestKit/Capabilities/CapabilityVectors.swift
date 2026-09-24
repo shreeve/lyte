@@ -1,15 +1,13 @@
 // The capability vector-file model and loader:
-// `Wire/Vectors/capabilities-v1.json` — the W7 layer top to bottom:
-// the deterministic CBOR profile, the typed capability set, the
-// intersect algebra as data, and the CTRL message codecs 0x0F/0x11/
-// 0x12. Same doctrine as the other loaders: TestKit may import
-// Foundation, LyteWire may not.
+// `Wire/Vectors/capabilities-v1.json` — the deterministic CBOR profile,
+// the typed capability set, the intersect algebra, and the CTRL message
+// codecs 0x0F/0x11/0x12.
 
 import Foundation
 import LyteWire
 
 /// One vector file: `Wire/Vectors/capabilities-v1.json`.
-public struct CapabilityVectorFile: Codable, Sendable {
+public struct CapabilityVectorFile: FrozenVectorFile {
     public var format: String
     public var formatVersion: Int
     public var wireVersion: Int
@@ -19,6 +17,11 @@ public struct CapabilityVectorFile: Codable, Sendable {
     public var messageVectors: [CapabilityMessageVector]
 
     public static let expectedFormat = "lyte-wire-capability-vectors"
+    public static let fileName = "capabilities-v1.json"
+
+    public var vectorNameGroups: [[String]] {
+        [cborVectors.map(\.name), setVectors.map(\.name), intersectVectors.map(\.name), messageVectors.map(\.name)]
+    }
 
     public init(
         format: String,
@@ -38,12 +41,6 @@ public struct CapabilityVectorFile: Codable, Sendable {
         self.messageVectors = messageVectors
     }
 
-    public static func load(from path: String) throws -> CapabilityVectorFile {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(
-            CapabilityVectorFile.self, from: data
-        )
-    }
 }
 
 /// One CBOR-profile vector. `canonical`: `cborHex` must decode and
@@ -169,9 +166,8 @@ public struct CapabilitySetVector: Codable, Sendable {
     }
 }
 
-/// One intersect vector — the W-G8 algebra as frozen data: decoding
-/// `aHex` and `bHex` and intersecting IN BOTH ORDERS must produce
-/// exactly `agreedHex` (commutativity is pinned by construction).
+/// One intersect vector: decoding `aHex` and `bHex` and intersecting in
+/// both orders must produce exactly `agreedHex`.
 public struct CapabilityIntersectVector: Codable, Sendable {
     public var name: String
     public var description: String
@@ -231,48 +227,5 @@ public struct CapabilityMessageVector: Codable, Sendable {
         self.codec = codec
         self.messageHex = messageHex
         self.error = error
-    }
-}
-
-/// Stable names for `CborError` cases, as they appear in vectors.
-public func cborErrorName(_ error: CborError) -> String {
-    switch error {
-    case .truncatedItem: return "truncatedItem"
-    case .trailingBytes: return "trailingBytes"
-    case .unsupportedItem: return "unsupportedItem"
-    case .nonCanonicalArgument: return "nonCanonicalArgument"
-    case .misorderedMapKeys: return "misorderedMapKeys"
-    case .duplicateMapKey: return "duplicateMapKey"
-    case .invalidUtf8: return "invalidUtf8"
-    case .nestingTooDeep: return "nestingTooDeep"
-    }
-}
-
-/// Stable names for `CapabilityError` cases, as they appear in
-/// vectors.
-public func capabilityErrorName(_ error: CapabilityError) -> String {
-    switch error {
-    case .malformedCbor: return "malformedCbor"
-    case .notAMap: return "notAMap"
-    case .missingKey: return "missingKey"
-    case .wrongValueType: return "wrongValueType"
-    case .nonCanonicalIdList: return "nonCanonicalIdList"
-    case .datagramCeilingBelowFloor: return "datagramCeilingBelowFloor"
-    }
-}
-
-/// Stable names for `CapabilityMessageError` cases, as they appear in
-/// vectors.
-public func capabilityMessageErrorName(
-    _ error: CapabilityMessageError
-) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .unexpectedType: return "unexpectedType"
-    case .unknownStatus: return "unknownStatus"
-    case .messageOverBudget: return "messageOverBudget"
-    case .emptyUpdate: return "emptyUpdate"
-    case .nonIntegerParameterKey: return "nonIntegerParameterKey"
-    case .malformedBody: return "malformedBody"
     }
 }

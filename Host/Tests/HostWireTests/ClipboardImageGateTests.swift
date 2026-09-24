@@ -2,6 +2,7 @@ import XCTest
 import HostCore
 import HostSession
 import HostWire
+import HostWireTestKit
 import LyteCore
 import LyteWire
 import LyteWireTestKit
@@ -50,121 +51,31 @@ final class ClipboardImageGateTests: XCTestCase {
         return bytes
     }
 
-    // MARK: The client end (the BulkClient shape, grown the REAL
-    // Wire ClipboardImageChannel — both ends of this gate run the
-    // production lane logic)
+    // MARK: The client end (the REAL Wire ClipboardImageChannel — both
+    // ends of this gate run the production lane logic)
 
-    private struct ImageClient {
-        var noise: NoiseSession
-        var transport: NoiseTransport?
-        var ctrlSeq: UInt16 = 0
-        var bulkSeq: UInt16 = 0
-        var arq = ArqEndpoint<ClientClock>(channel: .ctrl)
-        var bulkArq = ArqEndpoint<ClientClock>(channel: .bulkTransfer)
-        let staticKeys: NoiseKeyPair
-
+    private struct ImageClient: PeerBackedClient {
+        var peer: SealedCtrlPeer<ClientClock>
         var channel = ClipboardImageChannel()
         var book = ClipboardSyncBook()
         var imageRng = SplitMix64(seed: 0xC11)
 
-        var received: [[UInt8]] = []
         /// Bulk messages the channel did NOT claim (the file lane's).
         var receivedBulk: [BulkMessage] = []
         /// The channel's non-send events, in order.
         var imageEvents: [ClipboardImageEvent] = []
 
-        init(hostStaticPublicKey: [UInt8]) throws {
-            staticKeys = NoiseKeyPair.generate()
-            noise = try NoiseSession(
-                role: .initiator,
-                staticKeys: staticKeys,
-                remoteStaticPublicKey: hostStaticPublicKey
-            )
-        }
-
-        mutating func message1Datagram(
-            clientMicros: UInt64
-        ) throws -> [UInt8] {
-            let message1 = try noise.writeMessage1()
-            return try datagram(
-                channel: .ctrl,
-                body: [CtrlMessageType.noiseHandshake1] + message1,
-                sealed: false, clientMicros: clientMicros
-            )
-        }
-
-        mutating func datagram(
-            channel: ChannelId, body: [UInt8], sealed: Bool,
-            clientMicros: UInt64
-        ) throws -> [UInt8] {
-            let seq: ChannelSeq
-            switch channel {
-            case .bulkTransfer:
-                seq = ChannelSeq(rawValue: bulkSeq)
-                bulkSeq &+= 1
-            default:
-                seq = ChannelSeq(rawValue: ctrlSeq)
-                ctrlSeq &+= 1
-            }
-            let envelope = Envelope(
-                channel: channel, seq: seq,
-                frame: FrameNumber(rawValue: 0),
-                timestamp: clientMicros, fec: 0
-            )
-            guard sealed else { return try envelope.encode(payload: body) }
-            let header = try envelope.encode(payload: [])
-            let payload = try transport!.seal(
-                plaintext: body[...], aad: header[...], envelope: envelope
-            )
-            return try envelope.encode(payload: payload)
+        var progressMark: Int {
+            peer.received.count + receivedBulk.count + imageEvents.count
         }
 
         mutating func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
-            let (envelope, payload) = try Envelope.decode(bytes)
-            if transport == nil {
-                XCTAssertEqual(envelope.channel, .ctrl)
-                XCTAssertEqual(
-                    payload.first, CtrlMessageType.noiseHandshake2
-                )
-                _ = try noise.readMessage2(payload.dropFirst())
-                transport = try noise.makeTransport()
-                return
-            }
-            guard envelope.channel == .ctrl
-                || envelope.channel == .bulkTransfer
-            else { return }
-            let aad = bytes[bytes.startIndex..<payload.startIndex]
-            let plaintext: [UInt8]
-            do {
-                plaintext = try transport!.unseal(
-                    wirePayload: payload, aad: aad, envelope: envelope
-                )
-            } catch NoiseError.replayedSequence, NoiseError.staleSequence {
-                return // network duplicate; routine
-            }
-            if envelope.channel == .bulkTransfer {
-                for event in bulkArq.ingest(
-                    payload: plaintext,
-                    now: ClientTimestamp(microseconds: nowMicros)
-                ) {
-                    if case .message(_, let bytes) = event {
-                        try consumeBulkStream(bytes, nowMicros: nowMicros)
-                    }
-                }
-                return
-            }
-            switch plaintext.first {
-            case CtrlMessageType.arqSegment, CtrlMessageType.arqAck:
-                for event in arq.ingest(
-                    payload: plaintext,
-                    now: ClientTimestamp(microseconds: nowMicros)
-                ) {
-                    if case .message(_, let bytes) = event {
-                        received.append(bytes)
-                    }
-                }
-            default:
-                break // beacons etc. — not this gate's business
+            guard case .reliable(let envelope, _, let events) =
+                    try peer.absorb(bytes, nowMicros: nowMicros),
+                  envelope.channel == .bulkTransfer
+            else { return } // CTRL lands in `received`; beacons etc. aside
+            for case .message(_, let bytes) in events {
+                try consumeBulkStream(bytes, nowMicros: nowMicros)
             }
         }
 
@@ -183,7 +94,7 @@ final class ClipboardImageGateTests: XCTestCase {
             let message = try BulkMessage.decode(bytes)
             if channel.claims(message) {
                 let events = channel.ingest(
-                    message, book: &book, sha256: Sha256.digest
+                    message, book: &book, hasher: { Sha256() }
                 )
                 try absorbChannelEvents(events, nowMicros: nowMicros)
                 return
@@ -196,10 +107,7 @@ final class ClipboardImageGateTests: XCTestCase {
         ) throws {
             for event in events {
                 if case .send(let bytes) = event {
-                    try bulkArq.send(
-                        message: bytes,
-                        now: ClientTimestamp(microseconds: nowMicros)
-                    )
+                    try peer.sendBulk(bytes, nowMicros: nowMicros)
                 } else {
                     imageEvents.append(event)
                 }
@@ -211,7 +119,7 @@ final class ClipboardImageGateTests: XCTestCase {
             _ data: [UInt8], nowMicros: UInt64
         ) throws {
             let events = channel.shareLocalImage(
-                data, sha256: Sha256.digest(data),
+                data, sha256: { Sha256.digest(data) },
                 book: &book, rng: &imageRng
             )
             try absorbChannelEvents(events, nowMicros: nowMicros)
@@ -221,116 +129,36 @@ final class ClipboardImageGateTests: XCTestCase {
         mutating func sendRaw(
             _ bytes: [UInt8], nowMicros: UInt64
         ) throws {
-            try bulkArq.send(
-                message: bytes,
-                now: ClientTimestamp(microseconds: nowMicros)
-            )
+            try peer.sendBulk(bytes, nowMicros: nowMicros)
         }
 
         mutating func takeImageEvents() -> [ClipboardImageEvent] {
             defer { imageEvents.removeAll() }
             return imageEvents
         }
-
-        mutating func pollOut(nowMicros: UInt64) throws -> [[UInt8]] {
-            var out: [[UInt8]] = []
-            let now = ClientTimestamp(microseconds: nowMicros)
-            let (ctrlPayloads, _) = arq.poll(now: now)
-            for payload in ctrlPayloads {
-                out.append(try datagram(
-                    channel: .ctrl, body: payload, sealed: true,
-                    clientMicros: nowMicros
-                ))
-            }
-            let (bulkPayloads, _) = bulkArq.poll(now: now)
-            for payload in bulkPayloads {
-                out.append(try datagram(
-                    channel: .bulkTransfer, body: payload, sealed: true,
-                    clientMicros: nowMicros
-                ))
-            }
-            return out
-        }
-    }
-
-    private final class DatagramBox {
-        var datagrams: [VideoChannelDatagram] = []
     }
 
     private func establish(
         hostCapabilities: Capabilities,
         clientCapabilities: Capabilities
-    ) throws -> (session: Session, client: ImageClient, box: DatagramBox) {
-        let hostStatic = NoiseKeyPair.generate()
-        let box = DatagramBox()
-        let session = Session(
+    ) throws -> (host: HostSessionHarness, client: ImageClient) {
+        let host = HostSessionHarness(
             config: SessionConfig(
-                crypto: .noise(hostStatic: hostStatic),
+                crypto: .noise(hostStatic: NoiseKeyPair.generate()),
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: 1 << 62,
                 capabilities: hostCapabilities
             ),
-            clientTuple: Self.tupleA,
-            now: 0,
-            rng: SplitMix64(seed: 0x0122),
-            send: { box.datagrams.append($0) }
+            tuple: Self.tupleA,
+            rng: SplitMix64(seed: 0x0122)
         )
-        var client = try ImageClient(
-            hostStaticPublicKey: hostStatic.publicKey)
-        _ = session.receive(
-            try client.message1Datagram(clientMicros: 500),
-            from: Self.tupleA, now: 0, hostMicroseconds: 0
-        )
-        XCTAssertEqual(session.phase, .established)
-        session.pump(now: 0)
-        var negotiator = CapabilityNegotiator(
-            role: .client, local: clientCapabilities
-        )
-        try client.arq.send(
-            message: try XCTUnwrap(negotiator.start()).encode(),
-            now: ClientTimestamp(microseconds: 1_000)
-        )
-        return (session, client, box)
-    }
-
-    /// Exchange passes 2 ms apart until both ends quiesce.
-    private func settle(
-        _ session: Session, _ client: inout ImageClient,
-        _ box: DatagramBox, forwarded: inout Int, t: inout UInt64,
-        onEvent: (SessionEvent) -> Void = { _ in }
-    ) throws {
-        var idle = 0
-        while idle < 3 {
-            t += 2_000
-            let before = (
-                forwarded, client.received.count,
-                client.receivedBulk.count, client.imageEvents.count
-            )
-            var events = session.advance(now: t * 1_000, hostMicroseconds: t)
-            session.pump(now: t * 1_000)
-            while forwarded < box.datagrams.count {
-                try client.absorb(box.datagrams[forwarded].bytes, nowMicros: t)
-                forwarded += 1
-            }
-            for datagram in try client.pollOut(nowMicros: t) {
-                events += session.receive(
-                    datagram, from: Self.tupleA,
-                    now: t * 1_000, hostMicroseconds: t
-                )
-                session.pump(now: t * 1_000)
-                while forwarded < box.datagrams.count {
-                    try client.absorb(
-                        box.datagrams[forwarded].bytes, nowMicros: t
-                    )
-                    forwarded += 1
-                }
-            }
-            for event in events { onEvent(event) }
-            idle = (
-                forwarded, client.received.count,
-                client.receivedBulk.count, client.imageEvents.count
-            ) == before ? idle + 1 : 0
-        }
+        var client = ImageClient(peer: try host.connectClient(
+            declaring: clientCapabilities,
+            openChannels: [.ctrl, .bulkTransfer]
+        ))
+        client.peer.bulkArq = ArqEndpoint(channel: .bulkTransfer)
+        XCTAssertEqual(host.session.phase, .established)
+        return (host, client)
     }
 
     private var imagesTier: Capabilities {
@@ -341,15 +169,15 @@ final class ClipboardImageGateTests: XCTestCase {
 
     func testImageGateNegotiatesWithoutFileConsent() throws {
         // Neither end accepts files (no key 11) — images still agree.
-        let (session, clientValue, box) = try establish(
+        let (host, clientValue) = try establish(
             hostCapabilities: imagesTier,
             clientCapabilities: imagesTier
         )
         var client = clientValue
-        var forwarded = 0
+        let session = host.session
         var t: UInt64 = 1_000
         var agreed: Capabilities?
-        try settle(session, &client, box, forwarded: &forwarded, t: &t) {
+        try host.settle(&client, t: &t) {
             if case .capabilitiesAgreed(let set) = $0 { agreed = set }
         }
         XCTAssertEqual(agreed?.clipboardImagesAgreed, true,
@@ -360,14 +188,14 @@ final class ClipboardImageGateTests: XCTestCase {
 
         // A text-only client degrades v2 to v1 — text agreed, images
         // not, and the host's image mouth stays silent.
-        let (session2, client2Value, box2) = try establish(
+        let (host2, client2Value) = try establish(
             hostCapabilities: imagesTier,
             clientCapabilities: .wireDefault.declaringClipboardText()
         )
         var client2 = client2Value
-        var forwarded2 = 0
+        let session2 = host2.session
         var t2: UInt64 = 1_000
-        try settle(session2, &client2, box2, forwarded: &forwarded2, t: &t2)
+        try host2.settle(&client2, t: &t2)
         XCTAssertTrue(session2.agreedClipboardText)
         XCTAssertFalse(session2.agreedClipboardImages)
         XCTAssertEqual(
@@ -377,21 +205,23 @@ final class ClipboardImageGateTests: XCTestCase {
             "an ungated session never narrates the host clipboard"
         )
 
-        print("P-1 gate (negotiation): images agreed 10∧12 with no "
-            + "key 11; text-only peer degrades to v1, host mouth silent")
+        print("""
+            P-1 gate (negotiation): images agreed 10∧12 with no \
+            key 11; text-only peer degrades to v1, host mouth silent
+            """)
     }
 
     // MARK: Leg 2 — both directions in vivo + the boomerang proofs
 
     func testGateImageRoundTripsBothDirectionsAndEchoesSuppress() throws {
-        let (session, clientValue, box) = try establish(
+        let (host, clientValue) = try establish(
             hostCapabilities: imagesTier,
             clientCapabilities: imagesTier
         )
         var client = clientValue
-        var forwarded = 0
+        let session = host.session
         var t: UInt64 = 1_000
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try host.settle(&client, t: &t)
         XCTAssertTrue(session.agreedClipboardImages)
 
         // Client → host: a 150 KiB "PNG" (3 chunks — the multi-chunk
@@ -399,7 +229,7 @@ final class ClipboardImageGateTests: XCTestCase {
         let clientImage = makePayload(count: 150_000, seed: 0xF00D)
         try client.shareImage(clientImage, nowMicros: t)
         var applied: [(data: [UInt8], mime: String)] = []
-        try settle(session, &client, box, forwarded: &forwarded, t: &t) {
+        try host.settle(&client, t: &t) {
             if case .clipboardImageReceived(let data, let mime) = $0 {
                 applied.append((data, mime))
             }
@@ -422,7 +252,7 @@ final class ClipboardImageGateTests: XCTestCase {
             clientImage, now: t * 1_000, hostMicroseconds: t
         )
         XCTAssertEqual(echo, [.clipboardImageSuppressed(.loopEcho)])
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try host.settle(&client, t: &t)
         XCTAssertTrue(client.takeImageEvents().isEmpty,
                       "an apply echo must not boomerang as a share")
 
@@ -436,7 +266,7 @@ final class ClipboardImageGateTests: XCTestCase {
         XCTAssertTrue(hostEvents.contains(
             .clipboardImageShareStarted(byteCount: hostImage.count)
         ))
-        try settle(session, &client, box, forwarded: &forwarded, t: &t) {
+        try host.settle(&client, t: &t) {
             hostEvents.append($0)
         }
         let clientApplies = client.takeImageEvents().compactMap {
@@ -464,12 +294,78 @@ final class ClipboardImageGateTests: XCTestCase {
         )
 
         // And both reliable sublayers drain to quiet.
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try host.settle(&client, t: &t)
         XCTAssertTrue(session.arqIsQuiescent)
 
-        print("P-1 gate (in vivo): client image → host byte-exact "
-            + "(\(clientImage.count) B, 3 chunks); host image → client "
-            + "byte-exact (\(hostImage.count) B); both echoes suppressed")
+        print("""
+            P-1 gate (in vivo): client image → host byte-exact \
+            (\(clientImage.count) B, 3 chunks); host image → client \
+            byte-exact (\(hostImage.count) B); both echoes suppressed
+            """)
+    }
+
+    // MARK: Leg 2b — a refused host copy is never hashed
+
+    func testHostCopyIsJudgedByTheDigestFreeGatesBeforeAnyHash() throws {
+        let (host, clientValue) = try establish(
+            hostCapabilities: imagesTier,
+            clientCapabilities: imagesTier
+        )
+        var client = clientValue
+        let session = host.session
+        var t: UInt64 = 1_000
+        try host.settle(&client, t: &t)
+        let noHash: () -> [UInt8] = {
+            XCTFail("a refused image must never be hashed")
+            return []
+        }
+
+        // Empty and over-ceiling copies settle without a digest.
+        XCTAssertEqual(
+            session.prejudgeHostClipboardImage(byteCount: 0, now: t * 1_000),
+            [.clipboardImageSuppressed(.emptyImage)])
+        let over = ClipboardImageWire.maxImageByteCount + 1
+        XCTAssertEqual(
+            session.prejudgeHostClipboardImage(byteCount: over, now: t * 1_000),
+            [.clipboardImageSuppressed(.overBudget(over))])
+
+        // A fitting copy leaves only the digest-keyed book: hash, then
+        // judge again under the lock.
+        let image = makePayload(count: 70_000, seed: 0xD16E)
+        XCTAssertNil(session.prejudgeHostClipboardImage(
+            byteCount: image.count, now: t * 1_000))
+        var hashes = 0
+        let started = session.noteHostClipboardImageChanged(
+            image, sha256: { hashes += 1; return Sha256.digest(image) },
+            now: t * 1_000, hostMicroseconds: t)
+        XCTAssertEqual(hashes, 1)
+        XCTAssertTrue(started.contains(
+            .clipboardImageShareStarted(byteCount: image.count)))
+
+        // While that share is in flight the lane is busy: the next copy
+        // is refused before its digest, in both entry points.
+        let next = makePayload(count: 1_000, seed: 0xB5)
+        XCTAssertEqual(
+            session.prejudgeHostClipboardImage(
+                byteCount: next.count, now: t * 1_000),
+            [.clipboardImageSuppressed(.sendBusy)])
+        XCTAssertEqual(
+            session.noteHostClipboardImageChanged(
+                next, sha256: noHash, now: t * 1_000, hostMicroseconds: t),
+            [.clipboardImageSuppressed(.sendBusy)])
+
+        // A session whose image gate is shut says nothing at all.
+        let (textOnly, textClientValue) = try establish(
+            hostCapabilities: imagesTier,
+            clientCapabilities: .wireDefault.declaringClipboardText()
+        )
+        var textClient = textClientValue
+        var t2: UInt64 = 1_000
+        try textOnly.settle(&textClient, t: &t2)
+        XCTAssertEqual(
+            textOnly.session.prejudgeHostClipboardImage(
+                byteCount: image.count, now: t2 * 1_000),
+            [])
     }
 
     // MARK: Leg 3 — rule 3: ungated 0x22 drops loud; the lanes'
@@ -479,16 +375,16 @@ final class ClipboardImageGateTests: XCTestCase {
         // A files-only pair: chan 8 is OPEN (key 11 agreed) but the
         // image dialect is not — the marker itself must draw the
         // typed drop, never reach the file machinery.
-        let (session, clientValue, box) = try establish(
+        let (host, clientValue) = try establish(
             hostCapabilities: .wireDefault.declaringClipboardText()
                 .declaringBulkTransfer(),
             clientCapabilities: .wireDefault.declaringClipboardText()
                 .declaringBulkTransfer()
         )
         var client = clientValue
-        var forwarded = 0
+        let session = host.session
         var t: UInt64 = 1_000
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try host.settle(&client, t: &t)
         XCTAssertTrue(session.agreedBulkTransfer)
         XCTAssertFalse(session.agreedClipboardImages)
 
@@ -497,7 +393,7 @@ final class ClipboardImageGateTests: XCTestCase {
         )
         try client.sendRaw(cargo.encode(), nowMicros: t)
         var refusals = 0
-        try settle(session, &client, box, forwarded: &forwarded, t: &t) {
+        try host.settle(&client, t: &t) {
             if case .dropped(.clipboardImagesNotNegotiated) = $0 {
                 refusals += 1
             }
@@ -506,14 +402,14 @@ final class ClipboardImageGateTests: XCTestCase {
 
         // The mirror: an images-only pair (NO key 11) — a bare file
         // offer on the open chan 8 is still ungated traffic.
-        let (session2, client2Value, box2) = try establish(
+        let (host2, client2Value) = try establish(
             hostCapabilities: imagesTier,
             clientCapabilities: imagesTier
         )
         var client2 = client2Value
-        var forwarded2 = 0
+        let session2 = host2.session
         var t2: UInt64 = 1_000
-        try settle(session2, &client2, box2, forwarded: &forwarded2, t: &t2)
+        try host2.settle(&client2, t: &t2)
         let fileOffer = try BulkOffer(
             transferId: 0xF11E, totalByteCount: 10,
             chunkByteCount: 4_096,
@@ -525,7 +421,7 @@ final class ClipboardImageGateTests: XCTestCase {
         )
         var fileRefusals = 0
         var surfaced = 0
-        try settle(session2, &client2, box2, forwarded: &forwarded2, t: &t2) {
+        try host2.settle(&client2, t: &t2) {
             if case .dropped(.bulkNotNegotiated) = $0 { fileRefusals += 1 }
             if case .bulkMessageReceived = $0 { surfaced += 1 }
         }
@@ -533,23 +429,25 @@ final class ClipboardImageGateTests: XCTestCase {
         XCTAssertEqual(surfaced, 0)
         XCTAssertEqual(session2.counters.bulkMessagesReceived, 0)
 
-        print("P-1 gate (rule 3): ungated 0x22 dropped loud; file "
-            + "offer on an images-only chan 8 dropped loud — the "
-            + "lanes' gates are independent")
+        print("""
+            P-1 gate (rule 3): ungated 0x22 dropped loud; file \
+            offer on an images-only chan 8 dropped loud — the \
+            lanes' gates are independent
+            """)
     }
 
     // MARK: Leg 4 — a foreign mime is typed weather, and the
     // trailing offer never leaks
 
     func testGateForeignMimeDeclinedAndOfferSwallowed() throws {
-        let (session, clientValue, box) = try establish(
+        let (host, clientValue) = try establish(
             hostCapabilities: imagesTier,
             clientCapabilities: imagesTier
         )
         var client = clientValue
-        var forwarded = 0
+        let session = host.session
         var t: UInt64 = 1_000
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try host.settle(&client, t: &t)
 
         // A v3 peer's better idea: JPEG XL cargo. The marker decodes
         // (future formats stay speakable) but v2 declines it, and the
@@ -570,7 +468,7 @@ final class ClipboardImageGateTests: XCTestCase {
         )
         var refused: [ClipboardImageRefuseReason] = []
         var surfaced = 0
-        try settle(session, &client, box, forwarded: &forwarded, t: &t) {
+        try host.settle(&client, t: &t) {
             if case .clipboardImageRefused(let reason) = $0 {
                 refused.append(reason)
             }
@@ -590,7 +488,9 @@ final class ClipboardImageGateTests: XCTestCase {
         )
         XCTAssertEqual(session.clipboardImageCounters.receivesRefused, 1)
 
-        print("P-1 gate (mime): image/jxl → abort(declined), offer "
-            + "swallowed, nothing leaked")
+        print("""
+            P-1 gate (mime): image/jxl → abort(declined), offer \
+            swallowed, nothing leaked
+            """)
     }
 }

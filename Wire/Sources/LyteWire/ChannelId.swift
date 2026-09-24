@@ -1,7 +1,5 @@
-// The channel registry (overview §2, core plan §2): channel numbers are wire
-// contract, delivery class and priority are the send-side policy every layer
-// above agrees on. Reserved numbers stay unroutable until a spec revision
-// assigns them.
+// The channel registry: channel numbers are wire contract; delivery class
+// and priority are the send-side policy every layer above agrees on.
 
 /// How a channel's datagrams reach the far side.
 public enum DeliveryClass: Equatable, Sendable {
@@ -14,16 +12,11 @@ public enum DeliveryClass: Equatable, Sendable {
     case reliableOneShotGroups
 }
 
-/// The unified send-priority order (overview §2, conflict 13; the bulk
-/// rung is the W10/F-2 ruling): CTRL/input > audio > fresh video >
-/// video tail + retransmits > ratchet refinement > feature channels >
-/// telemetry > bulk. Lower rank sends first. `refinement` has no
-/// channel of its own — it rides video-active and the pacer demotes it
-/// by content, not by channel number. `bulk` sits STRICTLY below
-/// telemetry: the 25–50 ms feedback reports feed the congestion
-/// estimator that prices the path for every media class, and a 100 MB
-/// transfer is infinitely patient where a stale report mis-prices
-/// audio and video (design record 20260728-053300 §1).
+/// The unified send-priority order; lower rank sends first.
+/// `refinement` has no channel of its own — it rides video-active and the
+/// pacer demotes it by content. `bulk` sits strictly below telemetry: the
+/// feedback reports price the path for every media class, and a bulk
+/// transfer is patient where a stale report mis-prices audio and video.
 public enum WirePriority: UInt8, Comparable, Sendable {
     case control = 0
     case audio = 1
@@ -59,12 +52,9 @@ public struct ChannelId: RawRepresentable, Hashable, Sendable {
     public static let feedback = ChannelId(rawValue: 3)
     /// Sparse idle frames and the final converged ratchet frame.
     public static let videoIdle = ChannelId(rawValue: 4)
-    /// The bulk-transfer channel (W10 / F-2): chunked, resumable,
-    /// backpressured blob transfer over its own ARQ ordered stream —
-    /// the first feature channel actually built. Send class `.bulk`,
-    /// the ladder's tail; later feature channels (9+) keep `.feature`
-    /// so small interactive feature messages never queue behind a
-    /// file.
+    /// Chunked, resumable blob transfer over its own ARQ ordered stream.
+    /// Send class `.bulk`; channels 9+ keep `.feature` so small interactive
+    /// messages never queue behind a file.
     public static let bulkTransfer = ChannelId(rawValue: 8)
 
     /// Feature channels (clipboard, files, printing) start at 8.
@@ -109,6 +99,23 @@ public struct ChannelId: RawRepresentable, Hashable, Sendable {
         case Self.bulkTransfer.rawValue: return .bulk
         case Self.firstFeatureChannel...: return .feature
         default: return nil
+        }
+    }
+}
+
+extension ChannelId: CustomStringConvertible {
+    /// The registry name, for logs and dissectors: `ctrl`, `audio`,
+    /// `video-active`, `feedback`, `video-idle`, `reserved` (5–7),
+    /// `bulk-transfer` (8), and `feature` for the rest of 9…255.
+    public var description: String {
+        switch self {
+        case .ctrl: return "ctrl"
+        case .audio: return "audio"
+        case .videoActive: return "video-active"
+        case .feedback: return "feedback"
+        case .videoIdle: return "video-idle"
+        case .bulkTransfer: return "bulk-transfer"
+        default: return isReserved ? "reserved" : "feature"
         }
     }
 }

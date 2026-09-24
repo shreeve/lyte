@@ -1,64 +1,61 @@
-// Clipboard image sync (P-1, clipboard v2 — the H3 F-6 sketch
-// inherited whole by the H4 plan's wave 2; plan retired to git
-// history): image blobs ride as BULK-CHANNEL CARGO — F-2's engines,
-// verbatim — marked by one small message so the two kinds of cargo
-// (file drops, clipboard images) never confuse each other.
+// Clipboard image sync: image blobs ride as BULK-CHANNEL CARGO through
+// the bulk engines, marked so file drops and clipboard images never
+// confuse each other.
 //
-// THE CARGO MARKER — ClipboardImageCargo (0x22), direction-neutral,
-// riding chan 8's ARQ ordered stream immediately BEFORE its transfer's
-// BulkOffer. The ordered stream is the whole trick: the marker can
-// never arrive after its offer, so routing is race-free by carriage,
-// not by timing. The marker carries the transfer's MIME (the v1 design
-// doc's promised "lazy/on-demand transfer with MIME negotiation"
-// arrives here as its eager v2 subset): v2 pins image/png; a foreign
-// mime draws abort(declined) — typed, counted, never a trap — and a
-// future format is a new mime string, zero new wire bytes.
+// ClipboardImageCargo (0x22), direction-neutral, rides chan 8's ARQ
+// ordered stream immediately BEFORE its transfer's BulkOffer, so routing
+// is race-free by carriage, not timing. The marker carries the MIME: only
+// image/png is accepted; a foreign mime draws abort(declined), and a
+// future format is a new mime string with no new wire bytes.
 //
-// CAPABILITY CARRIAGE — the W7 forward-compat spine, fourth verse:
-// key 12 (CapabilityKey.clipboardImages, bool) rides the declaration
-// through `Capabilities.unknownEntries` as one canonical `0C F5` map
-// entry and survives intersection only on mutual byte-equal
-// declaration. ZERO frozen bytes move. Images move only when keys 10
-// AND 12 both survived — the feature (clipboard) and the dialect
-// (image cargo). Key 11 is deliberately NOT in the gate: F-2 pinned
-// key 11's declaration as the STANDING FILE-DROP CONSENT, and the
-// Off / Text only / Text + images tier (clipboard design §6) must not
-// couple image sync to file consent — an images-tier end speaks the
-// chan-8 bulk vocabulary for clipboard cargo whenever key 12 agreed,
-// key 11 or no. Declaration follows the tier: a text-only HOST
-// truthfully never declares key 12 (the --clipboard/key-10
-// precedent — declaration follows the armed leaf).
+// Gated by keys 10 AND 12 (see CapabilityKey.clipboardImages); key 11
+// (file-drop consent) is deliberately not part of the gate.
 //
-// LANE DISCIPLINE — one transfer at a time per direction PER LANE
-// (file lane, clipboard lane), each lane single-transfer by
-// construction exactly as F-2 ruled; the marker's id-routing is the
-// "multiplexing is a v2 conversation the id-carrying vocabulary is
-// already shaped for" evolution the F-2 record named. A second cargo
-// while the clipboard lane is busy draws abort(busy). Receiver memory
-// stays bounded by construction: the file lane by its disk-backed
-// window, the clipboard lane by the 32 MiB ceiling.
+// One transfer at a time per direction PER LANE (file lane, clipboard
+// lane); a second cargo while the clipboard lane is busy draws
+// abort(busy). Receiver memory is bounded: the file lane by its
+// disk-backed window, the clipboard lane by the 32 MiB ceiling.
 //
-// SANS-IO, the house shape: the channel has no clocks and no hashing
-// (the F-2 doctrine — the ENDS hash; digests arrive as injected
-// closures), randomness only at id mint (injected generator), and the
-// blob lives in memory (a clipboard image is ceiling-bounded cargo,
-// not a file — no disk, no resume book; a torn session just drops the
-// image and a re-copy re-syncs).
+// Sans-IO: no clocks, digests and hashers are injected, randomness only
+// at id mint, and the blob lives in memory (no disk, no resume; a torn
+// session drops the image and a re-copy re-syncs). A local copy is hashed
+// only after the digest-free gates (empty → lane busy → ceiling) pass,
+// and an incoming image feeds an incremental hasher chunk by chunk, so no
+// single step hashes a whole 32 MiB blob.
 
-/// The clipboard-image layer's fixed numbers (wire v2 of the
-/// clipboard feature; wire MAJOR unchanged).
+import LyteCore
+
+/// An incremental digest the embedding end supplies for incoming
+/// images — SHA-256, whose digest the offer carries.
+public protocol ClipboardImageHasher: Sendable {
+    /// Feeds the next bytes of the blob, in blob order.
+    mutating func absorb(_ bytes: ArraySlice<UInt8>)
+    /// The digest of everything absorbed. Called once.
+    mutating func finish() -> [UInt8]
+}
+
+extension Sha256: ClipboardImageHasher {
+    public mutating func absorb(_ bytes: ArraySlice<UInt8>) {
+        update(bytes)
+    }
+
+    public mutating func finish() -> [UInt8] {
+        finalized()
+    }
+}
+
+/// The clipboard-image layer's fixed numbers.
 public enum ClipboardImageWire {
-    /// The one v2 cargo format. Lowercase canonical; comparison is
+    /// The one cargo format. Lowercase canonical; comparison is
     /// case-insensitive (mime types compare that way).
     public static let pngMime = "image/png"
-    /// Every mime this build can carry, lowercase. v2 pins PNG only;
-    /// formats append here (and at the leaves) with zero wire change.
+    /// Every mime this build can carry, lowercase. Formats append here
+    /// (and at the leaves) with zero wire change.
     public static let acceptedMimes = [pngMime]
-    /// The v2 image ceiling: 32 MiB — comfortable for 4K screenshot
-    /// PNGs, and the clipboard lane's receiver-memory bound (the blob
-    /// assembles in memory by design). Over-ceiling LOCAL copies are
-    /// suppressed and counted, never sent (the text-ceiling rule);
-    /// over-ceiling OFFERS draw abort(declined).
+    /// The image ceiling: 32 MiB, the clipboard lane's receiver-memory
+    /// bound (the blob assembles in memory). Over-ceiling LOCAL copies
+    /// are suppressed and counted, never sent; over-ceiling OFFERS draw
+    /// abort(declined).
     public static let maxImageByteCount = 33_554_432
     /// Chunk geometry for clipboard cargo: the bulk default (64 KiB).
     public static let chunkByteCount = UInt32(BulkWire.defaultChunkByteCount)
@@ -82,43 +79,21 @@ public enum ClipboardImageWire {
 // MARK: - The capability spine helpers (key 12)
 
 extension Capabilities {
-    /// The key-12 entry as it rides the wire: CBOR bool under
-    /// unsigned key 12 (`0C F5` inside the map) — one canonical byte
-    /// image is what makes the intersection's byte-equal rule an
-    /// exact AND.
-    private static var clipboardImagesEntry: CborMapEntry {
-        CborMapEntry(
-            key: .unsigned(CapabilityKey.clipboardImages),
-            value: .bool(true)
-        )
-    }
-
-    /// True when this set (a declaration or an agreed intersection)
-    /// carries `clipboardImages: true`. On a v1 build the key lives
-    /// in `unknownEntries` — which is exactly what makes it survive
-    /// intersection only on mutual declaration. A `false` or
-    /// wrongly-typed value reads as absent: absence and refusal are
-    /// the same posture ("not supported"), per the spine's rule 3.
+    /// True when this set carries `clipboardImages: true` (key 12) — see
+    /// `declaresFlag(_:)`.
     public var clipboardImages: Bool {
-        unknownEntries.contains(Self.clipboardImagesEntry)
+        declaresFlag(CapabilityKey.clipboardImages)
     }
 
-    /// A copy of this set declaring clipboard-image support.
-    /// Idempotent; the CBOR encoder owns canonical key order, so the
-    /// entry may append here regardless of surrounding keys.
+    /// A copy of this set declaring `clipboardImages`.
     public func declaringClipboardImages() -> Capabilities {
-        guard !clipboardImages else { return self }
-        var declared = self
-        declared.unknownEntries.append(Self.clipboardImagesEntry)
-        return declared
+        declaringFlag(CapabilityKey.clipboardImages)
     }
 
-    /// The full image gate: feature (10) ∧ dialect (12) — images
-    /// move only when BOTH survived intersection. Key 11 (the
-    /// standing file-drop consent, F-2 §6) is deliberately absent:
-    /// the consent tier must not couple image sync to file consent.
-    /// An end with this gate true runs chan-8 bulk machinery for
-    /// clipboard cargo regardless of key 11.
+    /// The full image gate: keys 10 ∧ 12 both survived intersection.
+    /// Key 11 (file-drop consent) is deliberately absent; an end with
+    /// this gate true runs chan-8 bulk machinery for clipboard cargo
+    /// regardless of key 11.
     public var clipboardImagesAgreed: Bool {
         clipboardText && clipboardImages
     }
@@ -193,9 +168,7 @@ public struct ClipboardImageCargo: Hashable, Sendable {
             throw ClipboardImageCargoError.trailingBytes
         }
         let mimeSlice = payload[mimeStart..<mimeStart + mimeLen]
-        let mime = String(decoding: mimeSlice, as: UTF8.self)
-        guard mime.utf8.count == mimeSlice.count,
-              mime.utf8.elementsEqual(mimeSlice) else {
+        guard let mime = String(validating: mimeSlice, as: UTF8.self) else {
             throw ClipboardImageCargoError.invalidUtf8
         }
         return try ClipboardImageCargo(transferId: transferId, mime: mime)
@@ -216,32 +189,31 @@ public enum ClipboardImageCargoError: Error, Hashable, Sendable {
     case trailingBytes
     /// transferId 0 — always some layer's zero-fill bug.
     case zeroTransferId
-    /// A mime-less marker is unroutable — v2 requires the format.
+    /// A mime-less marker is unroutable.
     case emptyMime
     /// A mime over 255 UTF-8 bytes (construction-side; the u8 length
     /// fixes the wire bound).
     case mimeOverBudget(Int)
-    /// Mime bytes that are not valid UTF-8 (detected by byte-exact
-    /// re-encode, the CBOR text rule).
+    /// Mime bytes that are not valid UTF-8.
     case invalidUtf8
 }
 
 // MARK: - The channel (both ends embed one)
 
-/// Why a local image copy did not become cargo (routine weather,
-/// counted, never an error — the text-suppression rule).
+/// Why a local image copy did not become cargo (counted, never an
+/// error).
 public enum ClipboardImageSuppressReason: Hashable, Sendable {
     /// The OS reporting our own remote apply back — the sync book's
     /// boomerang stop.
     case loopEcho
     /// Identical to the last image we shared — the peer holds it.
     case duplicate
-    /// Past the 32 MiB v2 ceiling (byte count attached).
+    /// Past the 32 MiB ceiling (byte count attached).
     case overBudget(Int)
     /// A zero-byte read — some leaf's bug, kept loud in the counter.
     case emptyImage
-    /// The clipboard send lane already carries a transfer — v2 syncs
-    /// latest-wins clipboards, so the superseded copy just drops.
+    /// The clipboard send lane already carries a transfer; clipboards
+    /// sync latest-wins, so the superseded copy just drops.
     case sendBusy
 }
 
@@ -250,7 +222,7 @@ public enum ClipboardImageSuppressReason: Hashable, Sendable {
 public enum ClipboardImageRefuseReason: Hashable, Sendable {
     /// A mime this build cannot carry — abort(declined).
     case unsupportedMime(String)
-    /// The offer's byte count is past the v2 ceiling —
+    /// The offer's byte count is past the ceiling —
     /// abort(declined). Enforced against the OFFER, never trusted.
     case overBudget(UInt64)
     /// The clipboard receive lane already carries a transfer —
@@ -260,8 +232,8 @@ public enum ClipboardImageRefuseReason: Hashable, Sendable {
 
 /// Everything the channel surfaces to its embedding session core.
 /// `.send` is the one that moves bytes — chan 8's ordered stream;
-/// the rest is evidence. Payload bytes appear ONLY in `.applyImage`
-/// (the landing) — never in logs, per the CL-15 rule.
+/// the rest is evidence. Payload bytes appear ONLY in `.applyImage`,
+/// never in logs.
 public enum ClipboardImageEvent: Hashable, Sendable {
     /// Put these bytes on chan 8's ARQ ordered stream.
     case send([UInt8])
@@ -299,13 +271,13 @@ public struct ClipboardImageChannelCounters: Hashable, Sendable {
 }
 
 /// The clipboard-image lane, sans-IO — one per session core, both
-/// ends, driving F-2's engines with memory-backed cargo. The
+/// ends, driving the bulk engines with memory-backed cargo. The
 /// embedding core owes it: the negotiation gate (keys 10 ∧ 12)
 /// and the consent tier BEFORE calling in, hashing via the injected
 /// closures, and the OS clipboard IO on `.applyImage`. The channel
 /// owns: the marker handshake, the ceiling, mime policy, lane
-/// occupancy, and the sync-book interplay (via the caller's book —
-/// ONE book serves text and images, Clipboard.swift's rule).
+/// occupancy, and the sync-book interplay (via the caller's book,
+/// which serves text and images alike).
 public struct ClipboardImageChannel: Sendable {
     public private(set) var counters = ClipboardImageChannelCounters()
 
@@ -323,6 +295,12 @@ public struct ClipboardImageChannel: Sendable {
     private var receiveEngine: BulkReceiveEngine?
     private var receiveMime = ""
     private var receiveBuffer: [UInt8] = []
+    /// The incoming image's hasher and the chunks it has not absorbed
+    /// yet because an earlier one is still missing; `absorbedChunks`
+    /// counts the contiguous prefix already fed. Nil outside a transfer.
+    private var receiveHasher: (any ClipboardImageHasher)?
+    private var absorbedChunks: UInt64 = 0
+    private var storedAhead: Set<UInt64> = []
     /// Ids whose cargo was refused — the following offer (already in
     /// flight on the ordered stream when the abort left) is claimed
     /// and swallowed rather than leaking to the file lane.
@@ -349,22 +327,45 @@ public struct ClipboardImageChannel: Sendable {
 
     // MARK: The send lane
 
+    /// The digest-free gates for a local copy, in order: empty → lane
+    /// busy → ceiling. Returns the counted suppression when one refuses,
+    /// or nil when only the digest-keyed sync book remains — so a shell
+    /// can refuse an image without hashing it, and hash outside its lock.
+    public mutating func refuseLocalImageBeforeDigest(
+        byteCount: Int
+    ) -> [ClipboardImageEvent]? {
+        let reason: ClipboardImageSuppressReason
+        if byteCount == 0 {
+            reason = .emptyImage
+        } else if isSendActive {
+            reason = .sendBusy
+        } else if byteCount > imageByteCeiling {
+            reason = .overBudget(byteCount)
+        } else {
+            return nil
+        }
+        counters.sharesSuppressed += 1
+        return [.suppressed(reason)]
+    }
+
     /// One local image copy, already past the caller's negotiation
-    /// and consent-tier gates. `sha256` is the caller's digest of
-    /// `data` (the ends hash — the F-2 doctrine). Gate order mirrors
-    /// the text path: book → lane → ceiling.
+    /// and consent-tier gates. Gate order: empty → lane busy → ceiling,
+    /// then `sha256` (the caller's digest of `data`, computed only when
+    /// those gates pass), then the sync book.
     public mutating func shareLocalImage(
         _ data: [UInt8],
-        sha256: [UInt8],
+        sha256: () -> [UInt8],
         book: inout ClipboardSyncBook,
         rng: inout some RandomNumberGenerator
     ) -> [ClipboardImageEvent] {
-        guard !data.isEmpty else {
-            counters.sharesSuppressed += 1
-            return [.suppressed(.emptyImage)]
+        if let refused = refuseLocalImageBeforeDigest(byteCount: data.count) {
+            return refused
         }
-        sendBookKey = ClipboardImageWire.bookKey(sha256: sha256)
-        switch book.admitLocalChange(bytes: sendBookKey) {
+        let sha256 = sha256()
+        // The in-flight share owns `sendBookKey` until it finishes; a
+        // copy refused below must not overwrite it.
+        let bookKey = ClipboardImageWire.bookKey(sha256: sha256)
+        switch book.admitLocalChange(bytes: bookKey) {
         case .suppressEcho:
             counters.sharesSuppressed += 1
             return [.suppressed(.loopEcho)]
@@ -373,14 +374,6 @@ public struct ClipboardImageChannel: Sendable {
             return [.suppressed(.duplicate)]
         case .share:
             break
-        }
-        guard !isSendActive else {
-            counters.sharesSuppressed += 1
-            return [.suppressed(.sendBusy)]
-        }
-        guard data.count <= imageByteCeiling else {
-            counters.sharesSuppressed += 1
-            return [.suppressed(.overBudget(data.count))]
         }
         let transferId = BulkTransferId.mint(using: &rng)
         guard
@@ -402,6 +395,7 @@ public struct ClipboardImageChannel: Sendable {
             return [.suppressed(.emptyImage)]
         }
         sendBlob = data
+        sendBookKey = bookKey
         var engine = BulkSendEngine(offer: offer)
         // begin() throws only on a re-begin; this engine is fresh.
         let beginActions = (try? engine.begin()) ?? []
@@ -476,13 +470,14 @@ public struct ClipboardImageChannel: Sendable {
         return false
     }
 
-    /// One claimed bulk message into whichever lane owns it. `sha256`
-    /// digests the assembled blob at the receive lane's finish line
-    /// (the ends hash).
+    /// One claimed bulk message into whichever lane owns it. An admitted
+    /// incoming image feeds a hasher from `makeHasher` chunk by chunk as
+    /// its prefix assembles, so verification never hashes the whole blob
+    /// in one step.
     public mutating func ingest(
         _ message: BulkMessage,
         book: inout ClipboardSyncBook,
-        sha256: ([UInt8]) -> [UInt8]
+        hasher makeHasher: () -> any ClipboardImageHasher
     ) -> [ClipboardImageEvent] {
         let id = message.transferId
         if let engine = sendEngine, engine.offer.transferId == id {
@@ -494,7 +489,7 @@ public struct ClipboardImageChannel: Sendable {
                 // Ordered carriage makes anything between marker and
                 // offer a peer bug — the typed violation answer.
                 pendingIntent = nil
-                refusedIds.insert(id)
+                rememberRefused(id)
                 var events: [ClipboardImageEvent] = [
                     .violated(.unexpectedMessage(
                         type: message.encode().first ?? 0
@@ -509,12 +504,12 @@ public struct ClipboardImageChannel: Sendable {
                 }
                 return events
             }
-            return admitOffer(offer, mime: intent.mime, sha256: sha256,
-                              book: &book)
+            return admitOffer(offer, mime: intent.mime,
+                              makeHasher: makeHasher, book: &book)
         }
         if receiveEngine?.offer?.transferId == id {
             let actions = receiveEngine!.ingest(message)
-            return pumpReceive(actions, sha256: sha256, book: &book)
+            return pumpReceive(actions, makeHasher: makeHasher, book: &book)
         }
         // A refused id's trailing messages (the offer racing our
         // abort) — swallowed, the lane already spoke. The offer is
@@ -582,7 +577,7 @@ public struct ClipboardImageChannel: Sendable {
 
     private mutating func admitOffer(
         _ offer: BulkOffer, mime: String,
-        sha256: ([UInt8]) -> [UInt8],
+        makeHasher: () -> any ClipboardImageHasher,
         book: inout ClipboardSyncBook
     ) -> [ClipboardImageEvent] {
         pendingIntent = nil
@@ -602,6 +597,9 @@ public struct ClipboardImageChannel: Sendable {
         receiveBuffer = [UInt8](
             repeating: 0, count: Int(offer.totalByteCount)
         )
+        absorbedChunks = 0
+        storedAhead = []
+        receiveHasher = makeHasher()
         var engine = BulkReceiveEngine()
         var actions = engine.ingest(.offer(offer))
         // The marker's admission WAS the consent verdict — the offer
@@ -611,12 +609,12 @@ public struct ClipboardImageChannel: Sendable {
             actions = (try? engine.accept()) ?? []
         }
         receiveEngine = engine
-        return pumpReceive(actions, sha256: sha256, book: &book)
+        return pumpReceive(actions, makeHasher: makeHasher, book: &book)
     }
 
     private mutating func pumpReceive(
         _ actions: [BulkReceiveEngine.Action],
-        sha256: ([UInt8]) -> [UInt8],
+        makeHasher: () -> any ClipboardImageHasher,
         book: inout ClipboardSyncBook
     ) -> [ClipboardImageEvent] {
         var events: [ClipboardImageEvent] = []
@@ -635,12 +633,13 @@ public struct ClipboardImageChannel: Sendable {
                 receiveBuffer.replaceSubrange(
                     offset..<offset + data.count, with: data
                 )
+                absorbStoredPrefix(stored: index, offer: offer)
                 let more = (try? receiveEngine!.chunkStored(
                     index: index
                 )) ?? []
                 queue.append(contentsOf: more)
             case .verify:
-                let digest = sha256(receiveBuffer)
+                let digest = finishReceiveDigest(makeHasher)
                 let more = (try? receiveEngine!.verificationResult(
                     digest: digest
                 )) ?? []
@@ -656,10 +655,10 @@ public struct ClipboardImageChannel: Sendable {
                 events.append(.applyImage(
                     data: receiveBuffer, mime: receiveMime
                 ))
-                receiveBuffer = []
+                resetReceiveBuffer()
             case .aborted(let reason, let byRemote):
                 counters.receivesAborted += 1
-                receiveBuffer = []
+                resetReceiveBuffer()
                 events.append(.receiveAborted(
                     reason: reason, byRemote: byRemote
                 ))
@@ -670,15 +669,65 @@ public struct ClipboardImageChannel: Sendable {
         return events
     }
 
+    /// Feeds the hasher every stored chunk that extends the contiguous
+    /// prefix. Chunks normally arrive in order (one ordered stream), so
+    /// each store absorbs exactly its own bytes.
+    private mutating func absorbStoredPrefix(
+        stored index: UInt64, offer: BulkOffer
+    ) {
+        guard receiveHasher != nil else { return }
+        storedAhead.insert(index)
+        while storedAhead.remove(absorbedChunks) != nil {
+            guard let byteCount = offer.byteCount(ofChunk: absorbedChunks)
+            else { break }
+            let offset = Int(absorbedChunks) * Int(offer.chunkByteCount)
+            receiveHasher!.absorb(
+                receiveBuffer[offset..<offset + byteCount])
+            absorbedChunks += 1
+        }
+    }
+
+    /// The assembled image's digest: every chunk is stored by now, so
+    /// the admitted hasher's prefix is the whole blob.
+    private mutating func finishReceiveDigest(
+        _ makeHasher: () -> any ClipboardImageHasher
+    ) -> [UInt8] {
+        if var hasher = receiveHasher {
+            receiveHasher = nil
+            return hasher.finish()
+        }
+        // Unreachable: admission always installs the hasher. Kept total
+        // rather than trapping on a lane-state bug.
+        var hasher = makeHasher()
+        hasher.absorb(receiveBuffer[...])
+        return hasher.finish()
+    }
+
+    private mutating func resetReceiveBuffer() {
+        receiveBuffer = []
+        receiveHasher = nil
+        absorbedChunks = 0
+        storedAhead = []
+    }
+
+
+    /// The refused set is bounded: entries retire when their offer
+    /// trails through `ingest`, and a hostile flood of markers is capped
+    /// rather than remembered.
+    private mutating func rememberRefused(_ transferId: UInt64) {
+        if refusedIds.count >= Self.maxRememberedRefusals {
+            refusedIds.removeAll()
+        }
+        refusedIds.insert(transferId)
+    }
+
+    static let maxRememberedRefusals = 32
+
     private mutating func refusal(
         _ why: ClipboardImageRefuseReason,
         transferId: UInt64, reason: BulkAbortReason
     ) -> [ClipboardImageEvent] {
-        // The refused set is bounded: entries retire when their offer
-        // trails through `ingest`, and a hostile flood of markers is
-        // capped rather than remembered.
-        if refusedIds.count > 32 { refusedIds.removeAll() }
-        refusedIds.insert(transferId)
+        rememberRefused(transferId)
         var events: [ClipboardImageEvent] = [.refused(why)]
         if let abort = try? BulkAbort(
             transferId: transferId, reason: reason

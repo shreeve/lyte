@@ -1,18 +1,11 @@
-// The deterministic bulk-transfer replay harness — the ONE driving
-// loop `lyte-wire-vectorgen bulk` (authoring the transfer vectors)
-// and the test suite (replaying them frozen) share, so the vectors
-// mean exactly one thing. Auto-consent, synchronous storage, honest
-// digests: every `.readChunk` is answered immediately from the
-// payload, every `.store` is persisted and confirmed immediately,
-// and `.verify` digests the chunks ACTUALLY stored (so a corrupted
-// store would fail the sha-exact bar, not slide through).
-//
-// Sessions model teardown/reconnect: fresh engines every session,
-// possession and the resume book persisting across them (exactly the
-// ends' obligation, design record 20260728-053300 §5), and
-// `receiverIngestLimit` cutting delivery mid-flight — with in-order
-// ARQ carriage, a blackout means the receiver saw a prefix of the
-// sender's emissions, which is precisely what the cap expresses.
+// The deterministic bulk-transfer replay harness shared by
+// `lyte-wire-vectorgen bulk` (authoring) and the tests (replaying), so the
+// vectors mean one thing. Auto-consent and synchronous storage: every
+// `.readChunk` and `.store` is answered immediately, and `.verify` digests
+// the chunks actually stored. Each session gets fresh engines while
+// possession and the resume book persist; `receiverIngestLimit` cuts
+// delivery mid-flight (with in-order ARQ, a blackout leaves the receiver a
+// prefix of the sender's emissions).
 
 import LyteCore
 import LyteWire

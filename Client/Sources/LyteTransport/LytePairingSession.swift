@@ -1,23 +1,9 @@
-// LytePairingSession (CL-6): the whole client pairing flow as one
-// blocking call — the shell around PairingInitiatorService that the CLI
-// (`wire-pair`) and the app's pairing sheet both drive. Assembles the
-// exact production stack the probe modeled and CL-7 landed:
+// The client pairing flow as one blocking call (CLI and app sheet): Noise
+// IK with the persistent client static, then PairingInitiatorService over
+// the sealed ordered CTRL stream, echoing beacons meanwhile.
 //
-//   Noise IK (NoiseTransportCrypto, PERSISTENT client static)
-//     → UdpReceiveEndpoint (bind, handshake, receive thread)
-//     → ReliableCtrlEndpoint (the ARQ carriage — pairing messages ride
-//       the sealed ordered CTRL stream, exactly-once, in order)
-//     → PairingInitiatorService (share A → share B/Tb → confirm)
-//
-// plus beacon echoes while connected (the host's clock stays honest
-// during the run) — video datagrams from a `--pair` host that is also
-// streaming are counted by the demux and otherwise ignored.
-//
-// "Paired" is only reported once the confirm's ARQ segment is
-// acknowledged (reliable endpoint quiescent): the host really consumed
-// the message that completes ITS side, so both keystores can move
-// together. Persistence is the caller's move on `.paired` — this file
-// touches neither the Keychain nor the pinned-host store.
+// "Paired" is reported only once the confirm is acknowledged, so both
+// keystores move together. Persistence is the caller's job.
 
 import LyteIO
 import Dispatch
@@ -25,25 +11,19 @@ import Foundation
 import LyteWire
 
 public enum LytePairing {
-    /// Everything one pairing run needs. The host key comes from the
-    /// host's console banner (or a prior pin) — the TXT record only
-    /// carries its hash; `LyteDiscovery.publicKeyHash` validates a
-    /// pasted key against an advertisement before dialing.
+    /// Everything one pairing run needs.
     public struct Config: Sendable {
         public var hostAddress: String
         public var hostPort: UInt16
-        /// The host's 32-byte Noise static — dialed trust-on-first-use;
-        /// pairing's confirmation is what earns it the pin.
+        /// The host's 32-byte Noise static, dialed trust-on-first-use.
         public var hostStaticPublicKey: [UInt8]
         /// The PIN shown on the host's console, as typed.
         public var pin: String
-        /// The client's persistent identity (ClientNoiseIdentity) — the
-        /// static the host pins.
+        /// The client's persistent identity, which the host pins.
         public var clientStaticKeys: NoiseKeyPair
         /// Overall deadline for the run, handshake included.
         public var timeoutSeconds: Double
-        /// Progress lines for the console / UI, fired from worker
-        /// threads.
+        /// Progress lines, fired from worker threads.
         public var onProgress: (@Sendable (String) -> Void)?
 
         public init(
@@ -66,34 +46,32 @@ public enum LytePairing {
     }
 
     public enum Outcome: Equatable, Sendable {
-        /// Confirmed both ways: pin this static (the caller's
-        /// PinnedHostStore write).
+        /// Confirmed both ways: pin this static.
         case paired(hostStaticPublicKey: [UInt8])
-        /// Our PIN entry disagreed with the host's tag (or the session
-        /// was tampered with — indistinguishable by design). We aborted
-        /// with the typed reject.
+        /// The PIN disagreed with the host's tag (or tampering; the two
+        /// are indistinguishable). We aborted with the typed reject.
         case pinMismatch
-        /// The host refused: wrong PIN spent host-side, a burned PIN's
-        /// silence would surface as `timedOut` instead — 0x0E carries
-        /// only the typed reasons.
+        /// The host refused with a typed 0x0E reason.
         case hostRejected(PairingRejectReason)
-        /// The host's share was cryptographically invalid (G.I abort).
+        /// The host's share was cryptographically invalid.
         case invalidShare
         /// No verdict inside the deadline — wrong port, dead host, or a
         /// burned PIN's deliberate wire silence.
         case timedOut
-        /// The stack failed before pairing could speak (bind, handshake,
-        /// send errors) — the message says where.
+        /// The stack failed before pairing could speak.
         case failed(String)
     }
 
-    /// Runs one pairing flow to its verdict. Blocking — call it off the
-    /// main thread (the CLI's async run() context or a Task).
+    /// Runs one pairing flow to its verdict. Blocking.
     public static func run(_ config: Config) -> Outcome {
         let progress = config.onProgress ?? { _ in }
 
-        // ── The stack (WireViewCommand's construction order: the
-        // endpoint's datagram hook late-binds the reliable endpoint). ──
+        // Only the host's six ASCII digits reach CPace; any other form
+        // would spend one of the host's guesses on a certain mismatch.
+        guard let pinBytes = PairingPin.normalize(config.pin) else {
+            return .failed("the PIN must be the host's 6 digits")
+        }
+
         let crypto: NoiseTransportCrypto
         do {
             crypto = try NoiseTransportCrypto(
@@ -105,31 +83,17 @@ public enum LytePairing {
             return .failed("host key rejected: \(error)")
         }
 
-        let clientNow: @Sendable () -> ClientTimestamp = {
-            ClientTimestamp(
-                microseconds: SystemMonotonicClock.nowMicroseconds)
-        }
-        let reliableBox = PairingLockedBox<ReliableCtrlEndpoint?>(nil)
-        let echoBox = PairingLockedBox<BeaconEchoResponder?>(nil)
-
+        // The endpoint's datagram hook late-binds the flow, which needs
+        // the handshake hash the endpoint's handshake produces.
+        let flowBox = PairingLockedBox<LytePairingFlow?>(nil)
         let endpoint = UdpReceiveEndpoint(
             port: 0, crypto: crypto,
-            onDatagram: { outcome, _ in
-                guard case .accepted(let envelope, let payload) = outcome,
-                      envelope.channel == .ctrl
-                else { return }   // video/audio from a streaming host: ignored
-                if reliableBox.value?.handleCtrlDatagram(
-                    envelope: envelope, payload: payload) == true {
-                    return
-                }
-                echoBox.value?.handleCtrlPayload(
-                    payload, arrivalMicroseconds: clientNow().microseconds)
-            })
+            onDatagram: { outcome, _ in flowBox.value?.handle(outcome) })
 
         progress("Noise IK handshake → "
             + "\(config.hostAddress):\(config.hostPort) …")
         do {
-            try endpoint.start()
+            try endpoint.bindAndHandshake()
         } catch let error as TransportCryptoError {
             return .failed("handshake failed: \(error)")
         } catch {
@@ -140,96 +104,197 @@ public enum LytePairing {
             progress(String(format: "handshake complete in %.1f ms", ms))
         }
 
-        let sender = TransportSender(crypto: crypto, transmit: { datagram in
-            endpoint.sendToPeer(datagram)
-        })
-        let echoResponder = BeaconEchoResponder(
-            now: clientNow,
-            emit: { echo in
-                _ = try? sender.send(channel: .ctrl, timestamp: clientNow(),
-                                     plaintext: echo.encode())
-            })
-        echoBox.value = echoResponder
-
-        // ── The pairing machine, bound to THIS session's transcript. ──
-        guard let handshakeHash = crypto.handshakeHashSnapshot else {
-            return .failed("no handshake hash after handshake")   // unreachable
-        }
-        let service: PairingInitiatorService
+        let flow: LytePairingFlow
         do {
-            service = try PairingInitiatorService(
-                pin: Array(config.pin.utf8),
-                clientStaticPublicKey: crypto.clientStaticPublicKey,
+            flow = try LytePairingFlow(
+                crypto: crypto,
                 hostStaticPublicKey: config.hostStaticPublicKey,
-                noiseHandshakeHash: handshakeHash)
+                pin: pinBytes,
+                transmit: { endpoint.sendToPeer($0) },
+                progress: progress)
         } catch {
             return .failed("pairing init: \(error)")
         }
+        flowBox.value = flow
+        // Consumers are published; only now may host datagrams flow.
+        endpoint.startReceiving()
+        flow.startTimers()
+        defer { flow.stopTimers() }
 
-        let verdict = PairingLockedBox<Outcome?>(nil)
+        do {
+            try flow.start()
+        } catch {
+            return .failed("share A send: \(error)")
+        }
+
+        // Wait for an acknowledged verdict.
+        let deadline = SystemMonotonicClock.nowNanoseconds
+            + UInt64(Int(config.timeoutSeconds * 1000)) * 1_000_000
+        while SystemMonotonicClock.nowNanoseconds < deadline {
+            if let outcome = flow.settledOutcome { return outcome }
+            usleep(50_000)
+        }
+        // A lost final ACK must not un-pair a paired run.
+        return flow.outcome ?? .timedOut
+    }
+}
+
+/// One pairing run over an established Noise session with injected IO:
+/// sealed sends go to `transmit`, accepted datagrams come in through
+/// `handle`. Beacons are echoed; host video/audio is ignored.
+public final class LytePairingFlow: @unchecked Sendable {
+    private let service: PairingInitiatorService
+    private let reliable: ReliableCtrlEndpoint
+    private let echo: BeaconEchoResponder
+    private let now: @Sendable () -> ClientTimestamp
+    private let lock = NSLock()
+    private var verdict: LytePairing.Outcome?
+    private var serviceEvents: [PairingInitiatorService.Event] = []
+
+    /// - Parameters:
+    ///   - crypto: the established session; the run binds to its
+    ///     transcript hash and client static.
+    ///   - pin: the host's six ASCII digits (`PairingPin.normalize`).
+    ///   - transmit: hands one sealed datagram to the carrier.
+    public init(
+        crypto: NoiseTransportCrypto,
+        hostStaticPublicKey: [UInt8],
+        pin: [UInt8],
+        transmit: @escaping @Sendable ([UInt8]) -> Bool,
+        now: @escaping @Sendable () -> ClientTimestamp = {
+            ClientTimestamp(microseconds: SystemMonotonicClock.nowMicroseconds)
+        },
+        progress: @escaping @Sendable (String) -> Void = { _ in }
+    ) throws {
+        guard let handshakeHash = crypto.handshakeHashSnapshot else {
+            throw TransportCryptoError.handshakeFailed(
+                "pairing before the Noise handshake completed")
+        }
+        let service = try PairingInitiatorService(
+            pin: pin,
+            clientStaticPublicKey: crypto.clientStaticPublicKey,
+            hostStaticPublicKey: hostStaticPublicKey,
+            noiseHandshakeHash: handshakeHash)
+        let sender = TransportSender(crypto: crypto, transmit: transmit)
+        let reliableBox = PairingLockedBox<ReliableCtrlEndpoint?>(nil)
+        // Weak: the flow owns the reliable endpoint that owns this hook.
+        let verdictSink = WeakPairingFlow()
         let reliable = ReliableCtrlEndpoint(
             sender: sender,
+            now: now,
             onEvent: { event in
                 guard case .message(_, let bytes) = event,
                       let output = service.handleReliableCtrl(bytes)
                 else { return }
                 for reply in output.replies {
                     do { try reliableBox.value?.send(reply) }
-                    catch {
-                        progress("reliable reply refused: \(error)")
-                    }
+                    catch { progress("reliable reply refused: \(error)") }
                 }
-                for event in output.events {
-                    switch event {
-                    case .paired(let key):
-                        progress("host tag verified — confirm sent")
-                        verdict.value = .paired(hostStaticPublicKey: key)
-                    case .pinMismatch:
-                        progress("host tag MISMATCH — wrong PIN; "
-                            + "aborting with the typed reject")
-                        verdict.value = .pinMismatch
-                    case .invalidShare:
-                        progress("host share invalid — aborting")
-                        verdict.value = .invalidShare
-                    case .hostRejected(let reason):
-                        progress("host rejected the run (\(reason))")
-                        verdict.value = .hostRejected(reason)
-                    case .malformed:
-                        progress("malformed pairing bytes dropped")
-                    }
-                }
+                verdictSink.value?.record(output.events, progress: progress)
             })
-        reliable.start()
-        defer { reliable.stop() }
         reliableBox.value = reliable
+        self.service = service
+        self.reliable = reliable
+        self.now = now
+        self.echo = BeaconEchoResponder(
+            now: now,
+            emit: { echo in
+                _ = try? sender.send(channel: .ctrl, timestamp: now(),
+                                     plaintext: echo.encode())
+            })
+        verdictSink.value = self
+    }
 
-        do {
-            try reliable.send(service.start())
-            progress("share A sent (PIN bound to this session)")
-        } catch {
-            return .failed("share A send: \(error)")
+    /// Opens the run: share A on the reliable stream.
+    public func start() throws {
+        try start(now: now())
+    }
+
+    public func start(now: ClientTimestamp) throws {
+        try reliable.send(try service.start(), now: now)
+    }
+
+    /// Only CTRL matters: ARQ frames feed pairing, beacons are echoed.
+    public func handle(_ outcome: IngestOutcome) {
+        handle(outcome, now: now())
+    }
+
+    public func handle(_ outcome: IngestOutcome, now: ClientTimestamp) {
+        guard case .accepted(let envelope, let payload) = outcome,
+              envelope.channel == .ctrl
+        else { return }
+        if reliable.handleCtrlDatagram(
+            envelope: envelope, payload: payload, now: now) {
+            return
         }
+        echo.handleCtrlPayload(payload, arrivalMicroseconds: now.microseconds)
+    }
 
-        // ── Wait for the verdict; honesty needs quiescence (the confirm
-        // or reject really reached the host and was acknowledged). ──
-        let deadline = SystemMonotonicClock.nowNanoseconds
-            + UInt64(Int(config.timeoutSeconds * 1000)) * 1_000_000
-        while SystemMonotonicClock.nowNanoseconds < deadline {
-            if let outcome = verdict.value, reliable.isQuiescent {
-                return outcome
+    /// Virtual-time PTO beat.
+    public func tick(now: ClientTimestamp) {
+        reliable.tick(now: now)
+    }
+
+    public func startTimers() { reliable.start() }
+    public func stopTimers() { reliable.stop() }
+
+    /// The verdict, once the service reached one.
+    public var outcome: LytePairing.Outcome? {
+        lock.withLock { verdict }
+    }
+
+    /// The verdict once the host acknowledged it.
+    public var settledOutcome: LytePairing.Outcome? {
+        guard let outcome, reliable.isQuiescent else { return nil }
+        return outcome
+    }
+
+    /// The service's events so far, in order.
+    public var events: [PairingInitiatorService.Event] {
+        lock.withLock { serviceEvents }
+    }
+
+    public var pairedHostStaticPublicKey: [UInt8]? {
+        service.pairedHostStaticPublicKey
+    }
+
+    public var isTerminal: Bool { service.isTerminal }
+    public var isReliableQuiescent: Bool { reliable.isQuiescent }
+    public var nextDeadline: ClientTimestamp? { reliable.nextDeadline }
+
+    private func record(
+        _ events: [PairingInitiatorService.Event],
+        progress: (String) -> Void
+    ) {
+        for event in events {
+            let outcome: LytePairing.Outcome?
+            switch event {
+            case .paired(let key):
+                progress("host tag verified — confirm sent")
+                outcome = .paired(hostStaticPublicKey: key)
+            case .pinMismatch:
+                progress("host tag MISMATCH — wrong PIN; "
+                    + "aborting with the typed reject")
+                outcome = .pinMismatch
+            case .invalidShare:
+                progress("host share invalid — aborting")
+                outcome = .invalidShare
+            case .hostRejected(let reason):
+                progress("host rejected the run (\(reason))")
+                outcome = .hostRejected(reason)
+            case .malformed:
+                progress("malformed pairing bytes dropped")
+                outcome = nil
             }
-            usleep(50_000)
+            lock.withLock {
+                serviceEvents.append(event)
+                if let outcome { verdict = outcome }
+            }
         }
-        // Deadline with a verdict in hand but ACKs outstanding: report
-        // the verdict anyway — the ARQ retransmitted for the whole
-        // window, and a lost final ACK must not un-pair a paired run.
-        if let outcome = verdict.value { return outcome }
-        return .timedOut
     }
 }
 
-/// Tiny locked box for the late-binding construction order (the
-/// file-private LockedCell pattern; types don't travel between files).
+/// Locked box for late-binding construction.
 final class PairingLockedBox<T>: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: T
@@ -237,5 +302,14 @@ final class PairingLockedBox<T>: @unchecked Sendable {
     var value: T {
         get { lock.lock(); defer { lock.unlock() }; return stored }
         set { lock.lock(); stored = newValue; lock.unlock() }
+    }
+}
+
+private final class WeakPairingFlow: @unchecked Sendable {
+    private let lock = NSLock()
+    private weak var stored: LytePairingFlow?
+    var value: LytePairingFlow? {
+        get { lock.withLock { stored } }
+        set { lock.withLock { stored = newValue } }
     }
 }

@@ -1,28 +1,29 @@
-// The FEC vector-file model and loader for Wire/Vectors/fec-v1.json —
-// same discipline as EnvelopeVectors.swift: the committed file is the
-// frozen wire contract (master plan §4.12, FEC matrices at W1), verified
-// byte-exact on macOS and Linux. The RS matrices being byte-identical
-// across platforms is the point: the C leaf's parity bytes are contract,
-// not implementation detail.
+// The FEC vector-file model and loader for Wire/Vectors/fec-v1.json. The
+// RS parity bytes are wire contract, byte-identical across platforms.
 
 import Foundation
 import LyteWire
 
 /// One vector file: `Wire/Vectors/fec-v1.json`.
-public struct FecVectorFile: Codable, Sendable {
+public struct FecVectorFile: FrozenVectorFile {
     /// Always "lyte-wire-fec-vectors".
     public var format: String
     public var formatVersion: Int
     public var wireVersion: Int
     /// fec-field codec vectors (the envelope's 8-byte field).
     public var fieldVectors: [FecFieldVector]
-    /// The resiliency §5.2 parity ladder pinned as data, boundary rows
-    /// included; `parityShards` null = unprotectable (lookup throws).
+    /// The parity ladder pinned as data, boundary rows included;
+    /// `parityShards` null = unprotectable (lookup throws).
     public var geometryRows: [FecGeometryRow]
     /// RS encode/recovery matrices: parity bytes and recovery outcomes.
     public var recoveryMatrices: [FecRecoveryMatrix]
 
     public static let expectedFormat = "lyte-wire-fec-vectors"
+    public static let fileName = "fec-v1.json"
+
+    public var vectorNameGroups: [[String]] {
+        [fieldVectors.map(\.name), recoveryMatrices.map(\.name)]
+    }
 
     public init(
         format: String,
@@ -40,10 +41,6 @@ public struct FecVectorFile: Codable, Sendable {
         self.recoveryMatrices = recoveryMatrices
     }
 
-    public static func load(from path: String) throws -> FecVectorFile {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(FecVectorFile.self, from: data)
-    }
 }
 
 /// One fec-field vector. `rawHex` is the field's u64 value in hex (the
@@ -190,24 +187,5 @@ public struct FecRecoveryMatrix: Codable, Sendable {
             parityShards: parityShards,
             groupByteCount: groupByteCount
         )
-    }
-}
-
-/// Stable names for `FecError` cases, as they appear in vector files.
-public func fecErrorName(_ error: FecError) -> String {
-    switch error {
-    case .unknownScheme: return "unknownScheme"
-    case .nonZeroNoneField: return "nonZeroNoneField"
-    case .dataShardsOutOfRange: return "dataShardsOutOfRange"
-    case .parityShardsOutOfRange: return "parityShardsOutOfRange"
-    case .groupByteCountOutOfRange: return "groupByteCountOutOfRange"
-    case .overProvisionedDataShards: return "overProvisionedDataShards"
-    case .shardIndexOutOfRange: return "shardIndexOutOfRange"
-    case .unprotectableDataShardCount: return "unprotectableDataShardCount"
-    case .groupByteCountMismatch: return "groupByteCountMismatch"
-    case .shardSlotCountMismatch: return "shardSlotCountMismatch"
-    case .shardByteCountMismatch: return "shardByteCountMismatch"
-    case .unrecoverableGroup: return "unrecoverableGroup"
-    case .backendFailure: return "backendFailure"
     }
 }

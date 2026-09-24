@@ -31,6 +31,8 @@ final class ClipboardImageChannelTests: XCTestCase {
         /// Bytes claimed by neither lane on delivery — the file
         /// lane's, in a real core; a routing leak in these tests.
         var unclaimed: [[UInt8]] = []
+        /// Every slice the incremental hashers absorbed, per side.
+        let absorbed = [AbsorbLog(), AbsorbLog()]
 
         init(ceiling: Int = ClipboardImageWire.maxImageByteCount) {
             channels = [
@@ -88,9 +90,10 @@ final class ClipboardImageChannelTests: XCTestCase {
                 unclaimed.append(bytes)
                 return []
             }
-            return channels[side].ingest(
-                message, book: &books[side], sha256: Sha256.digest
-            )
+            let log = absorbed[side]
+            return channels[side].ingest(message, book: &books[side]) {
+                RecordingHasher(log: log)
+            }
         }
 
         mutating func share(
@@ -98,11 +101,26 @@ final class ClipboardImageChannelTests: XCTestCase {
             rng: inout some RandomNumberGenerator
         ) {
             let produced = channels[side].shareLocalImage(
-                data, sha256: Sha256.digest(data),
+                data, sha256: { Sha256.digest(data) },
                 book: &books[side], rng: &rng
             )
             pump(produced, from: side)
         }
+    }
+
+    /// Slice sizes a RecordingHasher absorbed (tests are single-threaded).
+    private final class AbsorbLog: @unchecked Sendable {
+        var sizes: [Int] = []
+    }
+
+    private struct RecordingHasher: ClipboardImageHasher {
+        let log: AbsorbLog
+        var sha = Sha256()
+        mutating func absorb(_ bytes: ArraySlice<UInt8>) {
+            log.sizes.append(bytes.count)
+            sha.update(bytes)
+        }
+        mutating func finish() -> [UInt8] { sha.finalized() }
     }
 
     private func patterned(_ count: Int) -> [UInt8] {
@@ -166,6 +184,68 @@ final class ClipboardImageChannelTests: XCTestCase {
         )
         XCTAssertEqual(loop.channels[0].counters.sharesCompleted, 1)
         XCTAssertTrue(loop.unclaimed.isEmpty)
+        // Hashed as it assembled: one absorb per chunk, never the blob.
+        XCTAssertEqual(loop.absorbed[1].sizes, [65_536, 65_536, 1])
+    }
+
+    /// A corrupted chunk fails the incremental digest: nothing is
+    /// applied.
+    func testIncrementalDigestRefusesACorruptedImage() throws {
+        var channel = ClipboardImageChannel()
+        var book = ClipboardSyncBook()
+        let image = patterned(65_536 + 3)
+        let id: UInt64 = 0x4242
+        let cargo = try ClipboardImageCargo(transferId: id, mime: "image/png")
+        XCTAssertEqual(channel.ingestCargo(cargo), [])
+        let offer = try BulkOffer(
+            transferId: id, totalByteCount: UInt64(image.count),
+            chunkByteCount: ClipboardImageWire.chunkByteCount,
+            sha256: Sha256.digest(image), name: ClipboardImageWire.wireName,
+            mimeHint: "image/png")
+        var events = channel.ingest(.offer(offer), book: &book) { Sha256() }
+        var tampered = Array(image[65_536...])
+        tampered[0] ^= 0xFF
+        for (index, data) in [Array(image[..<65_536]), tampered].enumerated() {
+            let chunk = try BulkChunk(
+                transferId: id, chunkIndex: UInt64(index), data: data)
+            events += channel.ingest(.chunk(chunk), book: &book) { Sha256() }
+        }
+        XCTAssertFalse(events.contains { event in
+            if case .applyImage = event { return true }
+            return false
+        })
+        XCTAssertEqual(channel.counters.imagesApplied, 0)
+        XCTAssertEqual(channel.counters.receivesAborted, 1)
+    }
+
+    /// The digest-free gates (empty → busy → ceiling) refuse before the
+    /// digest is asked for, so a refused copy is never hashed.
+    func testLocalCopiesAreHashedOnlyPastTheDigestFreeGates() {
+        var channel = ClipboardImageChannel(imageByteCeiling: 4_096)
+        var book = ClipboardSyncBook()
+        var rng = CountingRng()
+        var hashed = 0
+        func share(_ data: [UInt8]) -> [ClipboardImageEvent] {
+            channel.shareLocalImage(data, sha256: {
+                hashed += 1
+                return Sha256.digest(data)
+            }, book: &book, rng: &rng)
+        }
+        XCTAssertEqual(share([]), [.suppressed(.emptyImage)])
+        XCTAssertEqual(share(patterned(4_097)), [.suppressed(.overBudget(4_097))])
+        XCTAssertEqual(hashed, 0)
+        XCTAssertTrue(share(patterned(128)).contains { event in
+            if case .shareStarted = event { return true }
+            return false
+        })
+        XCTAssertEqual(hashed, 1)
+        XCTAssertEqual(share(patterned(4_097)), [.suppressed(.sendBusy)])
+        XCTAssertEqual(share(patterned(129)), [.suppressed(.sendBusy)])
+        XCTAssertEqual(hashed, 1)
+        XCTAssertEqual(
+            channel.refuseLocalImageBeforeDigest(byteCount: 10),
+            [.suppressed(.sendBusy)])
+        XCTAssertEqual(channel.counters.sharesSuppressed, 5)
     }
 
     func testConsecutiveSharesBothDirections() {
@@ -198,7 +278,7 @@ final class ClipboardImageChannelTests: XCTestCase {
 
         // Empty read — a leaf bug, loud in the counter.
         XCTAssertEqual(
-            channel.shareLocalImage([], sha256: Sha256.digest([]),
+            channel.shareLocalImage([], sha256: { Sha256.digest([]) },
                                     book: &book, rng: &rng),
             [.suppressed(.emptyImage)]
         )
@@ -207,7 +287,7 @@ final class ClipboardImageChannelTests: XCTestCase {
         // small ceiling stands in for 32 MiB).
         let big = patterned(4_097)
         XCTAssertEqual(
-            channel.shareLocalImage(big, sha256: Sha256.digest(big),
+            channel.shareLocalImage(big, sha256: { Sha256.digest(big) },
                                     book: &book, rng: &rng),
             [.suppressed(.overBudget(4_097))]
         )
@@ -217,7 +297,7 @@ final class ClipboardImageChannelTests: XCTestCase {
         let key = ClipboardImageWire.bookKey(sha256: Sha256.digest(image))
         book.noteRemoteApplied(bytes: key)
         XCTAssertEqual(
-            channel.shareLocalImage(image, sha256: Sha256.digest(image),
+            channel.shareLocalImage(image, sha256: { Sha256.digest(image) },
                                     book: &book, rng: &rng),
             [.suppressed(.loopEcho)]
         )
@@ -226,7 +306,7 @@ final class ClipboardImageChannelTests: XCTestCase {
         // (latest-wins is v2's documented posture).
         let inFlight = patterned(128)
         let events = channel.shareLocalImage(
-            inFlight, sha256: Sha256.digest(inFlight),
+            inFlight, sha256: { Sha256.digest(inFlight) },
             book: &book, rng: &rng
         )
         XCTAssertTrue(events.contains { event in
@@ -237,7 +317,7 @@ final class ClipboardImageChannelTests: XCTestCase {
         let superseded = patterned(129)
         XCTAssertEqual(
             channel.shareLocalImage(
-                superseded, sha256: Sha256.digest(superseded),
+                superseded, sha256: { Sha256.digest(superseded) },
                 book: &book, rng: &rng
             ),
             [.suppressed(.sendBusy)]
@@ -285,7 +365,7 @@ final class ClipboardImageChannelTests: XCTestCase {
         XCTAssertTrue(channel.claims(.offer(offer)))
         XCTAssertEqual(
             channel.ingest(.offer(offer), book: &book,
-                           sha256: Sha256.digest),
+                           hasher: { Sha256() }),
             []
         )
         XCTAssertFalse(channel.claims(.offer(offer)),
@@ -317,7 +397,7 @@ final class ClipboardImageChannelTests: XCTestCase {
             name: "clipboard.png", mimeHint: "image/png"
         )
         let events = channel.ingest(.offer(offer), book: &book,
-                                    sha256: Sha256.digest)
+                                    hasher: { Sha256() })
         XCTAssertEqual(events.first, .refused(.overBudget(1_025)))
         XCTAssertEqual(abortIn(events)?.reason, .declined)
         XCTAssertFalse(channel.isReceiveActive)
@@ -363,7 +443,7 @@ final class ClipboardImageChannelTests: XCTestCase {
         XCTAssertTrue(channel.claims(.offer(offer)))
         XCTAssertEqual(
             channel.ingest(.offer(offer), book: &book,
-                           sha256: Sha256.digest),
+                           hasher: { Sha256() }),
             []
         )
     }
@@ -382,7 +462,7 @@ final class ClipboardImageChannelTests: XCTestCase {
         )
         XCTAssertTrue(channel.claims(.chunk(chunk)))
         let events = channel.ingest(.chunk(chunk), book: &book,
-                                    sha256: Sha256.digest)
+                                    hasher: { Sha256() })
         guard case .violated(let violation)? = events.first else {
             return XCTFail("expected violation: \(events)")
         }
@@ -402,7 +482,7 @@ final class ClipboardImageChannelTests: XCTestCase {
         var rng = CountingRng()
         let image = patterned(64)
         let events = channel.shareLocalImage(
-            image, sha256: Sha256.digest(image), book: &book, rng: &rng
+            image, sha256: { Sha256.digest(image) }, book: &book, rng: &rng
         )
         guard case .shareStarted(let id, _)? = events.dropFirst().first
         else {
@@ -412,7 +492,7 @@ final class ClipboardImageChannelTests: XCTestCase {
         XCTAssertTrue(channel.claims(.abort(abort)))
         XCTAssertEqual(
             channel.ingest(.abort(abort), book: &book,
-                           sha256: Sha256.digest),
+                           hasher: { Sha256() }),
             [.shareAborted(reason: .declined, byRemote: true)]
         )
         XCTAssertFalse(channel.isSendActive)
@@ -456,5 +536,63 @@ final class ClipboardImageChannelTests: XCTestCase {
         )
         XCTAssertTrue(channel.claims(.offer(ours)))
         XCTAssertFalse(channel.claims(.offer(offer)))
+    }
+
+    // MARK: Lane occupancy vs the sync book
+
+    /// A copy refused while a share is in flight must not take over the
+    /// in-flight share's book slot: when that share lands, the book
+    /// records ITS image, so re-copying the refused one still syncs.
+    func testBusyRefusedCopySyncsAfterTheInFlightShareLands() {
+        var loop = Loop()
+        var rng = CountingRng()
+        let first = patterned(2 * 65_536)
+        let second = patterned(1_500)
+        let started = loop.channels[0].shareLocalImage(
+            first, sha256: { Sha256.digest(first) },
+            book: &loop.books[0], rng: &rng
+        )
+        XCTAssertEqual(
+            loop.channels[0].shareLocalImage(
+                second, sha256: { Sha256.digest(second) },
+                book: &loop.books[0], rng: &rng
+            ),
+            [.suppressed(.sendBusy)]
+        )
+        loop.pump(started, from: 0)
+        XCTAssertEqual(loop.channels[0].counters.sharesCompleted, 1)
+
+        loop.share(second, from: 0, rng: &rng)
+        XCTAssertEqual(loop.channels[0].counters.sharesCompleted, 2)
+        XCTAssertEqual(
+            loop.events[1],
+            [
+                .applyImage(data: first, mime: "image/png"),
+                .applyImage(data: second, mime: "image/png"),
+            ]
+        )
+        // The second share moved the dedupe slot on, so the first image
+        // is shareable again.
+        let firstKey = ClipboardImageWire.bookKey(sha256: Sha256.digest(first))
+        XCTAssertEqual(loop.books[0].admitLocalChange(bytes: firstKey), .share)
+    }
+
+    /// Marker-then-violation refusals are capped like every other
+    /// refusal — a hostile peer cannot grow the refused-id set.
+    func testRefusedIdsStayBoundedOnTheViolationPath() throws {
+        var channel = ClipboardImageChannel()
+        var book = ClipboardSyncBook()
+        let ids: [UInt64] = (1...200).map { 1_000 + $0 }
+        for id in ids {
+            let cargo = try ClipboardImageCargo(transferId: id, mime: "image/png")
+            XCTAssertEqual(channel.ingestCargo(cargo), [])
+            let chunk = try BulkChunk(transferId: id, chunkIndex: 0, data: [1])
+            _ = channel.ingest(.chunk(chunk), book: &book, hasher: { Sha256() })
+        }
+        let remembered = try ids.filter { id in
+            channel.claims(.chunk(try BulkChunk(transferId: id, chunkIndex: 0, data: [1])))
+        }
+        XCTAssertLessThanOrEqual(remembered.count, 32)
+        XCTAssertTrue(remembered.contains(ids.last!))
     }
 }

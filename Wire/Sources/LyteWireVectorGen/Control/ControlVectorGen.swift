@@ -1,16 +1,12 @@
-// Control-codec vector authoring (the second codec-promotion slice):
-// the CTRL/TLV/capability codecs that were pinned end-side under
-// mirror-and-flag during H2 — IdleFrame 0x15 (HS-11), the input pair
-// 0x16/0x17 + lastInputSeq TLV 0x03 (HS-13/CL-9), the audio-routing
-// pair 0x18/0x19 + capability key 9 (HS-18/CL-13). Run once, commit,
-// freeze. The circularity is broken by the hand-computed anchor bytes
-// in ControlCodecTests, which pin the same nominal messages.
+// Authors Vectors/control-v1.json: IdleFrame 0x15, the input pair
+// 0x16/0x17 with the lastInputSeq TLV 0x03, and the audio-routing pair
+// 0x18/0x19 with capability key 9. Anchored by ControlCodecTests.
 
 import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-func makeControlVectorFile() throws -> ControlVectorFile {
+public func makeControlVectorFile() throws -> ControlVectorFile {
     var vectors: [ControlVector] = []
 
     // MARK: IdleFrame (0x15)
@@ -326,6 +322,25 @@ func makeControlVectorFile() throws -> ControlVectorFile {
             AudioRoutingStatus(mode: .hostMuted).encode()
         ),
         mode: .hostMuted
+    ))
+    vectors.append(ControlVector(
+        name: "routing-request-streamoff",
+        description: "type ‖ mode: [0x18, 0x04] — streamOff (key-14"
+            + " mute-at-source; 0x03 stays the pinned tombstone).",
+        kind: .roundtrip, codec: .audioRoutingRequest,
+        messageHex: Hex.string(
+            AudioRoutingRequest(mode: .streamOff).encode()
+        ),
+        mode: .streamOff
+    ))
+    vectors.append(ControlVector(
+        name: "routing-status-streamoff",
+        description: "type ‖ mode: [0x19, 0x04] — streamOff applied.",
+        kind: .roundtrip, codec: .audioRoutingStatus,
+        messageHex: Hex.string(
+            AudioRoutingStatus(mode: .streamOff).encode()
+        ),
+        mode: .streamOff
     ))
     vectors.append(ControlVector(
         name: "routing-request-truncated",

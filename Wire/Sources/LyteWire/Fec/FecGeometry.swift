@@ -1,19 +1,11 @@
 // The RS block geometry for one FEC group (one video frame, one audio
-// interleave group): k data shards + m parity shards over the group's
-// payload bytes, one block per group (resiliency §5.2 — multi-block
-// geometry and the silent-disable branch are deleted from the protocol,
-// not inherited).
+// interleave group): k data shards + m parity shards, one block per group.
 //
-// Shard split, pinned at W1: **balanced**. shardByteCount =
-// ceil(groupByteCount / k); data shard i carries group bytes
-// [i·bs, min((i+1)·bs, total)) — every shard except possibly the last is
-// exactly bs, the last carries the remainder, and geometry validation
-// requires every shard non-empty. Encode-side RS buffers zero-pad the
-// trailing shard to bs; the pad bytes never travel. Parity shards are
-// always bs wire bytes. Balanced beats fill-to-1112 because parity
-// shards shrink with the tail (a 1200 B frame at k=2 costs 600 B parity
-// shards, not 1112 B), and any k with ceil(total/1112) ≤ k ≤ total
-// stays within the 1112 B budget by construction.
+// The split is balanced: bs = ceil(groupByteCount / k); data shard i
+// carries group bytes [i·bs, min((i+1)·bs, total)), and every shard must be
+// non-empty. Encode-side RS buffers zero-pad the trailing shard to bs; the
+// pad never travels. Parity shards are always bs bytes, so they shrink
+// with the frame instead of costing a full 1112 B each.
 
 public struct FecGeometry: Hashable, Sendable {
     /// k — data shards in the block, 1…255.
@@ -81,30 +73,23 @@ public struct FecGeometry: Hashable, Sendable {
     }
 }
 
-/// The loss regime selecting a geometry-table column. Policy — moving
-/// between regimes on live loss telemetry — is host-side (rung 3 of the
-/// resiliency §4 ladder); the ratios themselves are wire-plan data and
-/// live here.
+/// The loss regime selecting a geometry-table column. Choosing the regime
+/// is host policy; the ratios live here.
 public enum FecRegime: String, CaseIterable, Sendable {
     /// Post-FEC loss < 0.5%.
     case clean
-    /// Sustained post-FEC loss beyond 0.5% — resiliency §4 rung 3.
+    /// Sustained post-FEC loss beyond 0.5%.
     case lossy
 }
 
-/// The adaptive parity ladder of resiliency §5.2, as data: frame-size
-/// bucket (in data shards) → parity rule per regime. Small frames are
-/// cheap to overprotect and are the common case under damage; large
-/// frames buy single-loss immunity and lean on NACK as the second line.
+/// The adaptive parity ladder as data: frame-size bucket (in data shards)
+/// → parity rule per regime. Small frames are cheap to overprotect; large
+/// frames buy single-loss immunity and lean on NACK.
 ///
-/// GF(2⁸) truncation, pinned at W1: one RS block holds at most 255 total
-/// shards, so the ladder's nominal 33…255 bucket is honestly capped —
-/// clean protects up to k = 231 (231 + 24 = 255), lossy up to k = 204
-/// (204 + 51 = 255). Beyond that `parityShards(forDataShards:regime:)`
-/// throws rather than clamps: an unprotectable frame is prevented
-/// upstream by `frameByteCeiling` (resiliency §2.4, computed from
-/// `maxDataShards(_:)`), never silently under-protected — that is
-/// Sunshine's documented cascade and it stays deleted.
+/// One GF(2⁸) block holds at most 255 shards, so the 33…255 bucket is
+/// capped: clean protects up to k = 231, lossy up to k = 204. Beyond that
+/// `parityShards(forDataShards:regime:)` throws rather than clamps;
+/// `frameByteCeiling` (from `maxDataShards(_:)`) keeps frames below it.
 public enum FecGeometryTable {
     /// How a bucket computes parity from k.
     public enum ParityRule: Hashable, Sendable {
@@ -132,7 +117,6 @@ public enum FecGeometryTable {
         }
     }
 
-    /// Resiliency §5.2, row for row.
     public static let buckets: [Bucket] = [
         Bucket(dataShards: 1...2, clean: .shards(1), lossy: .shards(2)),
         Bucket(dataShards: 3...8, clean: .shards(2), lossy: .percentCeil(50)),
@@ -168,14 +152,19 @@ public enum FecGeometryTable {
     }
 
     /// The ladder's geometry for a group of `byteCount` payload bytes at
-    /// minimal k (fill shards to the 1112 B budget, balanced split).
+    /// minimal k: shards filled to `shardBudgetByteCount` (the 1112 B
+    /// plaintext ceiling unless the carrier reserves envelope TLV
+    /// headroom), balanced split.
     public static func geometry(
-        forGroupByteCount byteCount: Int, regime: FecRegime
+        forGroupByteCount byteCount: Int, regime: FecRegime,
+        shardBudgetByteCount budget: Int = WireBudget.maxPlaintextShardByteCount
     ) throws -> FecGeometry {
         guard byteCount >= 1 else {
             throw FecError.groupByteCountOutOfRange(byteCount)
         }
-        let budget = WireBudget.maxPlaintextShardByteCount
+        guard (1...WireBudget.maxPlaintextShardByteCount).contains(budget) else {
+            throw FecError.shardBudgetOutOfRange(budget)
+        }
         let k = (byteCount + budget - 1) / budget
         let m = try parityShards(forDataShards: k, regime: regime)
         return try FecGeometry(

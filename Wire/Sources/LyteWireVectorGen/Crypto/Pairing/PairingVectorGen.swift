@@ -1,10 +1,7 @@
-// Pairing vector authoring (W6): draft-irtf-cfrg-cpace-21's external
-// vectors transcribed as constants, the pinned PairingPake exchange
-// runs, and the 0x0B–0x0E codec layouts. Run once, commit, freeze. The
-// circularity is broken twice over: the draft section is transcription
-// (not generation), and the codec/exchange sections are anchored by the
-// hand-built bytes in PairingCodecTests and the draft-pinned math in
-// CPaceCoreTests.
+// Authors Vectors/pairing-v1.json: draft-irtf-cfrg-cpace-21's external
+// vectors transcribed as constants, pinned PairingPake exchange runs, and
+// the 0x0B–0x0E codec layouts. Codec and exchange sections are anchored
+// by PairingCodecTests and CPaceCoreTests.
 
 import LyteCore
 import LyteWire
@@ -15,7 +12,7 @@ private let draftSource =
 private let draftSha256 =
     "ed2772c26c21d43a199d490c1ebe5c5d2431a7dbce50d2124d4fa40957fbf58f"
 
-func makePairingVectorFile() throws -> PairingVectorFile {
+public func makePairingVectorFile() throws -> PairingVectorFile {
     PairingVectorFile(
         format: PairingVectorFile.expectedFormat,
         formatVersion: 1,
@@ -217,7 +214,7 @@ private func makeExchangeVectors() throws -> [PairingExchangeVector] {
         initiatorResult.intermediateSessionKey
             == responderResult.intermediateSessionKey
     else {
-        die("pairing exchange vector generation disagreed on the ISK")
+        preconditionFailure("pairing exchange vector generation disagreed on the ISK")
     }
 
     return [PairingExchangeVector(

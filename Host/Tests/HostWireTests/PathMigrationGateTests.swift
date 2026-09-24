@@ -6,14 +6,14 @@ import LyteWire
 import LyteWireTestKit
 
 // THE GATE (build plan HS-12 row): rebind mid-stream → resume ≤ 400 ms,
-// run deterministically on the Mac against the sans-IO PathValidator (the
-// live rebind on the host is the Linux send loop's thin job, deferred). The
-// simulation feeds the machine datagrams from 4-tuple A, then the same
+// run deterministically against the sans-IO PathValidator (the socket
+// rebind is lyte-host's). The simulation feeds the machine datagrams from 4-tuple A, then the same
 // connection ID from 4-tuple B, and asserts: a challenge is issued on B
 // and never before; the anti-amplification cap holds pre-validation; the
 // echo promotes B within the modeled time; the fresh-IDR signal fires
-// exactly once; the old path is retained then aged out; and a SPOOFED
-// conn-id from 4-tuple C with no valid echo never promotes.
+// exactly once; and the old path is retained then aged out. The
+// validator's spoof, withholding and foreign-traffic legs live in
+// HostSessionTests/PathValidatorTests.
 //
 // The ≤ 400 ms resume budget (resiliency gate G7: "IDR ≤ 400 ms after
 // first packet from new path") is modeled on the injected clock with
@@ -36,7 +36,7 @@ final class PathMigrationGateTests: XCTestCase {
 
     private func loadCorpus(_ name: String) throws -> [UInt8] {
         [UInt8](try Data(contentsOf: URL(
-            fileURLWithPath: Self.corpusDirectory + "/" + name
+            fileURLWithPath: Self.corpusDirectory + "/\(name)"
         )))
     }
 
@@ -52,10 +52,6 @@ final class PathMigrationGateTests: XCTestCase {
     private static let tupleB = FourTuple(
         localAddress: "10.0.0.249", localPort: 47_998,
         remoteAddress: "10.0.0.87", remotePort: 61_444
-    )
-    private static let tupleC = FourTuple(
-        localAddress: "10.0.0.249", localPort: 47_998,
-        remoteAddress: "203.0.113.66", remotePort: 4_444
     )
 
     /// A full video shard's wire size with the conn-id TLV attached:
@@ -89,10 +85,6 @@ final class PathMigrationGateTests: XCTestCase {
             XCTAssertTrue(events.isEmpty,
                           "no challenge may be issued before the rebind")
         }
-        XCTAssertNil(validator.sendAllowance(to: Self.tupleA),
-                     "the validated primary is uncapped")
-        XCTAssertEqual(validator.sendAllowance(to: Self.tupleB), 0,
-                       "an unseen tuple gets zero bytes")
 
         // t0: the client's address changes mid-stream — first datagram
         // bearing our conn-id from tuple B.
@@ -108,14 +100,9 @@ final class PathMigrationGateTests: XCTestCase {
         }
         XCTAssertEqual(on, Self.tupleB)
 
-        // Anti-amplification pre-validation: what we may still send to B
-        // is 3 × received minus the challenge already spent.
+        // Anti-amplification pre-validation: the challenge is the only
+        // datagram B receives, and it fits 3 × what B sent.
         let config = validator.config
-        XCTAssertEqual(
-            validator.sendAllowance(to: Self.tupleB),
-            Self.fullDatagramBytes * config.amplificationFactor
-                - config.challengeDatagramByteCount
-        )
         XCTAssertLessThanOrEqual(
             config.challengeDatagramByteCount,
             Self.fullDatagramBytes * config.amplificationFactor,
@@ -167,10 +154,6 @@ final class PathMigrationGateTests: XCTestCase {
         XCTAssertEqual(fallback.tuple, Self.tupleA)
         XCTAssertEqual(validator.primary.tuple, Self.tupleB)
 
-        // Promotion lifts the cap; the retained fallback keeps its.
-        XCTAssertNil(validator.sendAllowance(to: Self.tupleB))
-        XCTAssertNil(validator.sendAllowance(to: Self.tupleA))
-
         // The fresh-IDR signal: exactly once.
         XCTAssertTrue(validator.takeFreshKeyframeRequest())
         XCTAssertFalse(validator.takeFreshKeyframeRequest(),
@@ -217,11 +200,13 @@ final class PathMigrationGateTests: XCTestCase {
             resume, 400 * millisecond,
             "modeled resume \(resume / millisecond) ms blew the budget"
         )
-        print("HS-12 gate: modeled resume "
-            + "\(String(format: "%.1f", Double(resume) / 1e6)) ms ≤ 400 ms "
-            + "(rtt 30 + encoder tick 16.7 + IDR drain "
-            + "\(String(format: "%.1f", Double(drain) / 1e6)) + one-way 15 "
-            + "+ decode 10); \(emitted.count) conn-id-tagged IDR datagrams")
+        print("""
+            HS-12 gate: modeled resume \
+            \(String(format: "%.1f", Double(resume) / 1e6)) ms ≤ 400 ms \
+            (rtt 30 + encoder tick 16.7 + IDR drain \
+            \(String(format: "%.1f", Double(drain) / 1e6)) + one-way 15 \
+            + decode 10); \(emitted.count) conn-id-tagged IDR datagrams
+            """)
 
         // Old path retention, then age-out.
         let beforeExpiry = tEcho + validator.config.fallbackRetentionNS - 1
@@ -234,160 +219,6 @@ final class PathMigrationGateTests: XCTestCase {
         )
         XCTAssertEqual(expiry, [.fallbackExpired(Self.tupleA)])
         XCTAssertNil(validator.fallback)
-        XCTAssertEqual(validator.sendAllowance(to: Self.tupleA), 0,
-                       "an aged-out path is a stranger again")
-        XCTAssertNil(validator.nextDeadline)
-    }
-
-    // MARK: The spoof case
-
-    func testSpoofedConnIdNeverPromotes() throws {
-        let connId = makeConnectionId()
-        let millisecond: UInt64 = 1_000_000
-        var validator = PathValidator(
-            connectionId: connId,
-            initialPath: Self.tupleA,
-            now: 0,
-            rng: SplitMix64(seed: 0x77)
-        )
-
-        // The attacker replays our conn-id (plaintext until W5 seals the
-        // TLV as AAD — exactly why promotion needs the echo) from C.
-        let events = validator.datagramReceived(
-            from: Self.tupleC, connectionId: connId,
-            byteCount: Self.fullDatagramBytes, now: 0
-        )
-        guard case .sendChallenge(_, let challenge)? = events.first else {
-            return XCTFail("the probe itself is expected — promotion is not")
-        }
-
-        // While C's probe is outstanding, a second attacker tuple is
-        // ignored outright: one probe slot, no eviction by flooding.
-        XCTAssertTrue(validator.datagramReceived(
-            from: Self.tupleB, connectionId: connId,
-            byteCount: Self.fullDatagramBytes, now: millisecond
-        ).isEmpty)
-
-        // A wrong-token response does nothing.
-        let wrongToken = validator.pathResponseReceived(
-            from: Self.tupleC,
-            response: PathResponse(token: challenge.token &+ 1),
-            now: 2 * millisecond
-        )
-        XCTAssertTrue(wrongToken.isEmpty)
-        XCTAssertEqual(validator.primary.tuple, Self.tupleA)
-
-        // The right token from the WRONG tuple does nothing either: the
-        // echo must arrive from the probed address.
-        let wrongTuple = validator.pathResponseReceived(
-            from: Self.tupleB,
-            response: PathResponse(echoing: challenge),
-            now: 3 * millisecond
-        )
-        XCTAssertTrue(wrongTuple.isEmpty)
-        XCTAssertEqual(validator.primary.tuple, Self.tupleA)
-
-        // No valid echo ever comes: the probe times out and is abandoned.
-        let timeout = validator.advance(
-            now: validator.config.validationTimeoutNS + millisecond
-        )
-        XCTAssertEqual(timeout, [.probeAbandoned(Self.tupleC)])
-        XCTAssertEqual(validator.primary.tuple, Self.tupleA)
-        XCTAssertNil(validator.fallback)
-        XCTAssertFalse(validator.takeFreshKeyframeRequest(),
-                       "a spoofed path must never trigger an IDR")
-
-        // A later probe mints a NEW token, so the stale one is dead
-        // forever — echoing it after re-probe still cannot promote.
-        let tRetry = validator.config.validationTimeoutNS + 2 * millisecond
-        let retry = validator.datagramReceived(
-            from: Self.tupleC, connectionId: connId,
-            byteCount: Self.fullDatagramBytes, now: tRetry
-        )
-        guard case .sendChallenge(_, let fresh)? = retry.first else {
-            return XCTFail("expected a re-probe with a fresh token")
-        }
-        XCTAssertNotEqual(fresh.token, challenge.token,
-                          "every probe mints a fresh token")
-        XCTAssertTrue(validator.pathResponseReceived(
-            from: Self.tupleC,
-            response: PathResponse(echoing: challenge),
-            now: tRetry + millisecond
-        ).isEmpty)
-        XCTAssertEqual(validator.primary.tuple, Self.tupleA)
-    }
-
-    // MARK: Anti-amplification withholding
-
-    func testRuntDatagramWithholdsChallengeUntilBudgetAffordsIt() throws {
-        let connId = makeConnectionId()
-        var validator = PathValidator(
-            connectionId: connId,
-            initialPath: Self.tupleA,
-            now: 0,
-            rng: SplitMix64(seed: 0x9)
-        )
-        let config = validator.config
-
-        // A 10 B runt: 3 × 10 = 30 < the 61 B challenge — withheld.
-        let runt = validator.datagramReceived(
-            from: Self.tupleB, connectionId: connId, byteCount: 10, now: 0
-        )
-        XCTAssertTrue(runt.isEmpty,
-                      "the reflection guard applies to our own challenge")
-        XCTAssertEqual(validator.sendAllowance(to: Self.tupleB),
-                       10 * config.amplificationFactor)
-
-        // More bytes arrive; the budget now affords the (same-token)
-        // challenge and it is released.
-        let second = validator.datagramReceived(
-            from: Self.tupleB, connectionId: connId, byteCount: 45,
-            now: 1_000_000
-        )
-        guard case .sendChallenge(let on, let challenge)? = second.first,
-              second.count == 1
-        else {
-            return XCTFail("expected the withheld challenge, got \(second)")
-        }
-        XCTAssertEqual(on, Self.tupleB)
-        XCTAssertEqual(
-            validator.sendAllowance(to: Self.tupleB),
-            (10 + 45) * config.amplificationFactor
-                - config.challengeDatagramByteCount
-        )
-
-        // The released challenge validates normally.
-        let promoted = validator.pathResponseReceived(
-            from: Self.tupleB,
-            response: PathResponse(echoing: challenge),
-            now: 2_000_000
-        )
-        XCTAssertEqual(promoted.count, 2)
-        XCTAssertEqual(validator.primary.tuple, Self.tupleB)
-    }
-
-    // MARK: Foreign traffic
-
-    func testUnknownConnIdAndBareDatagramsNeverProbe() throws {
-        let connId = makeConnectionId()
-        var validator = PathValidator(
-            connectionId: connId,
-            initialPath: Self.tupleA,
-            now: 0,
-            rng: SplitMix64(seed: 0x3)
-        )
-        // A different session's conn-id: not ours to challenge — the
-        // host must not become a reflector toward arbitrary sources.
-        XCTAssertTrue(validator.datagramReceived(
-            from: Self.tupleC,
-            connectionId: makeConnectionId(seed: 0xFEED),
-            byteCount: 1_000, now: 0
-        ).isEmpty)
-        // No conn-id TLV at all: same.
-        XCTAssertTrue(validator.datagramReceived(
-            from: Self.tupleC, connectionId: nil, byteCount: 1_000, now: 0
-        ).isEmpty)
-        XCTAssertEqual(validator.sendAllowance(to: Self.tupleC), 0)
         XCTAssertNil(validator.nextDeadline)
     }
 }

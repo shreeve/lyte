@@ -1,22 +1,13 @@
-// The retry-cookie vector-file model and loader:
-// `Wire/Vectors/retry-v1.json` — the stateless msg1-flood defense
-// (RetryCookie mint/verify plus the CTRL 0x13/0x14 message pair). Two
-// sections:
-//
-// - `cookieVectors` freeze RetryCookie's transcript MAC as data:
-//   (tuple, msg1, now, secret) → the exact 24 cookie bytes, plus
-//   verify rows pinning the window/binding/rotation decisions. PINNED
-//   SELF-CONSISTENT (no published set covers our transcript), with the
-//   HMAC beneath them anchored in RetryCookieTests against an
-//   independent RFC 2104 construction over TestKit's FIPS-verified
-//   Sha256.
-// - `messageVectors` freeze the 0x13/0x14 codec layouts, anchored
-//   against the hand-built bytes in RetryCodecTests.
+// The retry-cookie vector-file model and loader: `Wire/Vectors/retry-v1.json`.
+// - `cookieVectors`: RetryCookie mint/verify as data, pinned
+//   self-consistent (the HMAC beneath is anchored in RetryCookieTests).
+// - `messageVectors`: the CTRL 0x13/0x14 codec layouts, anchored against
+//   the hand-built bytes in RetryCodecTests.
 
 import Foundation
 import LyteWire
 
-public struct RetryVectorFile: Codable, Sendable {
+public struct RetryVectorFile: FrozenVectorFile {
     public var format: String
     public var formatVersion: Int
     public var wireVersion: Int
@@ -24,6 +15,11 @@ public struct RetryVectorFile: Codable, Sendable {
     public var messageVectors: [RetryMessageVector]
 
     public static let expectedFormat = "lyte-wire-retry-vectors"
+    public static let fileName = "retry-v1.json"
+
+    public var vectorNameGroups: [[String]] {
+        [cookieVectors.map(\.name), messageVectors.map(\.name)]
+    }
 
     public init(
         format: String,
@@ -39,20 +35,13 @@ public struct RetryVectorFile: Codable, Sendable {
         self.messageVectors = messageVectors
     }
 
-    public static func load(from path: String) throws -> RetryVectorFile {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(RetryVectorFile.self, from: data)
-    }
 }
 
-/// One cookie vector. `mint` kind: minting with (tupleHex,
-/// message1Hex, mintNowHex, secretHex) must produce exactly
-/// `cookieHex`, and verifying that cookie at `verifyNowHex` under
-/// `secretsHex` (current-first) must answer `valid`. `verify` kind:
-/// no mint step — `cookieHex` is presented as-is (tampered, foreign,
-/// truncated…) and must answer `valid`. `lifetimeNowHex` overrides
-/// the default lifetime when present. u64s ride as hex, the house
-/// JSON-precision rule.
+/// One cookie vector. `mint`: minting with (tupleHex, message1Hex,
+/// mintNowHex, secretHex) must produce exactly `cookieHex`, and verifying
+/// it at `verifyNowHex` under `secretsHex` (current-first) must answer
+/// `valid`. `verify`: `cookieHex` is presented as-is and must answer
+/// `valid`. `lifetimeNowHex` overrides the default lifetime when present.
 public struct RetryCookieVector: Codable, Sendable {
     public var name: String
     public var description: String
@@ -148,17 +137,5 @@ public struct RetryMessageVector: Codable, Sendable {
         self.cookieHex = cookieHex
         self.message1Hex = message1Hex
         self.error = error
-    }
-}
-
-/// The error-name mapper the file tests assert against.
-public func retryMessageErrorName(_ error: RetryMessageError) -> String {
-    switch error {
-    case .truncatedMessage: return "truncatedMessage"
-    case .trailingBytes: return "trailingBytes"
-    case .unexpectedType: return "unexpectedType"
-    case .zeroCookieLength: return "zeroCookieLength"
-    case .invalidCookieLength: return "invalidCookieLength"
-    case .message1TooShort: return "message1TooShort"
     }
 }

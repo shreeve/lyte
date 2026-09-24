@@ -1,19 +1,14 @@
-// AudioTripwire — the postures design's auto-quiet gate
-// (docs/20260802-013946-postures-design.md): capture NEVER stops, only
-// transmission gates. Sans-IO by construction: time is counted in
-// packets (the wire's fixed 5 ms cadence), levels arrive as RMS the
-// caller computes from the PCM it already holds, and the encoded
-// bytes pass through untouched — the tripwire decides, the caller
-// sends.
+// The audio auto-quiet gate: capture never stops, only transmission
+// gates. Sans-IO: time is counted in packets (the wire's fixed 5 ms
+// cadence), levels arrive as RMS from the caller, and encoded bytes pass
+// through untouched; the tripwire decides, the caller sends.
 //
-// The asymmetry law (owner-specified): tripwire UP, leak DOWN. Waking
-// takes ~100 ms of sound (tripPackets) — and loses NOTHING, because
-// the pre-roll ring holds the onset and its leading context; gating
-// takes ~5 s of unbroken silence (quietHoldPackets), so sentence gaps
-// and breaths never flap the gate. While gated, a check-in fires
-// every ~5 s (checkInPackets) so the client's contract is bounded-
-// stale, never ambiguous; detection stays continuous — the check-in
-// cadence bounds staleness, not wake latency.
+// Tripwire up, leak down: waking takes ~100 ms of sound and loses
+// nothing (the pre-roll ring holds the onset); gating takes ~5 s of
+// unbroken silence, so pauses never flap the gate. While gated a
+// check-in fires every ~5 s; detection stays continuous.
+
+import LyteCore
 
 /// One gated packet held for the wake burst: the encoded bytes and
 /// the capture stamp they were born with.
@@ -29,19 +24,17 @@ public struct AudioTripwirePacket: Equatable, Sendable {
 
 public struct AudioTripwireConfig: Sendable {
     /// RMS at or above this is "sound" (float PCM in [-1, 1]).
-    /// 1e-3 ≈ -60 dBFS: comfortably above dither and virtual-sink
-    /// digital silence, comfortably below any audible content.
+    /// 1e-3 ≈ -60 dBFS: above dither and digital silence, below any
+    /// audible content.
     public var soundRmsFloor: Float
-    /// Consecutive sound packets that fire the tripwire while gated —
-    /// 20 × 5 ms = 100 ms. The ring preserves what these packets
-    /// heard, so detection latency costs no audio.
+    /// Consecutive sound packets that fire the tripwire while gated.
+    /// The ring preserves what they heard, so latency costs no audio.
     public var tripPackets: Int
-    /// Consecutive silent packets before the gate closes —
-    /// 1000 × 5 ms = 5 s. The flap hysteresis.
+    /// Consecutive silent packets before the gate closes.
     public var quietHoldPackets: Int
-    /// Ring capacity: 40 × 5 ms = 200 ms shipped on wake.
+    /// Ring capacity: packets shipped on wake.
     public var preRollPackets: Int
-    /// Still-quiet check-in cadence while gated — 1000 × 5 ms = 5 s.
+    /// Still-quiet check-in cadence while gated, in packets.
     public var checkInPackets: Int
 
     public init(
@@ -69,10 +62,8 @@ public enum AudioTripwireAction: Equatable, Sendable {
     /// Gated: the packet joined the ring; checkIn is true every
     /// checkInPackets while the silence holds.
     case stayQuiet(checkIn: Bool)
-    /// The tripwire fired: announce active, then send the pre-roll
-    /// burst IN ORDER — it already ends with the packet just offered,
-    /// so the onset and its leading context arrive intact and nothing
-    /// is sent twice.
+    /// The tripwire fired: announce active, then send the pre-roll burst
+    /// in order. It already ends with the packet just offered.
     case wake(preRoll: [AudioTripwirePacket])
 }
 
@@ -102,14 +93,14 @@ public struct AudioTripwire: Sendable {
     }
 
     private var state: State = .transmitting(silentRun: 0)
-    private var ring: [AudioTripwirePacket] = []
+    private var ring: BoundedRing<AudioTripwirePacket>
 
     public init(config: AudioTripwireConfig = AudioTripwireConfig()) {
         self.config = config
-        ring.reserveCapacity(config.preRollPackets)
+        ring = BoundedRing(capacity: config.preRollPackets)
     }
 
-    /// True while transmission is gated (the books' posture line).
+    /// True while transmission is gated.
     public var isGated: Bool {
         if case .gated = state { return true }
         return false
@@ -139,8 +130,8 @@ public struct AudioTripwire: Sendable {
             push(AudioTripwirePacket(
                 bytes: packet, captureMicroseconds: captureMicroseconds))
             if run >= config.tripPackets {
-                let preRoll = ring
-                ring.removeAll(keepingCapacity: true)
+                let preRoll = Array(ring)
+                ring.removeAll()
                 state = .transmitting(silentRun: 0)
                 counters.wakes += 1
                 counters.preRollShipped += preRoll.count
@@ -159,8 +150,5 @@ public struct AudioTripwire: Sendable {
     private mutating func push(_ packet: AudioTripwirePacket) {
         counters.packetsGated += 1
         ring.append(packet)
-        if ring.count > config.preRollPackets {
-            ring.removeFirst(ring.count - config.preRollPackets)
-        }
     }
 }
