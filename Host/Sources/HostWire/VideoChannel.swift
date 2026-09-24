@@ -186,12 +186,7 @@ public struct VideoFramePreparationConfig: Sendable {
 /// RS-FEC output with no sequence numbers, Noise nonces, or pacer state.
 /// Preparing it is safe off the Session lock; committing it remains ordered.
 public struct PreparedVideoFrame: Sendable {
-    fileprivate struct Shard: Sendable {
-        let fec: UInt64
-        let payload: [UInt8]
-    }
-
-    fileprivate let shards: [Shard]
+    fileprivate let shards: [VideoShardPayload]
     fileprivate let encodedByteCount: Int
     fileprivate let regime: FecRegime
     let isKeyframe: Bool
@@ -396,43 +391,28 @@ public final class VideoChannel {
         )
     }
 
-    /// Expensive pure half: validate Annex-B shape and build all RS shards.
-    /// This method neither reads nor mutates channel state.
+    /// Expensive pure half: validate Annex-B shape and build all RS shards
+    /// through Wire's packetizer at this channel's shard budget. This
+    /// method neither reads nor mutates channel state. A borrowed buffer
+    /// is copied once into an array; arrays and slices are not.
     public static func prepareFrame<C>(
         _ annexB: C,
         isKeyframe: Bool,
         config: VideoFramePreparationConfig
     ) throws -> PreparedVideoFrame
     where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
-        let classification = AnnexBCheck.classifyFrame(annexB)
-        guard classification.isFrameShaped else {
-            throw VideoError.frameNotFrameShaped
-        }
-        let derivedIdr = classification.containsIrap
-        guard isKeyframe == derivedIdr else {
-            throw VideoError.idrFlagMismatch(
-                claimed: isKeyframe, derived: derivedIdr
-            )
-        }
-
-        let budget = config.shardBudgetByteCount
-        let k = (annexB.count + budget - 1) / budget
-        let m = try FecGeometryTable.parityShards(
-            forDataShards: k, regime: config.regime
-        )
-        let geometry = try FecGeometry(
-            dataShards: k, parityShards: m, groupByteCount: annexB.count
-        )
-        let payloads = try FecEncoder.encode(group: annexB, geometry: geometry)
-        var shards: [PreparedVideoFrame.Shard] = []
-        shards.reserveCapacity(payloads.count)
-        for (index, payload) in payloads.enumerated() {
-            let field = try FecField.reedSolomonShard(index, of: geometry)
-            shards.append(.init(fec: field.encoded, payload: payload))
-        }
+        let frame: ArraySlice<UInt8> =
+            (annexB as? ArraySlice<UInt8>)
+            ?? (annexB as? [UInt8])?[...]
+            ?? Array(annexB)[...]
         return PreparedVideoFrame(
-            shards: shards,
-            encodedByteCount: annexB.count,
+            shards: try VideoPacketizer.shardPayloads(
+                frame: frame,
+                isIDR: isKeyframe,
+                regime: config.regime,
+                shardBudgetByteCount: config.shardBudgetByteCount
+            ),
+            encodedByteCount: frame.count,
             regime: config.regime,
             isKeyframe: isKeyframe
         )
