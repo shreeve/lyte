@@ -156,6 +156,8 @@ rsync -a Scripts/Tests/test-host-package-image.sh \
     "$pup:$pup_gate_root/Scripts/Tests/test-host-package-image.sh"
 rsync -a Scripts/Tests/test-host-installer.sh \
     "$pup:$pup_gate_root/Scripts/Tests/test-host-installer.sh"
+rsync -a Scripts/Tests/test-host-deploy.sh \
+    "$pup:$pup_gate_root/Scripts/Tests/test-host-deploy.sh"
 
 ssh "$pup" 'bash -se' <<'REMOTE'
 set -euo pipefail
@@ -164,24 +166,37 @@ export LD_LIBRARY_PATH="$HOME/.local/lib/swift-compat${LD_LIBRARY_PATH:+:$LD_LIB
 gate_root="$HOME/src/lyte-gates/deterministic"
 package_image_parent=""
 
+# Identity, the service's knobs, the deployed version and the installed unit
+# must be byte-identical after the gate. The XDG identity and host.conf are
+# required; the pre-XDG copies (kept read-only after migration) are covered
+# whenever they exist.
 protected_state_fingerprint() {
-    local config="$HOME/.config/lyte-host"
-    test -f "$config/portal_token"
+    local config="$HOME/.config/lyte" file
     test -f "$config/noise_static.key"
     test -f "$config/paired_clients"
-    sudo -n test -f /etc/lyte/lyte-host.conf
+    test -f "$config/host.conf"
 
     {
-        sha256sum \
-            "$config/portal_token" \
+        for file in \
             "$config/noise_static.key" \
-            "$config/paired_clients"
-        stat -c '%n %a %U %G %s' \
-            "$config/portal_token" \
-            "$config/noise_static.key" \
-            "$config/paired_clients"
-        sudo -n sha256sum /etc/lyte/lyte-host.conf
-        sudo -n stat -c '%n %a %U %G %s' /etc/lyte/lyte-host.conf
+            "$config/paired_clients" \
+            "$config/host.conf" \
+            "$HOME/.config/lyte-host/noise_static.key" \
+            "$HOME/.config/lyte-host/paired_clients" \
+            /etc/lyte/lyte-host.conf \
+            /etc/systemd/system/lyte-host.service
+        do
+            if [[ ! -e "$file" ]]; then
+                echo "absent $file"
+            elif [[ -r "$file" ]]; then
+                sha256sum "$file"
+                stat -c '%n %a %U %G %s' "$file"
+            else
+                sudo -n sha256sum "$file"
+                sudo -n stat -c '%n %a %U %G %s' "$file"
+            fi
+        done
+        echo "link $(readlink -- "$HOME/.local/bin/lyte-host" || echo absent)"
     } | sha256sum | awk '{print $1}'
 }
 
@@ -313,8 +328,9 @@ LYTE_REPOSITORY_ROOT="$gate_root" \
     "$gate_root/Host/Scripts/stage-host-image.sh" "$package_image"
 "$gate_root/Scripts/Tests/test-host-package-image.sh" "$package_image"
 "$gate_root/Scripts/Tests/test-host-installer.sh" "$package_image"
+"$gate_root/Scripts/Tests/test-host-installer.sh" --self-test
 "$gate_root/test-hermetic-linkage.sh" \
-    "$package_image/usr/local/bin/lyte-host"
+    "$package_image/bin/lyte-host"
 find "$package_image_parent" -xdev -depth -delete
 package_image_parent=""
 

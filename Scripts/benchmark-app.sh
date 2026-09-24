@@ -39,6 +39,7 @@ REMOTE_MOTION_LOG=""
 FRESH_HOST_RECOVERY_NEEDED=0
 FRESH_HOST_PROTECTED_STATE=""
 FRESH_HOST_JOURNAL_SINCE=""
+FRESH_HOST_LOG_OFFSET=0
 NO_BUILD=0
 APP_SHA256=""
 HOST_SHA256=""
@@ -214,18 +215,27 @@ HOST_PID="$(pup_ssh "systemctl show lyte-host --property MainPID --value")"
 # A capability-tagged host (the direct eye's cap_sys_admin) is
 # ptrace-guarded: /proc/PID/exe refuses same-uid readers no matter the
 # dumpable flag. sudo -n keeps the witness identical, just readable.
+# The service runs the deployed version (~/.local/bin/lyte-host, placed by
+# Host/Scripts/deploy-host.sh); it must be the binary built from the source
+# checked above.
 host_hashes="$(
   pup_ssh \
     "{ sha256sum /proc/$HOST_PID/exe 2>/dev/null \
        || sudo -n sha256sum /proc/$HOST_PID/exe; } \
        | head -1; \
+     sha256sum \"\$(readlink -f ~/.local/bin/lyte-host)\"; \
      sha256sum ~/src/lyte-host/.build/release/lyte-host"
 )"
 host_hashes="$(printf '%s\n' "$host_hashes" | awk '{print $1}')"
 running_host_sha="$(printf '%s\n' "$host_hashes" | awk 'NR == 1 {print}')"
-disk_host_sha="$(printf '%s\n' "$host_hashes" | awk 'NR == 2 {print}')"
-[[ "$running_host_sha" == "$disk_host_sha" ]] || {
-  echo "benchmark refused: running pup Host is not the built binary" >&2
+deployed_host_sha="$(printf '%s\n' "$host_hashes" | awk 'NR == 2 {print}')"
+built_host_sha="$(printf '%s\n' "$host_hashes" | awk 'NR == 3 {print}')"
+[[ "$deployed_host_sha" == "$built_host_sha" ]] || {
+  echo "benchmark refused: the deployed pup Host is not the built binary (run Host/Scripts/deploy-host.sh --restart)" >&2
+  exit 1
+}
+[[ -n "$running_host_sha" && "$running_host_sha" == "$deployed_host_sha" ]] || {
+  echo "benchmark refused: running pup Host is not the deployed binary (restart lyte-host)" >&2
   exit 1
 }
 
@@ -262,7 +272,7 @@ sudo -n nohup tcpdump -i any -nn -U -w '/tmp/$run_id-host.pcap' \
 p=\$(systemctl show lyte-host --property MainPID --value); \
 ps -o pid,lstart,args -p \"\$p\"; \
 { sha256sum /proc/\$p/exe 2>/dev/null || sudo -n sha256sum /proc/\$p/exe; }; \
-sha256sum ~/src/lyte-host/.build/release/lyte-host; \
+sha256sum \"\$(readlink -f ~/.local/bin/lyte-host)\"; \
 ss -u -a -n -p; ip -s link show" \
     > "$OUT_DIR/$run_id-host-before.txt"
 }
@@ -477,15 +487,9 @@ stop_motion() {
 # identity and configuration must remain byte-identical across the restart.
 protected_host_fingerprint() {
   pup_ssh \
-    "{ sha256sum ~/.config/lyte-host/portal_token \
-~/.config/lyte-host/noise_static.key \
-~/.config/lyte-host/paired_clients; \
-stat -c '%n %a %U %G %s' \
-~/.config/lyte-host/portal_token \
-~/.config/lyte-host/noise_static.key \
-~/.config/lyte-host/paired_clients; \
-sudo -n sha256sum /etc/lyte/lyte-host.conf; \
-sudo -n stat -c '%n %a %U %G %s' /etc/lyte/lyte-host.conf; }" \
+    "set -e; cd ~/.config/lyte; \
+sha256sum noise_static.key paired_clients host.conf; \
+stat -c '%n %a %U %G %s' noise_static.key paired_clients host.conf" \
     | shasum -a 256 \
     | awk '{print $1}'
 }
@@ -504,6 +508,8 @@ start_fresh_host() {
 
   FRESH_HOST_PROTECTED_STATE="$(protected_host_fingerprint)"
   FRESH_HOST_JOURNAL_SINCE="$(date -u +%FT%TZ)"
+  FRESH_HOST_LOG_OFFSET="$(pup_ssh \
+    "stat -c %s ~/.local/state/lyte/host.log 2>/dev/null || echo 0")"
   FRESH_HOST_RECOVERY_NEEDED=1
   restart_result="$(pup_ssh "port=$BENCH_PORT"'
 set -eu
@@ -518,10 +524,10 @@ while [ "$i" -lt 100 ]; do
           | grep -q "pid=$after,"; then
     set -- $(sudo -n sha256sum "/proc/$after/exe")
     running=$1
-    set -- $(sha256sum "$HOME/src/lyte-host/.build/release/lyte-host")
-    built=$1
-    [ "$running" = "$built" ] || {
-      echo "fresh service process is not the built host" >&2
+    set -- $(sha256sum "$(readlink -f "$HOME/.local/bin/lyte-host")")
+    deployed=$1
+    [ "$running" = "$deployed" ] || {
+      echo "fresh service process is not the deployed host" >&2
       exit 1
     }
     printf "%s %s\n" "$before" "$after"
@@ -555,6 +561,12 @@ finish_fresh_host() {
   pup_ssh \
     "sudo -n journalctl -u lyte-host \
 --since '$FRESH_HOST_JOURNAL_SINCE' --no-pager" > "$host_log"
+  # The host's own output since the restart. A start that rotated the log
+  # leaves a file shorter than the recorded offset: take all of it.
+  pup_ssh "log=~/.local/state/lyte/host.log; offset=$FRESH_HOST_LOG_OFFSET; \
+size=\$(stat -c %s \"\$log\" 2>/dev/null || echo 0); \
+[ \"\$size\" -ge \"\$offset\" ] || offset=0; \
+tail -c +\$((offset + 1)) \"\$log\"" > "$OUT_DIR/$run_id-host-output.log" || true
   pup_ssh \
     "systemctl is-active --quiet lyte-host" || {
     echo "lyte-host.service is not active after handshake-only" >&2
@@ -566,6 +578,7 @@ finish_fresh_host() {
   }
   FRESH_HOST_PROTECTED_STATE=""
   FRESH_HOST_JOURNAL_SINCE=""
+  FRESH_HOST_LOG_OFFSET=0
 }
 
 run_leg() {
