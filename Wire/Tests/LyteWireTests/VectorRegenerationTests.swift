@@ -40,6 +40,7 @@ final class VectorRegenerationTests: XCTestCase {
     func testClipboardImages() throws { try assertRegenerates(makeClipboardImageVectorFile) }
     func testCursor() throws { try assertRegenerates(makeCursorVectorFile) }
     func testRepairRefusal() throws { try assertRegenerates(makeRepairRefusalVectorFile) }
+    func testPostures() throws { try assertRegenerates(makePostureVectorFile) }
 
     func testVideo() throws {
         try assertRegenerates {

@@ -196,6 +196,15 @@ file; never rewrite a committed replay.
   case; the spine is pinned declared, absent, and composed with key 10.
   `CursorVectorFileTests` asserts the coverage discipline and anchors
   against `CursorCodecTests`.
+- `postures-v1.json` — the quiet-posture announcements: AudioTrackState
+  0x25 (`type ‖ state`, active 0x01 / quiet 0x02) and VideoPostureState
+  0x26 (`type ‖ posture ‖ keepaliveSeconds`, the interval in force,
+  1–255), plus the key-15/16 capability spine declared, absent, and
+  together. Roundtrips cover both states, both postures and the backoff
+  ladder (1, 2, 4, 8, 16, 30 s and the 255 ceiling); rejects cover
+  every AudioTrackStateError and VideoPostureStateError case. A new
+  file rather than an append to control-v1.json, so no frozen file
+  moves. Anchored by hand-computed bytes in `PostureVectorFileTests`.
 
 Every file above is rebuilt from its builder in `LyteWireVectorGen`
 by `VectorRegenerationTests`, so a builder can never drift from the
