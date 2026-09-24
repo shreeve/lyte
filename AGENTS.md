@@ -46,8 +46,10 @@ Six SwiftPM packages, Swift tools version 6.0, Swift 6 language mode.
   `LyteHelperSecurity` and `lyte-helperd` own the privileged AWDL helper;
   `LyteClientTestKit` owns client test equipment. Production streaming code
   never depends on corpus or harness code. The named exception: the `Lyte`
-  app target links `LyteCorpus` for its environment-gated diagnostic
-  benchmark.
+  app target links `LyteCorpus` for its diagnostic benchmark. Only a
+  diagnostic bundle (`LYTE_APP_DIAGNOSTICS=1 Scripts/make-app.sh`, which
+  writes Info.plist `LyteDiagnosticEntryPoints`) obeys the benchmark and
+  witness environment; every other bundle ignores it.
 - **`Browser/` — `LyteClientBrowser`:** `LyteClientBrowserCore` is the
   browser's sans-IO core over `LyteWire`, `LyteCore` and
   `LyteClientSession`; `LyteClientBrowser` owns the JS↔WASM boundary
@@ -62,19 +64,20 @@ Six SwiftPM packages, Swift tools version 6.0, Swift 6 language mode.
 Client never imports Host and Host never imports Client. Every package uses
 `Sources/<Target>/` for sources and `Tests/<Target>Tests/` for a target's
 own tests; a suite that composes several targets is named for what it
-composes (`LyteClientHostTests`, `LyteHostIntegrationTests`,
-`HostLayoutTests`). Reusable test equipment is named `<Domain>TestKit`,
-lives under `Sources/`, and only test targets depend on it.
+composes (`LyteClientHostTests`, `LyteHostIntegrationTests`). Reusable test
+equipment is named `<Domain>TestKit` and lives under `Sources/`; only test
+targets, other TestKits and the vector builders (`LyteWireVectorGen`,
+`LyteWireVectorGenTool`) depend on it.
 
 ## Architecture doctrine
 
 - **Swift above leaves.** C is allowed only at hardware and OS boundaries:
-  DRM/GBM/EGL/VAAPI/CUDA/NVENC module maps, PipeWire audio, libopus, UDP
-  syscalls, D-Bus, uinput and nanors. HEVC bitstream policy is Swift.
+  DRM/GBM/EGL/VAAPI module maps, PipeWire audio, libopus, UDP syscalls,
+  D-Bus, uinput and nanors. HEVC bitstream policy is Swift.
 - **Sans-IO cores.** `LyteCore`, `LyteWire`, `LyteClientCore`,
-  `LyteClientSession`, `HostCore`, `HostSession` and `HostWire` contain no
-  Foundation, Dispatch, Network, sockets, threads, locks or OS clocks; time
-  and randomness are injected. Their allowed imports are declared in
+  `LyteClientSession`, `LyteClientBrowserCore`, `HostCore`, `HostSession`
+  and `HostWire` contain no Foundation, Dispatch, Network, sockets,
+  threads, locks or OS clocks; time and randomness are injected. Their allowed imports are declared in
   `Common/Tests/LyteTestKitTests/SansIOArchitectureTests.swift`, the one
   enforcement point. Session targets may import `LyteCore` (Core sits below
   Session). `LyteWire` must stay WebAssembly-compilable.
@@ -139,8 +142,9 @@ Operational detail and the reasons behind each rule:
 - Impair only with `Scripts/netem/port-netem.sh`, scoped to one Lyte flow,
   and remove it after the run. Live benchmarks and netem runs need the
   owner's go-ahead.
-- Do not launch a benchmark app while the owner's interactive app is open;
-  both use the same bundle identity.
+- Do not run a benchmark while the owner's interactive app is open: the
+  diagnostic build is published to the same `.build/Lyte.app` with the
+  same bundle identity.
 - Do not deploy to or restart the standing service without the owner's
   go-ahead; deploys use `Host/Scripts/deploy-host.sh` as documented in
   [docs/OPERATIONS.md](docs/OPERATIONS.md#deploy-and-roll-back).
@@ -161,7 +165,13 @@ Operational detail and the reasons behind each rule:
   exact lines or file lists are not behavior tests; replace them with a
   behavioral test or delete them. Keep the import-allowlist and sans-IO
   lints, forbidden-token scans, and single-owner ratchets ("only one
-  implementation of X").
+  implementation of X"); a new ratchet is a row in the one token-aware
+  table, `Common/Tests/LyteTestKitTests/SingleOwnerTests.swift`.
+- Shell checks must fail on macOS bash 3.2, which ignores `set -e` for a
+  failing bare `[[ … ]]` or `(( … ))`, and no bash fails on `! cmd`. Guard
+  each check (`[[ … ]] || fail "…"`, `Scripts/lib/assert.sh`) or make it an
+  `if` condition; `Scripts/Tests/test-shell-assertions.sh` lints every
+  tracked script.
 - Code comments state invariants. Slice ids, dates, "found live" stories
   and owner-ruling narratives belong in commit messages; git owns history.
 - Repository scripts use POSIX tools (`grep`, `sed`, `awk`, `find`). `rg`
