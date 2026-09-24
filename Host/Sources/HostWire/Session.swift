@@ -1735,23 +1735,24 @@ public final class Session {
         )
     }
 
-    /// Queues one one-shot group's single message (non-zero, serially
-    /// ascending group ids — caller-allocated). The group retransmits
+    /// Queues one one-shot group's single message under the CTRL
+    /// endpoint's next group id, which it returns. The group retransmits
     /// independently of the ordered stream and of every other one-shot;
     /// full acknowledgment surfaces as `.reliableOneShotAcknowledged`.
+    @discardableResult
     public func sendReliableOneShot(
         _ message: [UInt8],
-        group: ArqGroupId,
         now: UInt64,
         hostMicroseconds: UInt64
-    ) throws {
+    ) throws -> ArqGroupId {
         guard phase == .established else {
             throw SessionError.notEstablished
         }
-        try ctrlArqLane.sendOneShot(message, group: group, now: now)
+        let group = try ctrlArqLane.sendOneShot(message, now: now)
         _ = serviceArqLane(
             .control, now: now, hostMicroseconds: hostMicroseconds
         )
+        return group
     }
 
     /// True when the reliable sublayers (CTRL and, when it exists, the

@@ -324,10 +324,11 @@ final class ArqCtrlGateTests: XCTestCase {
             if !oneShotsSent, t >= 1_200_000 {
                 oneShotsSent = true
                 for (group, message) in hostOneShots.sorted(by: { $0.key < $1.key }) {
-                    try session.sendReliableOneShot(
-                        message, group: ArqGroupId(rawValue: group),
-                        now: t * 1_000, hostMicroseconds: t
+                    let allocated = try session.sendReliableOneShot(
+                        message, now: t * 1_000, hostMicroseconds: t
                     )
+                    XCTAssertEqual(allocated, ArqGroupId(rawValue: group),
+                                   "the endpoint allocates 1, 2, … in order")
                 }
                 for (group, message) in clientOneShots.sorted(by: { $0.key < $1.key }) {
                     try client.arq.sendOneShot(
@@ -737,22 +738,19 @@ final class ArqCtrlGateTests: XCTestCase {
             XCTAssertEqual($0 as? ArqSendError, .emptyMessage)
         }
         XCTAssertThrowsError(try live.sendReliableOneShot(
-            [0x10], group: .orderedStream, now: 1_000, hostMicroseconds: 1
+            [], now: 1_000, hostMicroseconds: 1
         )) {
-            XCTAssertEqual($0 as? ArqSendError, .orderedStreamGroupId)
+            XCTAssertEqual($0 as? ArqSendError, .emptyMessage)
         }
-        try live.sendReliableOneShot(
-            [0x10], group: ArqGroupId(rawValue: 5),
-            now: 1_000, hostMicroseconds: 1
+        // The endpoint allocates one-shot groups, so a caller can no
+        // longer present an ordered-stream or non-ascending id.
+        XCTAssertEqual(
+            try live.sendReliableOneShot([0x10], now: 1_000, hostMicroseconds: 1),
+            ArqGroupId(rawValue: 1)
         )
-        XCTAssertThrowsError(try live.sendReliableOneShot(
-            [0x10], group: ArqGroupId(rawValue: 5),
-            now: 1_000, hostMicroseconds: 1
-        )) {
-            XCTAssertEqual(
-                $0 as? ArqSendError,
-                .oneShotGroupNotAscending(ArqGroupId(rawValue: 5))
-            )
-        }
+        XCTAssertEqual(
+            try live.sendReliableOneShot([0x10], now: 1_000, hostMicroseconds: 1),
+            ArqGroupId(rawValue: 2)
+        )
     }
 }
