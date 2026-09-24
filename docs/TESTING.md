@@ -113,7 +113,10 @@ In order:
    continues.
 4. **Browser page tests:** `node --test Browser/Tests/Page/page.test.mjs`
    (`SKIPPED` without Node).
-5. **Script tests:** `test-benchmark-safety.sh`,
+5. **Script tests:** `test-shell-assertions.sh` (every tracked `*.sh`
+   parses, and none states a check as a bare `[[ … ]]`, `(( … ))` or
+   `! cmd`, which macOS bash 3.2 never fails under `set -e`; tests use
+   `Scripts/lib/assert.sh`), `test-benchmark-safety.sh`,
    `test-host-release-posture.sh`, `test-host-package-image.sh --self-test`,
    `test-host-installer.sh --self-test` (which also runs
    `test-host-deploy.sh`), `test-sign-dev.sh`.

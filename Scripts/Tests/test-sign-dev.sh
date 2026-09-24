@@ -5,6 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 sign_dev="$repo_root/Scripts/sign-dev.sh"
 fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/lyte-sign-dev.XXXXXX")"
 trap 'rm -rf -- "$fixture_root"' EXIT
+source "$repo_root/Scripts/lib/assert.sh"
 
 fake_bin="$fixture_root/bin"
 fake_home="$fixture_root/home"
@@ -172,6 +173,17 @@ reset_logs() {
     : > "$codesign_log"
 }
 
+# The signer asked `security` exactly this (newline-separated) sequence.
+expect_security() {
+    [[ "$(<"$security_log")" == "$1" ]] \
+        || fail "security was asked: $(<"$security_log")"
+}
+
+# Nothing was signed.
+expect_unsigned() {
+    [[ ! -s "$codesign_log" ]] || fail "codesign ran: $(<"$codesign_log")"
+}
+
 run_signer() {
     HOME="$fake_home" \
     PATH="$fake_bin:$PATH" \
@@ -194,8 +206,7 @@ expect_failure() {
     shift
     local stderr="$fixture_root/stderr"
     if "$@" 2> "$stderr"; then
-        echo "expected command to fail: $*" >&2
-        exit 1
+        fail "expected command to fail: $*"
     fi
     if [[ -n "$expected" ]]; then
         grep -Fq "$expected" "$stderr"
@@ -209,13 +220,13 @@ run_signer "$fixture_root/Lyte.app" "$fixture_root/lyte-cli"
 grep -Fq -- "--force --sign AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA --identifier dev.shreeve.lyte --options runtime --timestamp=none $fixture_root/Lyte.app" "$codesign_log"
 grep -Fq -- "--verify --strict $fixture_root/Lyte.app" "$codesign_log"
 grep -Fq -- "--force --sign AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA --identifier dev.shreeve.lyte-cli --options runtime --timestamp=none $fixture_root/lyte-cli" "$codesign_log"
-[[ "$(<"$security_log")" == 'find-identity -v -p codesigning' ]]
+expect_security 'find-identity -v -p codesigning'
 
 write_two_apples
 reset_logs
 expect_failure "multiple Apple Development identities" run_signer \
     "$fixture_root/Lyte.app"
-[[ ! -s "$codesign_log" ]]
+expect_unsigned
 
 reset_logs
 LYTE_SIGNING_IDENTITY='Apple Development: Bob Two (TEAMTWO456)' \
@@ -231,7 +242,7 @@ write_duplicate_name_apples
 reset_logs
 LYTE_SIGNING_IDENTITY='Apple Development: Ada One (TEAMONE123)' \
     expect_failure "is ambiguous" run_signer "$fixture_root/Lyte.app"
-[[ ! -s "$codesign_log" ]]
+expect_unsigned
 
 reset_logs
 LYTE_SIGNING_IDENTITY=FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF \
@@ -243,31 +254,31 @@ reset_logs
 LYTE_SIGNING_IDENTITY='Apple Development: Missing (MISSING123)' \
     expect_failure "requested Apple signing identity not found" run_signer \
         "$fixture_root/Lyte.app"
-[[ ! -s "$codesign_log" ]]
-[[ "$(<"$security_log")" == 'find-identity -v -p codesigning' ]]
+expect_unsigned
+expect_security 'find-identity -v -p codesigning'
 
 reset_logs
 LYTE_SIGNING_IDENTITY='Developer ID Application: Ada One (TEAMONE123)' \
     expect_failure "not Apple Development or Lyte Dev" run_signer \
         "$fixture_root/Lyte.app"
-[[ ! -s "$codesign_log" ]]
+expect_unsigned
 
 reset_logs
 LYTE_SIGNING_IDENTITY='Lyte Dev' run_signer "$fixture_root/Lyte.app"
 grep -Fq -- '--sign DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD' "$codesign_log"
-[[ "$(<"$security_log")" == \
-    "find-identity $fake_home/Library/Keychains/lyte-signing.keychain-db" ]]
+expect_security \
+    "find-identity $fake_home/Library/Keychains/lyte-signing.keychain-db"
 
 : > "$valid_identities"
 reset_logs
 run_signer "$fixture_root/Lyte.app"
 grep -Fq -- '--sign DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD' "$codesign_log"
-[[ "$(<"$security_log")" == $'find-identity -v -p codesigning\nfind-identity '"$fake_home"'/Library/Keychains/lyte-signing.keychain-db' ]]
+expect_security $'find-identity -v -p codesigning\nfind-identity '"$fake_home"'/Library/Keychains/lyte-signing.keychain-db'
 
 : > "$fallback_identities"
 reset_logs
 expect_failure "identity not found" run_signer "$fixture_root/Lyte.app"
-[[ ! -s "$codesign_log" ]]
+expect_unsigned
 
 write_one_apple
 write_fallback

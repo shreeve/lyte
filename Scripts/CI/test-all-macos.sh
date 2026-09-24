@@ -140,6 +140,9 @@ else
     echo "    SKIPPED: node not installed"
 fi
 
+echo "==> shell script lint"
+Scripts/Tests/test-shell-assertions.sh
+
 echo "==> benchmark safety tests"
 Scripts/Tests/test-benchmark-safety.sh
 Scripts/Tests/test-host-release-posture.sh
@@ -212,7 +215,11 @@ LYTE_APP_DESTINATION="$ci_app" Scripts/make-app.sh release
 second_ci_bundle_version="$(
     plutil -extract CFBundleVersion raw -o - "$ci_app/Contents/Info.plist"
 )"
-[[ "$second_ci_bundle_version" -gt "$first_ci_bundle_version" ]]
+[[ "$second_ci_bundle_version" -gt "$first_ci_bundle_version" ]] || {
+    echo "macOS gate FAILED: bundle version did not increase" \
+        "($first_ci_bundle_version then $second_ci_bundle_version)" >&2
+    exit 1
+}
 Scripts/Tests/test-app-packaging.sh "$ci_app" "$ci_app_root"
 codesign --verify --strict "$ci_app/Contents/MacOS/Lyte"
 codesign --verify --strict "$ci_app/Contents/MacOS/lyte-helperd"

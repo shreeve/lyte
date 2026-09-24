@@ -5,17 +5,18 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 app="${1:-$repo_root/.build/Lyte.app}"
 active_stage="${2:-}"
 plist="$app/Contents/Info.plist"
+source "$repo_root/Scripts/lib/assert.sh"
 
-[[ -x "$app/Contents/MacOS/Lyte" ]]
-[[ -x "$app/Contents/MacOS/lyte-helperd" ]]
+[[ -x "$app/Contents/MacOS/Lyte" ]] || fail "no app executable in $app"
+[[ -x "$app/Contents/MacOS/lyte-helperd" ]] || fail "no helper executable in $app"
 plutil -lint "$plist" >/dev/null
 
 assert_hash() {
     local resource="$1"
     local expected="$2"
-    [[ -f "$app/Contents/Resources/$resource" ]]
+    [[ -f "$app/Contents/Resources/$resource" ]] || fail "missing $resource"
     [[ "$(shasum -a 256 "$app/Contents/Resources/$resource" \
-        | awk '{print $1}')" == "$expected" ]]
+        | awk '{print $1}')" == "$expected" ]] || fail "$resource changed"
 }
 
 assert_hash Opus-COPYING.txt \
@@ -43,20 +44,28 @@ bonjour_service="$(
     plutil -extract NSBonjourServices.0 raw -o - "$plist"
 )"
 
-[[ "$bundle_version" =~ ^[0-9]+$ ]]
-[[ "$bundle_version" -ge "$(git -C "$repo_root" rev-list --count HEAD)" ]]
-[[ "$short_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+[[ "$bundle_version" =~ ^[0-9]+$ ]] \
+    || fail "CFBundleVersion is not numeric: $bundle_version"
+commit_count="$(git -C "$repo_root" rev-list --count HEAD)"
+[[ "$bundle_version" -ge "$commit_count" ]] \
+    || fail "CFBundleVersion $bundle_version is below the commit count $commit_count"
+[[ "$short_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+    || fail "CFBundleShortVersionString is not x.y.z: $short_version"
 expected_revision="$(git -C "$repo_root" rev-parse --short=12 HEAD)"
 [[ -z "$(git -C "$repo_root" status --porcelain)" ]] \
     || expected_revision="${expected_revision}+"
-[[ "$source_revision" == "$expected_revision" ]]
-[[ -n "$local_network_usage" ]]
-[[ "$bonjour_service" == _lyte._udp ]]
+[[ "$source_revision" == "$expected_revision" ]] \
+    || fail "LyteSourceRevision is $source_revision; want $expected_revision"
+[[ -n "$local_network_usage" ]] || fail "no NSLocalNetworkUsageDescription"
+[[ "$bonjour_service" == _lyte._udp ]] \
+    || fail "NSBonjourServices[0] is $bonjour_service; want _lyte._udp"
 
 codesign --verify --strict "$app/Contents/MacOS/lyte-helperd"
 codesign --verify --strict "$app"
-[[ "$(codesign -d --verbose=4 "$app" 2>&1 \
-    | awk -F= '/^Identifier=/{print $2; exit}')" == dev.shreeve.lyte ]]
+identifier="$(codesign -d --verbose=4 "$app" 2>&1 \
+    | awk -F= '/^Identifier=/{print $2; exit}')"
+[[ "$identifier" == dev.shreeve.lyte ]] \
+    || fail "app signing identifier is $identifier; want dev.shreeve.lyte"
 
 app_signature="$(codesign -dvvv "$app" 2>&1)"
 helper_signature="$(codesign -dvvv "$app/Contents/MacOS/lyte-helperd" 2>&1)"
@@ -67,17 +76,19 @@ helper_authority="$(printf '%s\n' "$helper_signature" \
 requirement="$(codesign -d -r- "$app" 2>&1)"
 helper_requirement="$(codesign -d -r- \
     "$app/Contents/MacOS/lyte-helperd" 2>&1)"
-[[ "$helper_authority" == "$authority" ]]
+[[ "$helper_authority" == "$authority" ]] \
+    || fail "helper signed by $helper_authority, app by $authority"
 # Hardened runtime on both: the helper trusts whatever satisfies the app's
 # designated requirement, so neither process may accept injected code.
 hardened_runtime='^CodeDirectory .*flags=0x[[:xdigit:]]+\([^)]*runtime'
 grep -Eq "$hardened_runtime" <<< "$app_signature"
 grep -Eq "$hardened_runtime" <<< "$helper_signature"
+# Output is captured before grep: with pipefail, `grep -q` exiting early can
+# SIGPIPE the producer and turn a match into a failed pipeline.
 for signed in "$app" "$app/Contents/MacOS/lyte-helperd"; do
-    if codesign -d --entitlements - --xml "$signed" 2>/dev/null \
-        | grep -Fq 'get-task-allow'; then
-        echo "$signed permits task-port attach (get-task-allow)" >&2
-        exit 1
+    entitlements="$(codesign -d --entitlements - --xml "$signed" 2>/dev/null)"
+    if grep -Fq 'get-task-allow' <<< "$entitlements"; then
+        fail "$signed permits task-port attach (get-task-allow)"
     fi
 done
 case "$authority" in
@@ -86,8 +97,10 @@ case "$authority" in
             | awk -F= '/^TeamIdentifier=/{print $2; exit}')"
         helper_team_identifier="$(printf '%s\n' "$helper_signature" \
             | awk -F= '/^TeamIdentifier=/{print $2; exit}')"
-        [[ "$team_identifier" =~ ^[A-Z0-9]{10}$ ]]
-        [[ "$helper_team_identifier" == "$team_identifier" ]]
+        [[ "$team_identifier" =~ ^[A-Z0-9]{10}$ ]] \
+            || fail "app team identifier is malformed: $team_identifier"
+        [[ "$helper_team_identifier" == "$team_identifier" ]] \
+            || fail "helper team $helper_team_identifier, app team $team_identifier"
         grep -Fq 'anchor apple generic' <<< "$requirement"
         grep -Fq 'anchor apple generic' <<< "$helper_requirement"
         grep -Fq \
@@ -102,8 +115,7 @@ case "$authority" in
         grep -Fq 'certificate root = H"' <<< "$helper_requirement"
         ;;
     *)
-        echo "unexpected app signing authority: $authority" >&2
-        exit 1
+        fail "unexpected app signing authority: $authority"
         ;;
 esac
 
@@ -118,28 +130,27 @@ app_designated_requirement="$(
     printf '%s\n' "$requirement" \
         | awk '/^designated => / {sub(/^designated => /, ""); print; exit}'
 )"
-[[ "$client_requirement" == "$app_designated_requirement" ]]
+[[ "$client_requirement" == "$app_designated_requirement" ]] \
+    || fail "helper client requirement differs from the app's designated requirement"
 codesign --verify --strict -R="$client_requirement" "$app"
 if codesign --verify --strict -R="$client_requirement" \
     "$app/Contents/MacOS/lyte-helperd" >/dev/null 2>&1; then
-    echo "helper client requirement accepted the wrong bundle identifier" >&2
-    exit 1
+    fail "helper client requirement accepted the wrong bundle identifier"
 fi
 if codesign --verify --strict -R="$client_requirement" \
     /bin/ls >/dev/null 2>&1; then
-    echo "helper client requirement accepted a foreign platform binary" >&2
-    exit 1
+    fail "helper client requirement accepted a foreign platform binary"
 fi
 
 # TN3179 requires a Mach-O UUID so Local Network privacy can track a macOS
 # program reliably. Both responsible executables must carry one.
-dwarfdump --uuid "$app/Contents/MacOS/Lyte" | grep -Eq '^UUID: [0-9A-F-]{36} '
-dwarfdump --uuid "$app/Contents/MacOS/lyte-helperd" \
-    | grep -Eq '^UUID: [0-9A-F-]{36} '
-
 for executable in Lyte lyte-helperd; do
-    [[ "$(xcrun vtool -show-build "$app/Contents/MacOS/$executable" \
-        | awk '$1 == "minos" { print $2; exit }')" == 15.0 ]]
+    uuids="$(dwarfdump --uuid "$app/Contents/MacOS/$executable")"
+    grep -Eq '^UUID: [0-9A-F-]{36} ' <<< "$uuids" \
+        || fail "$executable carries no Mach-O UUID"
+    minos="$(xcrun vtool -show-build "$app/Contents/MacOS/$executable" \
+        | awk '$1 == "minos" { print $2; exit }')"
+    [[ "$minos" == 15.0 ]] || fail "$executable minos is $minos; want 15.0"
 done
 
 # Positive proof complements the no-dylib closure check: the app really
