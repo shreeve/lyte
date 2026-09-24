@@ -435,7 +435,7 @@ final class BulkCodecTests: XCTestCase {
         XCTAssertTrue(map.holds(5))
         XCTAssertTrue(map.holds(6))
         XCTAssertFalse(map.holds(7))
-        XCTAssertEqual(map.heldChunkCount, 5)
+        XCTAssertEqual(map.bitmapChunkIndices, [5, 6])
         XCTAssertThrowsError(
             try BulkChunkMap(contiguousCount: 0, bitmap: [0x01, 0x00])
         ) {
@@ -477,6 +477,44 @@ final class BulkCodecTests: XCTestCase {
         XCTAssertEqual(
             atEdge.bitmap.count, BulkWire.maxBitmapByteCount
         )
+    }
+
+    /// A possession with far more extras than the bitmap window (a
+    /// sender leaving a hole below every chunk) describes exactly the
+    /// window: every second offset set, nothing past it claimed.
+    func testDenseExtrasDescribeExactlyTheWindow() {
+        let windowBits = BulkWire.maxBitmapByteCount * 8
+        let possession = BulkPossession(
+            contiguousCount: 0,
+            extras: Set(stride(from: 2, to: UInt64(4 * windowBits), by: 2))
+        )
+        let map = possession.map
+        XCTAssertEqual(map.contiguousCount, 0)
+        XCTAssertEqual(
+            map.bitmap,
+            [UInt8](repeating: 0xAA, count: BulkWire.maxBitmapByteCount)
+        )
+        XCTAssertEqual(
+            map, BulkChunkMap.describing(
+                contiguousCount: 0,
+                extras: stride(from: 2, to: UInt64(windowBits + 2), by: 2)
+            ),
+            "the window scan and the extras walk agree"
+        )
+    }
+
+    /// A decoded map whose bitmap reaches past UInt64.max names no
+    /// chunk there; reading it must not trap.
+    func testHostileMapPastTheIndexSpaceNeverTraps() throws {
+        let ack = try BulkAck.decode(
+            [CtrlMessageType.bulkAck] + [1, 0, 0, 0, 0, 0, 0, 0]
+                + [0, 0, 0, 0, 0, 0, 0, 0]
+                + [UInt8](repeating: 0xFF, count: 8) + [1, 0] + [0x01]
+        )
+        XCTAssertEqual(ack.possession.contiguousCount, .max)
+        XCTAssertEqual(ack.possession.bitmapChunkIndices, [])
+        XCTAssertTrue(ack.possession.holds(.max - 1))
+        XCTAssertFalse(ack.possession.holds(.max))
     }
 
     func testPossessionArithmetic() {

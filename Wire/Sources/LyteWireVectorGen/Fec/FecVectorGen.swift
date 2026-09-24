@@ -339,7 +339,7 @@ public func makeFecVectorFile() throws -> FecVectorFile {
     return FecVectorFile(
         format: FecVectorFile.expectedFormat,
         formatVersion: 1,
-        wireVersion: Int(WireVersion.major),
+        wireVersion: 1,
         fieldVectors: fieldVectors,
         geometryRows: geometryRows,
         recoveryMatrices: matrices

@@ -1,7 +1,6 @@
 // Authors Vectors/clipboard-images-v1.json: the 0x22 cargo marker and
 // the key-12 capability spine. Anchored by ClipboardImageCodecTests.
 
-import Foundation
 import LyteCore
 import LyteWire
 import LyteWireTestKit
@@ -204,7 +203,7 @@ public func makeClipboardImageVectorFile() throws -> ClipboardImageVectorFile {
     return ClipboardImageVectorFile(
         format: ClipboardImageVectorFile.expectedFormat,
         formatVersion: 1,
-        wireVersion: Int(WireVersion.major),
+        wireVersion: 1,
         vectors: vectors
     )
 }

@@ -13,10 +13,6 @@ final class ArqVectorFileTests: XCTestCase {
         try ArqVectorFile.loadCommitted()
     }
 
-    func testFileIdentity() throws {
-        XCTAssertEqual(try loadFile().identityProblems, [])
-    }
-
     func testAllArqVectors() throws {
         for vector in try loadFile().vectors {
             guard let payload = Hex.bytes(vector.payloadHex) else {

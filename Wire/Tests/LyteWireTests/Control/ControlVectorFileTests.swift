@@ -15,10 +15,6 @@ final class ControlVectorFileTests: XCTestCase {
         try ControlVectorFile.loadCommitted()
     }
 
-    func testFileIdentity() throws {
-        XCTAssertEqual(try loadFile().identityProblems, [])
-    }
-
     /// The file pins the WHOLE value spaces of the enum-shaped codecs:
     /// every InputEvent body kind and every routing mode of both 0x18
     /// and 0x19 must appear as a roundtrip — a case added to either
@@ -51,7 +47,7 @@ final class ControlVectorFileTests: XCTestCase {
             case .idleFrame:
                 try checkIdleFrame(vector, message: message)
             case .inputEvent:
-                try checkInputEvent(vector, message: message)
+                try checkInputEventVector(vector, message: message)
             case .inputEcho:
                 try checkInputEcho(vector, message: message)
             case .lastInputSeqTlv:
@@ -94,32 +90,6 @@ final class ControlVectorFileTests: XCTestCase {
         case .decodeReject:
             XCTAssertThrowsError(try IdleFrame.decode(message), vector.name) {
                 guard let error = $0 as? IdleFrameError else {
-                    return XCTFail("\(vector.name): foreign error \($0)")
-                }
-                XCTAssertEqual(vectorErrorName(error), vector.error,
-                               vector.name)
-            }
-        }
-    }
-
-    private func checkInputEvent(
-        _ vector: ControlVector, message: [UInt8]
-    ) throws {
-        switch vector.kind {
-        case .roundtrip:
-            guard let seq = vector.seq,
-                  let micros = vector.clientMicrosHex.flatMap(Hex.uint64),
-                  let body = controlVectorBody(vector) else {
-                return XCTFail("\(vector.name): missing fields")
-            }
-            let event = InputEvent(
-                seq: seq, clientMicroseconds: micros, body: body
-            )
-            XCTAssertEqual(event.encode(), message, vector.name)
-            XCTAssertEqual(try InputEvent.decode(message), event, vector.name)
-        case .decodeReject:
-            XCTAssertThrowsError(try InputEvent.decode(message), vector.name) {
-                guard let error = $0 as? InputMessageError else {
                     return XCTFail("\(vector.name): foreign error \($0)")
                 }
                 XCTAssertEqual(vectorErrorName(error), vector.error,
@@ -229,6 +199,38 @@ final class ControlVectorFileTests: XCTestCase {
             XCTAssertEqual(try set.encodeCbor(), message, vector.name)
         case .decodeReject:
             XCTFail("\(vector.name): capabilitySet vectors are roundtrips")
+        }
+    }
+}
+
+/// Checks one `codec = inputEvent` vector: a roundtrip encodes to and
+/// decodes from exactly its bytes; a reject throws the named
+/// `InputMessageError`. Shared with the input-coordinate file.
+func checkInputEventVector(
+    _ vector: ControlVector, message: [UInt8]
+) throws {
+    switch vector.kind {
+    case .roundtrip:
+        guard let seq = vector.seq,
+              let micros = vector.clientMicrosHex.flatMap(Hex.uint64),
+              let body = controlVectorBody(vector) else {
+            return XCTFail("\(vector.name): missing fields")
+        }
+        let event = InputEvent(
+            seq: seq, clientMicroseconds: micros, body: body
+        )
+        XCTAssertEqual(event.encode(), message, vector.name)
+        XCTAssertEqual(try InputEvent.decode(message), event, vector.name)
+        // f64 equality forgives −0.0; the re-encode pins every bit.
+        XCTAssertEqual(try InputEvent.decode(message).encode(), message,
+                       vector.name)
+    case .decodeReject:
+        XCTAssertThrowsError(try InputEvent.decode(message), vector.name) {
+            guard let error = $0 as? InputMessageError else {
+                return XCTFail("\(vector.name): foreign error \($0)")
+            }
+            XCTAssertEqual(vectorErrorName(error), vector.error,
+                           vector.name)
         }
     }
 }

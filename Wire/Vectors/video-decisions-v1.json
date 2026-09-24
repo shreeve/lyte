@@ -1,0 +1,106 @@
+{
+  "format" : "lyte-wire-video-decision-vectors",
+  "formatVersion" : 1,
+  "provenance" : "pinned-self-consistent",
+  "scenarioFile" : "video-v1.json",
+  "scenarios" : [
+    {
+      "events" : [
+        "decoded 0 idr true",
+        "shardDropped staleFrame 0"
+      ],
+      "name" : "in-order-tiny-idr"
+    },
+    {
+      "events" : [
+        "nackCandidates 1 seqs [2, 3] shards [0, 1] parity 2 ageMicros 0",
+        "decoded 1 idr false",
+        "shardDropped staleFrame 1",
+        "shardDropped staleFrame 1"
+      ],
+      "name" : "shuffled-k3"
+    },
+    {
+      "events" : [
+        "nackCandidates 1 seqs [2] shards [0] parity 2 ageMicros 0",
+        "decoded 1 idr false"
+      ],
+      "name" : "loss-at-parity-limit-k3"
+    },
+    {
+      "events" : [
+        "shardDropped duplicateShard 1 shard 0",
+        "shardDropped duplicateShard 1 shard 1",
+        "decoded 1 idr false",
+        "shardDropped staleFrame 1",
+        "shardDropped staleFrame 1"
+      ],
+      "name" : "duplicates-k3"
+    },
+    {
+      "events" : [
+        "decoded 4 idr false"
+      ],
+      "name" : "seq-wrap-loss"
+    },
+    {
+      "events" : [
+        "nackCandidates 1 seqs [3, 4] shards [1, 2] parity 2 ageMicros 0",
+        "nackCandidates 1 seqs [5] shards [1, 2, 3] parity 2 ageMicros 0",
+        "nackCandidates 1 seqs [6] shards [1, 2, 3, 4] parity 2 ageMicros 0",
+        "shardDropped duplicateShard 2 shard 3",
+        "shardDropped duplicateShard 2 shard 4",
+        "decoded 1 idr false",
+        "decoded 2 idr false"
+      ],
+      "name" : "interleaved-frames-emit-in-order"
+    },
+    {
+      "events" : [
+        "nackCandidates 1 seqs [2] shards [0] parity 2 ageMicros 0",
+        "nackCandidates 1 seqs [3, 4] shards [0, 1, 2] parity 2 ageMicros 0",
+        "nackCandidates 1 seqs [6] shards [0, 1, 2, 4] parity 2 ageMicros 0",
+        "shardDropped duplicateShard 2 shard 3",
+        "shardDropped duplicateShard 2 shard 4",
+        "fecImpossible 1 presumedLostData 3 bestCaseParity 2",
+        "shardDropped duplicateShard 3 shard 3",
+        "shardDropped duplicateShard 3 shard 4",
+        "evicted 1 stale",
+        "decoded 2 idr false",
+        "decoded 3 idr false"
+      ],
+      "name" : "fec-impossible-then-eviction"
+    },
+    {
+      "events" : [
+        "decoded 100 idr true",
+        "shardDropped staleFrame 100",
+        "shardDropped staleFrame 100",
+        "shardDropped staleFrame 100"
+      ],
+      "name" : "corpus-idr-in-order"
+    },
+    {
+      "events" : [
+        "nackCandidates 100 seqs [1000] shards [0] parity 3 ageMicros 0",
+        "nackCandidates 100 seqs [1001] shards [0, 1] parity 3 ageMicros 0",
+        "nackCandidates 100 seqs [1002] shards [0, 1, 2] parity 3 ageMicros 0",
+        "decoded 100 idr true",
+        "nackCandidates 101 seqs [1020] shards [0] parity 3 ageMicros 0",
+        "nackCandidates 101 seqs [1021] shards [0, 1] parity 3 ageMicros 0",
+        "nackCandidates 101 seqs [1022] shards [0, 1, 2] parity 3 ageMicros 0",
+        "decoded 101 idr false"
+      ],
+      "name" : "corpus-sequence-with-loss"
+    },
+    {
+      "events" : [
+        "nackCandidates 103 seqs [1048] shards [0] parity 2 ageMicros 0",
+        "nackCandidates 103 seqs [1049] shards [0, 1] parity 2 ageMicros 0",
+        "decoded 103 idr false"
+      ],
+      "name" : "corpus-small-p-lossy-regime"
+    }
+  ],
+  "wireVersion" : 1
+}

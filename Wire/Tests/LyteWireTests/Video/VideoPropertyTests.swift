@@ -29,10 +29,10 @@ final class VideoPropertyTests: XCTestCase {
     /// Frame sizes that walk every geometry bucket: k=1 through the
     /// 9…32 bucket, biased small the way live traffic is.
     private func randomFrameByteCount(using rng: inout SplitMix64) -> Int {
-        switch Int.random(in: 0..<10, using: &rng) {
-        case 0..<4: return Int.random(in: 8...1112, using: &rng)          // k=1
-        case 4..<7: return Int.random(in: 1113...(8 * 1112), using: &rng) // k=2…8
-        default: return Int.random(in: (8 * 1112 + 1)...(20 * 1112), using: &rng)
+        switch rng.int(in: 0..<10) {
+        case 0..<4: return rng.int(in: 8...1112)          // k=1
+        case 4..<7: return rng.int(in: 1113...(8 * 1112)) // k=2…8
+        default: return rng.int(in: (8 * 1112 + 1)...(20 * 1112))
         }
     }
 
@@ -50,7 +50,7 @@ final class VideoPropertyTests: XCTestCase {
                 maxTrackedGroups: 64,
                 reorderThresholdPackets: 3
             ))
-            let frameCount = Int.random(in: 2...6, using: &rng)
+            let frameCount = rng.int(in: 2...6)
             let regime: FecRegime = Bool.random(using: &rng) ? .clean : .lossy
 
             // Delivery model: within each frame, shards shuffle freely and
@@ -81,17 +81,17 @@ final class VideoPropertyTests: XCTestCase {
                 let geometry = try FecGeometryTable.geometry(
                     forGroupByteCount: frame.count, regime: regime
                 )
-                shards.shuffle(using: &rng)
+                rng.shuffle(&shards)
                 shards.removeLast(
-                    Int.random(in: 0...geometry.parityShards, using: &rng)
+                    rng.int(in: 0...geometry.parityShards)
                 )
-                let carryCount = Int.random(in: 0...(shards.count / 2), using: &rng)
+                let carryCount = rng.int(in: 0...(shards.count / 2))
                 var batch = stragglers + shards.dropLast(carryCount)
                 stragglers = Array(shards.suffix(carryCount))
-                batch.shuffle(using: &rng)
+                rng.shuffle(&batch)
                 for shard in batch {
                     deliveries.append(shard)
-                    if Int.random(in: 0..<10, using: &rng) == 0 {
+                    if rng.int(in: 0..<10) == 0 {
                         deliveries.append(shard)
                     }
                 }
@@ -140,11 +140,11 @@ final class VideoPropertyTests: XCTestCase {
                 reorderThresholdPackets: 3,
                 fecImpossibleThresholdPackets: 4
             ))
-            let frameCount = Int.random(in: 3...6, using: &rng)
+            let frameCount = rng.int(in: 3...6)
             // One doomed frame loses more data shards than parity; never
             // the last frame, so follow-on traffic exists to presume its
             // shards lost against.
-            let doomed = Int.random(in: 0..<(frameCount - 1), using: &rng)
+            let doomed = rng.int(in: 0..<(frameCount - 1))
 
             var frames: [[UInt8]] = []
             var units: [DecodeUnit] = []
@@ -153,7 +153,7 @@ final class VideoPropertyTests: XCTestCase {
             for number in 0..<frameCount {
                 // ≥ 2 data shards so a beyond-parity pattern exists.
                 let frame = randomFrame(
-                    byteCount: Int.random(in: 1113...(6 * 1112), using: &rng),
+                    byteCount: rng.int(in: 1113...(6 * 1112)),
                     isIDR: false, using: &rng
                 )
                 frames.append(frame)
@@ -225,11 +225,11 @@ final class VideoPropertyTests: XCTestCase {
                     ? rng.next()
                     // Bias into decodable fields so the group machinery runs.
                     : (try? FecField.reedSolomonShard(
-                        Int.random(in: 0..<3, using: &rng),
+                        rng.int(in: 0..<3),
                         of: FecGeometry(dataShards: 2, parityShards: 1, groupByteCount: 8)
                     ).encoded) ?? 0
             )
-            let payload = rng.bytes(Int.random(in: 0...16, using: &rng))
+            let payload = rng.bytes(rng.int(in: 0...16))
             let events = assembler.ingest(
                 envelope: envelope, payload: payload,
                 now: ClientTimestamp(microseconds: UInt64(trial))

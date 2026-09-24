@@ -336,7 +336,7 @@ public func makeEnvelopeVectorFile() throws -> EnvelopeVectorFile {
     return EnvelopeVectorFile(
         format: EnvelopeVectorFile.expectedFormat,
         formatVersion: 1,
-        wireVersion: Int(WireVersion.major),
+        wireVersion: 1,
         vectors: vectors,
         seqComparisons: seqComparisons
     )

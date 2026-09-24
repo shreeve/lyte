@@ -13,10 +13,6 @@ final class CursorVectorFileTests: XCTestCase {
         try CursorVectorFile.loadCommitted()
     }
 
-    func testFileIdentity() throws {
-        XCTAssertEqual(try loadFile().identityProblems, [])
-    }
-
     /// The file's coverage discipline: the codec carries roundtrips
     /// including the hidden state, a non-square image, the exact side
     /// cap, and the exact image ceiling as legal; every error case

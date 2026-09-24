@@ -11,7 +11,7 @@ public func makeBulkVectorFile() throws -> BulkVectorFile {
     BulkVectorFile(
         format: BulkVectorFile.expectedFormat,
         formatVersion: 1,
-        wireVersion: Int(WireVersion.major),
+        wireVersion: 1,
         messageVectors: try makeBulkMessageVectors(),
         capabilityVectors: try makeBulkCapabilityVectors(),
         transferVectors: try makeBulkTransferVectors()

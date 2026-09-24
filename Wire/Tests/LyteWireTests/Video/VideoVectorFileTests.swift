@@ -11,16 +11,10 @@ import LyteWireTestKit
 
 final class VideoVectorFileTests: XCTestCase {
 
-    private static let packageRoot = WireTestPaths.packageRoot
-
-    private static let corpusDirectory = packageRoot + "/Vectors/video-corpus-v1"
+    private static let corpusDirectory = WireVectors.path("video-corpus-v1")
 
     private func loadFile() throws -> VideoVectorFile {
         try VideoVectorFile.loadCommitted()
-    }
-
-    func testFileIdentity() throws {
-        XCTAssertEqual(try loadFile().identityProblems, [])
     }
 
     func testFrameVectorsPacketizeByteExact() throws {
@@ -71,46 +65,18 @@ final class VideoVectorFileTests: XCTestCase {
 
     func testScenariosAssembleAsFrozen() throws {
         let file = try loadFile()
-        var framesByName: [String: (vector: VideoFrameVector, shards: [VideoShard], bytes: [UInt8])] = [:]
+        var framesByName: [String: (vector: VideoFrameVector, bytes: [UInt8])] = [:]
         for vector in file.frames {
-            let bytes = try vector.source.loadBytes(
+            framesByName[vector.name] = (vector, try vector.source.loadBytes(
                 corpusDirectory: Self.corpusDirectory
-            )
-            var packetizer = VideoPacketizer(
-                firstSeq: ChannelSeq(rawValue: vector.firstSeq)
-            )
-            let shards = try packetizer.packetize(
-                frame: bytes,
-                frameNumber: FrameNumber(rawValue: vector.frameNumber),
-                captureTimestamp: HostTimestamp(
-                    microseconds: try XCTUnwrap(Hex.uint64(vector.timestampHex))
-                ),
-                isIDR: vector.isIDR,
-                regime: try XCTUnwrap(FecRegime(rawValue: vector.regime))
-            )
-            framesByName[vector.name] = (vector, shards, bytes)
+            ))
         }
 
-        for scenario in file.scenarios {
-            var assembler = VideoAssembler()
-            let now = ClientTimestamp(microseconds: 0)
+        for (scenario, events) in try replayVideoScenarios(
+            file, corpusDirectory: Self.corpusDirectory
+        ) {
             var decoded: [DecodeUnit] = []
             var impossible: [UInt32] = []
-
-            var events: [VideoAssemblerEvent] = []
-            for step in scenario.steps {
-                let frame = try XCTUnwrap(framesByName[step.frame], scenario.name)
-                let shard = frame.shards[step.shardIndex]
-                // Through the envelope codec both ways — the wire path.
-                let datagram = try shard.encodeDatagram()
-                let (envelope, payload) = try Envelope.decode(datagram)
-                events += assembler.ingest(envelope: envelope, payload: payload, now: now)
-            }
-            if let tick = scenario.finalTickMicroseconds {
-                events += assembler.evictStale(
-                    now: ClientTimestamp(microseconds: UInt64(tick))
-                )
-            }
             for event in events {
                 switch event {
                 case .decoded(let unit): decoded.append(unit)

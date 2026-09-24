@@ -161,7 +161,7 @@ public func makeCursorVectorFile() throws -> CursorVectorFile {
     return CursorVectorFile(
         format: CursorVectorFile.expectedFormat,
         formatVersion: 1,
-        wireVersion: Int(WireVersion.major),
+        wireVersion: 1,
         vectors: vectors
     )
 }
