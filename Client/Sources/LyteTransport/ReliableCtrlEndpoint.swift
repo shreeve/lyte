@@ -86,7 +86,9 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
     /// window (the host's session-start beacon teaches it immediately).
     private var connectionId: ConnectionId?
     /// One-shot group ids are endpoint-allocated, serially ascending
-    /// from 1 (the ArqEndpoint reuse rule).
+    /// from 1 and never 0 (the ordered stream's id): the successor of
+    /// 0xFFFF is 1, which ArqEndpoint's serial comparison still reads
+    /// as ascending.
     private var nextOneShotGroup: UInt16 = 1
     private var stats = Stats()
     /// The production PTO wake; nil until `start()`. Re-scheduled to the
@@ -176,7 +178,7 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
             lock.unlock()
             throw error
         }
-        nextOneShotGroup &+= 1
+        nextOneShotGroup = nextOneShotGroup == .max ? 1 : nextOneShotGroup + 1
         stats.messagesSent += 1
         serviceLocked(now: now)
         lock.unlock()
@@ -274,6 +276,13 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
     func testingWakeFromTimer(now: ClientTimestamp) {
         lock.lock()
         wakeFromTimerLocked(now: now)
+        lock.unlock()
+    }
+
+    /// Seeds the one-shot allocator — the wrap pin's probe.
+    func testingSeedNextOneShotGroup(_ group: UInt16) {
+        lock.lock()
+        nextOneShotGroup = group
         lock.unlock()
     }
 
