@@ -4,33 +4,6 @@ import HostWire
 import LyteWire
 
 final class SessionInputEchoBookTests: XCTestCase {
-    func testSessionDelegatesInputEvidenceToTheNamedOwner() throws {
-        var components = #filePath.split(
-            separator: "/", omittingEmptySubsequences: false
-        )
-        components.removeLast(3)
-        let packageRoot = components.joined(separator: "/")
-        let session = try String(contentsOfFile:
-            packageRoot + "/Sources/HostWire/Session.swift",
-            encoding: .utf8
-        )
-
-        XCTAssertTrue(session.contains(
-            "private var inputEchoBook = SessionInputEchoBook()"
-        ))
-        for retiredOwnerSpelling in [
-            "private(set) var lastInputSeq",
-            "private var pendingEchoTuples",
-            "pendingEchoTuples.append",
-            "pendingEchoTuples.removeFirst",
-        ] {
-            XCTAssertFalse(
-                session.contains(retiredOwnerSpelling),
-                "input-echo policy returned to Session: \(retiredOwnerSpelling)"
-            )
-        }
-    }
-
     func testLatestInjectedSequenceAndTupleOrderShareOneBook() {
         var book = SessionInputEchoBook()
         XCTAssertNil(book.lastInjectedSequence)

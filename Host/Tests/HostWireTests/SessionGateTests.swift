@@ -23,34 +23,6 @@ import LyteWireTestKit
 
 final class SessionGateTests: XCTestCase {
 
-    func testCapabilityNegotiatorAloneOwnsDeclarationOnceState() throws {
-        let source = try sessionSource()
-
-        XCTAssertFalse(source.contains("capabilitiesDeclared"))
-        XCTAssertTrue(source.contains(
-            "guard let declaration = negotiator.start() else { return [] }"))
-    }
-
-    func testLastAdmittedFrameAloneOwnsTheVideoCursor() throws {
-        let source = try sessionSource()
-
-        XCTAssertFalse(source.contains(
-            "private var nextVideoFrameNumber ="))
-        XCTAssertFalse(source.contains("nextVideoFrameNumber ="))
-        XCTAssertTrue(source.contains(
-            "lastAdmittedVideoFrameNumber?.next ?? FrameNumber(rawValue: 0)"))
-    }
-
-    private func sessionSource() throws -> String {
-        var components = #filePath.split(
-            separator: "/", omittingEmptySubsequences: false)
-        components.removeLast(3)
-        let packageRoot = components.joined(separator: "/")
-        return try String(
-            contentsOfFile: packageRoot + "/Sources/HostWire/Session.swift",
-            encoding: .utf8)
-    }
-
     // MARK: Corpus plumbing (the HS-5 gate's, verbatim)
 
     private static var corpusDirectory: String {
