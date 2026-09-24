@@ -242,9 +242,10 @@ groups are independent one-shot messages allocated by the endpoint
 (`ArqEndpoint.sendOneShot`). Segments are retransmitted byte-identical in
 fresh datagrams (fresh seq, fresh nonce). An ACK describes at most 256
 segments past its cumulative point, which is also the widest receive
-window; a sender never exceeds the peer's window. One send group holds at
-most 32,512 segments; past that `send` throws `ArqSendError.queueFull`,
-which every shell treats as backpressure, not as a fatal error.
+window; a sender never exceeds the peer's window. A sender bounds each
+group's queue locally (LyteWire: 32,512 segments, a memory bound, not wire
+contract); past it `send` throws `ArqSendError.queueFull`, which every
+shell treats as backpressure, not as a fatal error.
 
 A reassembled message is at most 262,144 bytes. The ceiling is not
 negotiated, so both ends share it. A message past it poisons its group:

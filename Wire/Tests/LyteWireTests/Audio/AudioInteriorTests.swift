@@ -336,7 +336,8 @@ final class AudioInteriorTests: XCTestCase {
 
     /// An id exactly 2³¹ from the newest is neither behind nor ahead in
     /// serial arithmetic. It must be stale: admitted, it could never be
-    /// evicted, and one such ghost per step grew retention without bound.
+    /// evicted, and one such ghost per step would grow retention without
+    /// bound.
     func testAntipodalGroupIdIsStaleAndNeverRetained() throws {
         let nominal = try FecGeometry(
             dataShards: 4, parityShards: 2, groupByteCount: 320
