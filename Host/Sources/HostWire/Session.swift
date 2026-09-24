@@ -1159,6 +1159,7 @@ public final class Session {
         let decision = handshakeGate.admitMessage1(
             presentedCookie: presentedCookie,
             clientTuple: Self.cookieTuple(tuple),
+            clientAddress: HandshakeGate.addressShareKey(tuple.remoteAddress),
             message1: message1,
             now: now
         )
