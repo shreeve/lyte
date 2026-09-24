@@ -363,8 +363,10 @@ public struct ClipboardImageChannel: Sendable {
             counters.sharesSuppressed += 1
             return [.suppressed(.emptyImage)]
         }
-        sendBookKey = ClipboardImageWire.bookKey(sha256: sha256)
-        switch book.admitLocalChange(bytes: sendBookKey) {
+        // The in-flight share owns `sendBookKey` until it finishes; a
+        // copy refused below must not overwrite it.
+        let bookKey = ClipboardImageWire.bookKey(sha256: sha256)
+        switch book.admitLocalChange(bytes: bookKey) {
         case .suppressEcho:
             counters.sharesSuppressed += 1
             return [.suppressed(.loopEcho)]
@@ -402,6 +404,7 @@ public struct ClipboardImageChannel: Sendable {
             return [.suppressed(.emptyImage)]
         }
         sendBlob = data
+        sendBookKey = bookKey
         var engine = BulkSendEngine(offer: offer)
         // begin() throws only on a re-begin; this engine is fresh.
         let beginActions = (try? engine.begin()) ?? []
@@ -494,7 +497,7 @@ public struct ClipboardImageChannel: Sendable {
                 // Ordered carriage makes anything between marker and
                 // offer a peer bug — the typed violation answer.
                 pendingIntent = nil
-                refusedIds.insert(id)
+                rememberRefused(id)
                 var events: [ClipboardImageEvent] = [
                     .violated(.unexpectedMessage(
                         type: message.encode().first ?? 0
@@ -670,15 +673,23 @@ public struct ClipboardImageChannel: Sendable {
         return events
     }
 
+    /// The refused set is bounded: entries retire when their offer
+    /// trails through `ingest`, and a hostile flood of markers is capped
+    /// rather than remembered.
+    private mutating func rememberRefused(_ transferId: UInt64) {
+        if refusedIds.count >= Self.maxRememberedRefusals {
+            refusedIds.removeAll()
+        }
+        refusedIds.insert(transferId)
+    }
+
+    static let maxRememberedRefusals = 32
+
     private mutating func refusal(
         _ why: ClipboardImageRefuseReason,
         transferId: UInt64, reason: BulkAbortReason
     ) -> [ClipboardImageEvent] {
-        // The refused set is bounded: entries retire when their offer
-        // trails through `ingest`, and a hostile flood of markers is
-        // capped rather than remembered.
-        if refusedIds.count > 32 { refusedIds.removeAll() }
-        refusedIds.insert(transferId)
+        rememberRefused(transferId)
         var events: [ClipboardImageEvent] = [.refused(why)]
         if let abort = try? BulkAbort(
             transferId: transferId, reason: reason
