@@ -41,10 +41,11 @@ final class BrowserHostPeer {
     private var nowNS: UInt64 { nowMicros * 1_000 }
 
     func makeClient(
+        pin: String = BrowserHostPeer.pin,
         retry: BrowserControlSession.HandshakeRetry = .init()
     ) throws -> BrowserControlSession {
         try BrowserControlSession(
-            hostStaticPublicKeyHex: hostStaticHex, pin: Self.pin,
+            hostStaticPublicKeyHex: hostStaticHex, pin: pin,
             handshakeRetry: retry
         )
     }

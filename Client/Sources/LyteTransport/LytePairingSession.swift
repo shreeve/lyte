@@ -92,6 +92,12 @@ public enum LytePairing {
     public static func run(_ config: Config) -> Outcome {
         let progress = config.onProgress ?? { _ in }
 
+        // Only the host's six ASCII digits reach CPace; any other form
+        // would spend one of the host's guesses on a certain mismatch.
+        guard let pinBytes = PairingPin.normalize(config.pin) else {
+            return .failed("the PIN must be the host's 6 digits")
+        }
+
         // ── The stack (WireViewCommand's construction order: the
         // endpoint's datagram hook late-binds the reliable endpoint). ──
         let crypto: NoiseTransportCrypto
@@ -158,7 +164,7 @@ public enum LytePairing {
         let service: PairingInitiatorService
         do {
             service = try PairingInitiatorService(
-                pin: Array(config.pin.utf8),
+                pin: pinBytes,
                 clientStaticPublicKey: crypto.clientStaticPublicKey,
                 hostStaticPublicKey: config.hostStaticPublicKey,
                 noiseHandshakeHash: handshakeHash)

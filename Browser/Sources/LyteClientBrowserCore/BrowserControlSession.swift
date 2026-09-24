@@ -64,6 +64,8 @@ public final class BrowserControlSession {
         public var message1Transmissions: UInt64 = 0
         public var retryChallengesAnswered: UInt64 = 0
         public var idrRequestsSent: UInt64 = 0
+        /// Input events dropped because the reliable queue was full.
+        public var inputsRefused: UInt64 = 0
 
         public init() {}
     }
@@ -138,11 +140,12 @@ public final class BrowserControlSession {
         else {
             throw BrowserControlError.badHostStatic
         }
-        let digits = pin.filter(\.isNumber)
-        guard !digits.isEmpty else { throw BrowserControlError.badPin }
+        guard let pinBytes = PairingPin.normalize(pin) else {
+            throw BrowserControlError.badPin
+        }
         self.hostStaticPublicKey = hostKey
         self.clientStatic = NoiseKeyPair.generate()
-        self.pin = Array(digits.utf8)
+        self.pin = pinBytes
         self.handshakeRetry = handshakeRetry
     }
 
@@ -270,6 +273,12 @@ public final class BrowserControlSession {
             nextInputSeq &+= 1
             inputsSent += 1
             return step(outbound: try pollArq(nowMicros: nowMicros))
+        } catch ArqSendError.queueFull {
+            // Backpressure: the host has not acknowledged a full queue of
+            // segments. Drop this event; the liveness clock judges the path.
+            counters.inputsRefused += 1
+            note("input: dropped (reliable queue full)")
+            return step(outbound: [])
         } catch {
             return failStep("input send: \(error)")
         }
@@ -301,6 +310,10 @@ public final class BrowserControlSession {
             clipboardSent += 1
             note("clipboard: set sent (\(text.utf8.count) B)")
             return step(outbound: try pollArq(nowMicros: nowMicros))
+        } catch ArqSendError.queueFull {
+            // Backpressure, as for input: the next local change retries.
+            note("clipboard: not shared (reliable queue full)")
+            return step(outbound: [])
         } catch {
             return failStep("clipboard send: \(error)")
         }
@@ -434,19 +447,13 @@ public final class BrowserControlSession {
         _ datagram: [UInt8], nowMicros: UInt64
     ) -> Step {
         guard var transport else { return failStep("no transport") }
-        guard let (envelope, wirePayload) = try? Envelope.decode(datagram) else {
-            counters.undecodableDatagrams += 1
-            return step(outbound: [])
-        }
-        // The exact received header bytes are the AAD (fixed envelope + TLVs).
-        let aad = datagram[datagram.startIndex..<wirePayload.startIndex]
+        let envelope: Envelope
         let plaintext: [UInt8]
         do {
-            plaintext = try transport.unseal(
-                wirePayload: wirePayload,
-                aad: aad,
-                envelope: envelope
-            )
+            (envelope, plaintext) = try transport.openDatagram(datagram)
+        } catch is WireError {
+            counters.undecodableDatagrams += 1
+            return step(outbound: [])
         } catch {
             counters.unsealFailures += 1
             return step(outbound: [])
@@ -716,14 +723,9 @@ public final class BrowserControlSession {
             fec: 0,
             extensions: connectionId.map { [$0.wireExtension] } ?? []
         )
-        let header = try envelope.encode(payload: [])
-        let sealed = try transport.seal(
-            plaintext: plaintext[...],
-            aad: header[...],
-            envelope: envelope
-        )
+        let datagram = try transport.sealDatagram(envelope, plaintext: plaintext)
         self.transport = transport
-        return try envelope.encode(payload: sealed)
+        return datagram
     }
 
     private func encodeBareCarriage(

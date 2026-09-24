@@ -1,14 +1,10 @@
-// The client's first send path (CL-3). Until this slice the client only
-// listened; feedback (chan=3), beacon echoes, and IDR requests (CTRL) all
-// need datagrams flowing client→host, so this is the outbound mirror of
-// ReceiveDemux's discipline:
+// The client's sealed send path — feedback (chan=3), beacon echoes, IDR
+// requests and reliable CTRL all leave through here. The outbound mirror
+// of ReceiveDemux's discipline:
 //
-//   plaintext → envelope header (exact wire bytes, the AAD) →
-//   TransportCrypto.seal → header + wire payload → transmit
+//   plaintext → Envelope.sealedDatagram (header as AAD, TransportCrypto
+//   seal) → transmit
 //
-// The header is encoded once via Envelope.encode(payload: []) so the AAD
-// the seal sees is byte-identical to what the receiver's unseal will see —
-// the same rule the receive path pins (header-as-AAD, master plan §4.1).
 // Per-channel u16 seqs are allocated here, one counter per channel, so
 // every outbound channel gets the serial stream the far side's gap
 // tracking expects.
@@ -86,19 +82,19 @@ public final class TransportSender: @unchecked Sendable {
         )
         let datagram: [UInt8]
         do {
-            // The header bytes double as the AAD — exactly what the
-            // receiver will slice off ahead of the payload.
-            let header = try envelope.encode(payload: [])
-            let sealed: [UInt8]
-            do {
-                sealed = try crypto.seal(
-                    plaintext: plaintext[...], aad: header[...],
-                    envelope: envelope)
-            } catch {
-                stats.sealFailures += 1
-                throw error
+            // The header bytes double as the AAD (Envelope.sealedDatagram
+            // owns that rule), so the receiver authenticates exactly what
+            // it slices off ahead of the payload.
+            datagram = try envelope.sealedDatagram(plaintext[...]) {
+                plaintext, aad in
+                do {
+                    return try crypto.seal(
+                        plaintext: plaintext, aad: aad, envelope: envelope)
+                } catch {
+                    stats.sealFailures += 1
+                    throw error
+                }
             }
-            datagram = try envelope.encode(payload: sealed)
         } catch {
             lock.unlock()
             throw error
