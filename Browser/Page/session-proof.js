@@ -73,7 +73,7 @@ export async function runSessionProof({
     // each frame when its Conductor beat comes due.
     let lastAssembled = 0;
     let lastProgressAt = nowMicros();
-    while (Date.now() < deadline && !pump.failed) {
+    while (Date.now() < deadline && !pump.failed && !pump.closed) {
       await pump.turn(2);
       const now = nowMicros();
       const assembled = bridge.mediaStats().assembled;
