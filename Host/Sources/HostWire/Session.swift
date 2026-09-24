@@ -758,9 +758,9 @@ public final class Session {
     /// The clipboard-image lane (memory-backed bulk cargo). Inert unless
     /// the image gate (keys 10 ∧ 12) agreed: every entry point checks.
     private var clipboardImageChannel = ClipboardImageChannel()
-    /// Id mint for image cargo (sans-IO: the init's injected
-    /// generator, boxed so the stored property stays concrete).
-    private var imageRng: BoxedRng
+    /// The injected generator: the conn-id, path-challenge tokens and
+    /// image-cargo ids all draw from this one stream (see `SharedRng`).
+    private var rng: SharedRng
 
     /// The image lane's own books (share/apply/refuse verdicts).
     public var clipboardImageCounters: ClipboardImageChannelCounters {
@@ -782,7 +782,7 @@ public final class Session {
         sendAccounting: SessionSendAccounting = .pacerRelease,
         send: @escaping (VideoChannelDatagram) -> Void
     ) {
-        var rng = rng
+        var rng = SharedRng(rng)
         self.config = config
         self.connectionId = ConnectionId.random(using: &rng)
         // Every session datagram carries the conn-id TLV. Give that carrier
@@ -804,7 +804,7 @@ public final class Session {
             || config.capabilities.clipboardImages)
             ? SessionArqLane(channel: .bulkTransfer, config: arqConfig)
             : nil
-        self.imageRng = BoxedRng(base: rng)
+        self.rng = rng
         self.estimator = RateEstimator(
             config: config.estimator
                 ?? RateEstimatorConfig(
@@ -1779,7 +1779,7 @@ public final class Session {
         }
         let channelEvents = clipboardImageChannel.shareLocalImage(
             data, sha256: sha256,
-            book: &clipboardBook, rng: &imageRng
+            book: &clipboardBook, rng: &rng
         )
         var events = processImageEvents(channelEvents, now: now)
         events += serviceArqLane(
@@ -2954,7 +2954,7 @@ public final class Session {
                 initialPath: tuple,
                 now: now,
                 config: config.path,
-                rng: imageRng
+                rng: rng
             )
         }
         do {
@@ -3218,10 +3218,20 @@ public final class Session {
     }
 }
 
-/// A concrete `RandomNumberGenerator` boxing the init's injected
-/// generator (a stored `some` is not expressible), so the image-id mint
-/// does not force Session generic.
-struct BoxedRng: RandomNumberGenerator {
-    var base: any RandomNumberGenerator
-    mutating func next() -> UInt64 { base.next() }
+/// The init's injected generator, shared by reference: the conn-id,
+/// every path validator's challenge tokens and the image-id mint draw
+/// from one stream. Copies of a value-typed generator would replay each
+/// other, making challenge tokens equal to image ids a client sees.
+struct SharedRng: RandomNumberGenerator {
+    private final class State {
+        var base: any RandomNumberGenerator
+        init(_ base: any RandomNumberGenerator) { self.base = base }
+    }
+    private let state: State
+
+    init(_ base: some RandomNumberGenerator) {
+        state = State(base)
+    }
+
+    mutating func next() -> UInt64 { state.base.next() }
 }
