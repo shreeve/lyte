@@ -106,13 +106,15 @@ def motion_cadence_analysis(source, observations):
         # assigning it to the encoder.
         first_boundary = "host_to_client_delivery"
         failure = "motion_transport_burst"
-    elif not presentations:
+    elif not presentations or not queue_wait or not gated_lateness \
+            or not presentation_gaps:
+        # Missing evidence is a failure, never a pass.
         first_boundary = "client_presentation"
         failure = "motion_presentation_evidence_missing"
     elif (
-        (percentile(queue_wait, 99) or 0) > 8
-        or (percentile(gated_lateness, 99) or 0) > 8
-        or (percentile(presentation_gaps, 99) or 0) > 25
+        percentile(queue_wait, 99) > 8
+        or percentile(gated_lateness, 99) > 8
+        or percentile(presentation_gaps, 99) > 25
     ):
         first_boundary = "client_presentation"
         failure = "motion_client_presentation_jitter"
@@ -382,8 +384,77 @@ def quality_analysis(samples, elapsed):
     }
 
 
+def read_records(path):
+    """The JSONL records; a final line cut short by an interrupted writer is
+    dropped (the missing end record then fails the run), any other
+    malformed line is an error."""
+    lines = Path(path).read_text().splitlines()
+    records = []
+    for index, line in enumerate(lines):
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            if index != len(lines) - 1:
+                raise
+    return records
+
+
+# The impairment SLOs benchmark-netem.sh judges an impaired motion leg by.
+# Clean-air rungs (transport stretch, presentation jitter) fail by design
+# under jitter; these are the bounds the run must still hold.
+NETEM_PROFILES = {
+    "moderate": {
+        "presentationGapP99Milliseconds": 50.0,
+        "decodedProgressFPS": 30.0,
+    },
+}
+
+
+def netem_slo_verdict(verdict, profile):
+    limits = NETEM_PROFILES[profile]
+    motion = verdict["motion"]
+    audio = verdict["audio"]
+    renderer = verdict["renderer"]
+    failures = []
+
+    gap_limit = limits["presentationGapP99Milliseconds"]
+    gap_p99 = motion.get("presentationGapP99Milliseconds")
+    if gap_p99 is None or gap_p99 > gap_limit:
+        failures.append(f"presentation_gap_p99_{gap_p99}ms_over_{gap_limit:g}ms")
+    if renderer["appFailures"] or renderer["appleCorruptedFrames"]:
+        failures.append("renderer_failure_or_corruption")
+    fps_floor = limits["decodedProgressFPS"]
+    fps = verdict["quality"].get("decodedProgressFPS")
+    if fps is None or fps < fps_floor:
+        failures.append(f"decoded_fps_{fps}_below_{fps_floor:g}")
+    # Loss may cost PLC; concealment must still hold its bounds.
+    if audio["continuityClassification"] == "continuity_failure":
+        failures.append("audio_concealment_failed")
+    failures.extend(
+        failure for failure in verdict["failures"]
+        if failure in ("audio_plc_feed_mismatch", "audio_output_failure")
+    )
+    steady = audio["intervalAnalysis"]["steadyState"]
+    return {
+        "type": "lyte_netem_slo_verdict",
+        "profile": profile,
+        "runID": verdict["runID"],
+        "verdict": "PASS" if not failures else "FAIL",
+        "failures": failures,
+        "presentationGapP99Milliseconds": gap_p99,
+        "audioContinuity": audio["continuityClassification"],
+        "audioSteadyState": {
+            "plcInvocations": steady["plcInvocations"],
+            "underrunFrames": steady["underrunFrames"],
+        },
+        "decodedProgressFPS": fps,
+        "cleanAirVerdictForReference": verdict["verdict"],
+        "cleanAirFailuresForReference": verdict["failures"],
+    }
+
+
 def analyze(path):
-    records = [json.loads(line) for line in Path(path).read_text().splitlines()]
+    records = read_records(path)
     samples = [record for record in records if record.get("type") == "sample"]
     ends = [record for record in records if record.get("type") == "end"]
     if not samples or not ends:
@@ -628,9 +699,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("jsonl")
     parser.add_argument("--pretty", action="store_true")
+    parser.add_argument(
+        "--netem-profile", choices=sorted(NETEM_PROFILES),
+        help="judge the run by this impairment profile's SLOs instead")
     args = parser.parse_args()
     try:
         result = analyze(args.jsonl)
+        if args.netem_profile:
+            result = netem_slo_verdict(result, args.netem_profile)
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
         print(json.dumps({"type": "lyte_app_benchmark_error", "error": str(error)}))
         return 2

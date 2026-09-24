@@ -5,8 +5,9 @@
 #
 # Profiles:
 #   moderate — delay 20ms jitter 10ms, loss 1%  →  presentation-gap
-#              p99 ≤ 50 ms, audio concealment intact, renderer clean,
-#              decoded ≥ 30 fps.
+#              p99 ≤ 50 ms, audio concealment within its bounds, renderer
+#              clean, decoded ≥ 30 fps (analyze-app-benchmark.py
+#              --netem-profile).
 #
 # LYTE_BENCHMARK_PORT is both the impaired and the benchmarked port; both
 # scripts refuse unless lyte-host.service owns it, and the standing 41151
@@ -141,47 +142,7 @@ if ! python3 "$ROOT/Scripts/analyze-app-benchmark.py" \
     >> "$LOG"
 fi
 
-python3 - "$VERDICT_JSON" "$PROFILE" <<'PY' \
+# The impairment SLOs (analyze-app-benchmark.py NETEM_PROFILES) decide.
+python3 "$ROOT/Scripts/analyze-app-benchmark.py" --pretty \
+  --netem-profile "$PROFILE" "${artifacts[0]}" \
   | tee "$RUN_DIR/netem-verdict.json"
-import json
-import sys
-
-verdict = json.load(open(sys.argv[1]))
-profile = sys.argv[2]
-motion = verdict.get("motion", {})
-audio = verdict.get("audio", {})
-renderer = verdict.get("renderer", {})
-quality = verdict.get("quality", {})
-steady = (audio.get("intervalAnalysis", {}) or {}).get("steadyState", {})
-
-failures = []
-
-gap_p99 = motion.get("presentationGapP99Milliseconds")
-if gap_p99 is None or gap_p99 > 50:
-    failures.append(f"presentation_gap_p99_{gap_p99}ms_over_50ms")
-
-if renderer.get("appFailures", 0) or renderer.get("appleCorruptedFrames", 0):
-    failures.append("renderer_failure_or_corruption")
-
-fps = quality.get("decodedProgressFPS", 0)
-if fps < 30:
-    failures.append(f"decoded_fps_{fps:.1f}_below_30")
-
-result = {
-    "type": "lyte_netem_slo_verdict",
-    "profile": profile,
-    "runID": verdict.get("runID"),
-    "verdict": "PASS" if not failures else "FAIL",
-    "failures": failures,
-    "presentationGapP99Milliseconds": gap_p99,
-    "audioSteadyState": {
-        "plcInvocations": steady.get("plcInvocations"),
-        "underrunFrames": steady.get("underrunFrames"),
-    },
-    "decodedProgressFPS": fps,
-    "cleanAirVerdictForReference": verdict.get("verdict"),
-    "cleanAirFailuresForReference": verdict.get("failures"),
-}
-print(json.dumps(result, indent=2, sort_keys=True))
-sys.exit(0 if not failures else 1)
-PY
