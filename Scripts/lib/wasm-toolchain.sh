@@ -74,7 +74,8 @@ lyte_wasm_require() {
 
 # Manifests compile for the host with the macOS SDK. A macOS SDK newer than
 # the pinned toolchain can crash the manifest compile, so probe the default
-# SDK first and fall back to installed older ones. A caller's SDKROOT wins.
+# SDK first, then the installed Command Line Tools SDKs newest first. A
+# caller's SDKROOT wins.
 lyte_wasm_select_host_sdk() {
     label="$1"
     [ -z "${SDKROOT:-}" ] || return 0
@@ -87,8 +88,9 @@ let package = Package(
     name: ProcessInfo.processInfo.environment["LYTE_PROBE"] ?? "Probe"
 )
 EOF
-    for candidate in "" \
-        /Library/Developer/CommandLineTools/SDKs/MacOSX[0-9]*.[0-9]*.sdk
+    for candidate in "" $(ls -d \
+        /Library/Developer/CommandLineTools/SDKs/MacOSX[0-9]*.[0-9]*.sdk \
+        2>/dev/null | sort -rV)
     do
         [ -z "$candidate" ] || [ -d "$candidate" ] || continue
         if [ -n "$candidate" ]; then
