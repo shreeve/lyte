@@ -129,6 +129,17 @@ live state: [HANDOFF.md](HANDOFF.md).
   `lyte-cli wire-pair`) ends without a typed 0x0A teardown, so the host
   learns it left only when its path goes silent (about a second for a
   `--pair` host). Send `shuttingDown` once the PIN exchange completes.
+- **Audio books on a quiet LAN session.** A 30 s `lyte-cli wire-view
+  --audio` against pup reports about 17k underrun frames, 3 recenters
+  and a jitter-buffer skew pinned at +500 ppm, identically against the
+  pre-revamp host, so the cause is client-side (`AudioJitterBuffer`,
+  `AudioReceiver`, `LyteAudioPlayer`). Find why the skew sits at its
+  clamp and whether the underruns are start-up only.
+- **One home for the detector numbers.** The browser repeats the native
+  2.5 s / 350 ms blackout-detector values from `LyteUdpSessionTypes`;
+  name them once in `LyteClientSession`.
+- **Media keys.** The browser forwards media volume keys and the native
+  client drops them; pick one behavior for both shells.
 
 ## Wire
 
@@ -143,20 +154,31 @@ live state: [HANDOFF.md](HANDOFF.md).
 ## Browser
 
 - **Daily-driver browser client.** The Chrome proof runs against
-  `lyte-control-peer` with corpus video. Remaining: live Direct Eye against
+  `lyte-control-peer` with corpus video. The peer still widens its
+  blackout detector to 30 s for corpus runs; now that the browser sends
+  feedback, run it on the default lifecycle so the smoke proves more.
+  Remaining: live Direct Eye against
   the standing host, a persistent interactive session, Safari, real host
   clipboard where the platform allows it, and product composition
   (`LyteBrowserApp`). Do not scaffold empty `Applications/` stubs before
   composition earns them.
 - **Gate the browser core on pup.** pup's Swift 6.1.2 cannot resolve
-  JavaScriptKit's 6.2 manifest, so the pup gate neither mirrors nor tests
-  Browser. Upgrade pup's toolchain, or keep only `LyteClientBrowserCore`
+  JavaScriptKit's 6.2 manifest, so the pup gate mirrors only Browser's
+  manifest and `Sources/` (for Common's lints) and tests nothing there.
+  Upgrade pup's toolchain, or keep only `LyteClientBrowserCore`
   and its suite off macOS in `Browser/Package.swift` (as Client's manifest
   does), then mirror Browser and add `run_package_tests Browser` to
   `Scripts/CI/test-all-pup.sh`.
 
 ## Gates
 
+- **SystemTests on the exported host kit.** `SystemHostSession` and the
+  NACK gate harness in `SystemTests/` hand-roll what the exported
+  `HostWireTestKit.HostSessionHarness` provides; move them onto it.
+- **Source size.** The second revamp pass grew hand-written source by
+  about 3.4k lines (new behavior and safeguards). A behavior-preserving
+  shrink pass, like the first revamp's, should start with
+  `LyteClientSession`, `Lyte` (app), `lyte-host` and `HostWire`.
 - **Enforce the gates.** No hosted CI runs them, so "always green" rests
   on whoever lands a PR running `Scripts/CI/test-all-macos.sh` and
   `test-all-pup.sh` by hand. A self-hosted runner on pup (Linux leg) plus
