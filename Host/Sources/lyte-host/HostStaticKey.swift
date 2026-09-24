@@ -1,16 +1,14 @@
-// The host's pinned Noise static keypair (HS-7): generated once, persisted
-// like the portal token, printed so the J-G1 debug client can be handed the
-// public key out-of-band (pairing — W6 PIN-PAKE — is what replaces this
-// hand-carry later; the file and the print are the stub's whole key
-// distribution story).
+// The host's pinned Noise static keypair: generated once, persisted 0600
+// (SecretFile), and its public half printed and advertised so a client can
+// pin it (pairing's PIN-PAKE carries it too).
 
 import Foundation
 import LyteCore
 import LyteWire
 
 enum HostStaticKey {
-    /// Raw 32-byte X25519 private key, mode 0600, alongside the portal
-    /// token. The public key derives; it is never stored.
+    /// Raw 32-byte X25519 private key, mode 0600, beside paired_clients.
+    /// The public key derives; it is never stored.
     static let keyPath = FileManager.default
         .homeDirectoryForCurrentUser
         .appendingPathComponent(".config/lyte-host/noise_static.key")
@@ -29,14 +27,7 @@ enum HostStaticKey {
             return try NoiseKeyPair(privateKey: [UInt8](data))
         }
         let pair = NoiseKeyPair.generate()
-        try FileManager.default.createDirectory(
-            at: keyPath.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try Data(pair.privateKey).write(to: keyPath)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o600], ofItemAtPath: keyPath.path
-        )
+        try SecretFile.write(pair.privateKey, to: keyPath)
         print("noise: generated host static key → \(keyPath.path)")
         return pair
     }

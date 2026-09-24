@@ -1,8 +1,6 @@
-// The paired-clients keystore file (HS-9): the Foundation leaf under
-// HostWire's ClientKeystore codec. Lives beside the portal token and
-// the host static — and touches NEITHER: pairing pins CLIENT statics
-// into its own file; ~/.config/lyte-host/{portal_token,noise_static.key}
-// are never written by this path.
+// The paired-clients keystore file: the Foundation leaf under HostWire's
+// ClientKeystore codec. Lives beside the host static and never touches
+// it: pairing pins CLIENT statics into its own file only.
 
 import Foundation
 import HostWire
@@ -33,15 +31,9 @@ enum PairedClients {
     }
 
     /// Full rewrite (the codec's canonical-serialization rule), 0600
-    /// like its keyfile neighbors.
+    /// like the host static, atomically (SecretFile) — a crash mid-write
+    /// never leaves a torn store that locks every client out.
     static func save(_ store: ClientKeystore) throws {
-        try FileManager.default.createDirectory(
-            at: path.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try Data(store.serialized().utf8).write(to: path)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o600], ofItemAtPath: path.path
-        )
+        try SecretFile.write(Array(store.serialized().utf8), to: path)
     }
 }
