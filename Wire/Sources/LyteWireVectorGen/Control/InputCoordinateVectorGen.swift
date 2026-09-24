@@ -2,8 +2,9 @@
 // coordinates are finite f64. Every finite bit pattern roundtrips, the
 // extremes included; NaN (any sign or payload) and ±Inf reject with
 // `nonFiniteCoordinate` in each of the three f64-carrying kinds and in
-// either coordinate slot. Reject bytes come from the encoder, which is
-// total over bit patterns, so only the decoder's domain is under test.
+// either coordinate slot. The encoder refuses non-finite coordinates, so
+// reject bytes are the test kit's raw bit-pattern encoding
+// (`rawCoordinateBytes`) and only the decoder's domain is under test.
 
 import LyteCore
 import LyteWire
@@ -34,7 +35,7 @@ public func makeInputCoordinateVectorFile() throws -> InputCoordinateVectorFile 
         vectors.append(ControlVector(
             name: name, description: description,
             kind: .roundtrip, codec: .inputEvent,
-            messageHex: Hex.string(event.encode()),
+            messageHex: Hex.string(try event.encode()),
             seq: event.seq,
             clientMicrosHex: Hex.uint64String(event.clientMicroseconds),
             bodyKind: fields.kind,
@@ -74,7 +75,7 @@ public func makeInputCoordinateVectorFile() throws -> InputCoordinateVectorFile 
             kind: .decodeReject, codec: .inputEvent,
             messageHex: Hex.string(InputEvent(
                 seq: 4, clientMicroseconds: 0x41, body: body
-            ).encode()),
+            ).rawCoordinateBytes()),
             error: "nonFiniteCoordinate"
         ))
     }

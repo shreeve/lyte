@@ -46,7 +46,10 @@ final class SplitMix64Tests: XCTestCase {
     func testReplayedDrawsNeverUseIntWidthStdlibHelpers() throws {
         let root = URL(fileURLWithPath: WireVectors.directory)
             .deletingLastPathComponent()
-        let forbidden = ["Int.random(in:", ".shuffle(using:", ".shuffled(using:"]
+        let forbidden = [
+            "Int.random(in:", ".shuffle(using:", ".shuffled(using:",
+            ".randomElement(using:",
+        ]
         var offenders: [String] = []
         for directory in ["Tests/LyteWireTests", "Sources/LyteWireTestKit",
                           "Sources/LyteWireVectorGen"] {

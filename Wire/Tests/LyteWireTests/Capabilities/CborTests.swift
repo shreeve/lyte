@@ -217,11 +217,11 @@ final class CborTests: XCTestCase {
         case 1: return .negative(rng.next())
         case 2: return .bytes(rng.bytes(Int(rng.next() % 40)))
         case 3:
-            let scalars = "abcdefghij κλμ 🜁"
+            let scalars = Array("abcdefghij κλμ 🜁")
             let count = Int(rng.next() % 12)
             return .text(String(
                 (0..<count).map { _ in
-                    scalars.randomElement(using: &rng)!
+                    scalars[rng.int(in: scalars.indices)]
                 }
             ))
         case 4: return .bool(rng.next() & 1 == 0)

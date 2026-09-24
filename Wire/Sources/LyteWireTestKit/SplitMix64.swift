@@ -1,9 +1,10 @@
 // SplitMix64: the seeded RNG every LyteWire property test uses, so a
 // failure reproduces from its seed (Vigna's splitmix64.c constants).
-// The stdlib's `Int.random(in:using:)`/`shuffle(using:)` draw at Int's
-// width, so the same seed differs on wasm32; anything frozen or replayed
-// across platforms draws through `int(in:)` / `shuffle(_:)`, which draw at
-// 64 bits everywhere and match the stdlib on 64-bit hosts.
+// The stdlib's `Int.random(in:using:)`, `shuffle(using:)` and
+// `randomElement(using:)` draw at Int's width, so the same seed differs on
+// wasm32; anything frozen or replayed across platforms draws through
+// `int(in:)` / `shuffle(_:)` (an element is `xs[rng.int(in: xs.indices)]`),
+// which draw at 64 bits everywhere and match the stdlib on 64-bit hosts.
 
 public struct SplitMix64: RandomNumberGenerator, Sendable {
     private var state: UInt64
