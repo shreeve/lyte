@@ -54,9 +54,23 @@ lyte_wasm_available() {
         . "$HOME/.swiftly/env.sh"
     fi
     command -v swiftly >/dev/null 2>&1 || return 1
-    swiftly list 2>/dev/null | grep -q "Swift ${LYTE_WASM_TOOLCHAIN_VERSION}" || return 1
-    swiftly run swift sdk list "+${LYTE_WASM_TOOLCHAIN_VERSION}" 2>/dev/null \
-        | grep -qx "$LYTE_WASM_SDK"
+    # Matched as strings, not `| grep -q`: under a caller's pipefail, grep
+    # exiting early can SIGPIPE swiftly and turn a match into a miss.
+    toolchains="$(swiftly list 2>/dev/null)" || return 1
+    case "$toolchains" in
+        *"Swift ${LYTE_WASM_TOOLCHAIN_VERSION}"*) ;;
+        *) return 1 ;;
+    esac
+    sdks="$(swiftly run swift sdk list "+${LYTE_WASM_TOOLCHAIN_VERSION}" \
+        2>/dev/null)" || return 1
+    case "
+$sdks
+" in
+        *"
+$LYTE_WASM_SDK
+"*) return 0 ;;
+    esac
+    return 1
 }
 
 # Fails with the install commands unless the toolchain is usable, and
