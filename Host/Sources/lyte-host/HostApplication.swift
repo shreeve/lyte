@@ -128,11 +128,13 @@ struct Options {
                 // keep working; asking for a dead backend fails loudly.
                 guard i < args.count, args[i] == "direct" else {
                     let asked = i < args.count ? args[i] : "(missing)"
-                    throw HostError("--backend \(asked): the portal and "
-                        + "mutter ScreenCast backends were demolished "
-                        + "after first-light — the direct eye is the "
-                        + "only backend (--backend direct is an "
-                        + "accepted no-op)")
+                    throw HostError("""
+                        --backend \(asked): the portal and \
+                        mutter ScreenCast backends were demolished \
+                        after first-light — the direct eye is the \
+                        only backend (--backend direct is an \
+                        accepted no-op)
+                        """)
                 }
             case "--encoder":
                 i += 1
@@ -141,10 +143,12 @@ struct Options {
                 // flag survives as a no-op so holds/scripts keep
                 // working; asking for the dead seat fails loudly.
                 guard i < args.count, args[i] == "native" else {
-                    throw HostError("--encoder libav was demolished "
-                        + "after first-light — the native VAAPI seat "
-                        + "is the direct eye's only encoder "
-                        + "(--encoder native is an accepted no-op)")
+                    throw HostError("""
+                        --encoder libav was demolished \
+                        after first-light — the native VAAPI seat \
+                        is the direct eye's only encoder \
+                        (--encoder native is an accepted no-op)
+                        """)
                 }
             case "--ratchet":
                 opts.ratchet = true
@@ -189,9 +193,11 @@ struct Options {
                       let choice = InputBackendChoice(rawValue: args[i])
                 else {
                     throw HostError(
-                        "--input must be auto, uinput, or off "
-                        + "(mutter was retired in E2 — uinput is "
-                        + "primary)")
+                        """
+                            --input must be auto, uinput, or off \
+                            (mutter was retired in E2 — uinput is \
+                            primary)
+                            """)
                 }
                 opts.input = choice
             case "--no-audio":
@@ -213,8 +219,10 @@ struct Options {
                 opts.clipboard = true
                 opts.clipboardImages = true
             case let arg where arg.hasPrefix("--clipboard="):
-                throw HostError("--clipboard takes no value or "
-                    + "=images (the consent tier's third rung)")
+                throw HostError("""
+                    --clipboard takes no value or \
+                    =images (the consent tier's third rung)
+                    """)
             case "--accept-files":
                 opts.acceptFiles = true
             case let arg where arg.hasPrefix("--accept-files="):
@@ -243,8 +251,10 @@ struct Options {
             case "--audio-bitrate-kbps":
                 i += 1
                 guard i < args.count, let v = Int32(args[i]), v > 0 else {
-                    throw HostError("--audio-bitrate-kbps needs a "
-                        + "positive number")
+                    throw HostError("""
+                        --audio-bitrate-kbps needs a \
+                        positive number
+                        """)
                 }
                 opts.audioBitrate = v * 1_000
             case "--help", "-h":
@@ -379,32 +389,46 @@ func handlePairingEvent(_ event: PairingResponderService.Event) {
         let hex = Hex.string(key)
         do {
             var store = try PairedClients.load()
-            if store.pin(key, note: "paired "
-                + ISO8601DateFormatter().string(from: Date())) {
+            if store.pin(key, note: """
+                paired \
+                \(ISO8601DateFormatter().string(from: Date()))
+                """) {
                 try PairedClients.save(store)
-                print("pairing: PAIRED — client static \(hex) pinned → "
-                    + PairedClients.path.path)
+                print("""
+                    pairing: PAIRED — client static \(hex) pinned → \
+                    \(PairedClients.path.path)
+                    """)
             } else {
-                print("pairing: PAIRED — client static \(hex) was "
-                    + "already pinned")
+                print("""
+                    pairing: PAIRED — client static \(hex) was \
+                    already pinned
+                    """)
             }
         } catch {
             // The trust decision is made; only the persistence failed.
             // Loud enough to pin by hand, not fatal to the session.
-            print("pairing: PAIRED but the keystore write FAILED "
-                + "(\(error)) — pin \(hex) by hand")
+            print("""
+                pairing: PAIRED but the keystore write FAILED \
+                (\(error)) — pin \(hex) by hand
+                """)
         }
     case .rejected(let reason, let remaining):
-        print("pairing: REJECTED (\(reason)) — \(remaining) attempt(s) "
-            + "remain on this PIN")
+        print("""
+            pairing: REJECTED (\(reason)) — \(remaining) attempt(s) \
+            remain on this PIN
+            """)
     case .clientAborted(let reason):
-        print("pairing: client aborted (\(reason)) — its PIN entry "
-            + "disagreed with ours")
+        print("""
+            pairing: client aborted (\(reason)) — its PIN entry \
+            disagreed with ours
+            """)
     case .throttled:
         print("pairing: attempt inside the 1 s throttle window — dropped")
     case .pinBurned:
-        print("pairing: PIN BURNED — guess budget spent; pairing stays "
-            + "silent until a rerun of --pair mints a fresh PIN")
+        print("""
+            pairing: PIN BURNED — guess budget spent; pairing stays \
+            silent until a rerun of --pair mints a fresh PIN
+            """)
     case .malformed:
         print("pairing: malformed pairing bytes dropped")
     }
@@ -430,27 +454,33 @@ static func run(arguments: [String]) throws {
     // (the kernel's capability-subset rule) — the benchmark rig reads
     // its provenance witness via sudo.
     if lyte_set_dumpable() != 0 {
-        print("host: WARNING — could not restore dumpability "
-            + "(coredumps stay disabled)")
+        print("""
+            host: WARNING — could not restore dumpability \
+            (coredumps stay disabled)
+            """)
     }
 
     let sessionMode = opts.wireOut != nil || opts.wireListen != nil
+    let peer = opts.wireOut.map { "\($0.host):\($0.port)" }
+        ?? "listen :\(opts.wireListen ?? 0)"
     let destination = sessionMode
-        ? "lyte-udp session ("
-            + (opts.wireOut.map { "\($0.host):\($0.port)" }
-                ?? "listen :\(opts.wireListen!)")
-            + ", noise)"
-        : opts.outputPath
-    print("lyte-host — direct eye (GPU pixel observation + EGL blit) → "
-        + "native VAAPI (our pens) → \(destination)")
+        ? "lyte-udp session (\(peer), noise)" : opts.outputPath
+    print("""
+        lyte-host — direct eye (GPU pixel observation + EGL blit) → \
+        native VAAPI (our pens) → \(destination)
+        """)
     // E6b: libavcodec is out of the video path entirely — rate
     // moves are RC misc buffers on the next frame, by construction.
-    print("encoder: native VAAPI seat — rate directives ride the "
-        + "next frame's RC buffer (no libavcodec in the video path)")
+    print("""
+        encoder: native VAAPI seat — rate directives ride the \
+        next frame's RC buffer (no libavcodec in the video path)
+        """)
     if opts.ratchet {
-        print("note: --ratchet accepted-and-ignored — the portal-era "
-            + "ratchet prototype died in the E5 demolition (direct-leg "
-            + "quality refinement is the filed follow-up)")
+        print("""
+            note: --ratchet accepted-and-ignored — the portal-era \
+            ratchet prototype died in the E5 demolition (direct-leg \
+            quality refinement is the filed follow-up)
+            """)
     }
 
     // The scanout opens first: its geometry scales the input injector's
@@ -470,12 +500,16 @@ static func run(arguments: [String]) throws {
     var bulkShell: BulkReceiveShell?
     if sessionMode {
         if opts.pair, opts.requirePaired {
-            throw HostError("--pair admits a not-yet-paired client; "
-                + "--require-paired contradicts it")
+            throw HostError("""
+                --pair admits a not-yet-paired client; \
+                --require-paired contradicts it
+                """)
         }
         if !opts.audio, opts.hostAudio == .hostMuted {
-            throw HostError("--host-audio muted routes audio to the wire "
-                + "instead of the speakers; --no-audio contradicts it")
+            throw HostError("""
+                --host-audio muted routes audio to the wire \
+                instead of the speakers; --no-audio contradicts it
+                """)
         }
 
         // HS-9 setup happens before the socket exists so a bad keystore
@@ -487,13 +521,17 @@ static func run(arguments: [String]) throws {
         if opts.requirePaired {
             let store = try PairedClients.load()
             guard !store.entries.isEmpty else {
-                throw HostError("--require-paired with an empty "
-                    + "keystore would lock every client out — run "
-                    + "--pair once first")
+                throw HostError("""
+                    --require-paired with an empty \
+                    keystore would lock every client out — run \
+                    --pair once first
+                    """)
             }
             allowed = store.publicKeys
-            print("pairing: enforcing \(store.entries.count) paired "
-                + "client static(s) from \(PairedClients.path.path)")
+            print("""
+                pairing: enforcing \(store.entries.count) paired \
+                client static(s) from \(PairedClients.path.path)
+                """)
         }
         if opts.pair {
             var rng = SystemRandomNumberGenerator()
@@ -502,9 +540,11 @@ static func run(arguments: [String]) throws {
                 pin: Array(pin.utf8),
                 hostStaticPublicKey: keys.publicKey
             )
-            print("pairing: PIN \(pin) — enter it on the client "
-                + "(3 wrong guesses burn it; rerun --pair for a "
-                + "fresh one)")
+            print("""
+                pairing: PIN \(pin) — enter it on the client \
+                (3 wrong guesses burn it; rerun --pair for a \
+                fresh one)
+                """)
         }
 
         // HS-18 housekeeping before any session traffic: put back a
@@ -526,16 +566,22 @@ static func run(arguments: [String]) throws {
                 try leaf.start()
                 clipboardLeaf = leaf
                 let tier = opts.clipboardImages
-                    ? "text + images (PNG, "
-                        + "\(ClipboardImageWire.maxImageByteCount) B "
-                        + "image ceiling)"
+                    ? """
+                        text + images (PNG, \
+                        \(ClipboardImageWire.maxImageByteCount) B \
+                        image ceiling)
+                        """
                     : "text only"
-                print("clipboard: leaf up — RemoteDesktop-session "
-                    + "clipboard (Mutter), \(tier), "
-                    + "\(ClipboardWire.maxTextByteCount) B text ceiling")
+                print("""
+                    clipboard: leaf up — RemoteDesktop-session \
+                    clipboard (Mutter), \(tier), \
+                    \(ClipboardWire.maxTextByteCount) B text ceiling
+                    """)
             } catch {
-                print("clipboard: leaf unavailable (\(error)) — "
-                    + "clipboard sync OFF this run, key 10 not declared")
+                print("""
+                    clipboard: leaf unavailable (\(error)) — \
+                    clipboard sync OFF this run, key 10 not declared
+                    """)
             }
         }
 
@@ -552,12 +598,16 @@ static func run(arguments: [String]) throws {
             do {
                 let shell = try BulkReceiveShell(directoryPath: dropDir)
                 bulkShell = shell
-                print("files: accepting incoming transfers → \(dropDir) "
-                    + "(staging + fsync + atomic rename, resumable; "
-                    + "one transfer at a time)")
+                print("""
+                    files: accepting incoming transfers → \(dropDir) \
+                    (staging + fsync + atomic rename, resumable; \
+                    one transfer at a time)
+                    """)
             } catch {
-                print("files: drop directory unavailable (\(error)) — "
-                    + "file drop OFF this run, key 11 not declared")
+                print("""
+                    files: drop directory unavailable (\(error)) — \
+                    file drop OFF this run, key 11 not declared
+                    """)
             }
         }
 
@@ -608,11 +658,12 @@ static func run(arguments: [String]) throws {
             declared.chromaModes = [
                 CapabilityChroma.yuv420, CapabilityChroma.yuv444,
             ]
-            print("chroma: Main444 probe GREEN — declaring "
-                + "[420, 444] (Best tier open, Rext native pens)")
+            print("""
+                chroma: Main444 probe GREEN — declaring \
+                [420, 444] (Best tier open, Rext native pens)
+                """)
         } else {
-            print("chroma: no Main444 encode entrypoint — declaring "
-                + "[420] only")
+            print("chroma: no Main444 encode entrypoint — declaring [420] only")
         }
 
         // HS-21: arm the retry-cookie dial when asked. A random secret,
@@ -628,9 +679,11 @@ static func run(arguments: [String]) throws {
                 cookieEnterThreshold: opts.cookieEnter,
                 cookieExitThreshold: opts.cookieExit
             )
-            print("handshake: W8 retry-cookie dial ARMED "
-                + "(require-cookie engages at \(opts.cookieEnter) msg1/s, "
-                + "clears at \(opts.cookieExit)/s)")
+            print("""
+                handshake: W8 retry-cookie dial ARMED \
+                (require-cookie engages at \(opts.cookieEnter) msg1/s, \
+                clears at \(opts.cookieExit)/s)
+                """)
         }
 
         let w = try SessionWire(
@@ -655,8 +708,10 @@ static func run(arguments: [String]) throws {
                     interfaceName: opts.advertiseInterface
                 )
             } catch {
-                print("discovery: unavailable (\(error)) — "
-                    + "manual host:port still works")
+                print("""
+                    discovery: unavailable (\(error)) — \
+                    manual host:port still works
+                    """)
             }
         }
         // E2: kernel-uinput injection is ready before any client can
@@ -666,8 +721,10 @@ static func run(arguments: [String]) throws {
             w.inputInjector = injector
             w.noteMonitorExtent(
                 width: UInt32(screen.width), height: UInt32(screen.height))
-            print("input: injection via \(injector.name) "
-                + "(echo tuples + lastInputSeq stamping active)")
+            print("""
+                input: injection via \(injector.name) \
+                (echo tuples + lastInputSeq stamping active)
+                """)
         }
         let awaitOutcome: SessionWire.ClientAwaitOutcome
         do {
@@ -682,8 +739,10 @@ static func run(arguments: [String]) throws {
             throw error
         }
         if awaitOutcome == .terminationRequested {
-            print("session: termination requested before handshake — "
-                + "clean stop")
+            print("""
+                session: termination requested before handshake — \
+                clean stop
+                """)
             w.shutdown(reason: .shuttingDown, lingerSeconds: 0)
             w.inputInjector?.stop()
             clipboardLeaf?.stop()
@@ -692,9 +751,11 @@ static func run(arguments: [String]) throws {
             return
         }
         wire = w
-        print("session: up — pacer \(opts.wireRateMbps) Mbps, per-packet "
-            + "TOS (video 0xA0 / ctrl+audio+repairs 0xC0), 1 Hz beacon "
-            + "on CTRL")
+        print("""
+            session: up — pacer \(opts.wireRateMbps) Mbps, per-packet \
+            TOS (video 0xA0 / ctrl+audio+repairs 0xC0), 1 Hz beacon \
+            on CTRL
+            """)
 
         // HS-20: the estimator's ceiling reaches the encoder as rate
         // directives — the direct leg applies them live (RC misc
@@ -724,8 +785,10 @@ static func run(arguments: [String]) throws {
                 exactTighten: true
             ))
         } else {
-            print("encoder-vbv: DISABLED (--no-vbv-reconfigure) — the "
-                + "opening posture rides the whole run")
+            print("""
+                encoder-vbv: DISABLED (--no-vbv-reconfigure) — the \
+                opening posture rides the whole run
+                """)
         }
 
         // HS-19: the clipboard loop — client 0x1A sets apply through
@@ -794,9 +857,11 @@ static func run(arguments: [String]) throws {
                 // return-to-streaming request rebuilds below like any
                 // other flip.
                 if mode == .streamOff {
-                    print("audio-routing: stream OFF — the wire "
-                        + "carries no audio track (host speakers "
-                        + "unaffected)")
+                    print("""
+                        audio-routing: stream OFF — the wire \
+                        carries no audio track (host speakers \
+                        unaffected)
+                        """)
                     return true
                 }
                 do {
@@ -807,9 +872,11 @@ static func run(arguments: [String]) throws {
                     audioWire = flipped
                     return true
                 } catch {
-                    print("audio-routing: rebuild in \(mode) failed "
-                        + "(\(error)) — trying to come back "
-                        + "\(opts.hostAudio)")
+                    print("""
+                        audio-routing: rebuild in \(mode) failed \
+                        (\(error)) — trying to come back \
+                        \(opts.hostAudio)
+                        """)
                     if let back = try? AudioWire(
                         wire: w, bitrate: opts.audioBitrate,
                         mode: opts.hostAudio
@@ -820,12 +887,13 @@ static func run(arguments: [String]) throws {
                     return false
                 }
             }
-            print("audio: "
-                + (opts.hostAudio == .hostMuted
-                    ? "\"Lyte Audio\" virtual-sink capture (host MUTED)"
-                    : "default-sink monitor capture (host audible)")
-                + " → opus \(opts.audioBitrate / 1_000) kbps hard CBR → "
-                + "5 ms packets → RS 4+2 → chan 1 (TOS 0xC0 / DSCP 48)")
+            let capture = opts.hostAudio == .hostMuted
+                ? "\"Lyte Audio\" virtual-sink capture (host MUTED)"
+                : "default-sink monitor capture (host audible)"
+            print("""
+                audio: \(capture) → opus \(opts.audioBitrate / 1_000) kbps \
+                hard CBR → 5 ms packets → RS 4+2 → chan 1 (TOS 0xC0 / DSCP 48)
+                """)
         } catch {
             print("audio: unavailable (\(error)) — video-only session")
         }
@@ -876,8 +944,10 @@ static func run(arguments: [String]) throws {
         throw HostError(failure)
     }
     if leg.frames == 0 {
-        throw HostError("direct eye produced no frames in "
-            + "\(Int(opts.seconds))s")
+        throw HostError("""
+            direct eye produced no frames in \
+            \(Int(opts.seconds))s
+            """)
     }
     print("""
 
@@ -891,9 +961,11 @@ static func run(arguments: [String]) throws {
     let directNals = AnnexBCheck.nalUnits(in: leg.firstPacket)
     print("first packet NALs: \(AnnexBCheck.summary(of: leg.firstPacket))")
     guard AnnexBCheck.startsWithParameterSetsAndIrap(leg.firstPacket) else {
-        throw HostError("the direct eye's first packet does not begin "
-            + "with VPS/SPS/PPS + an IRAP picture (got: "
-            + "\(directNals.map { HevcNalType.name($0.type) }.joined(separator: " ")))")
+        throw HostError("""
+            the direct eye's first packet does not begin \
+            with VPS/SPS/PPS + an IRAP picture (got: \
+            \(directNals.map { HevcNalType.name($0.type) }.joined(separator: " ")))
+            """)
     }
     print("first packet starts with parameter sets + IDR: OK")
 
@@ -910,9 +982,11 @@ static func run(arguments: [String]) throws {
         if let d = wire.lastVbvDirective {
             let avg = d.averageBitsPerSecond
                 .map { " avg \($0 / 1_000) kbps," } ?? ""
-            vbvFinal = " — final\(avg) max \(d.maxBitsPerSecond / 1_000) "
-                + "kbps, vbv \(d.vbvBits / 8) B "
-                + "(ceiling \(d.frameByteCeiling) B)"
+            vbvFinal = """
+                 — final\(avg) max \(d.maxBitsPerSecond / 1_000) \
+                kbps, vbv \(d.vbvBits / 8) B \
+                (ceiling \(d.frameByteCeiling) B)
+                """
         }
         // F-3: the shell's own books (chunk/byte-level evidence),
         // appended to the files line when the shell ran.
@@ -1094,27 +1168,29 @@ static func run(arguments: [String]) throws {
         """)
         if let audio = audioWire {
             let trip = audio.tripwireCounters
-            print("audio: \(audio.packetsEncoded) packets encoded "
-                + "(\(audio.encodeFailures) encode failures)"
-                + (audio.negotiated.map {
-                    ", negotiated F32 \($0.rate) Hz \($0.channels)ch"
-                } ?? ", no buffers arrived")
-                + (trip.quietEntries > 0
-                    ? "; tripwire \(trip.quietEntries) quiet, "
-                        + "\(trip.wakes) wakes, "
-                        + "\(trip.packetsGated) gated, "
-                        + "\(trip.preRollShipped) pre-roll shipped"
-                    : "")
-                + (audio.negotiationError.map { "; ERROR \($0)" } ?? "")
-                + (audio.runError.map { "; run error \($0)" } ?? ""))
+            let negotiated = audio.negotiated.map {
+                ", negotiated F32 \($0.rate) Hz \($0.channels)ch"
+            } ?? ", no buffers arrived"
+            let tripwire = trip.quietEntries > 0 ? """
+                ; tripwire \(trip.quietEntries) quiet, \(trip.wakes) wakes, \
+                \(trip.packetsGated) gated, \(trip.preRollShipped) pre-roll shipped
+                """ : ""
+            let negotiationError = audio.negotiationError.map {
+                "; ERROR \($0)"
+            } ?? ""
+            let runError = audio.runError.map { "; run error \($0)" } ?? ""
+            print("""
+                audio: \(audio.packetsEncoded) packets encoded \
+                (\(audio.encodeFailures) encode failures)\(negotiated)\
+                \(tripwire)\(negotiationError)\(runError)
+                """)
         }
     } else {
         print("output: \(opts.outputPath)")
     }
     if let pairing = pairingService {
         if let key = pairing.pairedClientStaticPublicKey {
-            print("pairing: result — PAIRED, client "
-                + Hex.string(key))
+            print("pairing: result — PAIRED, client \(Hex.string(key))")
         } else if pairing.isBurned {
             print("pairing: result — PIN burned, nothing pinned")
         } else {

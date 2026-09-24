@@ -48,8 +48,10 @@ final class SessionBus {
             dbus_error_free(&err)
             switch kind {
             case .session:
-                throw HostError("cannot connect to the D-Bus session bus: \(msg) "
-                    + "(is DBUS_SESSION_BUS_ADDRESS set? Mutter needs the user session bus)")
+                throw HostError("""
+                    cannot connect to the D-Bus session bus: \(msg) \
+                    (is DBUS_SESSION_BUS_ADDRESS set? Mutter needs the user session bus)
+                    """)
             case .system:
                 throw HostError("cannot connect to the D-Bus system bus: \(msg)")
             }

@@ -1018,8 +1018,10 @@ final class NackRepairGateTests: XCTestCase {
         XCTAssertEqual(byIndex.count, 38)
         XCTAssertEqual(session.counters.fecRegimeSteps, 1)
 
-        print("HS-17 gate leg 5: post-FEC 5% stepped clean→lossy — "
-            + "frame 0 at 28+5, frame 2 at 28+10")
+        print("""
+            HS-17 gate leg 5: post-FEC 5% stepped clean→lossy — \
+            frame 0 at 28+5, frame 2 at 28+10
+            """)
     }
 
     // MARK: Leg 6 — THE CADENCE GATE under a repair storm (R-G8 shape)
@@ -1154,8 +1156,10 @@ final class NackRepairGateTests: XCTestCase {
         deviations.sort()
         let p99 = deviations[Int(Double(deviations.count - 1) * 0.99)]
         XCTAssertLessThanOrEqual(p99, 2 * ms,
-            "audio inter-send p99 deviation \(Double(p99) / 1e6) ms > "
-            + "2 ms through the repair storm")
+            """
+                audio inter-send p99 deviation \(Double(p99) / 1e6) ms > \
+                2 ms through the repair storm
+                """)
 
         let worstMS = Double(deviations.last!) / 1e6
         let audioQueueMS =

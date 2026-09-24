@@ -137,8 +137,10 @@ func makeInputInjector(_ choice: InputBackendChoice) -> InputInjector? {
         do {
             return try UinputInjector()
         } catch {
-            print("input: uinput unavailable (\(error)) — injection "
-                + "OFF (install the udev rule: setup-host.sh)")
+            print("""
+                input: uinput unavailable (\(error)) — injection \
+                OFF (install the udev rule: setup-host.sh)
+                """)
             return nil
         }
     }

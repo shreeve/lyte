@@ -91,7 +91,7 @@ public struct ClientKeystore: Equatable, Sendable {
         for entry in entries {
             let hex = Hex.string(entry.publicKey)
             lines.append(
-                entry.note.isEmpty ? hex : hex + " " + entry.note
+                entry.note.isEmpty ? hex : hex + " \(entry.note)"
             )
         }
         return lines.joined(separator: "\n") + "\n"

@@ -90,9 +90,11 @@ func runNativeCapture(
     }
     let width = screen.width
     let height = screen.height
-    print("capture: \(device) \(width)x\(height) → \(output) "
-        + "(qp \(qp), \(Int(seconds))s) [NATIVE — no libavcodec]"
-        + (chroma444 ? " [Rext 4:4:4]" : ""))
+    print("""
+        capture: \(device) \(width)x\(height) → \(output) \
+        (qp \(qp), \(Int(seconds))s) [NATIVE — no libavcodec]\
+        \(chroma444 ? " [Rext 4:4:4]" : "")
+        """)
 
     let pipeline: EyePipeline
     do {
@@ -140,9 +142,11 @@ func runNativeCapture(
            t - t0 > seconds / 2 {
             rateMoved = true
             pipeline.setRateControl(bitsPerSecond: bitrateBitsPerSecond / 2)
-            print("  live-rate: \(bitrateBitsPerSecond / 1_000_000) → "
-                + "\(bitrateBitsPerSecond / 2_000_000) Mbps at midpoint "
-                + "(no reset, no IDR expected)")
+            print("""
+                  live-rate: \(bitrateBitsPerSecond / 1_000_000) → \
+                \(bitrateBitsPerSecond / 2_000_000) Mbps at midpoint \
+                (no reset, no IDR expected)
+                """)
         }
         let observationClock = SystemMonotonicClock.nowMicroseconds
         guard case .sample(let skippedBeats) = samplingCadence.poll(
@@ -150,8 +154,10 @@ func runNativeCapture(
         else {
             usleep(1000)
             if t >= nextReport {
-                print("  t=\(String(format: "%2.0f", t - t0))s "
-                    + "frames_this_sec=\(framesThisSecond) total=\(frames)")
+                print("""
+                      t=\(String(format: "%2.0f", t - t0))s \
+                    frames_this_sec=\(framesThisSecond) total=\(frames)
+                    """)
                 framesThisSecond = 0
                 nextReport += 1.0
             }
@@ -206,8 +212,10 @@ func runNativeCapture(
         }
 
         if t >= nextReport {
-            print("  t=\(String(format: "%2.0f", t - t0))s "
-                + "frames_this_sec=\(framesThisSecond) total=\(frames)")
+            print("""
+                  t=\(String(format: "%2.0f", t - t0))s \
+                frames_this_sec=\(framesThisSecond) total=\(frames)
+                """)
             framesThisSecond = 0
             nextReport += 1.0
         }
@@ -216,16 +224,20 @@ func runNativeCapture(
 
     let duration = SystemMonotonicClock.nowSeconds - t0
     print(String(
-        format: "RESULT capture: %d frames in %.1fs = %.2f fps, "
-            + "%d bytes (%.1f KB/frame), %d IDRs, missed_grabs=%d "
-            + "[NATIVE]",
+        format: """
+            RESULT capture: %d frames in %.1fs = %.2f fps, \
+            %d bytes (%.1f KB/frame), %d IDRs, missed_grabs=%d \
+            [NATIVE]
+            """,
         frames, duration, Double(frames) / duration, bytes,
         frames > 0 ? Double(bytes) / Double(frames) / 1024 : 0,
         keyframes, missedGrabs))
-    print("RESULT observation: beats=\(observations), "
-        + "framebuffer_transitions=\(framebufferTransitions), "
-        + "pixel_changes=\(changedObservations), "
-        + "skipped_beats=\(skippedObservationBeats)")
+    print("""
+        RESULT observation: beats=\(observations), \
+        framebuffer_transitions=\(framebufferTransitions), \
+        pixel_changes=\(changedObservations), \
+        skipped_beats=\(skippedObservationBeats)
+        """)
     if observations > 0 {
         print(String(
             format: "RESULT fingerprint: %.2f ms/observation",
@@ -233,8 +245,7 @@ func runNativeCapture(
     }
     if frames > 0 {
         print(String(
-            format: "RESULT timing: blit %.2f ms/frame, "
-                + "encode %.2f ms/frame",
+            format: "RESULT timing: blit %.2f ms/frame, encode %.2f ms/frame",
             blitMs / Double(frames), encodeMs / Double(frames)))
     }
     exit(0)

@@ -28,8 +28,8 @@ func realtimeNowNS() -> UInt64 {
 }
 
 func hexTOS(_ tos: UInt8) -> String {
-    Hex.string(tos, width: 2, uppercase: true, prefix: true)
-        + "/dscp\(WireTos.dscp(tos))"
+    let hex = Hex.string(tos, width: 2, uppercase: true, prefix: true)
+    return "\(hex)/dscp\(WireTos.dscp(tos))"
 }
 
 func pad(_ s: String, _ width: Int) -> String {
@@ -71,9 +71,11 @@ func run() throws {
     let payloadSize = 1152 // the universal datagram budget
     let sentTOS = (0..<count).map { tosCycle[$0 % tosCycle.count] }
 
-    print("netio-check: \(count) datagrams of \(payloadSize) B to "
-        + "127.0.0.1:\(port), TOS cycle "
-        + tosCycle.map { hexTOS($0) }.joined(separator: " "))
+    print("""
+        netio-check: \(count) datagrams of \(payloadSize) B to \
+        127.0.0.1:\(port), TOS cycle \
+        \(tosCycle.map { hexTOS($0) }.joined(separator: " "))
+        """)
 
     // Payload byte 0 identifies the datagram, so received TOS matches to
     // sent TOS regardless of delivery order.
@@ -133,8 +135,10 @@ func run() throws {
         throw CheckError("received \(received)/\(count) within 3 s")
     }
     let deliveryMS = (lastRecvAt - sendStartMono) * 1000
-    print("received \(received)/\(count), batch delivery "
-        + String(Int(deliveryMS.rounded())) + " ms")
+    print("""
+        received \(received)/\(count), batch delivery \
+        \(String(Int(deliveryMS.rounded()))) ms
+        """)
 
     // Drain TX timestamps; the kernel delivers them asynchronously.
     var stamps: [UInt32: UInt64] = [:]
@@ -178,9 +182,11 @@ func run() throws {
         }
         if stamp != 0 { prevStamp = stamp }
         let deltaUS = stamp == 0 ? "-" : String((stamp &- sendStartNS) / 1000)
-        print("\(pad(String(i), 4)) \(pad(hexTOS(sentTOS[i]), 13)) "
-            + "\(pad(hexTOS(slot.tos), 13)) \(pad(String(slot.len), 5)) "
-            + "\(stamp) (+\(deltaUS) µs)\(marks)")
+        print("""
+            \(pad(String(i), 4)) \(pad(hexTOS(sentTOS[i]), 13)) \
+            \(pad(hexTOS(slot.tos), 13)) \(pad(String(slot.len), 5)) \
+            \(stamp) (+\(deltaUS) µs)\(marks)
+            """)
     }
     if stamps.count < count {
         print("tx stamps: only \(stamps.count)/\(count) arrived within 3 s")

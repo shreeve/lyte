@@ -156,8 +156,10 @@ final class RateEstimatorGateTests: XCTestCase {
             now: 60 * Self.ms, inRecovery: false
         )
         XCTAssertNil(verdict.newRateBitsPerSecond,
-                     "one clean report must not move the standing rate "
-                     + "already at the ceiling")
+                     """
+                         one clean report must not move the standing rate \
+                         already at the ceiling
+                         """)
         let measured = estimator.deliveryRateBitsPerSecond
         XCTAssertNotNil(measured)
         XCTAssertEqual(Double(measured!), 8e6, accuracy: 0.4e6,
@@ -354,8 +356,10 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(
             Double(estimator.deliveryRateBitsPerSecond ?? 0),
             250e3, accuracy: 30e3,
-            "the four-packet same-frame train stays intact and keeps "
-                + "the existing short-train ×0.5 weighting"
+            """
+                the four-packet same-frame train stays intact and keeps \
+                the existing short-train ×0.5 weighting
+                """
         )
     }
 
@@ -413,8 +417,10 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling)
         XCTAssertEqual(estimator.stats.downshifts, downshiftsBefore)
         XCTAssertGreaterThanOrEqual(estimator.stats.selfReferenceHolds, 1,
-            "persisted delay with backlog and no frame-local witness "
-                + "must hold as self-explaining, not churn")
+            """
+                persisted delay with backlog and no frame-local witness \
+                must hold as self-explaining, not churn
+                """)
     }
 
     /// Q-1, the receipts fix: a receiver radio that drains a queued
@@ -442,14 +448,18 @@ final class RateEstimatorGateTests: XCTestCase {
         let burstMax = estimator.deliveryRateBitsPerSecond
         XCTAssertNotNil(burstMax)
         XCTAssertGreaterThan(burstMax!, 100_000_000,
-                             "the max window keeps the burst sample — "
-                             + "the control law's probe is untouched")
+                             """
+                                 the max window keeps the burst sample — \
+                                 the control law's probe is untouched
+                                 """)
         let reported = estimator.measuredDeliveryRateBitsPerSecond
         XCTAssertNotNil(reported)
         XCTAssertEqual(Double(reported!), 8e6, accuracy: 0.4e6,
-                       "the reported delivery is the full-train median "
-                       + "— a lone clumped burst cannot print as the "
-                       + "session's delivery rate")
+                       """
+                           the reported delivery is the full-train median \
+                           — a lone clumped burst cannot print as the \
+                           session's delivery rate
+                           """)
     }
 
     func testUnmatchedSamplesAreIgnoredNotInvented() {
@@ -541,8 +551,10 @@ final class RateEstimatorGateTests: XCTestCase {
             if let rate = beat(lossPerHundred: 0).newRateBitsPerSecond {
                 if rate < before {
                     XCTAssertLessThan(i, 40,
-                        "falls after the 1 s loss window drained "
-                        + "would be invented loss")
+                        """
+                            falls after the 1 s loss window drained \
+                            would be invented loss
+                            """)
                 } else {
                     XCTAssertLessThanOrEqual(
                         Double(rate), Double(before) * 1.011,
@@ -558,11 +570,13 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertLessThanOrEqual(lastRate, Self.ceiling)
         XCTAssertGreaterThanOrEqual(estimator.stats.lossDownshifts, 2)
 
-        print("HS-16 gate (loss): 5% HELD at \(Self.ceiling / 1_000) kbps "
-            + "(FEC's band); 20% burst → "
-            + "\(downshiftRates.map { "\($0 / 1_000)" }.joined(separator: " → "))"
-            + " kbps; re-converged to \(lastRate / 1_000) kbps "
-            + "after \(estimator.stats.upshifts) evidence climbs")
+        print("""
+            HS-16 gate (loss): 5% HELD at \(Self.ceiling / 1_000) kbps \
+            (FEC's band); 20% burst → \
+            \(downshiftRates.map { "\($0 / 1_000)" }.joined(separator: " → "))\
+             kbps; re-converged to \(lastRate / 1_000) kbps \
+            after \(estimator.stats.upshifts) evidence climbs
+            """)
     }
 
     /// The floor-deadlock the live gate caught: at 500 kbps the pacer
@@ -606,8 +620,10 @@ final class RateEstimatorGateTests: XCTestCase {
             }
         }
         XCTAssertTrue(sawUpshift,
-            "paced evidence at the floor must still form delivery "
-            + "samples and let the rate climb")
+            """
+                paced evidence at the floor must still form delivery \
+                samples and let the rate climb
+                """)
         XCTAssertGreaterThan(estimator.rateBitsPerSecond, 500_000)
     }
 
@@ -675,15 +691,19 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertNotNil(newRate)
         XCTAssertEqual(verdict.change, .overuse)
         XCTAssertEqual(Double(newRate!), 10e6 * 0.85, accuracy: 0.6e6,
-                       "the overuse fall anchors to measured delivery, "
-                       + "not to the configured rate")
+                       """
+                           the overuse fall anchors to measured delivery, \
+                           not to the configured rate
+                           """)
         XCTAssertGreaterThanOrEqual(
             estimator.queuingDelayMicroseconds ?? 0, 20_000
         )
 
-        print("HS-16 gate (overuse): 25 ms inflation over baseline → "
-            + "\(newRate! / 1_000) kbps (0.85 × the 10 Mbps the path "
-            + "measurably delivered)")
+        print("""
+            HS-16 gate (overuse): 25 ms inflation over baseline → \
+            \(newRate! / 1_000) kbps (0.85 × the 10 Mbps the path \
+            measurably delivered)
+            """)
     }
 
     // MARK: The baseline witness rule (v1-final analysis finding 5):
@@ -724,9 +744,11 @@ final class RateEstimatorGateTests: XCTestCase {
             estimator.queuingDelayMicroseconds ?? 0, 1_000
         )
 
-        print("finding-5 gate (witness): one 25 ms-fast freak report → "
-            + "0 overuse verdicts, rate untouched (the raw-min "
-            + "baseline fell ~20 beats on this shape)")
+        print("""
+            finding-5 gate (witness): one 25 ms-fast freak report → \
+            0 overuse verdicts, rate untouched (the raw-min \
+            baseline fell ~20 beats on this shape)
+            """)
     }
 
     /// The control: TWO fast reports are corroboration — the floor
@@ -753,8 +775,7 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertFalse(beat(extraDelayMicros: 25_000).overuse,
                        "one inflated report must not fire (2 consecutive)")
         XCTAssertTrue(beat(extraDelayMicros: 25_000).overuse,
-                      "the corroborated floor must make real inflation "
-                      + "visible")
+                      "the corroborated floor must make real inflation visible")
     }
 
     // MARK: Leg 3b — HS-21: the overuse anchor is robust to one garbage
@@ -833,16 +854,20 @@ final class RateEstimatorGateTests: XCTestCase {
         let newRate = verdict.newRateBitsPerSecond
         XCTAssertNotNil(newRate)
         XCTAssertGreaterThan(Double(newRate!), 10e6,
-            "one garbage delivery sample must not crater the rate — "
-            + "the anchor is the clean median, not the lone outlier "
-            + "(got \(newRate! / 1_000) kbps)")
+            """
+                one garbage delivery sample must not crater the rate — \
+                the anchor is the clean median, not the lone outlier \
+                (got \(newRate! / 1_000) kbps)
+                """)
         XCTAssertEqual(Double(newRate!), 20e6 * 0.85, accuracy: 1.0e6,
             "the fall anchors to the 20 Mbps the median still measures")
 
-        print("HS-21 gate (garbage anchor): lone 2 Mbps sample at the "
-            + "overuse fire → \(newRate! / 1_000) kbps (median-anchored "
-            + "to 20 Mbps; the one-deep anchor would have cratered to "
-            + "~1,700 kbps)")
+        print("""
+            HS-21 gate (garbage anchor): lone 2 Mbps sample at the \
+            overuse fire → \(newRate! / 1_000) kbps (median-anchored \
+            to 20 Mbps; the one-deep anchor would have cratered to \
+            ~1,700 kbps)
+            """)
     }
 
     /// The regression pin: a GENUINE sustained overuse — delivery truly
@@ -880,8 +905,10 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertNotNil(first.newRateBitsPerSecond)
         XCTAssertEqual(Double(first.newRateBitsPerSecond!), 5e6 * 0.85,
             accuracy: 1.0e6,
-            "genuine sustained overuse still anchors to the 5 Mbps the "
-            + "path measurably delivers — the fast fall is intact")
+            """
+                genuine sustained overuse still anchors to the 5 Mbps the \
+                path measurably delivers — the fast fall is intact
+                """)
 
         // Sustained: it keeps falling under continued overuse (the
         // 500 ms limiter bounds cadence), never blunted by the median.
@@ -894,10 +921,12 @@ final class RateEstimatorGateTests: XCTestCase {
             Int(5e6 * 0.85) + 500_000,
             "the rate tracks the measured delivery down under the squeeze")
 
-        print("HS-21 gate (genuine fall): sustained 5 Mbps squeeze → "
-            + "first fall \(first.newRateBitsPerSecond! / 1_000) kbps "
-            + "(0.85 × measured), \(falls) falls total, settled at "
-            + "\(estimator.rateBitsPerSecond / 1_000) kbps")
+        print("""
+            HS-21 gate (genuine fall): sustained 5 Mbps squeeze → \
+            first fall \(first.newRateBitsPerSecond! / 1_000) kbps \
+            (0.85 × measured), \(falls) falls total, settled at \
+            \(estimator.rateBitsPerSecond / 1_000) kbps
+            """)
     }
 
     // MARK: Leg 3c — HS-22: only FULL trains vote on the anchor (the
@@ -976,14 +1005,18 @@ final class RateEstimatorGateTests: XCTestCase {
         let newRate = verdict.newRateBitsPerSecond
         XCTAssertNotNil(newRate)
         XCTAssertEqual(Double(newRate!), 20e6 * 0.85, accuracy: 1.0e6,
-            "a micro-train MAJORITY must not crater the rate — the "
-            + "anchor votes are full trains only "
-            + "(got \(newRate! / 1_000) kbps)")
+            """
+                a micro-train MAJORITY must not crater the rate — the \
+                anchor votes are full trains only \
+                (got \(newRate! / 1_000) kbps)
+                """)
 
-        print("HS-22 gate (micro-train majority): two 4-packet ~1 Mbps "
-            + "audio-paced samples at the overuse fire → "
-            + "\(newRate! / 1_000) kbps (full-train-anchored to 20 Mbps; "
-            + "the HS-21 median alone would have cratered to ~850 kbps)")
+        print("""
+            HS-22 gate (micro-train majority): two 4-packet ~1 Mbps \
+            audio-paced samples at the overuse fire → \
+            \(newRate! / 1_000) kbps (full-train-anchored to 20 Mbps; \
+            the HS-21 median alone would have cratered to ~850 kbps)
+            """)
     }
 
     // MARK: Leg 3d — HS-22c: the self-reference gate (finding (ii)).
@@ -1085,18 +1118,22 @@ final class RateEstimatorGateTests: XCTestCase {
                 "a self-referential overuse verdict must hold, not fall")
         }
         XCTAssertGreaterThanOrEqual(overuseVerdicts, 30,
-            "the overuse verdicts genuinely fired — the gate held the "
-            + "FALL, not the detector")
+            """
+                the overuse verdicts genuinely fired — the gate held the \
+                FALL, not the detector
+                """)
         XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling,
             "the rate never moved — the 500 kbps spiral is dead")
         XCTAssertEqual(estimator.stats.downshifts, 0)
         XCTAssertGreaterThanOrEqual(estimator.stats.selfReferenceHolds, 1)
 
-        print("HS-22c gate (self-reference): \(overuseVerdicts) overuse "
-            + "verdicts over 1 s at anchor ≈ standing rate with backlog "
-            + "→ 0 falls, \(estimator.stats.selfReferenceHolds) holds, "
-            + "rate pinned at \(estimator.rateBitsPerSecond / 1_000) kbps "
-            + "(the old law reached the floor in these beats)")
+        print("""
+            HS-22c gate (self-reference): \(overuseVerdicts) overuse \
+            verdicts over 1 s at anchor ≈ standing rate with backlog \
+            → 0 falls, \(estimator.stats.selfReferenceHolds) holds, \
+            rate pinned at \(estimator.rateBitsPerSecond / 1_000) kbps \
+            (the old law reached the floor in these beats)
+            """)
     }
 
     /// Real degradation whose capacity sits AT the standing rate: the
@@ -1230,14 +1267,18 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertNotNil(verdict.newRateBitsPerSecond)
         XCTAssertEqual(Double(verdict.newRateBitsPerSecond!), 5e6 * 0.85,
             accuracy: 1.0e6,
-            "an honestly low anchor falls to measured delivery — the "
-            + "gate reads the evidence, it does not read the backlog")
+            """
+                an honestly low anchor falls to measured delivery — the \
+                gate reads the evidence, it does not read the backlog
+                """)
         XCTAssertEqual(estimator.stats.selfReferenceHolds, 0)
 
-        print("HS-22c gate (honest dip under backlog): 20 → 5 Mbps path "
-            + "with standing backlog → fall to "
-            + "\(verdict.newRateBitsPerSecond! / 1_000) kbps "
-            + "(0.85 × measured), zero self-reference holds")
+        print("""
+            HS-22c gate (honest dip under backlog): 20 → 5 Mbps path \
+            with standing backlog → fall to \
+            \(verdict.newRateBitsPerSecond! / 1_000) kbps \
+            (0.85 × measured), zero self-reference holds
+            """)
     }
 
     // MARK: Leg 3e — HS-23: the stall gate (the Wi-Fi study's receiver
@@ -1282,19 +1323,23 @@ final class RateEstimatorGateTests: XCTestCase {
             }
         }
         XCTAssertGreaterThanOrEqual(overuseVerdicts, 10,
-            "the overuse verdicts genuinely fired — the gate held the "
-            + "FALL, not the detector")
+            """
+                the overuse verdicts genuinely fired — the gate held the \
+                FALL, not the detector
+                """)
         XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling,
             "the estimator rode through every stall cycle")
         XCTAssertEqual(estimator.stats.downshifts, 0)
         XCTAssertGreaterThanOrEqual(estimator.stats.stallHolds, 10)
 
-        print("HS-23 gate (stall ride-through): 10 gap-burst cycles "
-            + "(80 ms holes, 200 Mbps drains) → \(overuseVerdicts) "
-            + "overuse verdicts, \(estimator.stats.stallHolds) stall "
-            + "holds, 0 falls, rate pinned at "
-            + "\(estimator.rateBitsPerSecond / 1_000) kbps (the old law "
-            + "fell twice a second on this shape, forever)")
+        print("""
+            HS-23 gate (stall ride-through): 10 gap-burst cycles \
+            (80 ms holes, 200 Mbps drains) → \(overuseVerdicts) \
+            overuse verdicts, \(estimator.stats.stallHolds) stall \
+            holds, 0 falls, rate pinned at \
+            \(estimator.rateBitsPerSecond / 1_000) kbps (the old law \
+            fell twice a second on this shape, forever)
+            """)
     }
 
     /// A dwell TRAIN with rising peaks (70 → 90 ms) mimics queue
@@ -1319,8 +1364,10 @@ final class RateEstimatorGateTests: XCTestCase {
         let verdict = driver.beat(bottleneckMbps: 200, extraDelayMicros: 90_000)
         XCTAssertTrue(verdict.overuse)
         XCTAssertNil(verdict.newRateBitsPerSecond,
-            "rising dwells are not a building queue — the drain says "
-            + "the hole closed")
+            """
+                rising dwells are not a building queue — the drain says \
+                the hole closed
+                """)
         XCTAssertGreaterThanOrEqual(estimator.stats.stallHolds, 1)
         XCTAssertEqual(estimator.stats.downshifts, 0)
     }
@@ -1358,8 +1405,10 @@ final class RateEstimatorGateTests: XCTestCase {
         let midDwell = driver.beat(bottleneckMbps: 20, extraDelayMicros: 80_000)
         XCTAssertTrue(midDwell.overuse)
         XCTAssertNil(midDwell.newRateBitsPerSecond,
-            "the verdict fired mid-dwell — the deferral holds the fall "
-            + "so the drain can testify")
+            """
+                the verdict fired mid-dwell — the deferral holds the fall \
+                so the drain can testify
+                """)
         XCTAssertGreaterThanOrEqual(estimator.stats.fallDeferrals, 1)
 
         // The hole closes: the drain arrives compressed at 200 Mbps.
@@ -1370,14 +1419,18 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(estimator.stats.stallHolds, 1)
         XCTAssertEqual(estimator.stats.downshifts, 0)
         XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling,
-            "the dwell cost ZERO rate moves — and therefore zero "
-            + "VBV-forced IDRs")
+            """
+                the dwell cost ZERO rate moves — and therefore zero \
+                VBV-forced IDRs
+                """)
 
-        print("ramp-hunt gate (dwell deferral): mid-dwell verdict "
-            + "deferred, drain testified one report later → "
-            + "\(estimator.stats.fallDeferrals) deferral, "
-            + "\(estimator.stats.stallHolds) stall hold(s), 0 falls, "
-            + "rate pinned at \(estimator.rateBitsPerSecond / 1_000) kbps")
+        print("""
+            ramp-hunt gate (dwell deferral): mid-dwell verdict \
+            deferred, drain testified one report later → \
+            \(estimator.stats.fallDeferrals) deferral, \
+            \(estimator.stats.stallHolds) stall hold(s), 0 falls, \
+            rate pinned at \(estimator.rateBitsPerSecond / 1_000) kbps
+            """)
     }
 
     /// A hole past the 150 ms ceiling is sustained degradation, not a
@@ -1521,8 +1574,10 @@ final class RateEstimatorGateTests: XCTestCase {
         )
         XCTAssertTrue(verdict.overuse)
         XCTAssertNil(verdict.newRateBitsPerSecond,
-            "a NACK echo inside the clean column is the hole's shadow, "
-            + "not congestion")
+            """
+                a NACK echo inside the clean column is the hole's shadow, \
+                not congestion
+                """)
         XCTAssertGreaterThanOrEqual(estimator.stats.stallHolds, 1)
 
         // A rung-3-scale storm through the same shape: > 2% post-FEC
@@ -1651,8 +1706,7 @@ final class RateEstimatorGateTests: XCTestCase {
                 backlogBytes: 40_000
             )
             XCTAssertNotEqual(verdict.change, .overuse,
-                "a censored trickle at half the belief must not anchor "
-                + "a fall")
+                "a censored trickle at half the belief must not anchor a fall")
         }
         XCTAssertEqual(Double(estimator.rateBitsPerSecond), 10e6,
                        accuracy: 0.5e6,
@@ -1660,8 +1714,10 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(
             Double(estimator.capacityBeliefBitsPerSecond ?? 0),
             10e6, accuracy: 1e6,
-            "RECOVERY re-anchors belief; censored trickle then leaves "
-                + "that new-path anchor standing"
+            """
+                RECOVERY re-anchors belief; censored trickle then leaves \
+                that new-path anchor standing
+                """
         )
         XCTAssertEqual(estimator.stats.beliefDemotions, 0)
 
@@ -1694,12 +1750,14 @@ final class RateEstimatorGateTests: XCTestCase {
             "the belief follows the path down on honest evidence"
         )
 
-        print("HS-28 gate (belief): RECOVERY re-anchored at 10 Mbps; "
-            + "1 s of censored trickle left it standing; honest 4 Mbps "
-            + "evidence demoted it to "
-            + "\((estimator.capacityBeliefBitsPerSecond ?? 0) / 1_000) kbps "
-            + "and the fall landed at "
-            + "\(verdict.newRateBitsPerSecond! / 1_000) kbps")
+        print("""
+            HS-28 gate (belief): RECOVERY re-anchored at 10 Mbps; \
+            1 s of censored trickle left it standing; honest 4 Mbps \
+            evidence demoted it to \
+            \((estimator.capacityBeliefBitsPerSecond ?? 0) / 1_000) kbps \
+            and the fall landed at \
+            \(verdict.newRateBitsPerSecond! / 1_000) kbps
+            """)
     }
 
     /// THE LEG-B REPLAY GATE (the truth-probe's shape, virtual time):
@@ -1737,8 +1795,10 @@ final class RateEstimatorGateTests: XCTestCase {
         }
         let afterEpisode = estimator.rateBitsPerSecond
         XCTAssertLessThan(afterEpisode, Self.ceiling,
-            "genuine loss still falls — the honesty work must not "
-            + "blunt the loss branch")
+            """
+                genuine loss still falls — the honesty work must not \
+                blunt the loss branch
+                """)
         XCTAssertGreaterThanOrEqual(estimator.stats.lossDownshifts, 2)
 
         // Phase 3 — the limbo that killed the old law: 1.5 s of
@@ -1773,17 +1833,21 @@ final class RateEstimatorGateTests: XCTestCase {
                 XCTAssertGreaterThanOrEqual(
                     Double(newRate),
                     Double(estimator.rateBitsPerSecond) * 0.84,
-                    "an overuse fall in the limbo may be bounded "
-                    + "multiplicative at worst — never a crater to "
-                    + "0.85 × trickle"
+                    """
+                        an overuse fall in the limbo may be bounded \
+                        multiplicative at worst — never a crater to \
+                        0.85 × trickle
+                        """
                 )
             }
         }
         XCTAssertGreaterThanOrEqual(
             estimator.rateBitsPerSecond,
             Int(Double(afterEpisode) * 0.7),
-            "the limbo must not ratchet the rate toward the floor "
-            + "(the old law lived at 0.1–1.6 Mbps here)"
+            """
+                the limbo must not ratchet the rate toward the floor \
+                (the old law lived at 0.1–1.6 Mbps here)
+                """
         )
         XCTAssertLessThanOrEqual(
             estimator.stats.downshifts - downshiftsBeforeLimbo, 2,
@@ -1812,13 +1876,15 @@ final class RateEstimatorGateTests: XCTestCase {
             "clean air climbs toward the belief (10%/s), not a pin"
         )
 
-        print("HS-28 gate (leg-B replay): loss episode "
-            + "\(Self.ceiling / 1_000) → \(afterEpisode / 1_000) kbps; "
-            + "1.5 s censored limbo held "
-            + "\(beforeRecovery / 1_000) kbps (0 crater falls, belief "
-            + "\((estimator.capacityBeliefBitsPerSecond ?? 0) / 1_000) "
-            + "kbps); recovery reached "
-            + "\(estimator.rateBitsPerSecond / 1_000) kbps")
+        print("""
+            HS-28 gate (leg-B replay): loss episode \
+            \(Self.ceiling / 1_000) → \(afterEpisode / 1_000) kbps; \
+            1.5 s censored limbo held \
+            \(beforeRecovery / 1_000) kbps (0 crater falls, belief \
+            \((estimator.capacityBeliefBitsPerSecond ?? 0) / 1_000) \
+            kbps); recovery reached \
+            \(estimator.rateBitsPerSecond / 1_000) kbps
+            """)
     }
 
     /// The persistence twin the brief demands beside the replay: a
@@ -1852,16 +1918,19 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertNotNil(fell?.newRateBitsPerSecond,
             "a genuine capacity drop must fall")
         XCTAssertLessThanOrEqual(beats, 40,
-            "within ~1 s of onset (the pillar's fast fall, at most one "
-            + "limiter beat later than the old law)")
+            """
+                within ~1 s of onset (the pillar's fast fall, at most one \
+                limiter beat later than the old law)
+                """)
         XCTAssertEqual(Double(fell!.newRateBitsPerSecond!), 6e6 * 0.85,
                        accuracy: 1.0e6,
-            "anchored at measured delivery — the belief followed the "
-            + "path down")
+            "anchored at measured delivery — the belief followed the path down")
 
-        print("HS-28 gate (persistence twin): 20 → 6 Mbps genuine drop "
-            + "fell in \(beats) beats (\(beats * 25) ms) to "
-            + "\(fell!.newRateBitsPerSecond! / 1_000) kbps")
+        print("""
+            HS-28 gate (persistence twin): 20 → 6 Mbps genuine drop \
+            fell in \(beats) beats (\(beats * 25) ms) to \
+            \(fell!.newRateBitsPerSecond! / 1_000) kbps
+            """)
     }
 
     /// Self-inflicted evidence recuses itself: NACKs against frames
@@ -1923,13 +1992,17 @@ final class RateEstimatorGateTests: XCTestCase {
             now: driver.now, inRecovery: false
         )
         XCTAssertEqual(honest.change, .postFecLoss,
-            "unrecused NACK storms still bite — the recusal is "
-            + "surgical, not a muzzle")
+            """
+                unrecused NACK storms still bite — the recusal is \
+                surgical, not a muzzle
+                """)
         XCTAssertEqual(honest.fecRegime, .lossy)
 
-        print("HS-28 gate (recusal): 186 NACK shards against draining "
-            + "frames → 0 path evidence; the same storm against "
-            + "released frames → rung-3 fall + regime step")
+        print("""
+            HS-28 gate (recusal): 186 NACK shards against draining \
+            frames → 0 path evidence; the same storm against \
+            released frames → rung-3 fall + regime step
+            """)
     }
 
     /// The first live leg-B rerun's confession, pinned: a Wi-Fi hole
@@ -1977,8 +2050,10 @@ final class RateEstimatorGateTests: XCTestCase {
                 pacerBacklogBytes: 40_000
             )
             XCTAssertNil(verdict.newRateBitsPerSecond,
-                "a hole whose own drain testifies in the same report "
-                + "must not anchor a fall")
+                """
+                    a hole whose own drain testifies in the same report \
+                    must not anchor a fall
+                    """)
         }
         XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling,
             "the belief never demoted to the mid-hole trickle")
@@ -1994,15 +2069,19 @@ final class RateEstimatorGateTests: XCTestCase {
         )
         XCTAssertLessThanOrEqual(
             estimator.capacityBeliefBitsPerSecond ?? 0, 30_000_000,
-            "the drains raised the belief toward their burst rate again "
-            + "— HS-30's sustainable cap is dead"
+            """
+                the drains raised the belief toward their burst rate again \
+                — HS-30's sustainable cap is dead
+                """
         )
 
-        print("HS-28 gate (drain purge): 30 mid-hole reports (3 Mbps "
-            + "stretch + 200 Mbps drain, held delay) → 0 falls, belief "
-            + "\((estimator.capacityBeliefBitsPerSecond ?? 0) / 1_000) "
-            + "kbps, rate pinned at "
-            + "\(estimator.rateBitsPerSecond / 1_000) kbps")
+        print("""
+            HS-28 gate (drain purge): 30 mid-hole reports (3 Mbps \
+            stretch + 200 Mbps drain, held delay) → 0 falls, belief \
+            \((estimator.capacityBeliefBitsPerSecond ?? 0) / 1_000) \
+            kbps, rate pinned at \
+            \(estimator.rateBitsPerSecond / 1_000) kbps
+            """)
     }
 
     /// The other live confession: a 41 ms streak crashed to the floor
@@ -2052,8 +2131,7 @@ final class RateEstimatorGateTests: XCTestCase {
                 channels: lossLedger(received: received, missing: 0)
             )
             XCTAssertNil(verdict.newRateBitsPerSecond,
-                "a sub-rung-3 NACK echo is a shadow, not instant "
-                + "corroboration")
+                "a sub-rung-3 NACK echo is a shadow, not instant corroboration")
         }
 
         // Pressure that outlives the persistence still falls — and
@@ -2077,13 +2155,17 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertNotNil(verdict.newRateBitsPerSecond)
         XCTAssertGreaterThanOrEqual(verdict.newRateBitsPerSecond!,
                                     16_000_000,
-            "the persisted fall is bounded multiplicative — the echo "
-            + "never became an anchor")
+            """
+                the persisted fall is bounded multiplicative — the echo \
+                never became an anchor
+                """)
 
-        print("HS-28 gate (echo persistence): 0.8% post-FEC echo + "
-            + "young streak → 0 instant falls; persisted pressure "
-            + "fell bounded to "
-            + "\(verdict.newRateBitsPerSecond! / 1_000) kbps")
+        print("""
+            HS-28 gate (echo persistence): 0.8% post-FEC echo + \
+            young streak → 0 instant falls; persisted pressure \
+            fell bounded to \
+            \(verdict.newRateBitsPerSecond! / 1_000) kbps
+            """)
     }
 
     /// Mild residual post-FEC (clean column < x ≤ rung 3) must not pin
@@ -2149,11 +2231,13 @@ final class RateEstimatorGateTests: XCTestCase {
             estimator.stats.postFecDownshifts, 1,
             "residual below rung 3 must not mint rung-3 falls")
 
-        print("mild post-FEC climb: \(settlePoint / 1_000) → "
-            + "\(estimator.rateBitsPerSecond / 1_000) kbps after "
-            + "\(climbs) rises "
-            + "(\(estimator.stats.upshiftsUnderMildPostFec - mildBefore) "
-            + "mild-residual)")
+        print("""
+            mild post-FEC climb: \(settlePoint / 1_000) → \
+            \(estimator.rateBitsPerSecond / 1_000) kbps after \
+            \(climbs) rises \
+            (\(estimator.stats.upshiftsUnderMildPostFec - mildBefore) \
+            mild-residual)
+            """)
     }
 
     /// Rung-3 post-FEC still falls and blocks climbs — the mild-residual
@@ -2217,9 +2301,11 @@ final class RateEstimatorGateTests: XCTestCase {
             "sustained rung-3 evidence must not raise the rate")
         XCTAssertEqual(estimator.stats.upshiftsUnderMildPostFec, 0)
 
-        print("rung-3 climb block: fell to "
-            + "\(rateAfterFall / 1_000) kbps; 0 climbs under sustained "
-            + "post-FEC past the downshift bar")
+        print("""
+            rung-3 climb block: fell to \
+            \(rateAfterFall / 1_000) kbps; 0 climbs under sustained \
+            post-FEC past the downshift bar
+            """)
     }
 
     /// Quiet-static / sparse keepalive under impairment must not
@@ -2295,10 +2381,12 @@ final class RateEstimatorGateTests: XCTestCase {
             "paced multi-packet trains must still admit loss falls")
         XCTAssertLessThan(estimator.rateBitsPerSecond, beforeMotion)
 
-        print("sparse-hold: primed \(primed / 1_000) kbps held across "
-            + "\(estimator.stats.sparseEvidenceHolds - holdsBefore) "
-            + "stale-loss beats; motion reopened falls → "
-            + "\(estimator.rateBitsPerSecond / 1_000) kbps")
+        print("""
+            sparse-hold: primed \(primed / 1_000) kbps held across \
+            \(estimator.stats.sparseEvidenceHolds - holdsBefore) \
+            stale-loss beats; motion reopened falls → \
+            \(estimator.rateBitsPerSecond / 1_000) kbps
+            """)
     }
 
     /// Stale overuse pressure on an empty path (netem delay on
@@ -2349,9 +2437,11 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertGreaterThan(
             estimator.stats.sparseEvidenceHolds, holdsBefore)
 
-        print("sparse overuse hold: \(overuseBeats) verdicts, "
-            + "\(estimator.stats.sparseEvidenceHolds - holdsBefore) "
-            + "sparse holds, rate still \(primed / 1_000) kbps")
+        print("""
+            sparse overuse hold: \(overuseBeats) verdicts, \
+            \(estimator.stats.sparseEvidenceHolds - holdsBefore) \
+            sparse holds, rate still \(primed / 1_000) kbps
+            """)
     }
 
     // MARK: Leg 4 — the machine's numbers
@@ -2447,8 +2537,10 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(
             Double(estimator.capacityBeliefBitsPerSecond ?? 0),
             5e6, accuracy: 0.7e6,
-            "fresh uniformly-stretched evidence demotes the re-anchored "
-                + "belief on the 5 Mbps tether"
+            """
+                fresh uniformly-stretched evidence demotes the re-anchored \
+                belief on the 5 Mbps tether
+                """
         )
         XCTAssertLessThan(estimator.rateBitsPerSecond, 6_000_000)
     }
@@ -2612,9 +2704,11 @@ final class RateEstimatorGateTests: XCTestCase {
         _ = feedback(tMicros: t, newReceived: 100, newMissing: 0)
         XCTAssertEqual(session.lifecycleState, .active)
 
-        print("HS-16 gate (recovery): FROZEN → RECOVERY at "
-            + "\(Self.ceiling / 2_000) kbps (half-stale, on the pacer) → "
-            + "10 lossy windows HELD → 2 clean windows → ACTIVE")
+        print("""
+            HS-16 gate (recovery): FROZEN → RECOVERY at \
+            \(Self.ceiling / 2_000) kbps (half-stale, on the pacer) → \
+            10 lossy windows HELD → 2 clean windows → ACTIVE
+            """)
     }
 
     // MARK: Leg 6 — malformed feedback is counted, never fed
@@ -2838,18 +2932,22 @@ final class RateEstimatorGateTests: XCTestCase {
         deviations.sort()
         let p99 = deviations[Int(Double(deviations.count - 1) * 0.99)]
         XCTAssertLessThanOrEqual(p99, 2 * ms,
-            "audio inter-send p99 deviation \(Double(p99) / 1e6) ms > 2 ms "
-            + "through the rate crash")
+            """
+                audio inter-send p99 deviation \(Double(p99) / 1e6) ms > 2 ms \
+                through the rate crash
+                """)
 
-        print("HS-16 gate (R-G8 + crash) @6 s virtual: rate "
-            + "\(Self.ceiling / 1_000) → \(minRate / 1_000) kbps under the "
-            + "loss burst, back to \(session.pacerRateBitsPerSecond / 1_000) "
-            + "kbps on evidence (\(session.estimatorStats.downshifts) down / "
-            + "\(session.estimatorStats.upshifts) up); "
-            + "\(dataSends.count) audio packets, inter-send deviation "
-            + "p99 \(Double(p99) / 1e6) ms, worst "
-            + "\(Double(deviations.last!) / 1e6) ms; audio max queue delay "
-            + "\(Double(session.pacerTelemetry[.audio].maxQueueDelayNS) / 1e6) ms")
+        print("""
+            HS-16 gate (R-G8 + crash) @6 s virtual: rate \
+            \(Self.ceiling / 1_000) → \(minRate / 1_000) kbps under the \
+            loss burst, back to \(session.pacerRateBitsPerSecond / 1_000) \
+            kbps on evidence (\(session.estimatorStats.downshifts) down / \
+            \(session.estimatorStats.upshifts) up); \
+            \(dataSends.count) audio packets, inter-send deviation \
+            p99 \(Double(p99) / 1e6) ms, worst \
+            \(Double(deviations.last!) / 1e6) ms; audio max queue delay \
+            \(Double(session.pacerTelemetry[.audio].maxQueueDelayNS) / 1e6) ms
+            """)
     }
 
     // MARK: HS-29 — cap-aware probe damping (row ³'s shared cause)
@@ -2892,10 +2990,12 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(estimator.stats.downshifts, 0,
             "damping must come from the probe ceiling, not from falls")
 
-        print("HS-29 gate (damping): belief "
-            + "\(Int(belief) / 1_000) kbps, 50 Mbps cap — climb parked at "
-            + "\(Int(parked) / 1_000) kbps "
-            + "(\(estimator.stats.upshiftsDamped) damped rises, 0 falls)")
+        print("""
+            HS-29 gate (damping): belief \
+            \(Int(belief) / 1_000) kbps, 50 Mbps cap — climb parked at \
+            \(Int(parked) / 1_000) kbps \
+            (\(estimator.stats.upshiftsDamped) damped rises, 0 falls)
+            """)
     }
 
     /// THE OSSIFICATION GUARD: the belief must still grow when the air
@@ -2924,17 +3024,21 @@ final class RateEstimatorGateTests: XCTestCase {
             beats += 1
         }
         XCTAssertGreaterThanOrEqual(estimator.rateBitsPerSecond, 40_000_000,
-            "the belief ossified: 12 virtual seconds of improved air "
-            + "never walked the rate up — headroom probing is dead")
+            """
+                the belief ossified: 12 virtual seconds of improved air \
+                never walked the rate up — headroom probing is dead
+                """)
         XCTAssertLessThanOrEqual(beats, 480)
         XCTAssertGreaterThanOrEqual(
             estimator.capacityBeliefBitsPerSecond ?? 0, 36_000_000,
             "the belief did not follow the walk up")
 
-        print("HS-29 gate (capacity step): 20 → 45 Mbps air — rate "
-            + "reached \(estimator.rateBitsPerSecond / 1_000) kbps in "
-            + "\(beats) beats (\(Double(beats) * 0.025) s), belief "
-            + "\((estimator.capacityBeliefBitsPerSecond ?? 0) / 1_000) kbps")
+        print("""
+            HS-29 gate (capacity step): 20 → 45 Mbps air — rate \
+            reached \(estimator.rateBitsPerSecond / 1_000) kbps in \
+            \(beats) beats (\(Double(beats) * 0.025) s), belief \
+            \((estimator.capacityBeliefBitsPerSecond ?? 0) / 1_000) kbps
+            """)
     }
 
     // MARK: HS-30 — burst-vs-sustainable belief + probe cadence
@@ -2959,13 +3063,17 @@ final class RateEstimatorGateTests: XCTestCase {
         driver.beat(bottleneckMbps: 300)
         let after = estimator.capacityBeliefBitsPerSecond ?? 0
         XCTAssertLessThanOrEqual(after, Int(25e6),
-            "a 300 Mbps drain burst set the belief to \(after) — burst "
-            + "pollution is back")
+            """
+                a 300 Mbps drain burst set the belief to \(after) — burst \
+                pollution is back
+                """)
         XCTAssertGreaterThanOrEqual(after, before,
             "the drain may never LOWER the belief")
 
-        print("HS-30 gate (drain cap): belief \(before / 1_000) → "
-            + "\(after / 1_000) kbps through a 300 Mbps drain burst")
+        print("""
+            HS-30 gate (drain cap): belief \(before / 1_000) → \
+            \(after / 1_000) kbps through a 300 Mbps drain burst
+            """)
     }
 
     /// A fall inside the belief's headroom band arms the probe
@@ -3016,10 +3124,12 @@ final class RateEstimatorGateTests: XCTestCase {
             Double(estimator.rateBitsPerSecond), bandFloor,
             "the probe never fired after the cadence expired")
 
-        print("HS-30 gate (cadence): fall at the wall parked the climb "
-            + "below \(Int(bandFloor) / 1_000) kbps for the cadence "
-            + "(\(estimator.stats.upshiftsCadenceHeld) held rises), "
-            + "then re-probed to \(estimator.rateBitsPerSecond / 1_000) kbps")
+        print("""
+            HS-30 gate (cadence): fall at the wall parked the climb \
+            below \(Int(bandFloor) / 1_000) kbps for the cadence \
+            (\(estimator.stats.upshiftsCadenceHeld) held rises), \
+            then re-probed to \(estimator.rateBitsPerSecond / 1_000) kbps
+            """)
     }
 
     func testRecoveryClearsFailedProbeBandFromTheOldPath() {
@@ -3087,9 +3197,11 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(parked, belief * 1.3,
             "factor 1.5 should park the climb well past the 1.1 default")
 
-        print("HS-29 gate (knob): factor 1.5 parked the climb at "
-            + "\(Int(parked) / 1_000) kbps over a "
-            + "\(Int(belief) / 1_000) kbps belief")
+        print("""
+            HS-29 gate (knob): factor 1.5 parked the climb at \
+            \(Int(parked) / 1_000) kbps over a \
+            \(Int(belief) / 1_000) kbps belief
+            """)
     }
 }
 

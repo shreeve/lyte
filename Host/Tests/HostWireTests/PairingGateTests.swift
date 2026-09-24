@@ -416,10 +416,12 @@ final class PairingGateTests: XCTestCase {
         XCTAssertEqual(shell.replyFailures, 0)
         XCTAssertNil(client.sawReject)
 
-        print("HS-9 gate: paired through 5% loss / 2% dup / 4 ms jitter "
-            + "(\(net.lostCount) lost, \(net.duplicatedCount) duplicated of "
-            + "\(net.sentCount); converged at \(converged.map(String.init) ?? "-") "
-            + "µs virtual)")
+        print("""
+            HS-9 gate: paired through 5% loss / 2% dup / 4 ms jitter \
+            (\(net.lostCount) lost, \(net.duplicatedCount) duplicated of \
+            \(net.sentCount); converged at \(converged.map(String.init) ?? "-") \
+            µs virtual)
+            """)
     }
 
     // MARK: Wrong PIN — loud, oracle-free, nothing pinned

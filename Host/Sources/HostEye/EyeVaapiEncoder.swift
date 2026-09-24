@@ -33,8 +33,10 @@ import HostCore
 public struct EyeVaapiError: Error, CustomStringConvertible {
     public var description: String
     init(_ what: String, _ status: VAStatus) {
-        description = "\(what): VAStatus \(status) "
-            + "(\(String(cString: vaErrorStr(status))))"
+        description = """
+            \(what): VAStatus \(status) \
+            (\(String(cString: vaErrorStr(status))))
+            """
     }
     init(_ what: String) { description = what }
 }
@@ -189,8 +191,10 @@ public final class EyeVaapiEncoder {
                 & UInt32(VA_PREDICTION_DIRECTION_BI_NOT_EMPTY) != 0
         }
         guard gpb else {
-            throw EyeVaapiError("driver wants plain P slices — the "
-                + "slice pen only speaks the iHD GPB dialect yet")
+            throw EyeVaapiError("""
+                driver wants plain P slices — the \
+                slice pen only speaks the iHD GPB dialect yet
+                """)
         }
 
         // Config: NV12 (or packed AYUV at 4:4:4), our RC mode, and
@@ -262,10 +266,12 @@ public final class EyeVaapiEncoder {
         let rc = bitrateBitsPerSecond > 0
             ? "vbr \(bitrateBitsPerSecond / 1_000_000) Mbps cap"
             : "cqp \(qp)"
-        print("vaapi-native: \(String(cString: vaQueryVendorString(display))) "
-            + "— \(entrypoint == VAEntrypointEncSliceLP ? "LP" : "std")"
-            + " entrypoint, GPB, \(rc)"
-            + (chroma444 ? ", Rext Main444 (AYUV)" : ""))
+        print("""
+            vaapi-native: \(String(cString: vaQueryVendorString(display))) \
+            — \(entrypoint == VAEntrypointEncSliceLP ? "LP" : "std")\
+             entrypoint, GPB, \(rc)\
+            \(chroma444 ? ", Rext Main444 (AYUV)" : "")
+            """)
     }
 
     deinit {

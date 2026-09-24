@@ -119,11 +119,13 @@ final class DirectEyeLeg {
             deliverUs = max(deliverUs, other.deliverUs)
         }
         func described() -> String {
-            "cursor=\(Self.ms(cursorUs)) "
-            + "grab=\(Self.ms(grabUs)) "
-            + "fingerprint=\(Self.ms(fingerprintUs)) "
-            + "blit=\(Self.ms(blitUs)) "
-            + "encode=\(Self.ms(encodeUs)) deliver=\(Self.ms(deliverUs))"
+            """
+                cursor=\(Self.ms(cursorUs)) \
+                grab=\(Self.ms(grabUs)) \
+                fingerprint=\(Self.ms(fingerprintUs)) \
+                blit=\(Self.ms(blitUs)) \
+                encode=\(Self.ms(encodeUs)) deliver=\(Self.ms(deliverUs))
+                """
         }
         static func ms(_ us: UInt64) -> String {
             String(format: "%.1f", Double(us) / 1000)
@@ -162,8 +164,10 @@ final class DirectEyeLeg {
         } catch DirectScreenSourceError.noActivePrimaryPlane {
             throw HostError("direct: no active primary plane")
         } catch DirectScreenSourceError.initialTicketDenied {
-            throw HostError("direct: GETFB2 refused — the direct backend "
-                + "needs CAP_SYS_ADMIN (run under sudo or the E4 unit)")
+            throw HostError("""
+                direct: GETFB2 refused — the direct backend \
+                needs CAP_SYS_ADMIN (run under sudo or the E4 unit)
+                """)
         } catch {
             throw HostError("direct: screen source failed: \(error)")
         }
@@ -244,10 +248,12 @@ final class DirectEyeLeg {
         let rc = config.bitrateBitsPerSecond > 0
             ? "vbr \(config.bitrateBitsPerSecond / 1_000_000) Mbps cap"
             : "cqp \(config.qp)"
-        print("direct: eye open — \(width)x\(height) on "
-            + "\(config.device), native VAAPI \(rc), "
-            + (chroma == .yuv444 ? "Rext 4:4:4 (AYUV)" : "4:2:0")
-            + " (rate directives apply live)")
+        print("""
+            direct: eye open — \(width)x\(height) on \
+            \(config.device), native VAAPI \(rc), \
+            \(chroma == .yuv444 ? "Rext 4:4:4 (AYUV)" : "4:2:0")\
+             (rate directives apply live)
+            """)
 
         // E3: the cursor plane travels as metadata, never as video.
         // The watcher shares the DRM fd and loop cadence; a session-
@@ -255,8 +261,10 @@ final class DirectEyeLeg {
         let cursorWatcher = wire != nil ? EyeCursorWatcher(fd: fd) : nil
         if wire != nil {
             print(cursorWatcher != nil
-                ? "direct: cursor watcher on plane "
-                    + "\(cursorWatcher!.planeId) — shapes ride 0x24"
+                ? """
+                    direct: cursor watcher on plane \
+                    \(cursorWatcher!.planeId) — shapes ride 0x24
+                    """
                 : "direct: no cursor plane — shapes OFF this run")
         }
 
@@ -292,8 +300,10 @@ final class DirectEyeLeg {
                 } else {
                     staticIdrsServed += 1
                     lastDeliveryWallSeconds = SystemMonotonicClock.nowSeconds
-                    print("direct: static-screen IDR served "
-                        + "(re-encoded retained surface)")
+                    print("""
+                        direct: static-screen IDR served \
+                        (re-encoded retained surface)
+                        """)
                     return true
                 }
             }
@@ -381,9 +391,11 @@ final class DirectEyeLeg {
                     chroma444Active = true
                     samplingCadence.reset()
                     screen.resetIdentityObservation()
-                    print("direct: Best tier agreed — encoder "
-                        + "reopened as Rext 4:4:4 (AYUV, one-pass "
-                        + "blit)")
+                    print("""
+                        direct: Best tier agreed — encoder \
+                        reopened as Rext 4:4:4 (AYUV, one-pass \
+                        blit)
+                        """)
                 } catch {
                     lastError = "direct: 4:4:4 reopen: \(error)"
                     return
@@ -400,10 +412,12 @@ final class DirectEyeLeg {
                         fps: Self.fps, vbvBits: directive.vbvBits)))
                 directivesApplied += 1
                 if directivesApplied == 1 {
-                    print("direct: rate directive "
-                        + "(\(directive.kind.rawValue)) applied — "
-                        + "\(directive.maxBitsPerSecond / 1_000_000)"
-                        + " Mbps cap")
+                    print("""
+                        direct: rate directive \
+                        (\(directive.kind.rawValue)) applied — \
+                        \(directive.maxBitsPerSecond / 1_000_000)\
+                         Mbps cap
+                        """)
                 }
             }
 
@@ -431,9 +445,11 @@ final class DirectEyeLeg {
             if skippedBeats > 0 {
                 observationSkipEvents += 1
                 if observationSkipEvents <= 40 {
-                    print("direct: observation beat skipped "
-                        + "\(skippedBeats) beat(s) "
-                        + "prev[\(lastStages.described())] ms")
+                    print("""
+                        direct: observation beat skipped \
+                        \(skippedBeats) beat(s) \
+                        prev[\(lastStages.described())] ms
+                        """)
                 }
             }
             guard let observation = screen.observe() else {
@@ -450,9 +466,11 @@ final class DirectEyeLeg {
                     missedGrabs += 1
                     continue
                 case .geometryChanged(let newWidth, let newHeight):
-                    print("direct: display mode changed \(width)x\(height)"
-                        + " → \(newWidth)x\(newHeight) — ending "
-                        + "session; the re-dial reads fresh geometry")
+                    print("""
+                        direct: display mode changed \(width)x\(height)\
+                         → \(newWidth)x\(newHeight) — ending \
+                        session; the re-dial reads fresh geometry
+                        """)
                     modeChangeEnded = true
                     return
                 }
@@ -523,30 +541,34 @@ final class DirectEyeLeg {
 
         // No drain: the native seat is 1-in-1-out; nothing is held
         // back at close.
-        print("direct: eye closed — \(frames) frames, \(bytes) bytes, "
-            + "\(keyframes) IDRs, missed_grabs=\(missedGrabs), "
-            + "directives_applied=\(directivesApplied), "
-            + "static_idrs=\(staticIdrsServed), "
-            + "keepalives=\(keepalivesSent), "
-            + "observations=\(observations), "
-            + "framebuffer_transitions=\(framebufferTransitions), "
-            + "pixel_changes=\(changedObservations), "
-            + "observation_beats_skipped=\(skippedObservationBeats), "
-            + "posture_announcements=\(postureAnnouncements), "
-            + "delivery_failures=\(deliveryFailures), "
-            + "admission_skips=\(admission.skipped), "
-            + "cursor_shapes=\(cursorShapesSeen), "
-            + "hotspot_corrections=\(cursorHotspotCorrections)")
+        print("""
+            direct: eye closed — \(frames) frames, \(bytes) bytes, \
+            \(keyframes) IDRs, missed_grabs=\(missedGrabs), \
+            directives_applied=\(directivesApplied), \
+            static_idrs=\(staticIdrsServed), \
+            keepalives=\(keepalivesSent), \
+            observations=\(observations), \
+            framebuffer_transitions=\(framebufferTransitions), \
+            pixel_changes=\(changedObservations), \
+            observation_beats_skipped=\(skippedObservationBeats), \
+            posture_announcements=\(postureAnnouncements), \
+            delivery_failures=\(deliveryFailures), \
+            admission_skips=\(admission.skipped), \
+            cursor_shapes=\(cursorShapesSeen), \
+            hotspot_corrections=\(cursorHotspotCorrections)
+            """)
         serviceLock.lock()
         let serviceMaxUs = serviceMaxMicroseconds
         serviceLock.unlock()
-        print("direct: observation-book — beats=\(observations), "
-            + "skip_events=\(observationSkipEvents), "
-            + "beats_skipped=\(skippedObservationBeats), "
-            + "pixel_changes=\(changedObservations), "
-            + "stage_max[\(maxStages.described())] ms, "
-            + "service_max=\(StageClocks.ms(serviceMaxUs)) ms "
-            + "(janitor thread)")
+        print("""
+            direct: observation-book — beats=\(observations), \
+            skip_events=\(observationSkipEvents), \
+            beats_skipped=\(skippedObservationBeats), \
+            pixel_changes=\(changedObservations), \
+            stage_max[\(maxStages.described())] ms, \
+            service_max=\(StageClocks.ms(serviceMaxUs)) ms \
+            (janitor thread)
+            """)
     }
 
     /// E3: one cursor poll — fb changes become 0x24s. The hotspot is
@@ -588,12 +610,14 @@ final class DirectEyeLeg {
                     ?? "nil"
                 let pointerDesc = pointer.map { "\($0.x),\($0.y)" }
                     ?? "none"
-                print("direct: cursor derive #\(cursorShapesSeen): "
-                    + "\(frame.width)x\(frame.height) "
-                    + "crop(\(frame.cropX),\(frame.cropY)) "
-                    + "plane(\(planeDesc)) "
-                    + "pointer(\(pointerDesc)) "
-                    + "→ hotspot(\(hot.x),\(hot.y))")
+                print("""
+                    direct: cursor derive #\(cursorShapesSeen): \
+                    \(frame.width)x\(frame.height) \
+                    crop(\(frame.cropX),\(frame.cropY)) \
+                    plane(\(planeDesc)) \
+                    pointer(\(pointerDesc)) \
+                    → hotspot(\(hot.x),\(hot.y))
+                    """)
             }
             lastCursorFrame = frame
             sentHotspot = (hot.x, hot.y)
@@ -644,10 +668,12 @@ final class DirectEyeLeg {
         hotspotRecheckArmed = false
         guard hot.x != sent.x || hot.y != sent.y else { return }
         cursorHotspotCorrections += 1
-        print("direct: cursor hotspot corrected "
-            + "(\(sent.x),\(sent.y)) → (\(hot.x),\(hot.y)) at rest — "
-            + "plane(\(plane.x),\(plane.y)) "
-            + "pointer(\(Int(pointer.x)),\(Int(pointer.y)))")
+        print("""
+            direct: cursor hotspot corrected \
+            (\(sent.x),\(sent.y)) → (\(hot.x),\(hot.y)) at rest — \
+            plane(\(plane.x),\(plane.y)) \
+            pointer(\(Int(pointer.x)),\(Int(pointer.y)))
+            """)
         sentHotspot = (hot.x, hot.y)
         wire.noteCursorShape(CursorShape(
             width: UInt16(frame.width),
@@ -711,8 +737,10 @@ final class DirectEyeLeg {
                 deliveryFailures += 1
                 lastDeliveryFailureWallSeconds = SystemMonotonicClock.nowSeconds
                 if deliveryFailures <= 3 {
-                    print("direct: session refused frame "
-                        + "(\(keyframe ? "IDR" : "P")): \(error)")
+                    print("""
+                        direct: session refused frame \
+                        (\(keyframe ? "IDR" : "P")): \(error)
+                        """)
                 }
                 return false
             }

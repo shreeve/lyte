@@ -121,14 +121,18 @@ final class AudioWire: @unchecked Sendable {
                 // crash would strand the user's default sink silently.
                 // No frees here — deinit restores the routing and
                 // frees capture + encoder exactly once (finding 3b).
-                throw HostError("cannot persist the original default "
-                    + "sink for crash restore (\(error)) — refusing "
-                    + "hostMuted")
+                throw HostError("""
+                    cannot persist the original default \
+                    sink for crash restore (\(error)) — refusing \
+                    hostMuted
+                    """)
             }
-            print("audio: routing hostMuted — \"Lyte Audio\" sink is the "
-                + "default; original "
-                + (rc == 1 ? errString(saved) : "(unset)")
-                + " recorded for restore")
+            print("""
+                audio: routing hostMuted — \"Lyte Audio\" sink is the \
+                default; original \
+                \(rc == 1 ? errString(saved) : "(unset)")\
+                 recorded for restore
+                """)
         }
     }
 
@@ -164,8 +168,10 @@ final class AudioWire: @unchecked Sendable {
         } else {
             // The state file deliberately stays: the sweep finishes
             // the job on the next start.
-            print("audio: routing restore FAILED (\(errString(err))) — "
-                + "state file kept for the next-start sweep")
+            print("""
+                audio: routing restore FAILED (\(errString(err))) — \
+                state file kept for the next-start sweep
+                """)
         }
     }
 
@@ -187,13 +193,17 @@ final class AudioWire: @unchecked Sendable {
             : lyte_pw_audio_restore_default(record, &err, err.count)
         if rc == 0 {
             try? FileManager.default.removeItem(at: routingStatePath)
-            print("audio: swept a dirty previous run — default sink "
-                + "restored to "
-                + (record == unsetSentinel ? "(unset)" : record))
+            print("""
+                audio: swept a dirty previous run — default sink \
+                restored to \
+                \(record == unsetSentinel ? "(unset)" : record)
+                """)
         } else {
-            print("audio: leftover-routing sweep FAILED "
-                + "(\(errString(err))) — state file kept; restore by "
-                + "hand with wpctl set-default")
+            print("""
+                audio: leftover-routing sweep FAILED \
+                (\(errString(err))) — state file kept; restore by \
+                hand with wpctl set-default
+                """)
         }
     }
 
@@ -243,8 +253,10 @@ final class AudioWire: @unchecked Sendable {
             negotiated = (rate, chans)
             if rate != UInt32(sampleRate) || chans != UInt32(channels) {
                 negotiationError =
-                    "negotiated \(rate) Hz \(chans)ch, need "
-                    + "\(sampleRate)/\(channels)"
+                    """
+                        negotiated \(rate) Hz \(chans)ch, need \
+                        \(sampleRate)/\(channels)
+                        """
                 if let capture { lyte_pw_audio_quit(capture) }
                 return
             }

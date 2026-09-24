@@ -46,8 +46,10 @@ final class BulkReceiveGateTests: XCTestCase {
     // MARK: Fixtures
 
     private func makeTempDir() throws -> String {
-        let path = NSTemporaryDirectory() + "lyte-bulk-gate-"
-            + UUID().uuidString
+        let path = NSTemporaryDirectory() + """
+            lyte-bulk-gate-\
+            \(UUID().uuidString)
+            """
         try FileManager.default.createDirectory(
             atPath: path, withIntermediateDirectories: true
         )
@@ -215,8 +217,10 @@ final class BulkReceiveGateTests: XCTestCase {
         XCTAssertEqual(shell.state, .awaitingOffer,
                        "a completed shell re-arms for the next offer")
 
-        print("F-3 gate (happy path): 10,000 B → 3 chunks → sha-verified "
-            + "→ fsync-then-rename, byte-exact, zero strays")
+        print("""
+            F-3 gate (happy path): 10,000 B → 3 chunks → sha-verified \
+            → fsync-then-rename, byte-exact, zero strays
+            """)
     }
 
     // MARK: Leg 2 — teardown, resume, completes byte-exact
@@ -261,8 +265,10 @@ final class BulkReceiveGateTests: XCTestCase {
         XCTAssertEqual(try allEntries(dir), ["video.mp4"],
                        "the resume file and staging file both clean up")
 
-        print("F-3 gate (resume): teardown at 5/13 chunks → persisted "
-            + "state → fresh shell resumes the 8-chunk gap → byte-exact")
+        print("""
+            F-3 gate (resume): teardown at 5/13 chunks → persisted \
+            state → fresh shell resumes the 8-chunk gap → byte-exact
+            """)
     }
 
     // MARK: Leg 3 — the filename sanitization table
@@ -326,8 +332,10 @@ final class BulkReceiveGateTests: XCTestCase {
             "free.txt"
         )
 
-        print("F-3 gate (names): \(table.count)-row hostile-name table "
-            + "pinned; truncation byte-budgeted, collisions numbered")
+        print("""
+            F-3 gate (names): \(table.count)-row hostile-name table \
+            pinned; truncation byte-budgeted, collisions numbered
+            """)
     }
 
     // MARK: Leg 4 — the resume codec: pinned bytes, hostile decode
@@ -395,8 +403,10 @@ final class BulkReceiveGateTests: XCTestCase {
             )
         }
 
-        print("F-3 gate (codec): LBR1 resume record pinned byte-exact; "
-            + "truncation/magic/trailing all reject loud")
+        print("""
+            F-3 gate (codec): LBR1 resume record pinned byte-exact; \
+            truncation/magic/trailing all reject loud
+            """)
     }
 
     // MARK: Leg 5 — the shared streaming digest survives shell chunking
@@ -414,8 +424,10 @@ final class BulkReceiveGateTests: XCTestCase {
             XCTAssertEqual(stream.finalized(), reference)
         }
 
-        print("F-3 gate (digest): shared SHA-256 streaming splits "
-            + "match its one-shot result on 200,001 B")
+        print("""
+            F-3 gate (digest): shared SHA-256 streaming splits \
+            match its one-shot result on 200,001 B
+            """)
     }
 
     // MARK: Leg 6 — abort(busy): one transfer at a time, undisturbed
@@ -465,8 +477,10 @@ final class BulkReceiveGateTests: XCTestCase {
         XCTAssertEqual(try visibleEntries(dir), ["first.bin"],
                        "second.bin must never exist in any form")
 
-        print("F-3 gate (busy): concurrent offer → abort(busy) from the "
-            + "dispatcher; the live transfer completes byte-exact")
+        print("""
+            F-3 gate (busy): concurrent offer → abort(busy) from the \
+            dispatcher; the live transfer completes byte-exact
+            """)
     }
 
     // MARK: Leg 7 — storage failures: honest aborts, possession kept
@@ -545,8 +559,10 @@ final class BulkReceiveGateTests: XCTestCase {
         XCTAssertEqual(shell.counters.chunksStored, 0)
         XCTAssertEqual(try allEntries(dir), [], "nothing may touch disk")
 
-        print("F-3 gate (space): a 10,000 B offer against 1,024 B free "
-            + "→ abort(storageFailure) before a byte lands")
+        print("""
+            F-3 gate (space): a 10,000 B offer against 1,024 B free \
+            → abort(storageFailure) before a byte lands
+            """)
     }
 
     func testGateMidTransferWriteFailurePersistsPossessionThenResumes()
@@ -591,9 +607,11 @@ final class BulkReceiveGateTests: XCTestCase {
         XCTAssertEqual(try fileBytes(dir + "/resilient.dat"), payload)
         XCTAssertEqual(try allEntries(dir), ["resilient.dat"])
 
-        print("F-3 gate (write failure): disk refuses at chunk 3 → "
-            + "abort(storageFailure) + possession persisted → recovered "
-            + "disk resumes 10 chunks → byte-exact")
+        print("""
+            F-3 gate (write failure): disk refuses at chunk 3 → \
+            abort(storageFailure) + possession persisted → recovered \
+            disk resumes 10 chunks → byte-exact
+            """)
     }
 
     // MARK: Leg 8 — key 11 on the spine, mutual-only intersection
@@ -614,8 +632,10 @@ final class BulkReceiveGateTests: XCTestCase {
         XCTAssertFalse(
             Capabilities.wireDefault.intersecting(declared).bulkTransfer
         )
-        print("F-3 gate (spine): declaration = local bytes + `0B F5`, "
-            + "mutual-only survival")
+        print("""
+            F-3 gate (spine): declaration = local bytes + `0B F5`, \
+            mutual-only survival
+            """)
     }
 
     // MARK: The negotiated loopback client (the ClipboardGateTests
@@ -891,8 +911,10 @@ final class BulkReceiveGateTests: XCTestCase {
             XCTAssertEqual($0 as? SessionError, .bulkNotNegotiated)
         }
 
-        print("F-3 gate (rule 3): toggle-off host — key 11 absent, "
-            + "chan 8 dropped loud (\(refusals)×), sendBulk refused")
+        print("""
+            F-3 gate (rule 3): toggle-off host — key 11 absent, \
+            chan 8 dropped loud (\(refusals)×), sendBulk refused
+            """)
     }
 
     // MARK: Leg 10 — the full drop, in vivo: Session + shell + disk
@@ -967,8 +989,10 @@ final class BulkReceiveGateTests: XCTestCase {
         XCTAssertTrue(session.arqIsQuiescent,
                       "both reliable sublayers drain to quiet")
 
-        print("F-3 gate (in vivo): offer→accept→3 chunks→ack→verify→"
-            + "complete through a real Session pair; dropped.dat "
-            + "byte-exact in \(rounds) rounds")
+        print("""
+            F-3 gate (in vivo): offer→accept→3 chunks→ack→verify→\
+            complete through a real Session pair; dropped.dat \
+            byte-exact in \(rounds) rounds
+            """)
     }
 }

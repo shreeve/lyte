@@ -316,7 +316,7 @@ public final class BulkReceiveShell {
             counters.filesCompleted += 1
             events.append(.fileCompleted(
                 name: finalName,
-                path: store.directoryPath + "/" + finalName,
+                path: store.directoryPath + "/\(finalName)",
                 byteCount: offer.totalByteCount
             ))
         } catch {

@@ -182,8 +182,10 @@ public final class EyeCursorWatcher {
         guard ticket.fourcc == AR24, ticket.modifier == 0,
               let plane = ticket.planes.first else {
             return .failure(String(
-                format: "cursor fb %u is not linear ARGB8888 "
-                    + "(fourcc %08x, modifier %llx)",
+                format: """
+                    cursor fb %u is not linear ARGB8888 \
+                    (fourcc %08x, modifier %llx)
+                    """,
                 fb, ticket.fourcc, ticket.modifier))
         }
         let width = Int(ticket.width), height = Int(ticket.height)
@@ -192,8 +194,7 @@ public final class EyeCursorWatcher {
         guard let base = mmap(
             nil, mapLength, PROT_READ, MAP_SHARED, plane.fd, 0),
             base != MAP_FAILED else {
-            return .failure("mmap of cursor dmabuf failed "
-                + "(errno \(errno))")
+            return .failure("mmap of cursor dmabuf failed (errno \(errno))")
         }
         defer { munmap(base, mapLength) }
         dmabufSync(plane.fd, start: true)

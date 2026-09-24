@@ -18,15 +18,19 @@ enum PairedClients {
         }
         let data = try Data(contentsOf: path)
         guard let text = String(data: data, encoding: .utf8) else {
-            throw HostError("paired-clients store at \(path.path) is not "
-                + "UTF-8 — refusing to guess; move it aside to reset")
+            throw HostError("""
+                paired-clients store at \(path.path) is not \
+                UTF-8 — refusing to guess; move it aside to reset
+                """)
         }
         do {
             return try ClientKeystore.parse(text)
         } catch let ClientKeystore.ParseError.malformedLine(line, contents) {
-            throw HostError("paired-clients store at \(path.path) line "
-                + "\(line) is malformed (\"\(contents)\") — refusing to "
-                + "guess; fix or move it aside")
+            throw HostError("""
+                paired-clients store at \(path.path) line \
+                \(line) is malformed (\"\(contents)\") — refusing to \
+                guess; fix or move it aside
+                """)
         }
     }
 

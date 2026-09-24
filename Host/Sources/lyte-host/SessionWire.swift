@@ -82,12 +82,16 @@ func elevateCurrentThread(_ label: String, rtPriority: Int32) {
     // On Linux, who == 0 with PRIO_PROCESS is the calling task —
     // per-thread nice.
     if setpriority(__priority_which_t(PRIO_PROCESS.rawValue), 0, -10) == 0 {
-        print("sched: \(label) thread nice -10 (no rtprio rlimit — "
-            + "SCHED_RR refused; see Host/README to grant it)")
+        print("""
+            sched: \(label) thread nice -10 (no rtprio rlimit — \
+            SCHED_RR refused; see Host/README to grant it)
+            """)
         return
     }
-    print("sched: \(label) thread NOT elevated (unprivileged, no "
-        + "RLIMIT_NICE) — running at default CFS priority")
+    print("""
+        sched: \(label) thread NOT elevated (unprivileged, no \
+        RLIMIT_NICE) — running at default CFS priority
+        """)
     #endif
 }
 
@@ -731,10 +735,14 @@ final class SessionWire {
         timeoutSeconds: Double?,
         stopRequested: () -> Bool = { false }
     ) throws -> ClientAwaitOutcome {
-        print("noise: host static public key "
-            + Hex.string(hostStatic.publicKey))
-        print("noise: awaiting client handshake on port "
-            + "\(lyte_netio_local_port(listenNetio)) …")
+        print("""
+            noise: host static public key \
+            \(Hex.string(hostStatic.publicKey))
+            """)
+        print("""
+            noise: awaiting client handshake on port \
+            \(lyte_netio_local_port(listenNetio)) …
+            """)
         traceHandshake("awaitClientBegin", fields: [
             "pid": String(getpid()),
             "primaryLocalPort": String(lyte_netio_local_port(listenNetio)),
@@ -820,9 +828,11 @@ final class SessionWire {
         if stopRequested() {
             return .terminationRequested
         }
-        throw HostError("no client handshake within \(Int(timeoutSeconds ?? 0))s "
-            + "— is lyte-cli wire-view pointed at this host and holding "
-            + "the printed static key?")
+        throw HostError("""
+            no client handshake within \(Int(timeoutSeconds ?? 0))s \
+            — is lyte-cli wire-view pointed at this host and holding \
+            the printed static key?
+            """)
     }
 
     /// The session port (the kernel's pick when bound to port 0).
@@ -937,8 +947,10 @@ final class SessionWire {
         runPendingPairingEvents()
         print(session.arqIsQuiescent
             ? "session: teardown acknowledged — clean close"
-            : "session: teardown sent, unacknowledged after "
-                + "\(Int(lingerSeconds * 1000)) ms — closing anyway")
+            : """
+                session: teardown sent, unacknowledged after \
+                \(Int(lingerSeconds * 1000)) ms — closing anyway
+                """)
     }
 
     /// One encoded Annex-B packet → sealed shards on the wire. Runs on
@@ -1248,21 +1260,31 @@ final class SessionWire {
                 case .send(let reply):
                     replies.append(reply)
                 case .offerAccepted(let id, let name, let bytes, let resuming):
-                    print("files: offer \(Hex.string(id)) accepted — "
-                        + "\"\(BulkFileNaming.sanitized(name))\" "
-                        + "(\(bytes) B\(resuming ? ", RESUMING" : ""))")
+                    print("""
+                        files: offer \(Hex.string(id)) accepted — \
+                        \"\(BulkFileNaming.sanitized(name))\" \
+                        (\(bytes) B\(resuming ? ", RESUMING" : ""))
+                        """)
                 case .offerRefusedBusy(let id):
-                    print("files: offer \(Hex.string(id)) refused — "
-                        + "busy (one transfer at a time in v1)")
+                    print("""
+                        files: offer \(Hex.string(id)) refused — \
+                        busy (one transfer at a time in v1)
+                        """)
                 case .insufficientDiskSpace(let needed, let free):
-                    print("files: offer refused — needs \(needed) B, "
-                        + "\(free) B free")
+                    print("""
+                        files: offer refused — needs \(needed) B, \
+                        \(free) B free
+                        """)
                 case .fileCompleted(let name, let path, let bytes):
-                    print("files: COMPLETE — \"\(name)\" (\(bytes) B, "
-                        + "sha-verified) → \(path)")
+                    print("""
+                        files: COMPLETE — \"\(name)\" (\(bytes) B, \
+                        sha-verified) → \(path)
+                        """)
                 case .transferAborted(let reason, let byRemote):
-                    print("files: transfer aborted (\(reason), "
-                        + (byRemote ? "remote" : "local") + ")")
+                    print("""
+                        files: transfer aborted (\(reason), \
+                        \(byRemote ? "remote" : "local"))
+                        """)
                 case .storageFailure(let detail):
                     print("files: STORAGE FAILURE — \(detail)")
                 case .violated(let violation):
@@ -1359,8 +1381,10 @@ final class SessionWire {
             return
         }
         guard let handler = audioRoutingHandler else {
-            print("audio-routing: \(mode) requested but no flip surface "
-                + "is active this run — posture stays \(standing)")
+            print("""
+                audio-routing: \(mode) requested but no flip surface \
+                is active this run — posture stays \(standing)
+                """)
             noteAudioRoutingApplied(standing)
             return
         }
@@ -1371,8 +1395,10 @@ final class SessionWire {
             print("audio-routing: flipped to \(mode)")
             noteAudioRoutingApplied(mode)
         } else {
-            print("audio-routing: flip to \(mode) FAILED — posture "
-                + "stays \(standing)")
+            print("""
+                audio-routing: flip to \(mode) FAILED — posture \
+                stays \(standing)
+                """)
             noteAudioRoutingApplied(standing)
         }
     }
@@ -1466,8 +1492,10 @@ final class SessionWire {
     private func notePeerGone() {
         guard !peerGone else { return }
         peerGone = true
-        emit("session: client unreachable (ICMP port closed — it exited) "
-            + "— closing cleanly")
+        emit("""
+            session: client unreachable (ICMP port closed — it exited) \
+            — closing cleanly
+            """)
     }
 
     /// Wakes the sender thread: bytes were enqueued (or leftovers were
@@ -1526,8 +1554,7 @@ final class SessionWire {
                 drainFailed = true
                 drainCondition.unlock()
                 if firstFailure {
-                    print("session: wire drain failed (\(error)) — "
-                        + "closing")
+                    print("session: wire drain failed (\(error)) — closing")
                 }
                 wait = DrainWait()
             }
@@ -1700,8 +1727,10 @@ final class SessionWire {
     private func execute(_ event: SessionEvent) {
         switch event {
         case .handshakeCompleted(let remote):
-            emit("noise: handshake complete — client static "
-                + Hex.string(remote))
+            emit("""
+                noise: handshake complete — client static \
+                \(Hex.string(remote))
+                """)
             // The authenticated client's path: the media sockets connect
             // there before message 2 is flushed. Should that fail, sends
             // still leave through the listening socket, addressed.
@@ -1713,8 +1742,10 @@ final class SessionWire {
                     "remotePort": String(client.remotePort),
                 ])
             } catch {
-                emit("session: \(error) — sending addressed from the "
-                    + "listening socket")
+                emit("""
+                    session: \(error) — sending addressed from the \
+                    listening socket
+                    """)
             }
             // HS-9: the pairing run binds to THIS session's transcript
             // and statics; a re-handshake rebinds (and keeps the guess
@@ -1755,17 +1786,21 @@ final class SessionWire {
                 pendingPairingEvents.append(contentsOf: output.events)
                 return
             }
-            emit("ctrl-arq: message group \(group.rawValue) "
-                + "(\(message.count) B, type "
-                + "\(Hex.string(message.first ?? 0, prefix: true)))")
+            emit("""
+                ctrl-arq: message group \(group.rawValue) \
+                (\(message.count) B, type \
+                \(Hex.string(message.first ?? 0, prefix: true)))
+                """)
         case .reliableOneShotAcknowledged(let group):
             emit("ctrl-arq: one-shot group \(group.rawValue) acknowledged")
         case .arqIgnored(let reason):
             emit("ctrl-arq: ignored \(reason)")
         case .idrRequested(let request):
-            emit("ctrl: IDR request seq \(request.requestSeq) "
-                + "(frame \(request.frame.rawValue), "
-                + "coalesced \(request.coalescedCount))")
+            emit("""
+                ctrl: IDR request seq \(request.requestSeq) \
+                (frame \(request.frame.rawValue), \
+                coalesced \(request.coalescedCount))
+                """)
         case .path(let pathEvent):
             emit("path: \(pathEvent)")
             if case .promoted(let primary, _) = pathEvent {
@@ -1782,11 +1817,15 @@ final class SessionWire {
             // HS-21: the observable dial. Loud on purpose — this is the
             // live evidence the flip happened and cleared.
             emit(requireCookie
-                ? "handshake: FLOOD — require-cookie mode ENGAGED "
-                    + "(msg1 rate crossed the enter threshold; "
-                    + "un-cookied msg1s now answered with 0x13, no Noise)"
-                : "handshake: pressure cleared — require-cookie mode "
-                    + "DISENGAGED (back to the token-bucket posture)")
+                ? """
+                    handshake: FLOOD — require-cookie mode ENGAGED \
+                    (msg1 rate crossed the enter threshold; \
+                    un-cookied msg1s now answered with 0x13, no Noise)
+                    """
+                : """
+                    handshake: pressure cleared — require-cookie mode \
+                    DISENGAGED (back to the token-bucket posture)
+                    """)
         case .handshakeChallenged:
             // A flood would print per datagram; the final stats line
             // carries the handshakeChallengesMinted count instead.
@@ -1802,11 +1841,13 @@ final class SessionWire {
         case .sendFailed(let what):
             emit("send-failed: \(what)")
         case .capabilitiesAgreed(let agreed):
-            emit("capabilities: agreed — wire minor \(agreed.wireMinor), "
-                + "codecs \(agreed.videoCodecs), chroma \(agreed.chromaModes), "
-                + "idle-silence \(agreed.idleSilence), "
-                + "host-audio-routing \(agreed.hostAudioRouting), "
-                + "max datagram \(agreed.maxDatagramBytes) B")
+            emit("""
+                capabilities: agreed — wire minor \(agreed.wireMinor), \
+                codecs \(agreed.videoCodecs), chroma \(agreed.chromaModes), \
+                idle-silence \(agreed.idleSilence), \
+                host-audio-routing \(agreed.hostAudioRouting), \
+                max datagram \(agreed.maxDatagramBytes) B
+                """)
             withConfigLock {
                 _agreedPosture = AgreedMediaPosture(
                     audioQuiet: agreed.audioQuietPosture,
@@ -1825,24 +1866,34 @@ final class SessionWire {
                 cursorAnnounceOwed = true
             }
         case .capabilitiesFailed(let why):
-            emit("capabilities: NO WORKABLE INTERSECTION (\(why)) — "
-                + "typed teardown follows")
+            emit("""
+                capabilities: NO WORKABLE INTERSECTION (\(why)) — \
+                typed teardown follows
+                """)
         case .capabilityUpdateAcknowledged(let accepted):
-            emit("capabilities: update "
-                + (accepted ? "accepted" : "rejected") + " by the client")
+            emit("""
+                capabilities: update \
+                \(accepted ? "accepted" : "rejected") by the client
+                """)
         case .modeTransitionSent(let mode):
-            emit("mode: → \(mode == .idle ? "IDLE" : "ACTIVE") "
-                + "(0x09 on the reliable stream)")
+            emit("""
+                mode: → \(mode == .idle ? "IDLE" : "ACTIVE") \
+                (0x09 on the reliable stream)
+                """)
         case .teardownSent(let reason):
             emit("session: teardown 0x0A queued (\(reason))")
         case .lifecycleChanged(let state):
             switch state {
             case .frozen:
-                emit("lifecycle: FROZEN — 350 ms of media-path silence; "
-                    + "datagram video suspended, CTRL stays alive")
+                emit("""
+                    lifecycle: FROZEN — 350 ms of media-path silence; \
+                    datagram video suspended, CTRL stays alive
+                    """)
             case .recovery:
-                emit("lifecycle: RECOVERY — evidence returned; fresh IDR "
-                    + "at the half-stale rate, sends resume")
+                emit("""
+                    lifecycle: RECOVERY — evidence returned; fresh IDR \
+                    at the half-stale rate, sends resume
+                    """)
             case .active, .idle:
                 emit("lifecycle: \(state)")
             case .closed:
@@ -1854,9 +1905,11 @@ final class SessionWire {
             injectInput(event, receivedAtMicroseconds: rxMicros)
         case .videoBacklogPurged(let datagrams, let bytes, let staleWireMs):
             outbox.purgeVideo(ledger: session)
-            emit("rate: fall purge — \(datagrams) queued video datagrams "
-                + "(\(bytes) B, ~\(staleWireMs) ms stale at the new rate) "
-                + "dropped, fresh IDR armed")
+            emit("""
+                rate: fall purge — \(datagrams) queued video datagrams \
+                (\(bytes) B, ~\(staleWireMs) ms stale at the new rate) \
+                dropped, fresh IDR armed
+                """)
         case .rateChanged(let bps, let reason):
             // HS-16: downshifts and pacing policies always print (the
             // live gate's evidence); the ≤10%/s evidence climb prints
@@ -1877,34 +1930,38 @@ final class SessionWire {
                 // self-reference gate nor the stall gate held it.
                 var forensics = ""
                 if let f = session?.lastOveruseFallForensics {
-                    let train = f.lastFullTrainBitsPerSecond.map {
-                        "\($0 / 1_000) kbps "
-                            + "\((f.lastFullTrainAgeNS ?? 0) / 1_000_000) ms ago"
+                    func text<T>(_ value: T?) -> String {
+                        value.map { "\($0)" } ?? "—"
+                    }
+                    let belief = f.capacityBeliefBitsPerSecond.map {
+                        "\($0 / 1_000)"
+                    } ?? "—"
+                    let honest = f.honestAnchorBitsPerSecond.map {
+                        "\($0 / 1_000) kbps"
                     } ?? "none"
-                    forensics = " [anchor \(f.anchorBitsPerSecond / 1_000)"
-                        + " kbps from \(f.rateBeforeBitsPerSecond / 1_000)"
-                        + " kbps; belief "
-                        + (f.capacityBeliefBitsPerSecond.map {
-                            "\($0 / 1_000)"
-                        } ?? "—")
-                        + " kbps, honest "
-                        + (f.honestAnchorBitsPerSecond.map {
-                            "\($0 / 1_000) kbps"
-                        } ?? "none")
-                        + ", streak age "
-                        + "\((f.streakAgeNS ?? 0) / 1_000_000) ms; streak "
-                        + "\(f.streakStartMicroseconds.map(String.init) ?? "—")"
-                        + "→\(f.queuingDelayMicroseconds.map(String.init) ?? "—")"
-                        + " µs, peak "
-                        + "\(f.streakPeakMicroseconds.map(String.init) ?? "—")"
-                        + " µs; backlog \(f.pacerBacklogBytes) B; "
-                        + "full-train \(train); loss "
-                        + String(format: "%.3f", f.lossFraction)
-                        + "/\(String(format: "%.3f", f.postFecLossFraction))"
-                        + " post-FEC]"
+                    let train = f.lastFullTrainBitsPerSecond.map {
+                        let age = (f.lastFullTrainAgeNS ?? 0) / 1_000_000
+                        return "\($0 / 1_000) kbps \(age) ms ago"
+                    } ?? "none"
+                    let loss = String(
+                        format: "%.3f/%.3f",
+                        f.lossFraction, f.postFecLossFraction)
+                    forensics = """
+                         [anchor \(f.anchorBitsPerSecond / 1_000) kbps from \
+                        \(f.rateBeforeBitsPerSecond / 1_000) kbps; belief \
+                        \(belief) kbps, honest \(honest), streak age \
+                        \((f.streakAgeNS ?? 0) / 1_000_000) ms; streak \
+                        \(text(f.streakStartMicroseconds))→\
+                        \(text(f.queuingDelayMicroseconds)) µs, peak \
+                        \(text(f.streakPeakMicroseconds)) µs; backlog \
+                        \(f.pacerBacklogBytes) B; full-train \(train); loss \
+                        \(loss) post-FEC]
+                        """
                 }
-                emit("rate: ↓ \(bps / 1_000) kbps (queuing-delay overuse)"
-                    + forensics)
+                emit("""
+                    rate: ↓ \(bps / 1_000) kbps (queuing-delay overuse)\
+                    \(forensics)
+                    """)
             case .loss:
                 lastPrintedRate = bps
                 emit("rate: ↓ \(bps / 1_000) kbps (loss over threshold)")
@@ -1913,18 +1970,23 @@ final class SessionWire {
                 emit("rate: → \(bps / 1_000) kbps (IDR pacing \(pacing))")
             case .postFecLoss:
                 lastPrintedRate = bps
-                emit("rate: ↓ \(bps / 1_000) kbps (post-FEC loss — "
-                    + "rung 3)")
+                emit("rate: ↓ \(bps / 1_000) kbps (post-FEC loss — rung 3)")
             }
         case .repairEnqueued(let frame, let shards):
-            emit("repair: frame \(frame.rawValue) — \(shards) shard(s) "
-                + "retransmitted (fresh seqs, videoTail)")
+            emit("""
+                repair: frame \(frame.rawValue) — \(shards) shard(s) \
+                retransmitted (fresh seqs, videoTail)
+                """)
         case .nackJudgedStale(let frame, let reason):
-            emit("repair: NACK frame \(frame.rawValue) judged stale "
-                + "(\(reason))")
+            emit("""
+                repair: NACK frame \(frame.rawValue) judged stale \
+                (\(reason))
+                """)
         case .fecRegimeChanged(let regime):
-            emit("fec: regime → \(regime.rawValue) "
-                + "(§5.2 \(regime == .lossy ? "lossy" : "clean") column)")
+            emit("""
+                fec: regime → \(regime.rawValue) \
+                (§5.2 \(regime == .lossy ? "lossy" : "clean") column)
+                """)
         case .audioRoutingRequested(let mode):
             // Delivered under the lock mid-iteration: buffer only. The
             // flip (a PipeWire connect) runs off-lock in service().
@@ -1935,8 +1997,10 @@ final class SessionWire {
         case .audioTrackStateSent(let state):
             emit("audio-track: \(state) announced (0x25)")
         case .videoPostureStateSent(let state):
-            emit("video-posture: \(state.posture) "
-                + "keepalive \(state.keepaliveSeconds)s announced (0x26)")
+            emit("""
+                video-posture: \(state.posture) \
+                keepalive \(state.keepaliveSeconds)s announced (0x26)
+                """)
         case .clipboardSetReceived(let text):
             // CL-15/HS-19: the session's gate + book already ran (the
             // book is pre-armed against this apply's echo). Delivered
@@ -1944,24 +2008,30 @@ final class SessionWire {
             // (a blocking D-Bus SetSelection) runs off-lock in
             // service(). Never logs the payload.
             if clipboardApplyHandler != nil {
-                emit("clipboard: 0x1A set received "
-                    + "(\(text.utf8.count) B) — applying to the host "
-                    + "clipboard")
+                emit("""
+                    clipboard: 0x1A set received \
+                    (\(text.utf8.count) B) — applying to the host \
+                    clipboard
+                    """)
                 pendingClipboardApplies.append(text)
             } else {
                 // Defensive: a leafless shell never declares key 10,
                 // so the core's rule-3 gate makes this unreachable.
-                emit("clipboard: 0x1A set received "
-                    + "(\(text.utf8.count) B) — no clipboard leaf, "
-                    + "ignored")
+                emit("""
+                    clipboard: 0x1A set received \
+                    (\(text.utf8.count) B) — no clipboard leaf, \
+                    ignored
+                    """)
             }
         case .clipboardAnnounceSent(let byteCount):
             emit("clipboard: announce sent (\(byteCount) B, 0x1B)")
         case .clipboardAnnounceSuppressed(let reason):
             emit("clipboard: announce suppressed (\(reason))")
         case .cursorShapeSent(let pixelByteCount, let hidden):
-            emit("cursor: shape sent (0x24, "
-                + (hidden ? "hidden" : "\(pixelByteCount) B") + ")")
+            emit("""
+                cursor: shape sent (0x24, \
+                \(hidden ? "hidden" : "\(pixelByteCount) B"))
+                """)
         case .cursorShapeSuppressed(let reason):
             // Duplicates are the watcher's steady state between real
             // changes — only budget suppressions are worth a line;
@@ -1978,34 +2048,48 @@ final class SessionWire {
             // P-1: sha-verified — buffer for the off-lock leaf apply
             // (a blocking D-Bus SetSelection). Never logs the payload.
             if clipboardImageApplyHandler != nil {
-                emit("clipboard: image received (\(data.count) B, "
-                    + "\(mime)) — applying to the host clipboard")
+                emit("""
+                    clipboard: image received (\(data.count) B, \
+                    \(mime)) — applying to the host clipboard
+                    """)
                 pendingClipboardImageApplies.append(data)
             } else {
                 // Defensive: an imageless shell never declares key
                 // 12, so the core's gate makes this unreachable.
-                emit("clipboard: image received (\(data.count) B) — "
-                    + "no image leaf, ignored")
+                emit("""
+                    clipboard: image received (\(data.count) B) — \
+                    no image leaf, ignored
+                    """)
             }
         case .clipboardImageShareStarted(let byteCount):
-            emit("clipboard: image share started (\(byteCount) B "
-                + "as chan-8 cargo)")
+            emit("""
+                clipboard: image share started (\(byteCount) B \
+                as chan-8 cargo)
+                """)
         case .clipboardImageShareCompleted(let byteCount):
-            emit("clipboard: image share completed (\(byteCount) B, "
-                + "sha-verified by the client)")
+            emit("""
+                clipboard: image share completed (\(byteCount) B, \
+                sha-verified by the client)
+                """)
         case .clipboardImageShareAborted(let reason, let byRemote):
-            emit("clipboard: image share aborted (\(reason), "
-                + "\(byRemote ? "remote" : "local"))")
+            emit("""
+                clipboard: image share aborted (\(reason), \
+                \(byRemote ? "remote" : "local"))
+                """)
         case .clipboardImageReceiveAborted(let reason, let byRemote):
-            emit("clipboard: image receive aborted (\(reason), "
-                + "\(byRemote ? "remote" : "local"))")
+            emit("""
+                clipboard: image receive aborted (\(reason), \
+                \(byRemote ? "remote" : "local"))
+                """)
         case .clipboardImageSuppressed(let reason):
             emit("clipboard: image suppressed (\(reason))")
         case .clipboardImageRefused(let reason):
             emit("clipboard: image refused (\(reason))")
         case .clipboardImageViolation(let violation):
-            emit("clipboard: image lane protocol violation "
-                + "(\(violation)) — aborted")
+            emit("""
+                clipboard: image lane protocol violation \
+                (\(violation)) — aborted
+                """)
         }
     }
 
@@ -2022,8 +2106,10 @@ final class SessionWire {
         guard let injector = inputInjector else {
             if !inputNoInjectorWarned {
                 inputNoInjectorWarned = true
-                emit("input: event seq \(event.seq) arrived but no "
-                    + "injection backend is active — input is OFF this run")
+                emit("""
+                    input: event seq \(event.seq) arrived but no \
+                    injection backend is active — input is OFF this run
+                    """)
             }
             inputInjectFailures += 1
             return

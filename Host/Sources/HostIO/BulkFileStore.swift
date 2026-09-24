@@ -128,7 +128,7 @@ public final class BulkFileStore: BulkReceiveStore {
         close(fd)
         fd = -1
         openTransferId = nil
-        let destination = directoryPath + "/" + name
+        let destination = directoryPath + "/\(name)"
         guard rename(stagingPath(transferId), destination) == 0 else {
             throw BulkStoreError.renameFailed(
                 "\(destination): \(Self.errnoText())"
@@ -151,7 +151,7 @@ public final class BulkFileStore: BulkReceiveStore {
     }
 
     public func finalNameExists(_ name: String) -> Bool {
-        access(directoryPath + "/" + name, F_OK) == 0
+        access(directoryPath + "/\(name)", F_OK) == 0
     }
 
     public func freeDiskSpaceByteCount() -> UInt64? {
@@ -175,7 +175,7 @@ public final class BulkFileStore: BulkReceiveStore {
             }
             guard name.hasPrefix(Self.stagingPrefix),
                   name.hasSuffix(".resume") else { continue }
-            let path = directoryPath + "/" + name
+            let path = directoryPath + "/\(name)"
             guard let bytes = try? Self.readWholeFile(path),
                   let state = try? BulkResumeStateCodec.decode(bytes),
                   access(stagingPath(state.transferId), F_OK) == 0
@@ -240,13 +240,17 @@ public final class BulkFileStore: BulkReceiveStore {
     /// Exposed for tests that pre-seed staging bytes (the holed-map
     /// vector replay) and audit stray files.
     public func stagingPath(_ transferId: UInt64) -> String {
-        directoryPath + "/" + Self.stagingPrefix
-            + Hex.string(transferId, width: 16) + ".part"
+        directoryPath + """
+            /\(Self.stagingPrefix)\
+            \(Hex.string(transferId, width: 16)).part
+            """
     }
 
     public func resumePath(_ transferId: UInt64) -> String {
-        directoryPath + "/" + Self.stagingPrefix
-            + Hex.string(transferId, width: 16) + ".resume"
+        directoryPath + """
+            /\(Self.stagingPrefix)\
+            \(Hex.string(transferId, width: 16)).resume
+            """
     }
 
     private func syncDirectory() {
@@ -265,7 +269,7 @@ public final class BulkFileStore: BulkReceiveStore {
         var built = path.hasPrefix("/") ? "/" : ""
         for component in path.split(separator: "/") {
             built += (built.isEmpty || built == "/")
-                ? String(component) : "/" + component
+                ? String(component) : "/\(component)"
             if mkdir(built, 0o755) != 0 && errno != EEXIST {
                 throw BulkStoreError.directoryUnavailable(
                     "\(built): \(errnoText())"

@@ -331,9 +331,11 @@ final class ControlPeer {
         print("pairing: PIN \(pin) — enter it in the browser client")
         if let frames = corpusFrames {
             print(
-                "corpus: will emit \(frames.count) sealed frames + "
-                    + "\(tonePacketCount) Opus tone packets after ready "
-                    + "(no Direct Eye)"
+                """
+                    corpus: will emit \(frames.count) sealed frames + \
+                    \(tonePacketCount) Opus tone packets after ready \
+                    (no Direct Eye)
+                    """
             )
         }
         print("features: input echo + in-memory clipboardText (not Wayland OS)")
@@ -373,8 +375,10 @@ final class ControlPeer {
             if session.isIdle {
                 corpusEmitFinished = true
                 print(
-                    "corpus: emitted \(frames.count) frames "
-                        + "(sealed Lyte-UDP video; not live Direct Eye)"
+                    """
+                        corpus: emitted \(frames.count) frames \
+                        (sealed Lyte-UDP video; not live Direct Eye)
+                        """
                 )
             }
             return
@@ -412,8 +416,10 @@ final class ControlPeer {
         if toneIndex >= tonePacketCount {
             toneEmitFinished = true
             print(
-                "tone: emitted \(tonePacketCount) Opus packets "
-                    + "(\(toneHz) Hz; sealed chan-1; not live host audio)"
+                """
+                    tone: emitted \(tonePacketCount) Opus packets \
+                    (\(toneHz) Hz; sealed chan-1; not live host audio)
+                    """
             )
             return
         }
@@ -510,9 +516,11 @@ final class ControlPeer {
             case .capabilitiesAgreed(let caps):
                 capabilitiesAgreed = true
                 print(
-                    "capabilities: agreed codecs=\(caps.videoCodecs) "
-                        + "chroma=\(caps.chromaModes) maxDatagram=\(caps.maxDatagramBytes)"
-                        + " clipboardText=\(caps.clipboardText)"
+                    """
+                        capabilities: agreed codecs=\(caps.videoCodecs) \
+                        chroma=\(caps.chromaModes) maxDatagram=\(caps.maxDatagramBytes)\
+                         clipboardText=\(caps.clipboardText)
+                        """
                 )
             case .capabilitiesFailed(let why):
                 print("capabilities: FAILED — \(why)")
@@ -527,8 +535,10 @@ final class ControlPeer {
                 inputEventsEchoed += 1
                 if inputEventsEchoed <= 3 || inputEventsEchoed % 25 == 0 {
                     logPeer(
-                        "input: echoed seq=\(event.seq) "
-                            + "(total \(inputEventsEchoed); no OS inject)"
+                        """
+                            input: echoed seq=\(event.seq) \
+                            (total \(inputEventsEchoed); no OS inject)
+                            """
                     )
                 }
             case .clipboardSetReceived(let text):
@@ -550,8 +560,10 @@ final class ControlPeer {
                 }
                 clipboardSetsAcked += 1
                 logPeer(
-                    "clipboard: set \(text.utf8.count) B → announce ack "
-                        + "(in-memory; not OS clipboard)"
+                    """
+                        clipboard: set \(text.utf8.count) B → announce ack \
+                        (in-memory; not OS clipboard)
+                        """
                 )
             case .clipboardAnnounceSent(let byteCount):
                 logPeer("clipboard: announce sent (\(byteCount) B)")
@@ -661,8 +673,10 @@ final class ControlPeer {
         if let frames = corpusFrames, !corpusEmitFinished {
             if closed {
                 print(
-                    "WARN — corpus emit incomplete after client close "
-                        + "(index=\(corpusIndex)/\(frames.count))"
+                    """
+                        WARN — corpus emit incomplete after client close \
+                        (index=\(corpusIndex)/\(frames.count))
+                        """
                 )
             } else {
                 throw PeerError.message(
@@ -672,23 +686,29 @@ final class ControlPeer {
         }
         if corpusFrames != nil, !toneEmitFinished, !closed {
             print(
-                "WARN — tone emit incomplete "
-                    + "(index=\(toneIndex)/\(tonePacketCount))"
+                """
+                    WARN — tone emit incomplete \
+                    (index=\(toneIndex)/\(tonePacketCount))
+                    """
             )
         }
         if corpusFrames != nil, corpusEmitFinished {
             print(
-                "PASS — control + corpus video + tone "
-                    + "(Noise + pair + capabilities + \(corpusIndex) frames "
-                    + "+ \(toneIndex) Opus; inputEchoed=\(inputEventsEchoed) "
-                    + "clipboardAcked=\(clipboardSetsAcked))"
+                """
+                    PASS — control + corpus video + tone \
+                    (Noise + pair + capabilities + \(corpusIndex) frames \
+                    + \(toneIndex) Opus; inputEchoed=\(inputEventsEchoed) \
+                    clipboardAcked=\(clipboardSetsAcked))
+                    """
             )
         } else if corpusFrames == nil {
             print("PASS — control-only session (Noise + pair + capabilities)")
         } else {
             print(
-                "PASS — control session (corpus partial "
-                    + "\(corpusIndex)/\(corpusFrames?.count ?? 0))"
+                """
+                    PASS — control session (corpus partial \
+                    \(corpusIndex)/\(corpusFrames?.count ?? 0))
+                    """
             )
         }
         if let session, !closed {

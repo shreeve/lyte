@@ -20,9 +20,11 @@ enum HostStaticKey {
         if FileManager.default.fileExists(atPath: keyPath.path) {
             let data = try Data(contentsOf: keyPath)
             guard data.count == 32 else {
-                throw HostError("host static key at \(keyPath.path) is "
-                    + "\(data.count) bytes, expected 32 — refusing to "
-                    + "overwrite; move it aside to re-key")
+                throw HostError("""
+                    host static key at \(keyPath.path) is \
+                    \(data.count) bytes, expected 32 — refusing to \
+                    overwrite; move it aside to re-key
+                    """)
             }
             return try NoiseKeyPair(privateKey: [UInt8](data))
         }

@@ -304,8 +304,10 @@ public final class EyeGL {
                 $0.baseAddress)
         }
         guard image != nil else {
-            throw EyeGLError("eglCreateImage failed: "
-                + "0x\(String(eglGetError(), radix: 16)) fourcc=\(fourcc)")
+            throw EyeGLError("""
+                eglCreateImage failed: \
+                0x\(String(eglGetError(), radix: 16)) fourcc=\(fourcc)
+                """)
         }
         var tex: GLuint = 0
         glGenTextures(1, &tex)
