@@ -455,6 +455,49 @@ final class ArqEndpointTests: XCTestCase {
         XCTAssertFalse(a.isQuiescent) // the real segment is still owed
     }
 
+    /// A cumulative almost half the serial space past the last sent seq,
+    /// with a bitmap bit carrying the highest reported seq around to
+    /// "behind" it, still claims unsent data: it must not retire the
+    /// one-shot that the receiver never saw.
+    func testAckWrappedPastLastSentIsForgery() throws {
+        var a = Endpoint(
+            channel: .ctrl, config: ArqConfig(maxSegmentBodyByteCount: 10))
+        let group = try a.sendOneShot(
+            message: [UInt8](repeating: 7, count: 100), now: at(0))
+        XCTAssertFalse(a.poll(now: at(0)).datagrams.isEmpty) // seqs 0…9
+        var bitmap = [UInt8](repeating: 0, count: 13)
+        bitmap[12] = 0x10 // seq cumulative + 1 + 100
+        let forged = try ArqAck(blocks: [
+            ArqAck.Block(
+                channel: .ctrl, group: group,
+                cumulative: ArqSegmentSeq(rawValue: 9 &+ 32_700),
+                receivedBitmap: bitmap
+            )
+        ])
+        let events = a.ingest(payload: forged.encode(), now: at(1))
+        XCTAssertEqual(events, [.ignored(.ackForUnsentData(group))])
+        XCTAssertFalse(a.isQuiescent) // all ten segments are still owed
+    }
+
+    /// Half the serial space ahead of a group with nothing on the wire yet
+    /// is still unsent data, never a live offset into its empty ring.
+    func testAckHalfSpaceAheadOfUnsentGroupIsForgery() throws {
+        var a = Endpoint(channel: .ctrl)
+        try a.send(message: [0x29, 1], now: at(0))
+        let forged = try ArqAck(blocks: [
+            ArqAck.Block(
+                channel: .ctrl, group: .orderedStream,
+                cumulative: ArqSegmentSeq(rawValue: 32_767)
+            )
+        ])
+        let events = a.ingest(payload: forged.encode(), now: at(1))
+        XCTAssertEqual(
+            events, [.ignored(.ackForUnsentData(.orderedStream))]
+        )
+        XCTAssertEqual(a.poll(now: at(2)).datagrams.count, 1)
+        XCTAssertFalse(a.isQuiescent)
+    }
+
     func testForeignChannelAckIgnored() throws {
         var a = Endpoint(channel: .ctrl)
         try a.send(message: [0x2A, 0], now: at(0))

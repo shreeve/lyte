@@ -755,40 +755,43 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
         rtt: inout RttEstimator, config: ArqConfig, now: Instant
     ) -> Bool {
         // Forgery bound: nothing past the highest SENT seq may be
-        // acknowledged. (highestReported is initial − 1 when the block
-        // reports nothing, which is never past it.)
-        let lastSent = state.nextSeq &- 1
+        // acknowledged. Offsets are measured from base, where the ring
+        // (span ≤ receive window) holds every seq ever sent and not yet
+        // retired: the cumulative is placed serially, and the highest
+        // reported seq lies a bitmap's length (≤ 256) above it, unwrapped
+        // — so a cumulative near half the serial space cannot carry the
+        // bitmap around to "behind" the ring. A cumulative behind base is
+        // a stale ACK, not a forgery. (highestReported is initial − 1
+        // when the block reports nothing.)
+        let cumulativeOffset = Int(
+            Int16(bitPattern: block.cumulative.rawValue &- state.base))
         let claimHigh = block.highestReported.rawValue
-        guard Int16(bitPattern: claimHigh &- lastSent) <= 0 else {
-            return false
-        }
+        let highOffset = cumulativeOffset
+            + Int(claimHigh &- block.cumulative.rawValue)
+        guard highOffset < state.span else { return false }
 
         var progressed = false
-        func retire(_ seq: UInt16) {
-            let outcome = state.retire(offset: Int(seq &- state.base))
+        func retire(offset: Int) {
+            let outcome = state.retire(offset: offset)
             guard outcome.retired else { return }
             progressed = true
             if let sentAt = outcome.cleanSentAt {
                 rtt.sample(now.microseconds(since: sentAt))
             }
         }
-        // Cumulative: every seq from base through the cumulative.
-        let cumulativeSpan = Int(
-            Int16(bitPattern: block.cumulative.rawValue &- state.base)
-        ) + 1
-        if cumulativeSpan > 0 {
-            for offset in 0..<cumulativeSpan {
-                retire(state.base &+ UInt16(offset))
-            }
+        // Cumulative: every seq from base through the cumulative — at
+        // most the ring's span, by the bound above.
+        if cumulativeOffset >= 0 {
+            for offset in 0...cumulativeOffset { retire(offset: offset) }
         }
         // Bitmap: seqs cumulative+1+n.
         for (byteOffset, byte) in block.receivedBitmap.enumerated()
         where byte != 0 {
             for bit in 0..<8 where byte & (1 << bit) != 0 {
-                retire(block.cumulative.rawValue &+ 1
-                    &+ UInt16(byteOffset * 8 + bit))
+                retire(offset: cumulativeOffset + 1 + byteOffset * 8 + bit)
             }
         }
+        let baseBefore = state.base
         if progressed {
             state.backoffExponent = 0
             state.compactFront()
@@ -801,7 +804,9 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
         } ?? true
         if advanced {
             state.highestAckedEver = claimHigh
-            let reach = Int(Int16(bitPattern: claimHigh &- state.base))
+            // Still inside the ring: compaction moved base forward by
+            // what it retired, never past the claim.
+            let reach = highOffset - Int(state.base &- baseBefore)
                 - config.packetThreshold
             if reach >= 0 {
                 for index in state.head...(state.head + reach) {
