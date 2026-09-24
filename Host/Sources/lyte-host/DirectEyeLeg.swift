@@ -176,51 +176,6 @@ final class DirectEyeLeg {
         let width = screen.width
         let height = screen.height
 
-        // The encoder seat: the native VAAPI pens — zero libavcodec, rate
-        // directives apply live (the RC misc buffer rides the next frame).
-        let pipeline: EyePipeline
-        do {
-            pipeline = try EyePipeline(
-                width: width, height: height,
-                renderNode: config.renderNode, qp: config.qp,
-                bitrateBitsPerSecond: config.bitrateBitsPerSecond,
-                hrdBufferBits: config.bitrateBitsPerSecond > 0
-                    ? Int64(EncoderHrd.bufferBits(
-                        capBitsPerSecond: Int(config.bitrateBitsPerSecond),
-                        fps: Self.fps, vbvBits: config.vbvBits))
-                    : nil)
-        } catch {
-            lastError = "direct: init failed: \(error)"
-            return
-        }
-        let rc = config.bitrateBitsPerSecond > 0
-            ? "vbr \(config.bitrateBitsPerSecond / 1_000_000) Mbps cap"
-            : "cqp \(config.qp)"
-        print("direct: eye open — \(width)x\(height) on "
-            + "\(config.device), native VAAPI \(rc) "
-            + "(rate directives apply live)")
-
-        // E3: the cursor plane travels as metadata, never as video.
-        // The watcher shares the DRM fd and loop cadence; a session-
-        // less (file-mode) leg has no one to tell, so it skips.
-        let cursorWatcher = wire != nil ? EyeCursorWatcher(fd: fd) : nil
-        if wire != nil {
-            print(cursorWatcher != nil
-                ? "direct: cursor watcher on plane "
-                    + "\(cursorWatcher!.planeId) — shapes ride 0x24"
-                : "direct: no cursor plane — shapes OFF this run")
-        }
-
-        var samplingCadence = ScreenSamplingCadence()
-        var observations: UInt64 = 0
-        var framebufferTransitions: UInt64 = 0
-        var changedObservations: UInt64 = 0
-        var skippedObservationBeats: UInt64 = 0
-        var observationSkipEvents: UInt64 = 0
-        let t0 = SystemMonotonicClock.nowSeconds
-        // The stillness clock: last pixel change or client input.
-        var lastActivityWallSeconds = t0
-
         // The shell service cadence: the agreed-time pendings (the
         // 0x19 starting posture, the standing 0x24 cursor shape,
         // clipboard applies, bulk file I/O, pairing outcomes) flush ONLY
@@ -261,6 +216,59 @@ final class DirectEyeLeg {
                 serviceDone.wait()
             }
         }
+
+        // Chroma is a session posture: the encoder opens once, in the
+        // posture the client's declaration picks. The janitor above is
+        // what receives that declaration, so it runs during the wait.
+        let chroma = awaitOpeningChroma()
+
+        // The encoder seat: the native VAAPI pens — zero libavcodec, rate
+        // directives apply live (the RC misc buffer rides the next frame).
+        let pipeline: EyePipeline
+        do {
+            pipeline = try EyePipeline(
+                width: width, height: height,
+                renderNode: config.renderNode, qp: config.qp,
+                bitrateBitsPerSecond: config.bitrateBitsPerSecond,
+                hrdBufferBits: config.bitrateBitsPerSecond > 0
+                    ? Int64(EncoderHrd.bufferBits(
+                        capBitsPerSecond: Int(config.bitrateBitsPerSecond),
+                        fps: Self.fps, vbvBits: config.vbvBits))
+                    : nil,
+                chroma444: chroma == .yuv444)
+        } catch {
+            lastError = "direct: init failed: \(error)"
+            return
+        }
+        chroma444Active = pipeline.chroma444
+        let rc = config.bitrateBitsPerSecond > 0
+            ? "vbr \(config.bitrateBitsPerSecond / 1_000_000) Mbps cap"
+            : "cqp \(config.qp)"
+        print("direct: eye open — \(width)x\(height) on "
+            + "\(config.device), native VAAPI \(rc), "
+            + (chroma == .yuv444 ? "Rext 4:4:4 (AYUV)" : "4:2:0")
+            + " (rate directives apply live)")
+
+        // E3: the cursor plane travels as metadata, never as video.
+        // The watcher shares the DRM fd and loop cadence; a session-
+        // less (file-mode) leg has no one to tell, so it skips.
+        let cursorWatcher = wire != nil ? EyeCursorWatcher(fd: fd) : nil
+        if wire != nil {
+            print(cursorWatcher != nil
+                ? "direct: cursor watcher on plane "
+                    + "\(cursorWatcher!.planeId) — shapes ride 0x24"
+                : "direct: no cursor plane — shapes OFF this run")
+        }
+
+        var samplingCadence = ScreenSamplingCadence()
+        var observations: UInt64 = 0
+        var framebufferTransitions: UInt64 = 0
+        var changedObservations: UInt64 = 0
+        var skippedObservationBeats: UInt64 = 0
+        var observationSkipEvents: UInt64 = 0
+        let t0 = SystemMonotonicClock.nowSeconds
+        // The stillness clock: last pixel change or client input.
+        var lastActivityWallSeconds = t0
 
         // Recovery and quiet-desktop traffic do not depend on a fresh pixel
         // observation. This is deliberately serviced from the 1 ms shell
@@ -359,14 +367,11 @@ final class DirectEyeLeg {
                     SystemMonotonicClock.nowMicroseconds - cursorStart
             }
 
-            // V-4: the agreed chroma is connect-time truth that
-            // lands AFTER the leg opened its encoder (the declaration
-            // rides the handshake). One session per leg lifetime → at
-            // most one flip: a Best-tier agreement reopens the encoder
-            // in Rext 4:4:4. The fresh encoder's first frame is the
-            // IDR the joiner needs. Resetting the sampling/fingerprint
-            // state makes the current screen fresh immediately, even
-            // when the desktop is static.
+            // A Best agreement that lands after the opening wait lapsed
+            // reopens the encoder in Rext 4:4:4 (at most once per
+            // session). The fresh encoder's first frame is the IDR the
+            // client needs; resetting the sampling and identity state
+            // makes the current screen fresh even on a static desktop.
             if !pipeline.chroma444,
                ChromaPosture.from(
                    agreedChromaModes: snapshot?.agreedChromaModes
@@ -649,6 +654,23 @@ final class DirectEyeLeg {
             height: UInt16(frame.height),
             hotspotX: UInt16(hot.x), hotspotY: UInt16(hot.y),
             pixels: frame.pixels))
+    }
+
+    /// The chroma posture to open the encoder in: the agreed one, or 4:2:0
+    /// when no declaration lands within the opening wait (a pre-W7 peer)
+    /// or there is no session (file mode).
+    private func awaitOpeningChroma() -> ChromaPosture {
+        guard let wire else { return .yuv420 }
+        let start = SystemMonotonicClock.nowNanoseconds
+        while true {
+            if let posture = ChromaPosture.opening(
+                agreedChromaModes: wire.agreedChromaModes,
+                waitedNS: SystemMonotonicClock.nowNanoseconds - start) {
+                return posture
+            }
+            if lyteTerminationRequested != 0 { return .yuv420 }
+            usleep(config.pollUs)
+        }
     }
 
     /// Delivers one access unit with the owed IDR causes attached when it
