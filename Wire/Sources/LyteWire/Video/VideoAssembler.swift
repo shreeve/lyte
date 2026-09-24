@@ -232,18 +232,6 @@ public struct VideoAssembler: Sendable {
         )
     }
 
-    /// Leading present-slot count for a tracked frame — the sweep's
-    /// clean-path early-out anchor. Nil when untracked.
-    func testingContiguousPrefix(of frame: FrameNumber) -> Int? {
-        groups[frame.rawValue]?.contiguousPrefix
-    }
-
-    /// Whether the loss sweep has latched out further events for a
-    /// tracked frame. Nil when untracked.
-    func testingSweepSettled(of frame: FrameNumber) -> Bool? {
-        groups[frame.rawValue]?.sweepSettled
-    }
-
     /// Ingests one received datagram's (envelope, payload) and returns
     /// every event it caused, decoded frames included, in order. `now` is
     /// the receiver's clock (sans-IO rule: time is injected).
