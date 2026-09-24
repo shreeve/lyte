@@ -132,6 +132,17 @@ These rules protect the owner's live rig. They are repository law
   `lyte-eye`) while the service holds the DRM seat: parallel eyes black the
   interactive screen. `lyte-control-peer` has no eye and is safe beside the
   service.
+- **Accepted risk: ambient `CAP_SYS_ADMIN` on a user-writable path.** The
+  unit runs `~/.local/bin/lyte-host` — a symlink the seat user owns, into
+  `~/.local/share/lyte/versions/`, which the seat user also owns — with
+  ambient `CAP_SYS_ADMIN` and `Restart=always`, and `host.conf` (also the
+  user's) supplies its arguments. Any code running as the seat user can
+  re-point the symlink or rewrite a version, kill the host (signals are
+  permitted by UID), and systemd re-executes the planted binary with
+  `CAP_SYS_ADMIN`, which is effectively root. The owner accepts this for
+  now; the pre-1.0 hardening (a root-owned executable, or file capabilities
+  on a root-owned copy) is in [TODO.md](../TODO.md). Treat the seat
+  account as root-equivalent on a host running the service.
 - **Hand-run binaries.** Keep them under the home build tree, not `/tmp`
   (`nosuid` strips file capabilities), `setcap cap_sys_admin+ep` the exact
   binary, and remove the capability afterwards.
