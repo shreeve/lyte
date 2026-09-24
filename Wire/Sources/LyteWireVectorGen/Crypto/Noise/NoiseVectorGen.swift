@@ -165,26 +165,22 @@ private func makeTransportVector() throws -> NoiseTransportVector {
             timestamp: timestamp,
             fec: fec
         )
-        let aad = try envelope.encode(payload: [])
-        let wirePayload: [UInt8]
+        let datagram: [UInt8]
+        let opened: [UInt8]
         switch direction {
         case .clientToHost:
-            wirePayload = try clientTransport.seal(
-                plaintext: plaintext[...], aad: aad[...], envelope: envelope
+            datagram = try clientTransport.sealDatagram(
+                envelope, plaintext: plaintext
             )
-            let opened = try hostTransport.unseal(
-                wirePayload: wirePayload[...], aad: aad[...], envelope: envelope
-            )
-            precondition(opened == plaintext, "transport self-check failed")
+            opened = try hostTransport.openDatagram(datagram).plaintext
         case .hostToClient:
-            wirePayload = try hostTransport.seal(
-                plaintext: plaintext[...], aad: aad[...], envelope: envelope
+            datagram = try hostTransport.sealDatagram(
+                envelope, plaintext: plaintext
             )
-            let opened = try clientTransport.unseal(
-                wirePayload: wirePayload[...], aad: aad[...], envelope: envelope
-            )
-            precondition(opened == plaintext, "transport self-check failed")
+            opened = try clientTransport.openDatagram(datagram).plaintext
         }
+        precondition(opened == plaintext, "transport self-check failed")
+        let wirePayload = Array(datagram.dropFirst(envelope.headerByteCount))
         plan.append(.init(
             kind: .seal,
             direction: direction,

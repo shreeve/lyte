@@ -605,3 +605,100 @@ final class NoiseTransportTests: XCTestCase {
         XCTAssertEqual(client.datagramsSealedSinceRekey, 0)
     }
 }
+
+// MARK: - Sealed datagrams
+
+final class SealedDatagramTests: XCTestCase {
+
+    private func makeTransports() throws -> (client: NoiseTransport, host: NoiseTransport) {
+        let hostStatic = NoiseKeyPair.generate()
+        var client = try NoiseSession(
+            role: .initiator, staticKeys: NoiseKeyPair.generate(),
+            remoteStaticPublicKey: hostStatic.publicKey
+        )
+        var host = try NoiseSession(role: .responder, staticKeys: hostStatic)
+        _ = try host.readMessage1(try client.writeMessage1()[...])
+        _ = try client.readMessage2(try host.writeMessage2()[...])
+        return (try client.makeTransport(), try host.makeTransport())
+    }
+
+    private func envelope(seq: UInt16, tagged: Bool = true) -> Envelope {
+        Envelope(
+            channel: .ctrl, seq: ChannelSeq(rawValue: seq),
+            frame: FrameNumber(rawValue: 3), timestamp: 42, fec: 0,
+            extensions: tagged
+                ? [try! WireExtension(type: 0x01, value: [1, 2, 3, 4, 5, 6, 7, 8])]
+                : []
+        )
+    }
+
+    /// The datagram is header ‖ seal(plaintext, aad: header), byte for
+    /// byte what the two-step encode produces, and it opens back to the
+    /// same envelope and plaintext.
+    func testSealedDatagramIsHeaderThenSealedPayloadAndRoundTrips() throws {
+        // Two copies of one transport seal identically at the same seq.
+        var clientA = try makeTransports().client
+        var clientB = clientA
+        for tagged in [false, true] {
+            let env = envelope(seq: tagged ? 1 : 0, tagged: tagged)
+            let plaintext: [UInt8] = Array(0..<200)
+            let header = try env.encode(payload: [])
+            let twoStep = try env.encode(payload: try clientB.seal(
+                plaintext: plaintext[...], aad: header[...], envelope: env
+            )[...])
+            XCTAssertEqual(try clientA.sealDatagram(env, plaintext: plaintext), twoStep)
+        }
+
+        var (client, peer) = try makeTransports()
+        let env = envelope(seq: 9)
+        let datagram = try client.sealDatagram(env, plaintext: [7, 7, 7])
+        let opened = try peer.openDatagram(datagram)
+        XCTAssertEqual(opened.envelope, env)
+        XCTAssertEqual(opened.plaintext, [7, 7, 7])
+        // The header is authenticated: flip a header byte and it fails.
+        var tampered = datagram
+        tampered[8] ^= 1
+        XCTAssertThrowsError(try peer.openDatagram(tampered))
+        // Replays are the transport's verdict, passed through.
+        XCTAssertThrowsError(try peer.openDatagram(datagram)) {
+            XCTAssertEqual($0 as? NoiseError, .replayedSequence)
+        }
+    }
+
+    /// Decode failures surface as WireError before any open runs, and
+    /// the closure form sees the envelope first.
+    func testOpenDatagramDecodesBeforeOpening() throws {
+        var opens = 0
+        XCTAssertThrowsError(try Envelope.openDatagram([1, 2, 3][...]) { _, _, _ in
+            opens += 1
+            return []
+        }) {
+            XCTAssertEqual($0 as? WireError, .truncatedEnvelope)
+        }
+        let env = envelope(seq: 1)
+        let passthrough = try env.sealedDatagram([9, 8][...]) { plaintext, _ in
+            Array(plaintext)
+        }
+        let opened = try Envelope.openDatagram(passthrough[...]) { seen, payload, aad in
+            opens += 1
+            XCTAssertEqual(seen, env)
+            XCTAssertEqual(Array(aad), try env.encode(payload: []))
+            return Array(payload)
+        }
+        XCTAssertEqual(opened.plaintext, [9, 8])
+        XCTAssertEqual(opens, 1)
+    }
+
+    /// Budgets hold on the assembled datagram.
+    func testSealedDatagramEnforcesBudgets() {
+        let env = envelope(seq: 1)
+        XCTAssertThrowsError(try env.sealedDatagram([0][...]) { _, _ in
+            [UInt8](repeating: 0, count: WireBudget.maxWirePayloadByteCount + 1)
+        }) {
+            XCTAssertEqual(
+                $0 as? WireError,
+                .payloadOverBudget(WireBudget.maxWirePayloadByteCount + 1)
+            )
+        }
+    }
+}

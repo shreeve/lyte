@@ -244,25 +244,30 @@ final class NoiseVectorFileTests: XCTestCase {
                     return XCTFail("\(vector.name) step \(index): malformed seal")
                 }
                 let envelope = try step.makeEnvelope()
-                let aad = try envelope.encode(payload: [])
-                let sealed: [UInt8]
-                let opened: [UInt8]
+                let header = try envelope.encode(payload: [])
+                // The sealed-datagram codec must reproduce the pinned wire
+                // payload behind the exact header bytes.
+                let datagram: [UInt8]
+                let received: (envelope: Envelope, plaintext: [UInt8])
                 switch step.direction {
                 case .clientToHost:
-                    sealed = try clientTransport.seal(
-                        plaintext: plaintext[...], aad: aad[...], envelope: envelope
+                    datagram = try clientTransport.sealDatagram(
+                        envelope, plaintext: plaintext
                     )
-                    opened = try hostTransport.unseal(
-                        wirePayload: expected[...], aad: aad[...], envelope: envelope
-                    )
+                    received = try hostTransport.openDatagram(header + expected)
                 case .hostToClient:
-                    sealed = try hostTransport.seal(
-                        plaintext: plaintext[...], aad: aad[...], envelope: envelope
+                    datagram = try hostTransport.sealDatagram(
+                        envelope, plaintext: plaintext
                     )
-                    opened = try clientTransport.unseal(
-                        wirePayload: expected[...], aad: aad[...], envelope: envelope
-                    )
+                    received = try clientTransport.openDatagram(header + expected)
                 }
+                XCTAssertEqual(
+                    Array(datagram.prefix(header.count)), header,
+                    "\(vector.name) step \(index): header is not the AAD prefix"
+                )
+                XCTAssertEqual(received.envelope, envelope)
+                let sealed = Array(datagram.dropFirst(header.count))
+                let opened = received.plaintext
                 XCTAssertEqual(
                     Hex.string(sealed), expectedHex,
                     "\(vector.name) step \(index): wire payload diverges from the pin"
