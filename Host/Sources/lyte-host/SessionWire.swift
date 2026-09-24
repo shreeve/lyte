@@ -1638,11 +1638,24 @@ final class SessionWire {
             throw error
         }
         let now = SystemMonotonicClock.nowNanoseconds
-        let wake = session.nextWake(now: now)
         let blocked = outbox.isEmpty ? nil : blockedLane
-        let backoff = !outbox.isEmpty && noBufferBackoff
+        // The same test pumpForSocketState applies: when it releases
+        // only latency classes, due video must not set the wait.
+        let hold: SenderWait.Hold =
+            !outbox.isEmpty && noBufferBackoff ? .noBuffer
+            : blocked != nil ? .socketFull
+            : kernelPressureDecision?.allowVideoPump == false ? .pressure
+            : .none
+        let timeoutNS = SenderWait.timeoutNS(
+            nowNS: now,
+            latencyWakeNS: session.nextWake(now: now, upThrough: .audio),
+            allWakeNS: session.nextWake(now: now),
+            hold: hold)
+        // A lane with no connected socket yet writes through the
+        // listening socket (writeBatch), so that is the one to poll.
         var sockets: [(fd: Int32, pollOut: Bool)] = [
-            (lyte_netio_fd(listenNetio), false)
+            (lyte_netio_fd(listenNetio),
+             blocked.map { socket(for: $0) == nil } ?? false)
         ]
         if let videoNetio {
             sockets.append((lyte_netio_fd(videoNetio), blocked == .video))
@@ -1653,10 +1666,7 @@ final class SessionWire {
         lock.unlock()
         flushLogLines()
 
-        return DrainWait(
-            timeoutNS: SenderWait.timeoutNS(
-                nowNS: now, nextWakeNS: wake, noBufferBackoff: backoff),
-            sockets: sockets)
+        return DrainWait(timeoutNS: timeoutNS, sockets: sockets)
     }
 
     private func block(until wait: DrainWait) {

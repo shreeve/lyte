@@ -2780,9 +2780,14 @@ public final class Session {
 
     /// The earliest instant anything here has work: the pacer's wake,
     /// the next beacon, the ARQ's retransmit deadline, or a validator
-    /// deadline. The loop sleeps until this (Pacer semantics).
-    public func nextWake(now: UInt64) -> UInt64? {
-        var wake = channel.nextWake(now: now)
+    /// deadline. The loop sleeps until this (Pacer semantics). A shell
+    /// that pumps only latency classes (`pumpLatency`, a full socket)
+    /// passes `.audio`, so video that it will not release cannot make
+    /// the wake "now".
+    public func nextWake(
+        now: UInt64, upThrough highestClass: PacerClass = .bulk
+    ) -> UInt64? {
+        var wake = channel.nextWake(now: now, upThrough: highestClass)
         for candidate in [
             beaconClock.nextDeadlineNanoseconds,
             ctrlArqLane.nextDeadlineNanoseconds,
