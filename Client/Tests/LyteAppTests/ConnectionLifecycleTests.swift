@@ -84,7 +84,8 @@ final class ConnectionLifecycleTests: XCTestCase {
         // The host restarted and re-registered elsewhere: the first dial
         // draws silence, the re-browse finds it at its new address.
         harness.startPlan = [
-            .fail(TransportCryptoError.handshakeFailed("no response from host")),
+            .fail(HandshakeExhausted(
+                host: "10.9.9.9", port: 41_999, counters: .init())),
             .succeed, .hold,
         ]
         harness.browseResult = [DiscoveredLyteHost(
@@ -106,10 +107,9 @@ final class ConnectionLifecycleTests: XCTestCase {
     func testRejectedMessageTwoStillCountsAsUnanswered() async throws {
         let harness = LifecycleHarness()
         harness.startPlan = [
-            .fail(TransportCryptoError.handshakeFailed(
-                "message 2 rejected: authenticationFailed [kernel accepted "
-                    + "5 sends; received 1 datagrams: 0 retry challenges "
-                    + "answered, 0 non-message-2, 1 rejected message-2]")),
+            .fail(HandshakeExhausted(
+                host: "10.9.9.9", port: 41_999, counters: .init(),
+                lastRejection: "authenticationFailed")),
             .succeed,
         ]
         let model = ConnectionModel(services: harness.services)
@@ -127,8 +127,8 @@ final class ConnectionLifecycleTests: XCTestCase {
     /// "may be restarting" for the whole budget.
     func testReplacedHostIdentityEndsTheConnectWithARePairVerdict() async throws {
         let harness = LifecycleHarness()
-        harness.startPlan = [.fail(TransportCryptoError.handshakeFailed(
-            "no response from 10.9.9.9:41999 after 5 attempts"))]
+        harness.startPlan = [.fail(HandshakeExhausted(
+            host: "10.9.9.9", port: 41_999, counters: .init()))]
         harness.browseResult = [harness.reinstalledHost]
         let model = ConnectionModel(services: harness.services)
         await model.connectLyte(harness.host)
@@ -171,9 +171,8 @@ final class ConnectionLifecycleTests: XCTestCase {
 
     func testDialFailureClassification() {
         XCTAssertEqual(
-            DialFailure(TransportCryptoError.handshakeFailed(
-                "no response from 10.0.0.1:41151 after 5 attempts [kernel "
-                    + "accepted 5 sends; received 0 datagrams: …]")),
+            DialFailure(HandshakeExhausted(
+                host: "10.0.0.1", port: 41_151, counters: .init())),
             .unanswered)
         XCTAssertEqual(
             DialFailure(TransportCryptoError.handshakeFailed(

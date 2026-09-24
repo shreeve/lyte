@@ -259,9 +259,7 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
                 attempts: attempts,
                 intervalMicroseconds: UInt64(max(1, attemptTimeoutMilliseconds))
                     * 1_000))
-        var lastFailure = "no response from \(hostAddress):\(hostPort) "
-            + "after \(attempts) attempts"
-        var datagramsReceived = 0
+        var lastRejection: String?
         try io.sendToHost(initiator.begin(
             nowMicros: SystemMonotonicClock.nowMicroseconds))
         while true {
@@ -273,21 +271,16 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
                 try io.sendToHost(carriage)
                 continue
             case .exhausted:
-                let counters = initiator.counters
-                throw TransportCryptoError.handshakeFailed(
-                    lastFailure + " [kernel accepted "
-                        + "\(counters.message1Transmissions + counters.retryChallengesAnswered) sends; "
-                        + "received \(datagramsReceived) datagrams: "
-                        + "\(counters.retryChallengesAnswered) retry challenges answered, "
-                        + "\(counters.otherDatagrams + counters.undecodableDatagrams) non-message-2, "
-                        + "\(counters.rejectedMessage2) rejected message-2]")
+                throw HandshakeExhausted(
+                    host: hostAddress, port: hostPort,
+                    counters: initiator.counters,
+                    lastRejection: lastRejection)
             }
             let remainingMs = Int(
                 (initiator.attemptDeadlineMicros &- now) / 1_000)
             guard let datagram = try io.receiveDatagram(
                 timeoutMilliseconds: max(1, min(remainingMs, 100))
             ) else { continue }
-            datagramsReceived += 1
             switch initiator.ingest(
                 datagram[...], nowMicros: SystemMonotonicClock.nowMicroseconds
             ) {
@@ -299,7 +292,7 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
                 retryChallengesAnswered += 1
                 stateLock.unlock()
             case .rejectedMessage2(let error):
-                lastFailure = "message 2 rejected: \(error)"
+                lastRejection = String(describing: error)
             case .established(let made):
                 // Lock order is state → send → receive everywhere; both
                 // copies and the hash publish as one atomic state.
