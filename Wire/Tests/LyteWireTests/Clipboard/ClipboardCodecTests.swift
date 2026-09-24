@@ -2,7 +2,7 @@ import XCTest
 import LyteWire
 
 // The CL-15 clipboard vocabulary's anchors (design doc
-// docs/20260722-231500-lyte-clipboard.md): hand-computed bytes for the
+// docs/decisions/20260722-231500-lyte-clipboard.md): hand-computed bytes for the
 // 0x1A/0x1B pair (the vector file never grades its own homework), the
 // key-10 capability spine, the registry numbers, and the
 // loop-prevention book's laws — including the proof obligation that a

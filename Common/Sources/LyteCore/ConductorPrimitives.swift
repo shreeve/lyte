@@ -1,4 +1,4 @@
-// THE CONDUCTOR's shared primitives (docs/20260803-050422-metronome-playout-
+// THE CONDUCTOR's shared primitives (docs/decisions/20260803-050422-metronome-playout-
 // design.md). Instruments keep their own verbs, constants and doctrine:
 // audio's clock of record is the DAC (never HostClockModel) and audio sizes
 // its cushion from the detrended window spread, not a percentile. Nothing

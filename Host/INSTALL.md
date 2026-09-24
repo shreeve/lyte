@@ -3,6 +3,8 @@
 The host serves one GNOME/Mutter Wayland seat with an Intel GPU that
 owns the panel (the direct eye encodes on the die that owns the
 scanout). Everything below is idempotent — re-run any step freely.
+Day-to-day operation of an installed host (deploys, rollback, safety) is in
+[docs/OPERATIONS.md](../docs/OPERATIONS.md).
 
 ## 0. Build
 
@@ -14,7 +16,9 @@ swift build --package-path Host -c release
 ```
 
 The binaries land in `Host/.build/release/`. No setcap is needed when
-running under the service (step 2) — the capability rides the unit.
+running under the service (step 2) — the capability rides the unit. Swift
+6.1.2 on Ubuntu 26.04 needs a `libxml2.so.2` shim for its build tools; see
+[docs/OPERATIONS.md](../docs/OPERATIONS.md#build-on-pup).
 
 ### Stage the release image
 

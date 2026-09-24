@@ -1,5 +1,5 @@
 // AudioTrackState (0x25), host→client — the postures design's audio
-// tripwire announcement (docs/20260802-013946-postures-design.md:
+// tripwire announcement (docs/decisions/20260802-013946-postures-design.md:
 // "silence with a signed IOU"). When the track goes auto-quiet the
 // host GATES transmission while capture continues; this message is
 // the contract that makes the resulting wire silence honest:

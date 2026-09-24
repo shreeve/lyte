@@ -1,5 +1,7 @@
 # Lyte source layout and behavior-preserving migration
 
+> **Status:** Binding decision, with errata — the filesystem grammar and dependency direction bind; the current target list is [ARCHITECTURE.md](../ARCHITECTURE.md) (targets are `HostCore` and `HostSession`, Session targets may import `LyteCore`, and the platform targets named in §4 were never created).
+
 *Owner-approved ruling of record, 2026-08-03. This supersedes only the
 directory and target-shape portions of
 `20260730-115707-lyte-v2-rulings.md`. Its one-repo, always-green,

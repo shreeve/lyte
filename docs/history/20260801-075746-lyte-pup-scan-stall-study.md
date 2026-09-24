@@ -1,5 +1,7 @@
 # The 10-second stall — it is not AWDL, and it is not the Mac
 
+> **Status:** Historical — current truth: [OPERATIONS.md](../OPERATIONS.md).
+
 **Date:** 2026-08-01 (measurements 11:47 UTC benchmark + 13:00–13:30 UTC live
 probes) · **Machines:** M5 MacBook Pro (client, 10.0.0.235, now on 5 GHz
 ch 44) ↔ pup (Linux host, 10.0.0.249, still on 6 GHz ch 197) ·

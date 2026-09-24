@@ -1,8 +1,9 @@
 # Lyte — design decisions
 
 This living document owns product behavior and interaction decisions. Each
-section says whether the decision ships today or remains direction; frozen
-protocol and architecture records own the mechanics beneath it.
+section says whether the decision ships today or remains direction;
+[ARCHITECTURE.md](ARCHITECTURE.md) and [PROTOCOL.md](PROTOCOL.md) own the
+mechanics beneath it.
 
 ## D1. Two axes, one question
 
@@ -81,16 +82,21 @@ warning when its own repair and Conductor successfully absorbed the event.
   upstream licenses and notices.
 - `LyteWire` owns sans-IO protocol contracts; `LyteCore` owns shared sans-IO
   policy; `LyteIO` owns shared OS adapters.
-- `LyteClientCore` and `LyteClientSession` own pure client policy.
-  `HostCore`, `HostSession`, and `HostAudio` own pure host policy.
-  `LyteTransport` and `HostWire` execute those decisions at role boundaries.
+- `LyteClientCore` and `LyteClientSession` own pure client policy; every
+  client shell, native or browser, shares the `LyteClientSession`
+  initiator. `HostCore`, `HostSession`, and `HostAudio` own pure host
+  policy, and the sans-IO `HostWire` executes it. `LyteTransport` and
+  `lyte-host` own the platform IO.
 - The product speaks only Lyte-UDP. No GameStream, Sunshine, or Moonlight
   source remains in the shipping system.
 - The macOS shell uses SwiftUI/AppKit, VideoToolbox through
   `AVSampleBufferDisplayLayer`, AVAudioEngine plus pinned Opus,
   Network.framework, and a narrowly authenticated ServiceManagement helper.
-- The Linux host uses KMS/DRM capture, GPU color conversion, native VAAPI HEVC,
-  PipeWire audio, uinput, and a narrow UDP syscall leaf.
+- The Linux host uses KMS/DRM capture, GPU color conversion (BT.709 limited
+  range), native VAAPI HEVC, PipeWire audio, uinput, and a narrow UDP
+  syscall leaf.
+- The browser client is Swift compiled to WebAssembly behind a thin
+  JavaScriptKit bridge; page JavaScript owns only browser IO.
 - Swift Crypto is the only external Swift dependency of `LyteWire` and remains
   confined to its crypto leaf.
 

@@ -1,14 +1,14 @@
 // The Linux clipboard OS leaf (HS-19, closing CL-15's queued
 // follow-up): the real `HostClipboardLeaf`, driving the
 // RemoteDesktop-session clipboard API the design doc names
-// (docs/20260722-231500-lyte-clipboard.md §7; host build plan §6 —
+// (docs/decisions/20260722-231500-lyte-clipboard.md §7; host build plan §6 —
 // selection-change signals + fd-based transfer, both directions).
 //
 // WHICH RemoteDesktop session: the Mutter-internal one
 // (org.gnome.Mutter.RemoteDesktop). Input left this API family in E2
 // (uinput); clipboard could not — the Wayland-helper /
 // portal-without-Mutter-RD replacement is blocked on Ubuntu GNOME
-// (docs/20260807-015743-wayland-clipboard-gnome-blocker.md): no
+// (docs/decisions/20260807-015743-wayland-clipboard-gnome-blocker.md): no
 // wlr/ext-data-control, wl-clipboard hangs, portal RD Start still
 // auto-denies headless (CP-5 Q1). On GNOME the portal Clipboard is a
 // thin wrapper over this same Mutter session API, so the leaf drives

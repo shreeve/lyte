@@ -1,5 +1,5 @@
 // AudioTripwire — the postures design's auto-quiet gate
-// (docs/20260802-013946-postures-design.md): capture NEVER stops, only
+// (docs/decisions/20260802-013946-postures-design.md): capture NEVER stops, only
 // transmission gates. Sans-IO by construction: time is counted in
 // packets (the wire's fixed 5 ms cadence), levels arrive as RMS the
 // caller computes from the PCM it already holds, and the encoded

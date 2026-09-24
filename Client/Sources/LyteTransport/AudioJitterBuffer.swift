@@ -1,6 +1,6 @@
 // AudioJitterBuffer (CL-11): the adaptive playout buffer the
 // audio-continuity decision doc sized this slice for. The recorded
-// verdict (docs/20260720-145840): delay VARIANCE, not loss, is the
+// verdict (docs/decisions/20260720-145840): delay VARIANCE, not loss, is the
 // dominant impairment — so the buffer targets variance absorption with
 // a statistical target (the doc's §5.3 percentile idea at 5 ms-packet
 // granularity), conceals true gaps through Opus PLC (§5.4 — the

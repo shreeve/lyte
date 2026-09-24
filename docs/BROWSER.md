@@ -1,177 +1,112 @@
-# Browser client direction
+# Browser client
 
-*Living direction for the peer **browser client platform**. Commissioning
-start and frozen naming/carrier/ladder:
-[`20260807-021425-browser-client-platform-slice.md`](20260807-021425-browser-client-platform-slice.md).
-Not a protocol amendment.*
+The browser is meant to become another client platform beside macOS,
+Windows and Linux: the same wire contracts, Noise security, session policy
+and Conductor, reached through WebTransport instead of raw UDP. Naming,
+carrier and ownership are fixed by the
+[B-0 decision](decisions/20260807-021425-browser-client-platform-slice.md);
+this page owns the current state.
 
-Lyte should make a host reachable from an ordinary browser without forking
-the product into a second client. The browser is another platform shell —
-beside Mac, Windows, and Linux — around the same independently owned wire
-contracts, Noise security, session policy, and Conductor that native clients
-use. The platform adapter target is `LyteClientBrowser` (package
-`Browser/`); product composition lands later as `LyteBrowserApp` under
-`Applications/`.
+**Status: a proof harness, not a product.** Chrome runs Lyte's Swift
+WebAssembly client through a complete control, video, audio, input and
+clipboard session, but only against `lyte-control-peer`, a DRM-free test
+peer that replays the frozen video corpus and an Opus tone. No browser
+session has streamed a real desktop from a host's Direct Eye yet.
 
-## What is proven
+## What exists
 
-`LyteWire` is already a real WebAssembly target. Its complete suite passes
-under wasmtime on `wasm32-unknown-wasip1` (`Wire/Scripts/wasm-test.sh`),
-including the frozen vectors, Noise, pairing, FEC, ARQ, and media contracts.
-That proves protocol portability; it is **not** the browser client.
+| Piece | Where | What it does |
+|---|---|---|
+| `LyteClientBrowserCore` | `Browser/Sources/` | Sans-IO browser session over `LyteClientSession`: handshake and msg1 retransmit, pairing, capabilities, lifecycle (liveness close, teardown retransmit), sealed CTRL, video assembly and Conductor schedule, IDR requests, audio depacketize, input and clipboard. Built natively and tested (`LyteClientBrowserCoreTests`, against an in-process `HostWire.Session`) |
+| `LyteClientBrowser` | `Browser/Sources/` | The WASM executable: `globalThis.lyteBrowser`, the JS↔WASM bridge (JavaScriptKit) |
+| Page | `Browser/Page/` | `session-pump.js` (WebTransport datagrams ↔ WASM), `video-sink.js` (WebCodecs decode, WebGPU present), `interaction.js` (DOM input, Opus decode, AudioWorklet), `audio-ring-worklet.js`, `session-proof.js` (the scripted proof), `webtransport-carrier.js`, `lyte-io.js`, `index.html` |
+| `lyte-wt-sidecar` | `Browser/Scripts/wt-sidecar.mjs` | Same-box WebTransport ↔ UDP relay (Node, `rwebtransport`); opaque bytes only, one UDP socket per WebTransport session; refuses 41151 |
+| `lyte-control-peer` | `Host/Sources/lyte-control-peer/` | A real `HostWire.Session` and pairing responder over UDP with no Direct Eye; `--emit-corpus` sends `video-corpus-v1` frames 000–009 and an Opus tone; `--sessions 0` serves sessions until killed |
 
-**B-1 is green in Chrome:** `Browser/` builds `LyteClientBrowser` with the
-official Swift 6.3.3 Wasm SDK and JavaScriptKit PackageToJS, loads it in
-Google Chrome, and exercises two frozen wire contracts across the
-JavaScript boundary:
+Behavior the proof exercises today:
 
-- `envelope-v1/nominal-video-shard` — decode + re-encode byte match
-- `noise-v1/snow-ik-25519-chachapoly-sha256` — IK message 1+2 byte match
+- Undecodable, forged, replayed or late datagrams are counted and dropped;
+  they never fail the session. The connection id is learned only from
+  authenticated datagrams.
+- Message 1 is retransmitted verbatim (5 × 1 s); a rejected message 2 is
+  skipped so a genuine one can still complete.
+- The liveness timeout closes the session and sends a teardown; a local
+  teardown is retransmitted until acknowledged.
+- Video: FEC assembly, `VideoBeatConductor` schedule, WebCodecs HEVC
+  (`hev1.1.6.L150.B0`, hardware preferred), WebGPU `importExternalTexture`
+  to a canvas. Presentation is paced by the Conductor: frames decoded ahead
+  of their beat are held until it, and none is shown before its PTS.
+  Decode is throttled (at most 8 decoded or in-decoder frames); the decode
+  backlog is bounded at 120 frames and the handoff at 12. Handoff overflow
+  or backlog loss requests an IDR over sealed CTRL.
+- Audio: WASM depacketizes Opus, WebCodecs decodes it, an AudioWorklet ring
+  plays it in real time (the smoke renders offline). The WASM audio queue
+  keeps the newest 20 packets (100 ms).
+- Input: DOM keyboard (`KeyboardEvent.code` → evdev), pointer, buttons and
+  wheel go out as sealed `InputEvent`s; held keys and buttons are released
+  on blur. The peer echoes input but injects nothing.
+- Clipboard text round-trips through capability key 10; the peer's
+  clipboard is in memory, not an OS clipboard.
 
-**B-2 is green in Chrome:** the same page dials a same-box
-`lyte-wt-sidecar` (`Browser/Scripts/wt-sidecar.mjs`, Node
-`rwebtransport`) and round-trips **opaque** Lyte-shaped datagrams over
-WebTransport:
+## Run it
 
-- frozen envelope framing bytes survive WT↔UDP echo
-- frozen Noise IK message-1 **ciphertext** survives as opaque bytes (sidecar
-  never unseals)
-- full `WireBudget.maxDatagramByteCount` (1152 B) round-trips
-- measured usable ceiling **1214 B** ≥ 1152 B (Chrome's reported
-  `maxDatagramSize` was 1024 — treat runtime measure as truth)
+Toolchain: swiftly with Swift 6.3.3 and the `swift-6.3.3-RELEASE_wasm` SDK
+(pins and install commands: `Scripts/lib/wasm-toolchain.sh`), Google
+Chrome with a GPU, Node 24 or 26, and `openssl`.
 
-**B-3 is green in Chrome:** the WASM initiator completes a **control-only**
-session against a DRM-free `lyte-control-peer` (real `HostWire.Session`)
-through the sidecar in `--udp-peer` mode:
+```sh
+Browser/Scripts/build.sh     # WASM + page + corpus staged in Browser/.serve/
+Browser/Scripts/serve.sh     # http://127.0.0.1:8765/ with control peer + sidecar
+# open the URL in Chrome; Connect and Re-run work repeatedly
 
-- Noise IK handshake (end-to-end; sidecar stays opaque)
-- PIN PAKE pairing (`PairingPakeInitiator` ↔ `PairingResponderService`)
-- capability declaration / agreement via `LyteClientSession`
-- typed `SessionTeardown`
-- peer has no Direct Eye (safe beside standing 41151)
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  Browser/Scripts/smoke-chrome.sh   # headless proof; rebuilds first
+```
 
-**B-4 is green in Chrome:** one **timestamped** canned HEVC IRAP from the
-frozen Wire corpus (`video-corpus-v1/frame-000-idr.annexb`, staged by
-`build.sh`) is classified in WASM (`AnnexBCheck`), decoded with **WebCodecs**
-(`hev1.1.6.L150.B0`, hardware prefer), and presented with **WebGPU**
-(`importExternalTexture` → `<canvas>`).
+`serve.sh` builds `lyte-control-peer`, starts it on loopback UDP 41234
+(`LYTE_CONTROL_PEER_PORT`, never 41151), starts the sidecar in
+`--udp-peer` mode, and serves `.serve/`. `build.sh` uses PackageToJS with
+`--use-cdn`, so the page loads the WASI shim from jsDelivr; the sidecar
+installs `rwebtransport` under `Browser/Harness/` on first run. The module
+is about 77 MB without binaryen's `wasm-opt` and behaves the same.
 
-**B-5 is green in Chrome:** sealed corpus video (Wire `video-corpus-v1`
-frames 000–009) over WT → WASM FEC assemble → `VideoBeatConductor` schedule
-→ WebCodecs → WebGPU. Media shards use **binary ingest**
-(`controlIngestBytes` / `Uint8Array`); hex stays for small control/debug
-only. Peer is DRM-free `lyte-control-peer --emit-corpus` (widened blackout
-silence so missing chan-3 feedback does not FROZEN-suppress video).
+The smoke's PASS lines and what each asserts are listed in
+[TESTING.md](TESTING.md#browser-smoke--browserscriptssmoke-chromesh). The
+Browser package's native tests run in the macOS gate; the WASM build runs
+there when the toolchain is installed. Neither needs Chrome.
 
-**B-6 is green in Chrome:** interaction shell on top of B-3…B-5 — sealed
-`InputEvent` / `InputEcho` on reliable CTRL (peer echoes without uinput),
-capability-gated clipboard text (`clipboardText` + in-memory peer announce
-ack; **not** Wayland OS clipboard), sealed Opus tone → WASM
-`AudioDepacketizer` → WebCodecs → AudioWorklet ring, and a real connect /
-PIN / session / video-surface page. Still **not** live Direct Eye / not
-daily-driver remote desktop.
+The `serve.sh` harness always starts its own local peer. Pointing the page
+at a peer on pup (a fresh 41xxx port, never 41151) needs a serve mode that
+skips the local peer, which does not exist yet.
 
-Logical packets stay transport-independent:
+## Bridge API
+
+`globalThis.lyteBrowser` exposes: `runFrozenContracts`,
+`verifyEnvelopeHex`, `verifyCarrierEcho`, `classifyAnnexBBytes`,
+`controlOpen`, `controlBegin`, `controlIngestBatch` (one packed
+`Uint8Array` per burst), `controlTick` (`null` when quiet),
+`controlTeardown`, `controlSendInput`, `controlClipboardSet`,
+`controlFacts`, `mediaTakeAnnexB`, `mediaPopDue`, `mediaNotePresented`,
+`mediaNoteDropped`, `mediaStats`, `audioPopPacket`, `interactionStats`,
+plus the constants `conductorBeatMicroseconds`, `wireBudgetBytes` and the
+frozen-contract vectors.
+
+## Carrier
+
+Browsers cannot open raw UDP. WebTransport datagrams over HTTP/3 are the
+browser carrier: unreliable and unordered, with no TCP head-of-line
+blocking, but with QUIC's own congestion control and TLS underneath, so
+the path is less free than native UDP. Lyte envelopes cross it unchanged:
 
 ```text
-Lyte packet → native: UDP | browser: WebTransport datagram
+Lyte packet → native: UDP datagram | browser: WebTransport datagram
 ```
 
-WebTransport is **not** raw UDP. It is the browser-safe QUIC/HTTP3 path
-(datagrams ≈ unreliable unordered delivery; TLS and congestion control
-built in). QUIC congestion control is less free than raw UDP — do not
-pretend otherwise. Native Lyte keeps custom UDP.
-
-Page JavaScript can call back into WASM via
-`globalThis.lyteBrowser.runFrozenContracts()`,
-`verifyCarrierEcho(...)`, `controlOpen` / `controlBegin` /
-`controlIngestBytes` (media hot path) / `controlIngest` (hex, control),
-`controlTick` / `controlTeardown`, `controlSendInput` /
-`controlClipboardSet`, `audioPopPacket` / `interactionStats`,
-`mediaAnnexBBytes` / `mediaPopDue`, `classifyAnnexBBytes`, and related
-helpers. Headless gate: `Browser/Scripts/smoke-chrome.sh` (needs GPU —
-does not pass `--disable-gpu`).
-
-This does **not** yet prove a Direct Eye session against pup's standing
-host, persistent interactive drive after the smoke teardown, Safari, or
-OS-level host clipboard (GNOME-blocked).
-
-The client policy boundaries are moving in the same direction:
-`LyteClientCore` and `LyteClientSession` now compile on Linux with warnings as
-errors. A browser shell must consume those IO-free boundaries rather than
-reimplementing their policy in JavaScript. B-3 wires `LyteClientSession`
-into the WASM control initiator for capabilities / lifecycle. B-4 keeps
-HEVC decode/present in page JS (platform ports) and Annex-B classification
-in `LyteCore`. B-6 maps DOM input and clipboard consent onto the same
-typed CTRL words the Mac client uses.
-
-## Run B-1 … B-6 locally (Chrome)
-
-Pins match the Wire wasm leg: swiftly toolchain **6.3.3** + SDK
-`swift-6.3.3-RELEASE_wasm` (install commands in
-`Wire/Scripts/wasm-test.sh` / `Browser/Scripts/build.sh`).
-
-```sh
-# From the repository root
-Browser/Scripts/build.sh          # stages Browser/.serve/ (+ corpus 000–009)
-Browser/Scripts/serve.sh          # http://127.0.0.1:8765/ + control-peer --emit-corpus + wt-sidecar
-# Open that URL in Google Chrome — expect PASS for B-1 + control-session/*
-# + conductor-video/* + session-input/echo + clipboard/text-roundtrip
-# + audio/{depacketize,webcodecs} + audio-worklet/ring + interaction-shell/b6.
-
-# Headless gate (system Chrome + node + openssl + Xcode swift; needs GPU)
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-  Browser/Scripts/smoke-chrome.sh
-```
-
-`serve.sh` / `smoke-chrome.sh` start:
-
-1. `lyte-control-peer --emit-corpus` on a fresh loopback UDP **41xxx**
-   port (never 41151) — corpus video + Opus tone; input echo; in-memory
-   clipboard ack; declares `clipboardText`
-2. `lyte-wt-sidecar --udp-peer 127.0.0.1:<that-port>`
-3. static file server for `.serve/`
-
-`build.sh` uses PackageToJS `--use-cdn` so the WASI browser shim loads from
-jsDelivr; no local `npm install` is required for the served page. It also
-stages `Wire/Vectors/video-corpus-v1/frame-000…009.annexb` into `.serve/`
-and `.serve/corpus/` (not duplicated in `Browser/` git). The B-2 sidecar
-installs `rwebtransport` under `Browser/Harness/` on first run
-(`node_modules/` is gitignored). The release wasm is large (~76 MB today;
-swift-crypto/FoundationEssentials drag — recorded in the scoping doc, not
-fought this slice). `wasm-opt` is optional and not required for the gate.
-
-**Echo vs peer sidecar:** B-2 carrier echoes need the sidecar's built-in UDP
-echo. B-3…B-6 need `--udp-peer`. The combined page SKIPs `wt-carrier/*` when
-the sidecar is in peer mode (B-2 already landed) and runs control + Conductor
-video + interaction organs.
-
-**Safari:** deferred. Recent Safari may run the WASM proof page, but Safari
-is not a B-1…B-6 gate. Fleet `serverCertificateHashes` constraints remain a
-later concern. Do not block Chrome progress on Safari.
-
-### Optional pup qualification (no DRM)
-
-`lyte-control-peer` builds on Linux too. Against pup, bind a fresh 41xxx
-port and point the Mac sidecar at it — do **not** displace standing
-`lyte-host` on 41151 and do **not** start a second Direct Eye:
-
-```sh
-# on pup (after syncing Host/ Wire/ Common/)
-cd ~/src/lyte-host
-LD_LIBRARY_PATH=$HOME/.local/lib/swift-compat \
-  swift build -c release --product lyte-control-peer
-./.build/release/lyte-control-peer \
-  --listen 41234 --bind 0.0.0.0 --meta-out /tmp/lyte-b3-peer.json --seconds 300
-# note PIN + hostStaticPublicKeyHex from the JSON / console
-
-# on Mac — stage page, then sidecar forward to pup
-Browser/Scripts/build.sh
-# copy peer JSON fields into Browser/.serve/control-peer.json (or edit serve)
-node Browser/Scripts/wt-sidecar.mjs --meta-out Browser/.serve/wt-sidecar.json \
-  --udp-peer 10.0.0.232:41234
-# serve .serve/ and open in Chrome with that meta + peer JSON
-```
+Noise and pairing run end to end between the WASM client and the host; the
+relay sees only ciphertext. Chrome measured a usable datagram ceiling of
+1214 B (it reported `maxDatagramSize` 1024), above Lyte's 1152 B budget.
+Consult the measured ceiling per session; do not trust the reported one
+alone.
 
 ## Intended shape
 
@@ -182,112 +117,56 @@ WebTransport datagrams
 dedicated worker: browser IO + Lyte WASM
 Noise · FEC · reassembly · session policy · Conductor
         │
-        ├── encoded video ──► WebCodecs VideoDecoder
-        │                         │
-        │                  GPU-backed VideoFrame
-        │                         │
-        │                         ▼
-        │                  WebGPU ──► <canvas>
-        │
+        ├── encoded video ──► WebCodecs VideoDecoder ──► GPU VideoFrame ──► WebGPU ──► <canvas>
         ├── encoded audio ──► decoder ──► AudioWorklet ring
-        │
         └── control/input ◄── DOM events and Pointer Lock
 ```
 
-The `<canvas>` is a GPU presentation surface, not a place to decode video or
-copy every frame through JavaScript. The preferred video path is WebCodecs to
-a GPU-backed `VideoFrame`, imported by WebGPU and rendered into the canvas.
-That keeps scaling, color conversion, cursor composition, and overlays on the
-GPU. Canvas 2D is acceptable for a diagnostic fallback, not the performance
-architecture.
-
-Protocol work, network pumping, and preferably rendering live off the browser's
-main thread in a dedicated worker, using `OffscreenCanvas` where the selected
-browser permits it. The main thread owns the page, permission gestures, and
-input capture. Decoded frames are closed promptly; neither WebCodecs nor the
-browser event loop is allowed to become a hidden latency buffer.
-
-The Conductor remains the sole playout authority. It assigns presentation
-times, absorbs correctable disturbances, and drops work that has missed the
-score. Browser queues execute that policy; they do not replace it.
-
-Audio follows the same rule. Decoded samples feed a small ring consumed by an
-`AudioWorklet`, keeping audio callbacks off the main thread and giving the
-Conductor an explicit clock boundary. Input maps DOM, wheel, keyboard, and
-Pointer Lock events onto the existing typed Lyte messages.
-
-## Carrier and security
-
-Browsers cannot open Lyte's raw UDP socket. **WebTransport datagrams over
-HTTP/3 are the frozen browser-edge carrier** (B-0 decision record): they
-preserve unreliable, unordered datagram behavior without TCP head-of-line
-blocking. A carrier adapter moves opaque Lyte envelopes between WebTransport
-and the host's UDP session boundary.
-
-**B-2/B-3 adapter decision: same-box sidecar** (`lyte-wt-sidecar`) for the
-Chrome proof and local harness. Echo mode proves the carrier; `--udp-peer
-host:port` forwards opaque datagrams to a real Lyte UDP peer (refuses
-standing 41151). Pairing and Noise remain end-to-end between the browser's
-WASM client and the host; the sidecar sees only ciphertext. An optional
-in-process Linux host leaf remains a later packaging choice. Native UDP on
-standing 41151 is untouched.
-
-**B-3 host peer:** `lyte-control-peer` (Host package, macOS + Linux) wraps
-`HostWire.Session` + `PairingResponderService` over plain UDP with **no**
-Direct Eye — safe beside the standing DRM seat. Pup qualification uses the
-same binary on a fresh 41xxx port.
-
-Measured datagram ceiling must be consulted (and negotiated downward per
-session if a future path falls short). Do not assume 1152 B from the Lyte
-budget alone; do not treat Chrome's reported `maxDatagramSize` as the sole
-truth without a measure.
+Today everything runs on the page's main thread; moving protocol work and
+rendering into a worker (with `OffscreenCanvas`) is part of the product
+path. The canvas is a GPU presentation surface: no CPU decode or per-frame
+copy through JavaScript on the normal path. The Conductor stays the only
+playout authority; browser queues execute its schedule and never become a
+hidden latency buffer.
 
 ## Codec posture
 
-The browser reports what `VideoDecoder.isConfigSupported()` can actually
-decode. Lyte uses a hardware-backed codec only after a truthful capability
-intersection; it does not silently substitute a high-latency software decoder.
-HEVC remains the native shipping path. Adding another browser codec is a
-separate capability and frozen-vector decision, not an excuse to weaken or
-fork that path.
+The browser reports what `VideoDecoder.isConfigSupported()` can decode.
+Lyte uses a hardware-backed codec only after a truthful capability
+intersection and never substitutes a slow software decoder. HEVC remains
+the native path; another browser codec would be a separate capability and
+frozen-vector decision.
 
 ## Boundaries
 
 The browser client must not:
 
-- invent a JavaScript copy of protocol or Conductor policy;
+- copy protocol or Conductor policy into JavaScript;
 - add a plaintext or transport-trusted mode;
 - make the host speak a second application protocol;
-- decode or transform full video frames on the CPU as the normal path;
-- accumulate an opaque browser buffer and call the resulting latency a
-  cushion; or
-- disturb native UDP behavior when browser support is absent or disabled.
+- decode or transform full frames on the CPU as the normal path;
+- accumulate an opaque browser buffer and call the latency a cushion; or
+- disturb native UDP when browser support is absent or disabled.
 
 ## Commissioning ladder
 
-Native harsh-path commissioning has earned this work. Advance through
-independently testable slices (full matrix in the B-0 decision record):
+"Landed" means the gate tests the claim. B-4 to B-6 are proven against the
+control peer's corpus replay, not against a real desktop.
 
-| Stage | Proof |
-|---|---|
-| **B-0** | Naming, WebTransport carrier, capability matrix, ladder — **landed** |
-| **B-1** | Load Lyte WASM in Chrome; exercise frozen contracts through the JS boundary — **landed** |
-| **B-2** | Opaque datagram round-trip through the WebTransport adapter; measure datagram ceiling — **landed** |
-| **B-3** | Pair, Noise, capabilities, control-only session — **landed** (HostWire peer; pup optional) |
-| **B-4** | One timestamped frame through WebCodecs and WebGPU — **landed** (canned corpus IRAP) |
-| **B-5** | Conductor-driven sealed corpus video over WT — **landed** (not Direct Eye) |
-| **B-6** | AudioWorklet, input, clipboard, product UI — Chrome ladder “done” — **landed** |
+| Stage | Claim | Evidence |
+|---|---|---|
+| B-0 | Naming, carrier, capability matrix, ladder | decision record |
+| B-1 | Lyte WASM runs in Chrome; frozen envelope and Noise vectors match across the JS boundary | smoke: `envelope-v1/*`, `noise-v1/*` |
+| B-2 | Opaque datagrams round-trip through the WebTransport relay; ceiling measured | carrier echo proofs (skipped in peer mode) |
+| B-3 | Noise, PIN pairing, capabilities, teardown against a real `HostWire.Session` | smoke: `control-session/*`; native tests |
+| B-4 | One timestamped HEVC IRAP through WebCodecs and WebGPU | smoke: `frame-present/*` |
+| B-5 | Sealed corpus video, FEC-assembled and presented on the Conductor's clock | smoke: `conductor-video/*` (paced, none early) |
+| B-6 | Input, clipboard text, Opus to AudioWorklet | smoke: `session-input/echo`, `clipboard/*`, `audio/*`, `audio-worklet/ring`; DOM input is not driven by the headless smoke |
 
-Every slice keeps the native Mac/Linux gates and the WASM vector suite green.
-B-6 closes the commissioning ladder in Chrome against `lyte-control-peer`.
-Daily-driver browser RD (live Direct Eye, persistent session, Safari, OS
-clipboard) remains deferred — see `TODO.md`.
+Next, toward a usable client ([TODO.md](../TODO.md)): live Direct Eye
+against a real host, a persistent interactive session, Safari, and product
+composition (`LyteBrowserApp`).
 
-## Historical detail
-
-The dated [browser bridge consult](20260720-184200-browser-client-caddy-bridge.md)
-and [browser viewer scoping](20260728-054139-lyte-browser-viewer-scoping.md)
-preserve the original research, measurements, rejected alternatives, and
-earlier slice estimates. They are frozen records. This page owns the current
-direction when those records describe superseded repository structure or
-pre-commissioning status.
+The original research, measurements and rejected alternatives are in the
+[bridge consult](history/20260720-184200-browser-client-caddy-bridge.md)
+and the [viewer scoping](history/20260728-054139-lyte-browser-viewer-scoping.md).

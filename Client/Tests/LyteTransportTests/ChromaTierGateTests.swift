@@ -189,10 +189,9 @@ final class ChromaTierGateTests: XCTestCase {
 
     // MARK: - 4. The SPS chroma read, on real encoder output
 
-    /// The frozen Rext 4:4:4 SPS — pup's production leaf
-    /// (lyte-encode-check, EncoderRecipe.best444: p4/ull/qres +
-    /// rext/rgb_mode yuv444, cq4) encoding 1920×1080, captured
-    /// 2026-07-29. Carries emulation-prevention bytes (00 00 03 runs
+    /// A frozen Rext 4:4:4 SPS from real encoder output (the retired
+    /// NVENC leaf: p4/ull/qres + rext/rgb_mode yuv444, cq4) encoding
+    /// 1920×1080. Carries emulation-prevention bytes (00 00 03 runs
     /// in the compat flags and VUI), so this vector exercises the RBSP
     /// strip too.
     private static let rext444SpsHex = "4201010408000003009e08000003"

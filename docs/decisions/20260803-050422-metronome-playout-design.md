@@ -1,5 +1,7 @@
 # THE CONDUCTOR — one score, one clock, many instruments, everything on the beat
 
+> **Status:** Binding decision — the Conductor's playout laws, including the stretch-law addendum. Its drift discussion predates the host's own 16,667 µs capture grid; code: `LyteCore/VideoBeatConductor.swift`.
+
 **Status: ADOPTED 2026-08-03 (owner design session; the Conductor term
 and the law names are the owner's — use them verbatim). The model is
 medium-agnostic: audio already lives it (jitter buffer = cushion,

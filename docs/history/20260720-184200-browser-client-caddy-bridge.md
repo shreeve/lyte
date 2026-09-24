@@ -1,5 +1,7 @@
 # Browser Client via Caddy WebTransport Bridge (design consult, 2026-07-20)
 
+> **Status:** Historical — current truth: [BROWSER.md](../BROWSER.md).
+
 *(Amended same evening — see the §6 addendum: the Lyte-UDP decision
 supersedes this doc's host-protocol premise; the bridge concept survives,
 simplified to a dumb datagram relay.)*
@@ -118,7 +120,7 @@ binary, not inside it.
 ## 6. Addendum (2026-07-20, ~21:51): the Lyte-UDP decision simplifies the bridge
 
 The same-evening decision
-([20260720-215100-lyte-udp-decision.md](20260720-215100-lyte-udp-decision.md))
+([20260720-215100-lyte-udp-decision.md](../decisions/20260720-215100-lyte-udp-decision.md))
 changes the host-side protocol and, with it, the bridge's job — for the
 simpler:
 

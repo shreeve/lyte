@@ -11,7 +11,7 @@ import UniformTypeIdentifiers
 struct NegotiatedFeatures: Equatable {
     /// Key 9: the host-speaker mute control.
     var hostAudioRouting = false
-    /// Key 14 (mode 0x03): the wire audio-off control.
+    /// Key 14 (mode 0x04): the wire audio-off control.
     var audioStreamOff = false
     /// Key 10: clipboard text sharing.
     var clipboardText = false

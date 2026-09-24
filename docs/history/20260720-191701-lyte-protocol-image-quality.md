@@ -1,5 +1,7 @@
 # Lyte Protocol — Image Quality Pillar (2026-07-20)
 
+> **Status:** Historical — current truth: [PROTOCOL.md](../PROTOCOL.md). The shipping color path is BT.709 limited range, not full-range.
+
 ## TL;DR
 
 **HEVC Rext 4:4:4 is the codec decision; everything else follows from it.**

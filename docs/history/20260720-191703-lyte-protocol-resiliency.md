@@ -1,5 +1,7 @@
 # Lyte Protocol — Network Resiliency Design (2026-07-20)
 
+> **Status:** Historical — current truth: [PROTOCOL.md](../PROTOCOL.md).
+
 *One of four parallel pillar designs for the greenfield Lyte protocol (v2, LYTE-PLAN §5
 Stage 3). This pillar owns loss, congestion, recovery, and adverse networks. Siblings own
 image quality/codecs, timing/pacing/latency, and transport/session architecture;
@@ -349,4 +351,4 @@ table.
 - [draft-cardwell-iccrg-bbr-congestion-control](https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control) — delivery-rate/bottleneck model
 - [Sunshine stream.cpp](https://github.com/LizardByte/Sunshine/blob/3a12f96a/src/stream.cpp), [PR #2787](https://github.com/LizardByte/Sunshine/pull/2787), [PR #2803](https://github.com/LizardByte/Sunshine/pull/2803) — FEC block cap, silent disable, pacing retrofit
 - [Parsec BUD](https://parsec.app/blog/a-networking-protocol-built-for-the-lowest-latency-interactive-game-streaming-1fd5a03a6007), [US10951890](https://patents.justia.com/patent/10951890) — encoder-bitrate-as-congestion-lever, selective retransmit
-- Local: docs/sunshine-v2026.715.205118.md (§6, §14), docs/20260720-145840-audio-continuity.md (§1, §4), docs/moonlight-common-c.md (§12), HANDOFF.md (idle-video acceptance)
+- Local: docs/sunshine-v2026.715.205118.md (§6, §14), docs/decisions/20260720-145840-audio-continuity.md (§1, §4), docs/moonlight-common-c.md (§12), HANDOFF.md (idle-video acceptance)

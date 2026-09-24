@@ -1,5 +1,7 @@
 # Browser Viewer Scoping — the WASM promise is cashed: LyteWire builds and passes 400/400 under wasm32 today (2026-07-28)
 
+> **Status:** Historical — current truth: [BROWSER.md](../BROWSER.md).
+
 *Commissioned by the H3 §0 owner decisions (HANDOFF, 2026-07-27 ~21:22):
 answer 3 pulled the WASM browser viewer INTO H3, against the H3 plan's own
 recommendation; answer 4 holds LAN-first — no rendezvous, no relay fleet,

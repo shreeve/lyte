@@ -1,5 +1,7 @@
 # Wayland clipboard leaf — GNOME blocker (2026-08-07)
 
+> **Status:** Binding decision — the host clipboard stays on Mutter RemoteDesktop until an unlock named here lands ([TODO.md](../../TODO.md)).
+
 > **Verdict: blocked on the reference host.** Capture and input are
 > compositor-independent; host clipboard is not. Shipping Lyte on Ubuntu
 > GNOME still requires the Mutter RemoteDesktop session-bus clipboard API
@@ -10,7 +12,7 @@
 ## 1. What was asked
 
 After Direct Eye, the last Mutter-coupled organ is clipboard
-(`TODO.md`; plan note in `docs/20260801-105800-direct-eye-plan.md` §5).
+(`TODO.md`; plan note in `docs/history/20260801-105800-direct-eye-plan.md` §5).
 The filed replacement was an unprivileged user-session Wayland helper
 (`wlr-data-control` or equivalent) speaking to `lyte-host` over a local
 socket — or, failing that, portal Clipboard without a Mutter RD session.

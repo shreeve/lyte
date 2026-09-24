@@ -1,5 +1,5 @@
 // The NSPasteboard glue (design doc
-// docs/20260722-231500-lyte-clipboard.md §8) — deliberately thin:
+// docs/decisions/20260722-231500-lyte-clipboard.md §8) — deliberately thin:
 // NSPasteboard has no change notification, so a ~200 ms `changeCount`
 // poll watches for local copies while active, and `apply` writes host
 // content and swallows its own bump. ALL policy (the negotiated/

@@ -1,5 +1,5 @@
 // Bulk-channel vector authoring (W10 / F-2 — design record
-// docs/20260728-053300-lyte-bulk-channel.md): the transfer sextet
+// docs/decisions/20260728-053300-lyte-bulk-channel.md): the transfer sextet
 // 0x1C–0x21, the key-11 capability spine, and the worked
 // multi-session transfer traces. Run once, commit, freeze. The
 // circularity is broken by the hand-computed anchor bytes in

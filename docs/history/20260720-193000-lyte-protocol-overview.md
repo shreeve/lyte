@@ -1,5 +1,7 @@
 # Lyte Protocol v1 — Capstone Overview (2026-07-20)
 
+> **Status:** Historical — current truth: [PROTOCOL.md](../PROTOCOL.md).
+
 *The binding reconciliation layer over the four pillar designs
 (image quality 191701, timing 191702, resiliency 191703, transport 191704).
 Where this doc and a pillar disagree, this doc wins; the pillar docs are not
@@ -153,7 +155,7 @@ H-ladder unchanged.
 ## 6. Addendum (2026-07-20, ~21:51): the Lyte-UDP decision
 
 The maintainer's same-evening decision
-([20260720-215100-lyte-udp-decision.md](20260720-215100-lyte-udp-decision.md))
+([20260720-215100-lyte-udp-decision.md](../decisions/20260720-215100-lyte-udp-decision.md))
 drops the GameStream compat dialect entirely and replaces QUIC with
 homegrown Lyte-UDP over plain UDP. The body of this doc is deliberately not
 rewritten; read it with these rulings:

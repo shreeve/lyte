@@ -1,8 +1,10 @@
 # V-3 — the §7 corpus harness, and the banked 4:2:0 baseline (2026-07-29)
 
+> **Status:** Historical — current truth: [TESTING.md](../TESTING.md).
+
 *H4 wave 1, slice V-3 (`docs/20260728-194226-lyte-h4-plan.md` §2): the
 image-quality pillar's §7 acceptance machinery
-(`docs/20260720-191701-lyte-protocol-image-quality.md`), built as a
+(`docs/history/20260720-191701-lyte-protocol-image-quality.md`), built as a
 standing instrument — the acceptance gate for 4:4:4 and the regression
 guard for every later recipe change. Composes V-1's encode half
 (`lyte-encode-check`, the production C leaf on pup) and V-2's client

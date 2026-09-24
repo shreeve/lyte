@@ -1,10 +1,12 @@
 # Browser client — peer platform slice (2026-08-07)
 
+> **Status:** Binding decision — browser naming, WebTransport carrier and ownership. Ladder status and §7's "next" are superseded: [BROWSER.md](../BROWSER.md) owns current browser truth.
+
 > **Verdict: open the browser client as a peer platform**, not a side demo.
 > Harsh-path control plane and Conductor Wi‑Fi bars are closed on `main`
 > (#209–#222 family). Remaining native posture items in `TODO.md` are
 > demand-gated or GNOME-blocked; none is a performance gate that must
-> delay this slice. Living direction stays in [`BROWSER.md`](BROWSER.md);
+> delay this slice. Living direction stays in [`BROWSER.md`](../BROWSER.md);
 > this record freezes naming, carrier, ownership, and the commissioning
 > ladder for the first real `LyteClientBrowser` work.
 
@@ -102,7 +104,7 @@ No open performance campaign blocks this start. Banked, demand-gated items
 (Opus DTX warm rung, DSP fades, instant-replay ring) stay in `TODO.md`.
 Wayland host clipboard remains GNOME-blocked and orthogonal. Browser work
 must not reopen encoder-reset rate paths, uncapped FEC, or Conductor-as-
-browser-buffer anti-patterns named in [`BROWSER.md`](BROWSER.md).
+browser-buffer anti-patterns named in [`BROWSER.md`](../BROWSER.md).
 
 ## 7. Immediate next code
 
@@ -110,7 +112,7 @@ browser-buffer anti-patterns named in [`BROWSER.md`](BROWSER.md).
 `Scripts/{build,serve,smoke-chrome,wt-sidecar}.sh|.mjs`) with Host
 `lyte-control-peer` for the DRM-free control gate and a canned Wire-corpus
 IRAP for the WebCodecs + WebGPU frame bar. Living runbook:
-[`BROWSER.md`](BROWSER.md).
+[`BROWSER.md`](../BROWSER.md).
 
 **B-5 next:** live Conductor-driven video. No claim of a streaming browser
 client before that bar. Do not displace standing UDP 41151.

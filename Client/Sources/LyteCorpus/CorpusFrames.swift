@@ -1,6 +1,6 @@
 // CorpusFrames (H4 V-3): the §7 verification corpus as deterministic
 // pixel math — the image-quality pillar's test content, versioned
-// in-repo (docs/20260720-191701-lyte-protocol-image-quality.md §7):
+// in-repo (docs/history/20260720-191701-lyte-protocol-image-quality.md §7):
 //
 //   (a) dense monospaced terminal text, white-on-black AND
 //       syntax-highlighted (saturated single-pixel strokes — the

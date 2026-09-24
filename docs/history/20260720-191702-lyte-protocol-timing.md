@@ -1,5 +1,7 @@
 # Lyte Protocol: Timing, Pacing, and Latency (design note, 2026-07-20)
 
+> **Status:** Historical — current truth: [PROTOCOL.md](../PROTOCOL.md). No PipeWire master clock: the host samples on its own 60 Hz grid.
+
 ## TL;DR
 
 One master clock (the host PipeWire graph clock, already pinned for audio RTP),
@@ -111,7 +113,7 @@ Two rules keep the encoder honest under load:
 
 ## 4. The pacer (hard constraint restated)
 
-**Hard constraint, inherited from docs/20260720-145840-audio-continuity.md §4
+**Hard constraint, inherited from docs/decisions/20260720-145840-audio-continuity.md §4
 and not negotiable: while a worst-case IDR transmits, audio inter-send
 intervals at the host NIC stay within 5 ms ± 2 ms at p99, and no audio packet
 waits behind more than one in-flight video send batch.** Sunshine's

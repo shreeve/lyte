@@ -1,5 +1,7 @@
 # Lyte Protocol: Transport & Session Architecture (2026-07-20)
 
+> **Status:** Historical — current truth: [PROTOCOL.md](../PROTOCOL.md). QUIC was rejected: Lyte-UDP runs over plain UDP.
+
 *One of four pillar documents for the native Lyte protocol. This one owns the
 skeleton: wire transport, channels, framing envelope, negotiation, crypto,
 session lifecycle. Siblings own image quality/codecs, timing/pacing, and
@@ -8,7 +10,7 @@ and stays out of the semantics. Builds on tonight's decisions (damage-driven
 video; IDLE = sparse frames + liveness on a reliable channel; ACTIVE =
 unreliable datagrams; idle→active = fresh IDR; explicit mode transitions;
 negotiated superpowers; H6 = one `lyte` binary) and on
-docs/20260720-184200-browser-client-caddy-bridge.md (browser client = same
+docs/history/20260720-184200-browser-client-caddy-bridge.md (browser client = same
 Swift protocol layer in WASM behind a protocol-dumb Caddy bridge).*
 
 ## TL;DR
@@ -90,7 +92,7 @@ that was true):
 **swift-nio-quic**, gated on a validation spike with pass/fail criteria:
 (a) RFC 9221 datagrams exposed; (b) app-controlled send timing — library
 pacing off or bypassable, because the host paces video deliberately per
-docs/20260720-145840-audio-continuity.md §4 and must not have a second pacer
+docs/decisions/20260720-145840-audio-continuity.md §4 and must not have a second pacer
 fighting it; (c) socket access for DSCP; (d) sustained 100+ Mbps datagram
 flow on Linux without allocation storms; (e) migration works. Any failure →
 **msquic C FFI**, no redesign — the transport is wrapped behind one Swift

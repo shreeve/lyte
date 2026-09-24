@@ -1014,7 +1014,7 @@ static func serveSession(
                 // owns the quantum forcing, so two never overlap.
                 audioWire?.stop()
                 audioWire = nil
-                // Mute-at-source (postures design, mode 0x03): stop
+                // Mute-at-source (postures design, mode 0x04): stop
                 // IS the whole apply — no capture, no encode, zero
                 // packets; the host's own speakers keep playing. The
                 // return-to-streaming request rebuilds below like any

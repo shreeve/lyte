@@ -1,5 +1,5 @@
 // The bulk-transfer vocabulary (W10 / F-2 — design record
-// docs/20260728-053300-lyte-bulk-channel.md): the wire shapes of a
+// docs/decisions/20260728-053300-lyte-bulk-channel.md): the wire shapes of a
 // chunked, resumable, backpressured blob transfer. Six messages, all
 // riding CHANNEL 8's ARQ ordered stream (group 0) — never CTRL, so a
 // file can never head-of-line-block a keystroke; never FEC'd, because

@@ -1,6 +1,6 @@
 // BulkSendShell (F-4): the client's driver for ONE bulk transfer —
 // the shell around LyteWire's sans-IO `BulkSendEngine` (W10, design
-// record docs/20260728-053300-lyte-bulk-channel.md §7/§9). The engine
+// record docs/decisions/20260728-053300-lyte-bulk-channel.md §7/§9). The engine
 // has no timers and no IO; this shell answers its actions:
 //
 //   `.emit`      → the injected send closure (the session core's

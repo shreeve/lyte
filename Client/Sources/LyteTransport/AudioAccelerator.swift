@@ -1,6 +1,6 @@
 // AudioAccelerator (CL-17): accelerate-only WSOLA time-scale
 // modification — the M7 receiver spec's §5.2 as written
-// (docs/20260720-145840-audio-continuity.md): when the playout pipe
+// (docs/decisions/20260720-145840-audio-continuity.md): when the playout pipe
 // holds more audio than the adaptive target, play slightly fast by
 // excising whole waveform periods under a crossfade, pitch preserved,
 // until the backlog drains. This replaces the jitter buffer's counted

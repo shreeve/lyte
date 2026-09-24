@@ -1,5 +1,5 @@
 // VideoQuietPacer — the postures design's video quiet/wake axis
-// (docs/20260802-013946-postures-design.md), sans-IO: the caller
+// (docs/decisions/20260802-013946-postures-design.md), sans-IO: the caller
 // supplies "seconds since the last damage or client input" and gets
 // back the keepalive interval now in force plus, exactly once per
 // step, the announcement to send. The ladder: 1 s while active

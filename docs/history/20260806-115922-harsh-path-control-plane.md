@@ -1,5 +1,7 @@
 # Harsh-path control plane — detection, mitigation, optimality
 
+> **Status:** Historical — current truth: [ARCHITECTURE.md](../ARCHITECTURE.md).
+
 *2026-08-06 local. Analysis of Lyte’s end-to-end congestion / loss / jitter /
 stall control plane, with the harsh-network patch as the working tree under
 review. Control-plane policy only — not a wire/protocol change; frozen
@@ -10,7 +12,7 @@ vectors untouched.*
 | Path | Evidence |
 |---|---|
 | Mac Wi‑Fi → pup wired `.232` | Abundant ~100 Mbps; latency bursts p95 ~75 ms / p99 ~92 ms even to wired pup (owner path notes) |
-| Pup Wi‑Fi `.249` | Backup; scan-stall study (`docs/20260801-075746-lyte-pup-scan-stall-study.md`) is why production prefers wired |
+| Pup Wi‑Fi `.249` | Backup; scan-stall study (`docs/history/20260801-075746-lyte-pup-scan-stall-study.md`) is why production prefers wired |
 | Clean LAN motion (pre‑#204) | 1,831/1,831 frames, 0 IDR, 0 NACK, transport p99 ~5.8 ms (`HANDOFF.md`) |
 | Moderate netem (prior investigator) | Before IDR fix: 124 IDRs; after client-owned recovery: 2 IDRs, 0 corrupt/handoff drops |
 | 1% netem residual | Estimator could settle ~3 Mbps while air still had headroom — climb pinned by post-FEC clean bar |
@@ -43,7 +45,7 @@ Product posture today: default 4:2:0 on many connects; Best 4:4:4 when negotiate
 
 **Earliest reliable congestion signal used today:** one-way queuing-delay inflation from matched dispersion (GCC family), needing two consecutive inflated reports (>15 ms over second-min baseline), often plus 500 ms persistence before an uncorroborated fall.
 
-**Earliest Lyte could use without wire-v2:** same feedback already carries audio’s always-on delay sensor; it already feeds per-channel inflation. ECN / receive-window hints remain parked wire wants (`docs/20260728-175200-lyte-wire-v2-study.md`).
+**Earliest Lyte could use without wire-v2:** same feedback already carries audio’s always-on delay sensor; it already feeds per-channel inflation. ECN / receive-window hints remain parked wire wants (`docs/history/20260728-175200-lyte-wire-v2-study.md`).
 
 ## Mitigation inventory and optimality verdicts
 
@@ -168,9 +170,9 @@ Live netem was **not** re-run here: standing `lyte-host.service` must not be dis
 
 ## References
 
-- Resiliency pillar §2 / §4: `docs/20260720-191703-lyte-protocol-resiliency.md`
-- Conductor: `docs/20260803-050422-metronome-playout-design.md`
+- Resiliency pillar §2 / §4: `docs/history/20260720-191703-lyte-protocol-resiliency.md`
+- Conductor: `docs/decisions/20260803-050422-metronome-playout-design.md`
 - DESIGN D2–D4: `docs/DESIGN.md`
-- Quality probe (floor crash / directive IDR): `docs/20260728-164746-lyte-video-quality-probe.md`
-- Scan-stall: `docs/20260801-075746-lyte-pup-scan-stall-study.md`
+- Quality probe (floor crash / directive IDR): `docs/history/20260728-164746-lyte-video-quality-probe.md`
+- Scan-stall: `docs/history/20260801-075746-lyte-pup-scan-stall-study.md`
 - Live resume: `HANDOFF.md`
