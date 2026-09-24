@@ -93,9 +93,9 @@ let package = Package(
             dependencies: [
                 "LyteClientCore", "LyteUI", "LyteHelperProtocol",
                 "LyteTransport",
-                // The env-gated diagnostic benchmark's quality scorer
-                // (VideoQualityReadback) — an explicit, honest dependency;
-                // the streaming stack itself carries no corpus code.
+                // The env-gated diagnostic benchmark's quality scorer and
+                // synthetic motion reference — an explicit dependency; the
+                // streaming stack itself carries no corpus code.
                 "LyteCorpus",
                 .product(name: "LyteCore", package: "Common"),
                 .product(name: "LyteIO", package: "Common"),

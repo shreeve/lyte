@@ -1,6 +1,6 @@
 import LyteCore
 import XCTest
-@testable import LyteTransport
+@testable import LyteCorpus
 
 final class SyntheticMotionReferenceTests: XCTestCase {
     func testMarkerSelectsExactReferenceFrame() {
