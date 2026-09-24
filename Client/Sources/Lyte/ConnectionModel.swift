@@ -1268,12 +1268,24 @@ final class ConnectionModel {
 
     /// 1_734_567 → "1.73M"; 41_200 → "41.2k"; small counts stay exact.
     /// Only ever used for denominators — deficits always print exact.
-    private static func compactCount(_ n: UInt64) -> String {
+    nonisolated private static func compactCount(_ n: UInt64) -> String {
         switch n {
         case ..<10_000: return "\(n)"
         case ..<1_000_000: return String(format: "%.1fk", Double(n) / 1e3)
         default: return String(format: "%.2fM", Double(n) / 1e6)
         }
+    }
+
+    /// The network row's loss clause. `lost` is the demux's per-channel
+    /// `seqMissing` sum, which is already net of late (reordered) fills.
+    nonisolated static func lossSummary(lost: UInt64, received: UInt64) -> String {
+        let expected = received + lost
+        guard lost > 0 else {
+            return "lost 0 of \(compactCount(expected)) host packets"
+        }
+        let percent = String(
+            format: "%.3f", 100 * Double(lost) / Double(max(1, expected)))
+        return "lost \(lost) of \(compactCount(expected)) host packets (\(percent)%)"
     }
 
     /// A compact snapshot of the session's existing books — the same
@@ -1302,16 +1314,9 @@ final class ConnectionModel {
         // deficit is the signal, and a percent must never round a real
         // loss into looking clean), then the clock model's honest RTT.
         let totals = endpoint.demux.snapshotTotals()
-        let perChannel = endpoint.demux.snapshotChannels()
-        let missing = perChannel.reduce(UInt64(0)) { $0 + $1.stats.seqMissing }
-        let lateFilled = perChannel.reduce(UInt64(0)) { $0 + $1.stats.seqLateFilled }
-        let lost = missing > lateFilled ? missing - lateFilled : 0
-        let expected = totals.datagrams + lost
-        var wire = lost == 0
-            ? "lost 0 of \(Self.compactCount(expected)) host packets"
-            : String(format: "lost %d of %@ host packets (%.3f%%)",
-                     lost, Self.compactCount(expected),
-                     100 * Double(lost) / Double(max(1, expected)))
+        let lost = endpoint.demux.snapshotChannels()
+            .reduce(UInt64(0)) { $0 + $1.stats.seqMissing }
+        var wire = Self.lossSummary(lost: lost, received: totals.datagrams)
         // roundtrip min + jitter, spelled out — "±" falsely implies a
         // symmetric spread; the stat is the floor plus upward spread
         // (p90 − min), which is what "jitter" means to every reader.
