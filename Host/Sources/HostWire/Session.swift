@@ -1395,23 +1395,13 @@ public final class Session {
     private func encodeSealedAudio(
         envelope: Envelope, plaintext: [UInt8]
     ) throws -> [UInt8] {
-        var header = try envelope.encode(payload: [])
-        header.reserveCapacity(
-            header.count + plaintext.count + WireBudget.aeadTagByteCount
-        )
-        let sealed = try sealPayload(
-            plaintext[...], aad: header[...], envelope: envelope
-        )
-        guard sealed.count <= WireBudget.maxWirePayloadByteCount else {
-            throw WireError.payloadOverBudget(sealed.count)
+        let datagram = try SealedDatagram.assemble(
+            envelope: envelope, plaintext: plaintext[...]
+        ) { plaintext, aad, envelope in
+            try sealPayload(plaintext, aad: aad, envelope: envelope)
         }
-        let total = header.count + sealed.count
-        guard total <= WireBudget.maxDatagramByteCount else {
-            throw WireError.datagramOverBudget(total)
-        }
-        header.append(contentsOf: sealed)
         counters.audioSealedDatagramsAssembledInPlace += 1
-        return header
+        return datagram
     }
 
     /// Audio datagrams still waiting in the shared pacer — the audio
@@ -3179,14 +3169,14 @@ public final class Session {
             fec: 0,
             extensions: [connectionId.wireExtension]
         )
-        let payload: [UInt8]
-        if sealed {
-            let header = try envelope.encode(payload: [])
-            payload = try sealPayload(body[...], aad: header[...], envelope: envelope)
-        } else {
-            payload = body
+        guard sealed else {
+            return (envelope, try envelope.encode(payload: body))
         }
-        let bytes = try envelope.encode(payload: payload)
+        let bytes = try SealedDatagram.assemble(
+            envelope: envelope, plaintext: body[...]
+        ) { plaintext, aad, envelope in
+            try sealPayload(plaintext, aad: aad, envelope: envelope)
+        }
         return (envelope, bytes)
     }
 
