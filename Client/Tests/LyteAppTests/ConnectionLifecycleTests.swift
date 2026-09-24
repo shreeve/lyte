@@ -100,6 +100,41 @@ final class ConnectionLifecycleTests: XCTestCase {
                        "the probe dial must target where the host was reached")
     }
 
+    /// One undecryptable datagram from the host's tuple (stale, or forged)
+    /// used to turn an unanswered dial into a hard failure; the restarting
+    /// host must still be hunted.
+    func testRejectedMessageTwoStillCountsAsUnanswered() async throws {
+        let harness = LifecycleHarness()
+        harness.startPlan = [
+            .fail(TransportCryptoError.handshakeFailed(
+                "message 2 rejected: authenticationFailed [kernel accepted "
+                    + "5 sends; received 1 datagrams: 0 retry challenges "
+                    + "answered, 0 non-message-2, 1 rejected message-2]")),
+            .succeed,
+        ]
+        let model = ConnectionModel(services: harness.services)
+        await model.connectLyte(harness.host)
+        defer { model.disconnect() }
+
+        guard case .streaming = model.phase else {
+            return XCTFail("a rejected message 2 ended the hunt: \(model.phase)")
+        }
+        XCTAssertEqual(harness.started.count, 2)
+    }
+
+    func testDialFailureClassification() {
+        XCTAssertEqual(
+            DialFailure(TransportCryptoError.handshakeFailed(
+                "no response from 10.0.0.1:41151 after 5 attempts [kernel "
+                    + "accepted 5 sends; received 0 datagrams: …]")),
+            .unanswered)
+        XCTAssertEqual(
+            DialFailure(TransportCryptoError.handshakeFailed(
+                "Noise handshake already in progress")),
+            .refused)
+        XCTAssertEqual(DialFailure(HarnessTimeout()), .refused)
+    }
+
     // MARK: - Capability agreement
 
     /// The core receives before `startSession` returns, so the host's

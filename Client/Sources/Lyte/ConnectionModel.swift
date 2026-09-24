@@ -335,13 +335,9 @@ final class ConnectionModel {
                 // A dial that failed after binding still holds its socket.
                 services.endSession(candidate, .silent)
                 guard isCurrent(generation) else { return }
-                guard case TransportCryptoError.handshakeFailed(let why)
-                        = error, why.hasPrefix("no response"),
-                      services.now() < deadline else {
-                    if let endpointError = error as? TransportEndpointError,
-                       let problem = LocalNetworkAccessProblem.endpointError(
-                        endpointError)
-                    {
+                let failure = DialFailure(error)
+                guard failure == .unanswered, services.now() < deadline else {
+                    if case .localNetwork(let problem) = failure {
                         phase = .failed(.localNetwork(
                             problem,
                             diagnosticDetail: String(describing: error)))
