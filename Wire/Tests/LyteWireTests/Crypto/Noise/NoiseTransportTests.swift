@@ -326,6 +326,100 @@ final class NoiseTransportTests: XCTestCase {
         )
     }
 
+    // MARK: Long one-way gaps
+
+    /// Seals `seq` values at the given extended counters (skipping ahead
+    /// in sub-half-window steps, as a sender whose datagrams are lost
+    /// does) and returns the sealed datagrams for the listed counters.
+    private func sealAcross(
+        _ client: inout NoiseTransport, through last: UInt64,
+        keeping kept: Set<UInt64>
+    ) throws -> [(env: Envelope, aad: [UInt8], wire: [UInt8])] {
+        var out: [(env: Envelope, aad: [UInt8], wire: [UInt8])] = []
+        var counter: UInt64 = 0
+        while counter <= last {
+            let env = envelope(seq: UInt16(truncatingIfNeeded: counter))
+            let headerBytes = try aad(env)
+            let wire = try client.seal(
+                plaintext: [UInt8(truncatingIfNeeded: counter)][...],
+                aad: headerBytes[...], envelope: env
+            )
+            if kept.contains(counter) { out.append((env, headerBytes, wire)) }
+            let next = kept.filter { $0 > counter }.min() ?? last + 1
+            counter = min(counter + 30_000, next)
+        }
+        return out
+    }
+
+    /// A receive gap of half the seq space or more must not kill the
+    /// channel: after a bounded run of failures the receiver resyncs
+    /// forward and every later datagram opens again.
+    func testReceiverResyncsAfterLongOneWayGaps() throws {
+        for gap: UInt64 in [40_000, 70_000, 200_000] {
+            var (client, host) = try makeTransports()
+            let resumed = (gap...(gap + 40)).map { $0 }
+            let kept = Set([0] + resumed)
+            let sealed = try sealAcross(&client, through: gap + 40, keeping: kept)
+            XCTAssertEqual(sealed.count, kept.count)
+
+            var opened: [UInt64] = []
+            for (index, datagram) in sealed.enumerated() {
+                if let plaintext = try? host.unseal(
+                    wirePayload: datagram.wire[...], aad: datagram.aad[...],
+                    envelope: datagram.env
+                ) {
+                    XCTAssertEqual(plaintext.count, 1)
+                    opened.append(index == 0 ? 0 : resumed[index - 1])
+                }
+            }
+            // Datagram 0, then at most the threshold's worth of losses
+            // before resync; everything after it opens.
+            let lost = kept.count - opened.count
+            XCTAssertLessThanOrEqual(lost, 8, "gap \(gap)")
+            XCTAssertEqual(opened.first, 0)
+            XCTAssertEqual(
+                Array(opened.dropFirst()), Array(resumed.suffix(opened.count - 1)),
+                "gap \(gap): contiguous after resync"
+            )
+        }
+    }
+
+    /// Forged datagrams in the stuck state neither resync the receiver
+    /// nor stop a genuine datagram from resyncing it afterwards.
+    func testForgeriesNeverResyncTheReceiver() throws {
+        var (client, host) = try makeTransports()
+        let gap: UInt64 = 70_000
+        let sealed = try sealAcross(
+            &client, through: gap + 1, keeping: [0, gap, gap + 1]
+        )
+        _ = try host.unseal(
+            wirePayload: sealed[0].wire[...], aad: sealed[0].aad[...],
+            envelope: sealed[0].env
+        )
+        for _ in 0..<20 {
+            var forged = sealed[1].wire
+            forged[0] ^= 0x5A
+            XCTAssertThrowsError(try host.unseal(
+                wirePayload: forged[...], aad: sealed[1].aad[...],
+                envelope: sealed[1].env
+            ))
+        }
+        XCTAssertEqual(
+            try host.unseal(
+                wirePayload: sealed[1].wire[...], aad: sealed[1].aad[...],
+                envelope: sealed[1].env
+            ),
+            [UInt8(truncatingIfNeeded: gap)]
+        )
+        XCTAssertEqual(
+            try host.unseal(
+                wirePayload: sealed[2].wire[...], aad: sealed[2].aad[...],
+                envelope: sealed[2].env
+            ),
+            [UInt8(truncatingIfNeeded: gap + 1)]
+        )
+    }
+
     // MARK: Rekey
 
     func testRekeyChangesKeyAndGraceWindowCoversInFlight() throws {
