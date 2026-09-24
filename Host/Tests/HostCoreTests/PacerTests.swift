@@ -286,6 +286,23 @@ final class PacerTests: XCTestCase {
         XCTAssertEqual(pacer.nextBatch(now: 20)?.tokens.map(\.tag), [12, 2])
     }
 
+    func testLatencyClassesNeverWaitForAPartlyRefilledBucket() {
+        // 20 Mbps → 2,500 B quantum. Two video shards leave 196 B: less
+        // than an audio datagram, but not a deficit.
+        let pacer = Pacer(rateBitsPerSecond: 20_000_000, now: 0)
+        pacer.enqueue(.freshVideo, bytes: 1152, frameID: 1, now: 0)
+        pacer.enqueue(.freshVideo, bytes: 1152, frameID: 1, now: 0)
+        pacer.enqueue(.freshVideo, bytes: 1152, frameID: 1, now: 0)
+        XCTAssertEqual(pacer.nextBatch(now: 0)?.tokens.count, 2)
+        pacer.enqueue(.audio, bytes: 320, now: 0)
+        XCTAssertEqual(pacer.nextWake(now: 0), 0)
+        XCTAssertEqual(pacer.nextBatch(now: 0)?.tokens.map(\.priorityClass),
+                       [.audio])
+        // The audio charged the bucket: video waits out the deficit.
+        XCTAssertNil(pacer.nextBatch(now: 0))
+        XCTAssertGreaterThan(pacer.nextWake(now: 0)!, 0)
+    }
+
     func testFifoWithinClass() {
         let pacer = Pacer(rateBitsPerSecond: 50_000_000, now: 0)
         for tag in 0..<5 {

@@ -8,9 +8,11 @@
 //   FIFO within a class; `urgent` jumps only its own class's queue, and
 //   never splits a frame: once a normal token with a frame ID leaves, the
 //   rest of that frame leaves before any urgent token.
-// - A negative balance is only ever an oversize lower-class overrun.
-//   Control and audio emit alone through it and charge the bucket, so
-//   the wire total still honors the rate; video never borrows it.
+// - Control and audio never wait for the bucket: a latency-class head
+//   that does not fit emits alone and charges the bucket, driving it
+//   negative if need be, so the wire total still honors the rate while
+//   video waits out the deficit. Otherwise the balance goes negative only
+//   by an oversize token emitted alone on a full bucket.
 // - Rate is injected (`setRate`); the pacer never estimates anything.
 
 import LyteCore
@@ -268,10 +270,9 @@ public final class Pacer {
                 out.append(t)
                 outBytes += t.bytes
             }
-            // Latency exemption: control and audio emit alone through a
-            // negative balance, charging the bucket.
-            else if out.isEmpty, head.priorityClass <= .audio,
-                    tokens < 0 {
+            // Latency exemption: control and audio emit alone whatever
+            // the balance, charging the bucket.
+            else if out.isEmpty, head.priorityClass <= .audio {
                 let t = queues[head.priorityClass.rawValue].pop()!
                 out.append(t)
                 outBytes += t.bytes
@@ -308,8 +309,8 @@ public final class Pacer {
         refill(now: now)
         guard let head = highestHead(),
               head.priorityClass <= highestAllowedClass else { return nil }
-        // Latency exemption: control/audio emit through a deficit now.
-        if head.priorityClass <= .audio, tokens < 0 { return now }
+        // Latency exemption: control/audio emit now, whatever the balance.
+        if head.priorityClass <= .audio { return now }
         let need = min(Double(head.bytes), burstBytes)
         if tokens + 1e-3 >= need { return now }
         let deficit = need - tokens
