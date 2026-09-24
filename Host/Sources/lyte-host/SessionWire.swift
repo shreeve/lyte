@@ -1726,6 +1726,11 @@ final class SessionWire {
 
     private func emit(_ line: String) { pendingLogLines.append(line) }
 
+    /// An enum value's case without its payload: a rate-limit key.
+    static func caseName(_ value: some Any) -> Substring {
+        String(describing: value).prefix { $0 != "(" }
+    }
+
     /// Requires `lock`. One occurrence of a per-datagram line class.
     private func emitLimited(_ key: String, _ line: @autoclosure () -> String) {
         pendingLogLines += lineLimiter.admit(
@@ -1806,7 +1811,12 @@ final class SessionWire {
         case .reliableOneShotAcknowledged(let group):
             emit("ctrl-arq: one-shot group \(group.rawValue) acknowledged")
         case .arqIgnored(let reason):
-            emitLimited("ctrl-arq: ignored", "ctrl-arq: ignored \(reason)")
+            // A poisoned ordered stream repeats its reason for every
+            // segment until the session ends; each reason is limited on
+            // its own so it cannot hide the others.
+            emitLimited(
+                "ctrl-arq: ignored \(Self.caseName(reason))",
+                "ctrl-arq: ignored \(reason)")
         case .idrRequested(let request):
             emit("""
                 ctrl: IDR request seq \(request.requestSeq) (frame \
@@ -1843,9 +1853,7 @@ final class SessionWire {
         case .dropped(.handshakeCookieInvalid):
             break
         case .dropped(let reason):
-            // Keyed by the reason's case, not its payload.
-            let kind = String(describing: reason).prefix { $0 != "(" }
-            emitLimited("drop: \(kind)", "drop: \(reason)")
+            emitLimited("drop: \(Self.caseName(reason))", "drop: \(reason)")
         case .sendFailed(let what):
             emit("send-failed: \(what)")
         case .capabilitiesAgreed(let agreed):

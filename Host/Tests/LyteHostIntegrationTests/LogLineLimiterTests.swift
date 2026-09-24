@@ -36,6 +36,17 @@ final class LogLineLimiterTests: XCTestCase {
         ], "past the burst a key stays counted, one summary per interval")
     }
 
+    /// Lines are keyed by an event's case, so a payload that differs per
+    /// datagram (a poisoned stream's segments, unseal counts) shares one
+    /// budget.
+    func testTheKeyIsTheCaseWithoutItsPayload() {
+        enum Reason { case unsealFailed(Int), orderedStreamPoisoned }
+        XCTAssertEqual(SessionWire.caseName(Reason.unsealFailed(7)), "unsealFailed")
+        XCTAssertEqual(
+            SessionWire.caseName(Reason.orderedStreamPoisoned),
+            "orderedStreamPoisoned")
+    }
+
     func testKeysAreLimitedIndependentlyAndTheFinalPassOwesEverything() {
         var limiter = LogLineLimiter(burst: 1, intervalNS: 10 * second)
         XCTAssertEqual(limiter.admit("a", now: 0) { "a0" }, ["a0"])
