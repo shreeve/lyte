@@ -10,8 +10,12 @@ public struct SyntheticMotionReference: Sendable {
     public let height: Int
     private let base: [UInt8]
 
+    /// The smallest canvas the fixed motion geometry fits.
+    public static let minimumWidth = 960
+    public static let minimumHeight = 600
+
     public init(width: Int, height: Int) {
-        precondition(width >= 960 && height >= 600)
+        precondition(width >= Self.minimumWidth && height >= Self.minimumHeight)
         self.width = width
         self.height = height
         var background = [UInt8](repeating: 0, count: width * height * 4)

@@ -100,6 +100,88 @@ final class ConnectionLifecycleTests: XCTestCase {
                        "the probe dial must target where the host was reached")
     }
 
+    /// One undecryptable datagram from the host's tuple (stale, or forged)
+    /// used to turn an unanswered dial into a hard failure; the restarting
+    /// host must still be hunted.
+    func testRejectedMessageTwoStillCountsAsUnanswered() async throws {
+        let harness = LifecycleHarness()
+        harness.startPlan = [
+            .fail(TransportCryptoError.handshakeFailed(
+                "message 2 rejected: authenticationFailed [kernel accepted "
+                    + "5 sends; received 1 datagrams: 0 retry challenges "
+                    + "answered, 0 non-message-2, 1 rejected message-2]")),
+            .succeed,
+        ]
+        let model = ConnectionModel(services: harness.services)
+        await model.connectLyte(harness.host)
+        defer { model.disconnect() }
+
+        guard case .streaming = model.phase else {
+            return XCTFail("a rejected message 2 ended the hunt: \(model.phase)")
+        }
+        XCTAssertEqual(harness.started.count, 2)
+    }
+
+    /// The pinned host was reinstalled: its name now advertises another
+    /// key, and the pinned static can only meet silence. Say so instead of
+    /// "may be restarting" for the whole budget.
+    func testReplacedHostIdentityEndsTheConnectWithARePairVerdict() async throws {
+        let harness = LifecycleHarness()
+        harness.startPlan = [.fail(TransportCryptoError.handshakeFailed(
+            "no response from 10.9.9.9:41999 after 5 attempts"))]
+        harness.browseResult = [harness.reinstalledHost]
+        let model = ConnectionModel(services: harness.services)
+        await model.connectLyte(harness.host)
+
+        guard case .failed(.ordinary(let message)) = model.phase else {
+            return XCTFail("a replaced host kept the hunt going: \(model.phase)")
+        }
+        XCTAssertTrue(message.contains("different identity"), message)
+        XCTAssertEqual(harness.started.count, 1)
+    }
+
+    func testReplacedHostIdentityEndsARoamingWindow() async throws {
+        let harness = LifecycleHarness()
+        harness.startPlan = [.succeed, .hold]
+        let model = ConnectionModel(services: harness.services)
+        await model.connectLyte(harness.host)
+
+        harness.browseResult = [harness.reinstalledHost]
+        model.reconnectNow()
+        try await harness.waitUntil {
+            if case .failed = model.phase { return true }
+            return false
+        }
+        XCTAssertFalse(model.canReconnect)
+        XCTAssertEqual(harness.streamsEnded, 1)
+    }
+
+    func testIdentityCheckNeedsTheSameNameAndNoPinnedSighting() {
+        let harness = LifecycleHarness()
+        let pkh = harness.host.publicKeyHash!
+        XCTAssertTrue(ConnectionModel.identityReplaced(
+            in: [harness.reinstalledHost], name: "PUP", publicKeyHash: pkh))
+        XCTAssertFalse(ConnectionModel.identityReplaced(
+            in: [harness.reinstalledHost, harness.host], name: "pup",
+            publicKeyHash: pkh), "the pinned identity is right there")
+        XCTAssertFalse(ConnectionModel.identityReplaced(
+            in: [harness.reinstalledHost], name: "kit", publicKeyHash: pkh),
+            "another host's key says nothing about ours")
+    }
+
+    func testDialFailureClassification() {
+        XCTAssertEqual(
+            DialFailure(TransportCryptoError.handshakeFailed(
+                "no response from 10.0.0.1:41151 after 5 attempts [kernel "
+                    + "accepted 5 sends; received 0 datagrams: …]")),
+            .unanswered)
+        XCTAssertEqual(
+            DialFailure(TransportCryptoError.handshakeFailed(
+                "Noise handshake already in progress")),
+            .refused)
+        XCTAssertEqual(DialFailure(HarnessTimeout()), .refused)
+    }
+
     // MARK: - Capability agreement
 
     /// The core receives before `startSession` returns, so the host's
@@ -176,6 +258,89 @@ final class ConnectionLifecycleTests: XCTestCase {
         XCTAssertEqual(
             model.bulkCoordinator?.drop(urls: [harness.missingFile]),
             .notConnected)
+    }
+
+    // MARK: - Ends that beat adoption
+
+    /// Best declared to a 4:2:0-only host: the core fails the agreement
+    /// and closes itself while `startSession` is still returning. The
+    /// window must take the Good fallback, not stream a dead session.
+    func testCapabilityFailureBeforeAttachRedialsAtGood() async throws {
+        let harness = LifecycleHarness()
+        harness.preferChroma(.best)
+        harness.startPlan = [.hold, .hold]
+        let model = ConnectionModel(services: harness.services)
+        defer { model.disconnect() }
+
+        let connect = Task { await model.connectLyte(harness.host) }
+        try await harness.waitForStarts(1)
+        model.handleLyteEvent(.capabilitiesFailed(.noCommonChromaMode))
+        model.handleLyteEvent(.closed(.localTeardown(.shuttingDown)))
+        harness.resolveStart(0, with: .success(()))
+        await connect.value
+
+        XCTAssertFalse(model.lyteSession === harness.started[0],
+                       "a session that failed its agreement was adopted")
+        XCTAssertEqual(model.chromaTier, .good)
+        try await harness.waitForStarts(2)
+        XCTAssertNotEqual(model.roamingStatus, .attached)
+    }
+
+    func testTerminalFailureBeforeAttachEndsTheWindow() async throws {
+        let harness = LifecycleHarness()
+        harness.startPlan = [.hold]
+        let model = ConnectionModel(services: harness.services)
+
+        let connect = Task { await model.connectLyte(harness.host) }
+        try await harness.waitForStarts(1)
+        model.handleLyteEvent(.capabilitiesFailed(.noCommonVideoCodec))
+        model.handleLyteEvent(.closed(.localTeardown(.shuttingDown)))
+        harness.resolveStart(0, with: .success(()))
+        await connect.value
+
+        guard case .failed = model.phase else {
+            return XCTFail("a dead session streamed: \(model.phase)")
+        }
+        XCTAssertNil(model.lyteSession)
+        XCTAssertEqual(harness.streamsBegan, harness.streamsEnded,
+                       "the helper hold must not outlive the session")
+        XCTAssertTrue(harness.wasEnded(harness.started[0]))
+    }
+
+    /// The host restarts while a roaming re-dial is still returning: the
+    /// replacement is already closed and must not be adopted as live.
+    func testCloseBeforeRoamingAdoptionKeepsHunting() async throws {
+        let harness = LifecycleHarness()
+        harness.startPlan = [.succeed, .hold, .hold]
+        let model = ConnectionModel(services: harness.services)
+        await model.connectLyte(harness.host)
+        defer { model.disconnect() }
+
+        model.reconnectNow()
+        try await harness.waitForStarts(2)
+        model.handleLyteEvent(.closed(.peerTeardown(.shuttingDown)))
+        harness.resolveStart(1, with: .success(()))
+        try await harness.waitUntil { harness.wasEnded(harness.started[1]) }
+
+        XCTAssertNil(model.lyteSession)
+        XCTAssertEqual(harness.endings(of: harness.started[1]), [.silent])
+        XCTAssertNotEqual(model.roamingStatus, .attached)
+        guard case .streaming = model.phase else {
+            return XCTFail("a host restart ended the window: \(model.phase)")
+        }
+    }
+
+    func testFailedDialReleasesItsSession() async throws {
+        let harness = LifecycleHarness()
+        harness.startPlan = [.fail(TransportCryptoError.handshakeFailed(
+            "message 1 refused (harness)"))]
+        let model = ConnectionModel(services: harness.services)
+        await model.connectLyte(harness.host)
+
+        guard case .failed = model.phase else {
+            return XCTFail("a refused dial did not fail: \(model.phase)")
+        }
+        XCTAssertEqual(harness.endings(of: harness.started[0]), [.silent])
     }
 
     // MARK: - Roaming fencing
@@ -351,6 +516,22 @@ final class LifecycleHarness: @unchecked Sendable {
         locked {
             _ = pins.setShareClipboard(
                 publicKeyHash: host.publicKeyHash!, share: true)
+        }
+    }
+
+    /// The pinned host after a reinstall: same name and address, new key.
+    var reinstalledHost: DiscoveredLyteHost {
+        DiscoveredLyteHost(
+            name: host.name, address: host.address, port: host.port,
+            wireVersion: nil,
+            publicKeyHash: LyteDiscovery.publicKeyHash(
+                ofStaticPublicKey: [UInt8](repeating: 0x5A, count: 32)))
+    }
+
+    /// The pinned host's default chroma declaration.
+    func preferChroma(_ tier: ChromaTier) {
+        locked {
+            _ = pins.setChromaTier(publicKeyHash: host.publicKeyHash!, tier: tier)
         }
     }
 

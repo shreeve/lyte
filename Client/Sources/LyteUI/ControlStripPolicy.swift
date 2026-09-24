@@ -22,33 +22,11 @@ public enum StripEdge: String, CaseIterable, Sendable {
     case top
 }
 
-/// The strip preferences' storage: app-wide UserDefaults keys the views
-/// also bind via @AppStorage. Unknown raw values fall back to the
-/// defaults, so a hand-edited plist never wedges the strip.
+/// The strip preferences' app-wide UserDefaults keys, bound by the views'
+/// @AppStorage (which falls back to its default on an unknown raw value).
 public enum StripPreferences {
     public static let edgeKey = "controlStripEdge"
     public static let hiddenKey = "controlStripHidden"
-
-    public static func edge(from defaults: UserDefaults = .standard) -> StripEdge {
-        defaults.string(forKey: edgeKey).flatMap(StripEdge.init(rawValue:))
-            ?? .bottom
-    }
-
-    public static func setEdge(
-        _ edge: StripEdge, in defaults: UserDefaults = .standard
-    ) {
-        defaults.set(edge.rawValue, forKey: edgeKey)
-    }
-
-    public static func hidden(from defaults: UserDefaults = .standard) -> Bool {
-        defaults.bool(forKey: hiddenKey)
-    }
-
-    public static func setHidden(
-        _ hidden: Bool, in defaults: UserDefaults = .standard
-    ) {
-        defaults.set(hidden, forKey: hiddenKey)
-    }
 }
 
 /// The reveal/fade state machine. Sans-IO: time is nanoseconds handed

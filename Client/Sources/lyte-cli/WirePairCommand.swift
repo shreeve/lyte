@@ -25,7 +25,7 @@ struct WirePair: AsyncParsableCommand {
     @Option(name: .long, help: "The host's --wire-listen port (default: from discovery)")
     var port: UInt16 = 0
 
-    @Option(name: .long, help: "The 6-digit PIN printed on the host's console")
+    @Option(name: .long, help: "The 6-digit PIN printed on the host's console; `-` reads it from standard input, keeping it out of the process list")
     var pin: String
 
     @Option(name: .long, help: "The host's static public key, 64 hex digits (from lyte-host's banner; optional when the host is discoverable and already pinned)")
@@ -35,13 +35,26 @@ struct WirePair: AsyncParsableCommand {
     var timeout: Double = 20
 
     func validate() throws {
-        guard PairingPin.isValid(pin) else {
-            throw ValidationError("--pin must be the host's 6 digits, got \"\(pin)\"")
+        guard pin == "-" || PairingPin.isValid(pin) else {
+            throw ValidationError("--pin must be the host's 6 digits or -, got \"\(pin)\"")
         }
+    }
+
+    /// The PIN itself: `argument`, or one line read when it is `-`.
+    static func resolvedPin(
+        _ argument: String, readLine: () -> String?
+    ) throws -> String {
+        guard argument == "-" else { return argument }
+        let line = readLine()?.trimmingCharacters(in: .whitespaces) ?? ""
+        guard PairingPin.isValid(line) else {
+            throw ValidationError("standard input must carry the host's 6-digit PIN")
+        }
+        return line
     }
 
     func run() async throws {
         setvbuf(stdout, nil, _IOLBF, 0)
+        let pin = try Self.resolvedPin(self.pin) { Swift.readLine() }
 
         // ── Resolve the dial target: discovery by name/address, manual
         // host:port as the always-working fallback. ──

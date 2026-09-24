@@ -78,6 +78,11 @@ final class ConnectionModel {
     /// Fences late events from detached sessions: each session built
     /// mints an epoch, and only the current epoch's events apply.
     private var sessionEpoch = 0
+    /// The first session-ending event (a capability failure or a close)
+    /// of the current epoch's dial, held while no window owns the session
+    /// yet. Adoption replays it, so a session that died during its own
+    /// start never becomes a live-looking stream.
+    private var pendingTerminal: LyteUdpSessionEvent?
     /// The session machine's FROZEN pill.
     private(set) var lyteFrozen = false
     /// What the current session's capability agreement made available.
@@ -157,8 +162,7 @@ final class ConnectionModel {
     /// ordinal high-water mark makes overlapping scans idempotent, and a
     /// recorder reset (ordinals restart) clears it implicitly.
     private let linkHealthMeter = LinkHealthMeter(
-        trace: ProcessInfo.processInfo
-            .environment["LYTE_LINK_HEALTH_DEBUG"] == "1"
+        trace: DiagnosticEnvironment.current["LYTE_LINK_HEALTH_DEBUG"] == "1"
             ? { line in print(line); fflush(stdout) } : nil)
     /// nil until streaming produces a verdict; .good renders nothing.
     private(set) var linkHealth: LinkHealthAssessment?
@@ -227,7 +231,7 @@ final class ConnectionModel {
             "port": String(host.port),
         ])
 
-        let environment = ProcessInfo.processInfo.environment
+        let environment = DiagnosticEnvironment.current
         let benchmarking = environment["LYTE_BENCHMARK_RUN_ID"] != nil
         // A benchmark autoconnect has no human interaction surface. Never
         // let Security.framework wait on hidden authorization UI before the
@@ -250,8 +254,8 @@ final class ConnectionModel {
                 "error": String(describing: error),
             ])
             guard isCurrent(generation) else { return }
-            // The Keychain path needs the stable "Lyte Dev" signature —
-            // builds via Scripts/make-app.sh (docs/MACOS-SIGNING.md).
+            // The Keychain grant follows a stable signature: builds via
+            // Scripts/make-app.sh (docs/MACOS-SIGNING.md).
             phase = .failed(.ordinary("client identity: \(error)"))
             return
         }
@@ -328,14 +332,12 @@ final class ConnectionModel {
                     "round": String(round),
                     "error": String(describing: error),
                 ])
+                // A dial that failed after binding still holds its socket.
+                services.endSession(candidate, .silent)
                 guard isCurrent(generation) else { return }
-                guard case TransportCryptoError.handshakeFailed(let why)
-                        = error, why.hasPrefix("no response"),
-                      services.now() < deadline else {
-                    if let endpointError = error as? TransportEndpointError,
-                       let problem = LocalNetworkAccessProblem.endpointError(
-                        endpointError)
-                    {
+                let failure = DialFailure(error)
+                guard failure == .unanswered, services.now() < deadline else {
+                    if case .localNetwork(let problem) = failure {
                         phase = .failed(.localNetwork(
                             problem,
                             diagnosticDetail: String(describing: error)))
@@ -349,12 +351,20 @@ final class ConnectionModel {
                     + "it may be restarting; still trying…")
                 // The quiet re-browse: if the reborn host is already
                 // advertising, dial where it lives NOW.
-                let sighting = await services.browse(2.0)
-                    .first { $0.publicKeyHash == host.publicKeyHash }
+                let hosts = await services.browse(2.0)
                 guard isCurrent(generation) else { return }
-                if let sighting {
+                if let sighting = hosts.first(where: {
+                    $0.publicKeyHash?.lowercased()
+                        == host.publicKeyHash?.lowercased()
+                }) {
                     dialAddress = sighting.address
                     dialPort = sighting.port
+                } else if let pkh = host.publicKeyHash,
+                          Self.identityReplaced(
+                            in: hosts, name: host.name, publicKeyHash: pkh) {
+                    phase = .failed(.ordinary(
+                        Self.identityReplacedMessage(host.name)))
+                    return
                 }
             }
         }
@@ -368,6 +378,7 @@ final class ConnectionModel {
         }
         phase = .streaming
         services.streamBegan()
+        replayPendingTerminal()
     }
 
     // MARK: - Session lifecycle
@@ -404,6 +415,7 @@ final class ConnectionModel {
         // never carries over.
         sessionEpoch += 1
         negotiated = .none
+        pendingTerminal = nil
         let epoch = sessionEpoch
         let session = LyteUdpSession(
             crypto: crypto,
@@ -440,6 +452,22 @@ final class ConnectionModel {
         // sharing is on (updatePasteboardWatcher).
         pasteboardSync = makePasteboardSync(for: lyte)
         if negotiated.agreed { startAgreedFeatures(on: lyte) }
+    }
+
+    /// Delivers the end a session met before its window adopted it, once
+    /// the window's machinery (roaming, the chroma fallback) stands to act
+    /// on it. The last step of every adoption.
+    func replayPendingTerminal() {
+        guard let event = pendingTerminal else { return }
+        pendingTerminal = nil
+        if case .closed(let reason) = event,
+           case .localTeardown = reason {
+            // The core closed itself before anyone owned it: nobody else
+            // is driving this end.
+            beginRoamingAfterLoss(reason)
+        } else {
+            handleLyteEvent(event)
+        }
     }
 
     /// The attached session's agreed features: the clipboard watcher and
@@ -549,6 +577,12 @@ final class ConnectionModel {
     }
 
     func handleLyteEvent(_ event: LyteUdpSessionEvent) {
+        if lyteSession == nil, Self.endsSession(event) {
+            // The dial in flight has no window yet; its end waits for
+            // adoption.
+            if pendingTerminal == nil { pendingTerminal = event }
+            return
+        }
         switch event {
         case .capabilitiesAgreed(let agreed):
             negotiated = NegotiatedFeatures(agreed)
@@ -590,6 +624,37 @@ final class ConnectionModel {
             case .roam:
                 beginRoamingAfterLoss(reason)
             }
+        }
+    }
+
+    /// True when a host advertises under the pinned host's name with a
+    /// different identity while none advertises the pinned one. mDNS keeps
+    /// instance names unique on a link, so the pinned host was reinstalled
+    /// or replaced: a dial against its old static can only meet silence
+    /// (the host cannot decrypt message 1), which looks exactly like a
+    /// host that is down.
+    static func identityReplaced(
+        in hosts: [DiscoveredLyteHost], name: String, publicKeyHash: String
+    ) -> Bool {
+        let pinned = publicKeyHash.lowercased()
+        guard !hosts.contains(where: {
+            $0.publicKeyHash?.lowercased() == pinned
+        }) else { return false }
+        return hosts.contains {
+            $0.name.caseInsensitiveCompare(name) == .orderedSame
+                && $0.publicKeyHash.map { $0.lowercased() != pinned } == true
+        }
+    }
+
+    static func identityReplacedMessage(_ name: String) -> String {
+        "\(name) now has a different identity — it was reinstalled or "
+            + "replaced. Pair with it again."
+    }
+
+    private static func endsSession(_ event: LyteUdpSessionEvent) -> Bool {
+        switch event {
+        case .capabilitiesFailed, .closed: true
+        default: false
         }
     }
 

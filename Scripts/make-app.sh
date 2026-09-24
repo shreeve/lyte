@@ -9,6 +9,16 @@ ROOT="$PWD"
 . "$ROOT/Scripts/lib/source-fingerprint.sh"
 
 CONFIG="${1:-release}"
+# The app's diagnostic entry points (autoconnect, the benchmark driver) obey
+# the environment only in a bundle whose signed Info.plist enables them.
+case "${LYTE_APP_DIAGNOSTICS:-0}" in
+  1) DIAGNOSTIC_ENTRY_POINTS='<key>LyteDiagnosticEntryPoints</key> <true/>' ;;
+  0) DIAGNOSTIC_ENTRY_POINTS='' ;;
+  *)
+    echo "error: LYTE_APP_DIAGNOSTICS must be 0 or 1" >&2
+    exit 1
+    ;;
+esac
 LIVE_APP="$ROOT/.build/Lyte.app"
 APP="${LYTE_APP_DESTINATION:-$LIVE_APP}"
 case "$APP" in
@@ -177,6 +187,7 @@ cat > "$STAGED_APP/Contents/Info.plist" <<EOF
     <string>Lyte discovers and streams from Lyte hosts on your local network.</string>
     <key>NSBonjourServices</key>
     <array><string>_lyte._udp</string></array>
+    ${DIAGNOSTIC_ENTRY_POINTS}
 </dict>
 </plist>
 EOF
