@@ -93,7 +93,12 @@ public final class EyeGL {
     private var srcSizeLoc444: GLint = -1
     private var srcSizeLocFingerprint: GLint = -1
     private var fingerprintTarget: FingerprintTarget?
-    private var previousFingerprint: [UInt32]?
+    /// Two persistent readback buffers, swapped per beat: `currentWords`
+    /// receives the new fingerprint, `previousWords` holds the last one
+    /// (valid only while `hasPreviousFingerprint`). No per-beat allocation.
+    private var currentWords: [UInt32] = []
+    private var previousWords: [UInt32] = []
+    private var hasPreviousFingerprint = false
 
     public init(renderNode: String) throws {
         nodeFd = open(renderNode, O_RDWR)
@@ -392,7 +397,7 @@ public final class EyeGL {
             }
             fingerprintTarget = try makeFingerprintTarget(
                 width: width, height: height)
-            previousFingerprint = nil
+            hasPreviousFingerprint = false
         }
         guard let target = fingerprintTarget else {
             throw EyeGLError("fingerprint target unavailable")
@@ -408,10 +413,13 @@ public final class EyeGL {
         glDisable(GLenum(GL_FRAMEBUFFER_SRGB))
         glDrawArrays(GLenum(GL_TRIANGLES), 0, 3)
 
-        var words = [UInt32](
-            repeating: 0,
-            count: Int(target.tilesWide * target.tilesHigh) * 2)
-        words.withUnsafeMutableBytes { storage in
+        let wordCount = Int(target.tilesWide * target.tilesHigh) * 2
+        if currentWords.count != wordCount {
+            currentWords = [UInt32](repeating: 0, count: wordCount)
+            previousWords = [UInt32](repeating: 0, count: wordCount)
+            hasPreviousFingerprint = false
+        }
+        currentWords.withUnsafeMutableBytes { storage in
             glReadPixels(
                 0, 0, target.tilesWide, target.tilesHigh,
                 GLenum(GL_RG_INTEGER), GLenum(GL_UNSIGNED_INT),
@@ -422,14 +430,15 @@ public final class EyeGL {
             throw EyeGLError(
                 "fingerprint read failed: 0x\(String(error, radix: 16))")
         }
-        let changed = previousFingerprint != words
-        previousFingerprint = words
+        let changed = !hasPreviousFingerprint || previousWords != currentWords
+        swap(&previousWords, &currentWords)
+        hasPreviousFingerprint = true
         return changed
     }
 
     /// Reconfiguration and recovery make the current scanout fresh again.
     public func resetFingerprint() {
-        previousFingerprint = nil
+        hasPreviousFingerprint = false
     }
 
     // MARK: - NV12 render target
