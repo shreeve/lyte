@@ -1700,10 +1700,16 @@ public final class LyteUdpSession: @unchecked Sendable {
     }
 
     /// Bind → Noise handshake (blocking, retry timer inside; answers a
-    /// W8 retry challenge with the verbatim msg1) → receive thread →
-    /// capability declaration as the first reliable word → timers.
-    /// Throws TransportCryptoError / TransportEndpointError on a dial
-    /// that never became a session.
+    /// W8 retry challenge with the verbatim msg1) → core published →
+    /// receive thread → capability declaration as the first reliable
+    /// word → timers. Throws TransportCryptoError / TransportEndpointError
+    /// on a dial that never became a session.
+    ///
+    /// The core is built after the handshake (its lifecycle clocks start
+    /// at construction) and published before the receive thread starts,
+    /// so the host's first datagrams — its declaration and session-start
+    /// beacon, sent the moment the session establishes — wait in the
+    /// kernel buffer instead of reaching a nil core.
     public func start() throws {
         let endpoint = UdpReceiveEndpoint(
             port: config.bindPort,
@@ -1713,7 +1719,7 @@ public final class LyteUdpSession: @unchecked Sendable {
                 self?.core?.handleDatagram(
                     outcome, arrivalMicroseconds: arrivalMicroseconds)
             })
-        try endpoint.start()
+        try endpoint.bindAndHandshake()
         self.endpoint = endpoint
 
         let sender = TransportSender(crypto: crypto, transmit: {
@@ -1732,6 +1738,7 @@ public final class LyteUdpSession: @unchecked Sendable {
             onEvent: onEvent
         )
         coreStorage.withLock { $0 = core }
+        endpoint.startReceiving()
         try core.open()
         core.startTimers()
 
