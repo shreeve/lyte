@@ -467,6 +467,16 @@ final class VideoPipelineTests: XCTestCase {
     func testSamplePayloadIsByteExactWithOneOwnedCopy() throws {
         let frame = try loadPrefix()[0]
         let expected = lengthPrefixed(annexB: frame)
+        // The oracle walks back into whole NALs, none left over.
+        var nalCount = 0
+        var cursor = 0
+        while cursor + 4 <= expected.count {
+            let length = expected[cursor..<cursor + 4].reduce(0) { $0 << 8 | Int($1) }
+            cursor += 4 + length
+            nalCount += 1
+        }
+        XCTAssertEqual(cursor, expected.count)
+        XCTAssertEqual(nalCount, 5, "corpus IDR: VPS SPS PPS PREFIX_SEI IDR_W_RADL")
         let factory = VideoRenderFactory()
         let sample = try XCTUnwrap(factory.makeSampleBuffer(from: DecodeUnit(
             frameNumber: FrameNumber(rawValue: 0),

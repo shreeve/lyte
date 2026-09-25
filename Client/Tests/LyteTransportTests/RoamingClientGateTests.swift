@@ -228,11 +228,11 @@ final class RoamingClientGateTests: XCTestCase {
         XCTAssertEqual(coordinator.snapshot().phase, .awaitingReconnect)
         // The probe dial at the last-known address draws silence —
         // the host isn't there anymore.
-        if policy.sessionClosed(now: t).contains(where: {
-            if case .dial = $0 { return true }; return false
-        }) {
-            _ = policy.dialFailed(now: t + 1_500_000)
-        }
+        XCTAssertEqual(
+            policy.sessionClosed(now: t),
+            [.dial(address: "10.0.0.60", port: 41_161, discovered: false)])
+        XCTAssertEqual(policy.dialFailed(now: t + 1_500_000), [.beginScan],
+                       "a failed probe goes back to looking")
 
         // REDISCOVERY: the same identity appears at address B — the
         // policy dials it at once.
