@@ -207,6 +207,42 @@ final class BrowserPlayoutTests: XCTestCase {
         XCTAssertNil(playout.idrRequestDue(nowMicros: far))
     }
 
+    /// One damage event is one verdict: a handoff overflow and a Conductor
+    /// flush each count once in the IDR request, naming the newest frame.
+    func testEachDamageEventCountsOnceInTheIdrRequest() throws {
+        let corpus = try Self.corpus()
+        let far: UInt64 = 1 << 40
+        for flush in [false, true] {
+            var playout = BrowserVideoPlayout()
+            var packetizer = VideoPacketizer()
+            // Nothing is presented. Overflow: the thirteenth on-time frame
+            // finds the 12-deep handoff full. Flush: 100 ms of capture a
+            // frame, arriving 1 ms apart, passes the 200 ms debt ceiling
+            // on the fourth.
+            let count = flush ? 4 : 13
+            for index in 0..<count {
+                let shards = try packetizer.packetize(
+                    frame: index == 0
+                        ? corpus[0] : corpus[1 + (index - 1) % (corpus.count - 1)],
+                    frameNumber: FrameNumber(rawValue: UInt32(index)),
+                    captureTimestamp: HostTimestamp(microseconds: 1_000_000
+                        + UInt64(index) * (flush ? 100_000 : Self.beatMicros)),
+                    isIDR: index == 0,
+                    regime: .clean)
+                let arrival = 1_000_000
+                    + UInt64(index) * (flush ? 1_000 : Self.beatMicros)
+                for shard in shards {
+                    _ = playout.ingestShard(
+                        envelope: shard.envelope, payload: shard.payload[...],
+                        arrivalMicroseconds: arrival)
+                }
+            }
+            let request = try XCTUnwrap(playout.idrRequestDue(nowMicros: far))
+            XCTAssertEqual(request.coalescedCount, 1, flush ? "flush" : "overflow")
+            XCTAssertEqual(request.frame.rawValue, UInt32(count - 1))
+        }
+    }
+
     /// When the page stops taking decode input, the backlog is bounded; the
     /// evicted frame takes its dependents with it, so the page is never
     /// handed a frame whose reference is gone, and the loss asks for an IDR.

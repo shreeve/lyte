@@ -293,15 +293,16 @@ public struct BrowserVideoPlayout {
         recovery.recordDemand(frame: FrameNumber(rawValue: frame))
     }
 
-    private mutating func absorb(_ outcome: BoundedRendererHandoff<UInt32>.Outcome) {
-        absorb(discarded: outcome.discarded.map(\.element),
-               recoveryRequested: outcome.recoveryRequested)
-    }
-
     /// Discarded entries lose their presentation metadata only; their
-    /// Annex-B stays queued for decode so the reference chain holds.
-    private mutating func absorb(discarded: [UInt32], recoveryRequested: Bool) {
-        for frame in discarded {
+    /// Annex-B stays queued for decode so the reference chain holds. A
+    /// requested recovery is one verdict, naming `newest` when a frame
+    /// being scheduled caused it.
+    private mutating func absorb(
+        _ outcome: BoundedRendererHandoff<UInt32>.Outcome,
+        newest: UInt32? = nil
+    ) {
+        for entry in outcome.discarded {
+            let frame = entry.element
             if let scheduled = scheduledByFrame.removeValue(forKey: frame) {
                 counters.framesNotPresentable &+= 1
                 if scheduled.shouldPresent { abandoned.append(frame) }
@@ -310,8 +311,9 @@ public struct BrowserVideoPlayout {
                 abandon(early: pendingEarly!)
             }
         }
-        if recoveryRequested, let newest = discarded.max() {
-            demandRecovery(frame: newest)
+        if outcome.recoveryRequested,
+           let damaged = newest ?? outcome.discarded.map(\.element).max() {
+            demandRecovery(frame: damaged)
         }
     }
 
@@ -397,13 +399,9 @@ public struct BrowserVideoPlayout {
 
         if decision.shouldFlush {
             if let early = pendingEarly { abandon(early: early) }
-            let flushed = handoff.failEpisode()
-            absorb(flushed)
             // The queue may have been empty (or held only an early frame):
             // the flush still owes the stream an IRAP.
-            if flushed.recoveryRequested {
-                demandRecovery(frame: frame.frameNumber)
-            }
+            absorb(handoff.failEpisode(), newest: frame.frameNumber)
         }
         if unit.isIDR {
             // A usable IRAP answers any open recovery episode, including
@@ -423,16 +421,7 @@ public struct BrowserVideoPlayout {
             counters.framesNotPresentable &+= 1
             frame.shouldPresent = false
         }
-        absorb(
-            discarded: outcome.discarded.map(\.element)
-                .filter { $0 != frame.frameNumber },
-            recoveryRequested: outcome.recoveryRequested
-        )
-        if outcome.recoveryRequested, outcome.discarded.isEmpty == false,
-           !outcome.accepted
-        {
-            demandRecovery(frame: frame.frameNumber)
-        }
+        absorb(outcome, newest: frame.frameNumber)
         return frame
     }
 }
