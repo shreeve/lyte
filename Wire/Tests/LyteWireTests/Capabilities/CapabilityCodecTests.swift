@@ -3,9 +3,10 @@ import XCTest
 import LyteWire
 import LyteWireTestKit
 
-// The W7 capability message codecs (0x0F / 0x11 / 0x12), anchored by
+// The capability message codecs (0x0F / 0x11 / 0x12), anchored by
 // hand-built bytes — the anchors that break the vector file's
-// circularity, per the beacon/lifecycle doctrine.
+// circularity — plus the encode-side refusals and the decode rejects
+// capabilities-v1.json does not carry.
 
 final class CapabilityCodecTests: XCTestCase {
 
@@ -27,22 +28,7 @@ final class CapabilityCodecTests: XCTestCase {
         )
     }
 
-    func testDeclarationRejects() {
-        assertThrows(CapabilityMessageError.truncatedMessage) {
-            try CapabilityDeclaration.decode(hex("0f"))
-        }
-        assertThrows(CapabilityMessageError.unexpectedType(0x10)) {
-            try CapabilityDeclaration.decode(
-                hex("10" + CapabilitiesTests.wireDefaultHex)
-            )
-        }
-        // A declaration past the 1024 B ceiling refuses BEFORE any
-        // CBOR work — the anti-streaming stop.
-        let fat = hex("0f") + Array(repeating: 0, count: 1024)
-        assertThrows(CapabilityMessageError.messageOverBudget(1025)) {
-            try CapabilityDeclaration.decode(fat)
-        }
-        // Encode enforces the same ceiling.
+    func testDeclarationEncodeRefusesOverBudget() {
         var bloated = Capabilities.wireDefault
         bloated.unknownEntries = [CborMapEntry(
             key: .unsigned(100),
@@ -55,10 +41,6 @@ final class CapabilityCodecTests: XCTestCase {
             else {
                 return XCTFail("expected messageOverBudget, got \(error)")
             }
-        }
-        // A malformed body wraps the capability error.
-        assertThrows(CapabilityMessageError.malformedBody(.notAMap)) {
-            try CapabilityDeclaration.decode(hex("0f810a"))
         }
     }
 
@@ -76,29 +58,15 @@ final class CapabilityCodecTests: XCTestCase {
         XCTAssertEqual(try CapabilityUpdate.decode(expected), message)
     }
 
-    func testUpdateRejects() {
-        assertThrows(CapabilityMessageError.truncatedMessage) {
-            try CapabilityUpdate.decode(hex("11"))
-        }
-        // An empty proposal map is a no-op and rejects.
-        assertThrows(CapabilityMessageError.emptyUpdate) {
-            try CapabilityUpdate.decode(hex("11a0"))
-        }
+    func testUpdateEncodeRefusesEmptyProposal() {
         assertThrows(CapabilityMessageError.emptyUpdate) {
             try CapabilityUpdate(parameters: []).encode()
-        }
-        // Parameter keys are registry numbers; a text key rejects.
-        assertThrows(CapabilityMessageError.nonIntegerParameterKey) {
-            try CapabilityUpdate.decode(hex("11a1616100"))
-        }
-        assertThrows(CapabilityMessageError.unexpectedType(0x0F)) {
-            try CapabilityUpdate.decode(hex("0f" + raiseMapHex))
         }
     }
 
     // MARK: - Update ack (0x12)
 
-    func testUpdateAckHandComputedAnchors() throws {
+    func testUpdateAckHandComputedAnchor() throws {
         let parameters = [CapabilityParameter(
             key: CapabilityKey.maxDatagramBytes, value: .unsigned(1500)
         )]
@@ -110,26 +78,11 @@ final class CapabilityCodecTests: XCTestCase {
             try CapabilityUpdateAck.decode(hex("1201" + raiseMapHex)),
             accepted
         )
-        let rejected = CapabilityUpdateAck(
-            status: .rejected, parameters: parameters
-        )
-        XCTAssertEqual(try rejected.encode(), hex("1202" + raiseMapHex))
-        XCTAssertEqual(
-            try CapabilityUpdateAck.decode(hex("1202" + raiseMapHex)),
-            rejected
-        )
     }
 
+    /// The ack frames its own type and status, so its rejects are its
+    /// own, not the shared declaration/update frame check's.
     func testUpdateAckRejects() {
-        assertThrows(CapabilityMessageError.truncatedMessage) {
-            try CapabilityUpdateAck.decode(hex("12"))
-        }
-        assertThrows(CapabilityMessageError.unknownStatus(0x03)) {
-            try CapabilityUpdateAck.decode(hex("1203" + raiseMapHex))
-        }
-        assertThrows(CapabilityMessageError.unknownStatus(0x00)) {
-            try CapabilityUpdateAck.decode(hex("1200" + raiseMapHex))
-        }
         assertThrows(CapabilityMessageError.emptyUpdate) {
             try CapabilityUpdateAck.decode(hex("1201a0"))
         }

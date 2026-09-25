@@ -4,10 +4,10 @@ import LyteWire
 import LyteWireTestKit
 
 // The typed capability set: the hand-computed CBOR anchor (breaking
-// the vector file's circularity), the unknown-key/unknown-id
-// forward-compat rules, the decode rejects, and the W-G8 intersect
-// algebra as seeded properties (commutative, idempotent — plus
-// associative, free from the same construction).
+// the vector file's circularity), the forward-compat rules no vector
+// pins, the rejects' associated values, the keys 9–16 flag spine, and
+// the intersect algebra as seeded properties (commutative, idempotent,
+// associative, absorbing).
 
 final class CapabilitiesTests: XCTestCase {
 
@@ -33,40 +33,7 @@ final class CapabilitiesTests: XCTestCase {
         )
     }
 
-    func testRicherSetRoundTrips() throws {
-        let set = Capabilities(
-            wireMinor: 3,
-            videoCodecs: [CapabilityCodec.hevc, 2],
-            chromaModes: [CapabilityChroma.yuv420, CapabilityChroma.yuv444],
-            idleSilence: true,
-            featureChannels: [
-                CapabilityFeature.clipboard,
-                CapabilityFeature.fileTransfer,
-                CapabilityFeature.printing,
-            ],
-            audioExpress: true,
-            resume: true,
-            maxDatagramBytes: 1500
-        )
-        let encoded = try set.encodeCbor()
-        XCTAssertEqual(try Capabilities.decodeCbor(encoded), set)
-    }
-
     // MARK: - Forward compatibility
-
-    func testUnknownKeysArePreservedNotRejected() throws {
-        // wireDefault plus a foreign key 100 → text "x": one more map
-        // entry (0xA9), 0x1864 sorting after 0x08 bytewise.
-        let foreign = "a9" + Self.wireDefaultHex.dropFirst(2)
-            + "18646178"
-        let decoded = try Capabilities.decodeCbor(hex(foreign))
-        XCTAssertEqual(decoded.unknownEntries, [
-            CborMapEntry(key: .unsigned(100), value: .text("x"))
-        ])
-        XCTAssertEqual(decoded.wireMinor, 0)
-        // Preservation is byte-exact through re-encode.
-        XCTAssertEqual(try decoded.encodeCbor(), hex(foreign))
-    }
 
     func testNonIntegerKeysAreForeignToo() throws {
         // Text key "zz" (0x627a7a) sorts after every integer key.
@@ -79,38 +46,10 @@ final class CapabilitiesTests: XCTestCase {
         XCTAssertEqual(try decoded.encodeCbor(), hex(foreign))
     }
 
-    func testUnknownIdsInsideListsCarryNotReject() throws {
-        var set = Capabilities.wireDefault
-        set.videoCodecs = [CapabilityCodec.hevc, 200]
-        let decoded = try Capabilities.decodeCbor(try set.encodeCbor())
-        XCTAssertEqual(decoded.videoCodecs, [1, 200])
-        // Intersection with a v1-only peer drops the foreign id.
-        XCTAssertEqual(
-            decoded.intersecting(.wireDefault).videoCodecs,
-            [CapabilityCodec.hevc]
-        )
-    }
-
-    func testOmittedOptionalKeysDefaultToUnsupported() throws {
-        // A lean future declaration: only the three required keys.
-        let lean = try Cbor.encode(.map([
-            .init(key: .unsigned(1), value: .unsigned(0)),
-            .init(key: .unsigned(2), value: .array([.unsigned(1)])),
-            .init(key: .unsigned(3), value: .array([.unsigned(1)])),
-        ]))
-        let decoded = try Capabilities.decodeCbor(lean)
-        XCTAssertFalse(decoded.idleSilence)
-        XCTAssertEqual(decoded.featureChannels, [])
-        XCTAssertFalse(decoded.audioExpress)
-        XCTAssertFalse(decoded.resume)
-        XCTAssertEqual(
-            decoded.maxDatagramBytes,
-            UInt32(WireBudget.maxDatagramByteCount)
-        )
-    }
-
     // MARK: - Rejects
 
+    /// The rejects whose associated values capabilities-v1.json cannot
+    /// pin (its vectors compare error case names only).
     func testDecodeRejects() throws {
         // Missing each required key in turn.
         for missing in [CapabilityKey.wireMinor,
@@ -153,32 +92,6 @@ final class CapabilitiesTests: XCTestCase {
                 try Capabilities.decodeCbor(try Cbor.encode(.map(entries)))
             }
         }
-        // Non-canonical id list (descending).
-        let descending = try Cbor.encode(.map([
-            .init(key: .unsigned(1), value: .unsigned(0)),
-            .init(
-                key: .unsigned(2),
-                value: .array([.unsigned(2), .unsigned(1)])
-            ),
-            .init(key: .unsigned(3), value: .array([.unsigned(1)])),
-        ]))
-        assertThrows(CapabilityError.nonCanonicalIdList) {
-            try Capabilities.decodeCbor(descending)
-        }
-        // Ceiling below the 1152 B protocol floor.
-        let lowCeiling = try Cbor.encode(.map([
-            .init(key: .unsigned(1), value: .unsigned(0)),
-            .init(key: .unsigned(2), value: .array([.unsigned(1)])),
-            .init(key: .unsigned(3), value: .array([.unsigned(1)])),
-            .init(key: .unsigned(8), value: .unsigned(1151)),
-        ]))
-        assertThrows(CapabilityError.datagramCeilingBelowFloor(1151)) {
-            try Capabilities.decodeCbor(lowCeiling)
-        }
-        // Not a map at the top level.
-        assertThrows(CapabilityError.notAMap) {
-            try Capabilities.decodeCbor(hex("810a"))
-        }
         // Malformed CBOR wraps the inner error.
         assertThrows(CapabilityError.malformedCbor(.truncatedItem)) {
             try Capabilities.decodeCbor(hex("a2"))
@@ -198,7 +111,7 @@ final class CapabilitiesTests: XCTestCase {
         }
     }
 
-    // MARK: - Intersect algebra (gate W-G8)
+    // MARK: - Intersect algebra
 
     func testIntersectHandExample() {
         let host = Capabilities(
