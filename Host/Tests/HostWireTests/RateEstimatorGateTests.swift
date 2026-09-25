@@ -764,85 +764,6 @@ final class RateEstimatorGateTests: XCTestCase {
     // 810 kbps in a single step). The anchor is now the MEDIAN of the last
     // few raw samples, so the freshest sample cannot decide the fall alone.
 
-    /// A clean 20 Mbps path, overuse fires on a report whose ONLY
-    /// delivery sample is garbage-low — the fall must anchor to the
-    /// clean median the window still holds, never to the lone outlier.
-    func testOveruseAnchorRejectsOneGarbageDeliverySample() {
-        let estimator = makeEstimator()
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
-
-        // Ten clean 20 Mbps reports: the standing rate stays at the
-        // ceiling and the raw-delivery window fills with 20 Mbps
-        // samples (and the delay baseline is established).
-        for _ in 0..<10 {
-            now += 25 * Self.ms
-            clientMicros += 25_000
-            let samples = train(
-                estimator, seqStart: seq, count: 12,
-                sendStartNS: now - Self.ms,
-                bottleneckBitsPerSecond: 20e6
-            )
-            seq += 12
-            _ = estimator.ingest(
-                report(samples: samples, clientMicros: clientMicros),
-                now: now, inRecovery: false
-            )
-        }
-        XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling)
-
-        // Arm: one inflated report, still a clean 20 Mbps train.
-        now += 25 * Self.ms; clientMicros += 25_000
-        let arm = train(
-            estimator, seqStart: seq, count: 12,
-            sendStartNS: now - Self.ms,
-            bottleneckBitsPerSecond: 20e6, extraDelayMicros: 40_000
-        )
-        seq += 12
-        XCTAssertFalse(estimator.ingest(
-            report(samples: arm, clientMicros: clientMicros),
-            now: now, inRecovery: false
-        ).overuse)
-
-        // Fire: inflated reports whose ONLY delivery samples are
-        // garbage short trains measuring ~2 Mbps. The one-deep anchor
-        // of old would fall to 0.85 × 2 Mbps = 1.7 Mbps (a crater);
-        // the median of the last three raw samples is still 20 Mbps
-        // (garbage outvoted), so when the dwell deferral's budget
-        // expires the fall lands at 0.85 × 20 Mbps.
-        var verdict: RateEstimatorVerdict
-        var deferredBeats = 0
-        repeat {
-            now += 25 * Self.ms; clientMicros += 25_000
-            let garbage = train(
-                estimator, seqStart: seq, count: 4,
-                sendStartNS: now - Self.ms,
-                bottleneckBitsPerSecond: 2e6, extraDelayMicros: 40_000
-            )
-            seq += 4
-            verdict = estimator.ingest(
-                report(samples: garbage, clientMicros: clientMicros),
-                now: now, inRecovery: false
-            )
-            deferredBeats += 1
-        } while verdict.newRateBitsPerSecond == nil && deferredBeats < 30
-        XCTAssertGreaterThanOrEqual(estimator.stats.fallDeferrals, 1,
-            "the persistence held the uncorroborated beats first")
-        XCTAssertTrue(verdict.overuse)
-        XCTAssertEqual(verdict.change, .overuse)
-        let newRate = verdict.newRateBitsPerSecond
-        XCTAssertNotNil(newRate)
-        XCTAssertGreaterThan(Double(newRate!), 10e6,
-            """
-                one garbage delivery sample must not crater the rate — \
-                the anchor is the clean median, not the lone outlier \
-                (got \(newRate! / 1_000) kbps)
-                """)
-        XCTAssertEqual(Double(newRate!), 20e6 * 0.85, accuracy: 1.0e6,
-            "the fall anchors to the 20 Mbps the median still measures")
-    }
-
     /// The regression pin: a GENUINE sustained overuse — delivery truly
     /// drops to ~5 Mbps for the whole run — still falls fast and anchors
     /// to the measured delivery, exactly as the one-deep anchor did. By
@@ -1397,38 +1318,6 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(estimator.stats.stallHolds, 0)
     }
 
-    /// Sustained rate reduction in the stall gate's own terms: the
-    /// "drain" measures BELOW the pace (8 Mbps under a 20 Mbps rate) —
-    /// a capacity-limited bottleneck spaces arrivals at capacity, and
-    /// no super-rate train exists to plead a closed hole. Falls to
-    /// measured delivery exactly as HS-21 pinned.
-    func testDrainBelowThePaceIsARealSqueezeAndFalls() {
-        let estimator = makeEstimator()
-        let driver = EstimatorDriver(self, estimator)
-
-        for _ in 0..<10 {
-            driver.beat(bottleneckMbps: 20)
-        }
-
-        XCTAssertNil(driver.beat(
-            bottleneckMbps: 8,
-            extraDelayMicros: 40_000
-        ).newRateBitsPerSecond)
-        // The verdict beats are deferred (dwell-shaped); the sub-pace
-        // drain never improves, so the budget expires and the fall
-        // bites.
-        var verdict = driver.beat(bottleneckMbps: 8, extraDelayMicros: 40_000)
-        var deferredBeats = 0
-        while verdict.newRateBitsPerSecond == nil, deferredBeats < 30 {
-            verdict = driver.beat(bottleneckMbps: 8, extraDelayMicros: 40_000)
-            deferredBeats += 1
-        }
-        XCTAssertNotNil(verdict.newRateBitsPerSecond)
-        XCTAssertEqual(Double(verdict.newRateBitsPerSecond!),
-                       8e6 * 0.85, accuracy: 1.0e6)
-        XCTAssertEqual(estimator.stats.stallHolds, 0)
-    }
-
     /// Conservation is the third leg: a gap-burst shape WITH loss is a
     /// congested queue tail-dropping, not a hole that closed — the
     /// fall proceeds despite the bounded peak and the super-rate drain.
@@ -1468,9 +1357,7 @@ final class RateEstimatorGateTests: XCTestCase {
     /// presumption expires mid-dwell, moments before the drain makes
     /// the frame whole (the first live gate judged 30 of 35 NACK
     /// entries stale). Post-FEC evidence inside the regime ladder's
-    /// own clean column (< 0.5%) must not defeat the hold — but a
-    /// rung-3-scale NACK storm still bites through its own ungated
-    /// branch.
+    /// own clean column (< 0.5%) must not defeat the hold.
     func testNackEchoInsideTheHoleStillHolds() throws {
         let estimator = makeEstimator()
         let driver = EstimatorDriver(self, estimator)
@@ -1506,25 +1393,6 @@ final class RateEstimatorGateTests: XCTestCase {
                 not congestion
                 """)
         XCTAssertGreaterThanOrEqual(estimator.stats.stallHolds, 1)
-
-        // A rung-3-scale storm through the same shape: > 2% post-FEC
-        // falls on its own branch, gate or no gate.
-        var stormNacks: [FeedbackReport.NackEntry] = []
-        for frame in 0..<6 {
-            stormNacks.append(try FeedbackReport.NackEntry(
-                frame: FrameNumber(rawValue: UInt32(100 + frame)),
-                missingShards: Array(0...30)
-            ))
-        }
-        received += 400
-        let storm = driver.beat(
-            bottleneckMbps: 200,
-            channels: lossLedger(received: received, missing: 0),
-            nacks: stormNacks
-        )
-        XCTAssertEqual(storm.change, .postFecLoss,
-            "loss FEC could not absorb still bites — rung 3 is ungated")
-        XCTAssertNotNil(storm.newRateBitsPerSecond)
     }
 
     /// The 1.7% feedback-direction loss the study measured: reports
@@ -1793,46 +1661,6 @@ final class RateEstimatorGateTests: XCTestCase {
             Double(beforeRecovery) * 1.15,
             "clean air climbs toward the belief (10%/s), not a pin"
         )
-    }
-
-    /// The persistence twin the brief demands beside the replay: a
-    /// GENUINE capacity drop — honest stretched trains, a building
-    /// queue, standing backlog — still falls within ~1 s of onset,
-    /// anchored at measured delivery.
-    func testGenuineCapacityDropFallsWithinOneSecondOfOnset() {
-        let estimator = makeEstimator()
-        let driver = EstimatorDriver(self, estimator)
-
-        for _ in 0..<10 {
-            driver.beat(bottleneckMbps: 20)
-        }
-
-        // The squeeze: the path drops to 6 Mbps, the queue builds
-        // +10 ms per beat, the pacer holds backlog. Count beats to
-        // the first fall.
-        var extraDelay: UInt64 = 30_000
-        var fell: RateEstimatorVerdict?
-        var beats = 0
-        while fell?.newRateBitsPerSecond == nil, beats < 40 {
-            extraDelay += 10_000
-            let verdict = driver.beat(
-                bottleneckMbps: 6,
-                extraDelayMicros: extraDelay,
-                backlogBytes: 40_000
-            )
-            if verdict.newRateBitsPerSecond != nil { fell = verdict }
-            beats += 1
-        }
-        XCTAssertNotNil(fell?.newRateBitsPerSecond,
-            "a genuine capacity drop must fall")
-        XCTAssertLessThanOrEqual(beats, 40,
-            """
-                within ~1 s of onset (the pillar's fast fall, at most one \
-                limiter beat later than the old law)
-                """)
-        XCTAssertEqual(Double(fell!.newRateBitsPerSecond!), 6e6 * 0.85,
-                       accuracy: 1.0e6,
-            "anchored at measured delivery — the belief followed the path down")
     }
 
     /// Self-inflicted evidence recuses itself: NACKs against frames

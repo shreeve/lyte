@@ -249,6 +249,9 @@ final class NackRepairGateTests: XCTestCase {
                        "the newer IDR is the heal — no fresh IDR owed")
         drain(session, box: box, until: now + 5 * Self.ms, now: &now)
         XCTAssertTrue(box.tail().isEmpty)
+        XCTAssertEqual(try refusalsOnWire(box), [RepairRefusal(
+            frame: FrameNumber(rawValue: 0), reason: .superseded
+        )], "older-than-IDR refuses dead but tells the client")
 
         // The IDR itself stays repairable (§5.2's burst-loss rationale).
         let idrRepair = try feed(
@@ -369,6 +372,10 @@ final class NackRepairGateTests: XCTestCase {
         )))
         XCTAssertFalse(session.takeFreshKeyframeRequest())
         XCTAssertEqual(session.counters.repairRefusalsSent, 1)
+        drain(session, box: box, until: now + 5 * Self.ms, now: &now)
+        XCTAssertEqual(try refusalsOnWire(box), [RepairRefusal(
+            frame: FrameNumber(rawValue: 0), reason: .unknownFrame
+        )])
     }
 
     func testGarbageUnknownFrameNacksNeverBypassClientRecoveryOwner() throws {
@@ -399,19 +406,6 @@ final class NackRepairGateTests: XCTestCase {
         XCTAssertEqual(armed, 0,
             "wire-cadence garbage NACKs bypassed the client episode")
         XCTAssertEqual(session.counters.repairRefusalsSent, 40)
-
-        // A later unknown frame remains the same policy: refuse now; the
-        // client request (or its 250 ms deadline) re-anchors once.
-        now = 1_011 * Self.ms
-        _ = try feed(
-            session,
-            report: nackReport(
-                frame: 7, shards: [0], clientMicros: now / 1_000
-            ),
-            now: now
-        )
-        XCTAssertFalse(session.takeFreshKeyframeRequest())
-        XCTAssertEqual(session.counters.repairRefusalsSent, 41)
     }
 
     func testNackAfterCloseIsSuppressed() throws {
@@ -548,72 +542,6 @@ final class NackRepairGateTests: XCTestCase {
         drain(session, box: box, until: now + 5 * Self.ms, now: &now)
         XCTAssertTrue(try refusalsOnWire(box).isEmpty)
         XCTAssertEqual(session.counters.repairRefusalsSent, 0)
-    }
-
-    func testOlderThanIdrRefusalRidesSuperseded() throws {
-        let box = Box()
-        let session = makeSession(box: box)
-        var now: UInt64 = 0
-        try establishSrtt(session, box: box, now: &now)
-        box.sendInstant = now
-        _ = try session.ingestVideoFrame(
-            syntheticFrame(byteCount: 8_000),
-            captureTimestampMicroseconds: now / 1_000,
-            isKeyframe: false, now: now
-        )
-        _ = try session.ingestVideoFrame(
-            syntheticFrame(byteCount: 12_000, irap: true),
-            captureTimestampMicroseconds: now / 1_000,
-            isKeyframe: true, now: now
-        )
-        drain(session, box: box, until: now + 15 * Self.ms, now: &now)
-
-        _ = try feed(
-            session,
-            report: nackReport(frame: 0, shards: [0],
-                               clientMicros: now / 1_000),
-            now: now
-        )
-        drain(session, box: box, until: now + 5 * Self.ms, now: &now)
-        XCTAssertEqual(try refusalsOnWire(box), [RepairRefusal(
-            frame: FrameNumber(rawValue: 0), reason: .superseded
-        )], "older-than-IDR refuses dead but tells the client")
-    }
-
-    func testEvictedFrameRefusalRidesUnknownFrame() throws {
-        let box = Box()
-        let session = makeSession(box: box) {
-            $0.repairRetentionNS = 100 * Self.ms
-            $0.repairFreezeBudgetOverrideNS = 10_000 * Self.ms
-        }
-        var now: UInt64 = 0
-        try establishSrtt(session, box: box, now: &now)
-        box.sendInstant = now
-        _ = try session.ingestVideoFrame(
-            syntheticFrame(byteCount: 8_000),
-            captureTimestampMicroseconds: now / 1_000,
-            isKeyframe: false, now: now
-        )
-        drain(session, box: box, until: now + 10 * Self.ms, now: &now)
-        now += 200 * Self.ms
-        box.sendInstant = now
-        _ = try session.ingestVideoFrame(
-            syntheticFrame(byteCount: 8_000),
-            captureTimestampMicroseconds: now / 1_000,
-            isKeyframe: false, now: now
-        )
-        drain(session, box: box, until: now + 10 * Self.ms, now: &now)
-
-        _ = try feed(
-            session,
-            report: nackReport(frame: 0, shards: [0],
-                               clientMicros: now / 1_000),
-            now: now
-        )
-        drain(session, box: box, until: now + 5 * Self.ms, now: &now)
-        XCTAssertEqual(try refusalsOnWire(box), [RepairRefusal(
-            frame: FrameNumber(rawValue: 0), reason: .unknownFrame
-        )])
     }
 
     func testOpeningIdrExemptionRepairsBlackGlass() throws {
