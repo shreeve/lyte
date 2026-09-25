@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # Build-graph identity for the gates' SwiftPM caches. SwiftPM can keep stale
 # absolute dependency paths after a file moves between targets or packages,
 # so a gate cleans a package's scratch directory whenever this identity
@@ -11,14 +11,7 @@
 # run them inside command substitution, where no bash applies `set -e`, so
 # each failure is an explicit return.
 
-# lyte_sha256: the hex SHA-256 of stdin.
-lyte_sha256() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum | awk '{print $1}'
-    else
-        shasum -a 256 | awk '{print $1}'
-    fi
-}
+. "$(dirname "${BASH_SOURCE[0]}")/sha256.sh"
 
 # lyte_manifest_path_dependencies MANIFEST: the X of every
 # `.package(… path: "../X" …)` in MANIFEST, whatever its other arguments and
@@ -103,4 +96,22 @@ lyte_build_graph_hash() {
 $more"
     done
     printf '%s\n' "$identity" | lyte_sha256
+}
+
+# lyte_changed_build_graph ROOT PACKAGE: PACKAGE's build-graph hash when it
+# differs from the one lyte_record_build_graph last stored in its scratch
+# directory, nothing when it does not.
+lyte_changed_build_graph() {
+    local hash marker="$1/$2/.build/.lyte-build-graph-sha256"
+    hash="$(lyte_build_graph_hash "$1" "$2")" || return 1
+    if [ ! -f "$marker" ] || [ "$(cat "$marker")" != "$hash" ]; then
+        printf '%s\n' "$hash"
+    fi
+}
+
+# lyte_record_build_graph ROOT PACKAGE HASH: PACKAGE's scratch directory is
+# built for HASH.
+lyte_record_build_graph() {
+    mkdir -p "$1/$2/.build"
+    printf '%s\n' "$3" > "$1/$2/.build/.lyte-build-graph-sha256"
 }

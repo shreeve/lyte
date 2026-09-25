@@ -167,43 +167,21 @@ trap 'exit 143' TERM
 trap 'exit 129' HUP
 trap 'exit 141' PIPE
 
-# run_package_tests PACKAGE [--build-only TARGET...]: resolve PACKAGE, then
-# test it (or build only TARGETs), cleaning its build state first when its
-# build graph changed.
+# run_package_tests PACKAGE: resolve and test PACKAGE, cleaning its build
+# state first when its build graph changed.
 run_package_tests() {
-    local package="$1" path="$gate_root/$1" target
-    shift
-    local marker="$path/.build/.lyte-build-graph-sha256"
-    local build_graph_hash installed_hash=""
-    build_graph_hash="$(lyte_build_graph_hash "$gate_root" "$package")" \
-        || build_graph_hash=""
-    [[ -n "$build_graph_hash" ]] \
+    local package="$1" path="$gate_root/$1" changed
+    echo "==> $package tests"
+    changed="$(lyte_changed_build_graph "$gate_root" "$package")" \
         || fail "no build-graph identity for $package"
-
-    if [[ "${1:-}" == --build-only ]]; then
-        shift
-        echo "==> $package builds: $*"
-    else
-        echo "==> $package tests"
-    fi
-    if [[ -f "$marker" ]]; then
-        installed_hash="$(<"$marker")"
-    fi
-    if [[ "$installed_hash" != "$build_graph_hash" ]]; then
+    if [[ -n "$changed" ]]; then
         echo "    package or source-path graph changed; invalidating stale SwiftPM build state"
         (cd "$path" && swift package clean)
     fi
     (cd "$path" && swift package resolve)
-    if (( $# )); then
-        for target in "$@"; do
-            (cd "$path" \
-                && swift build --target "$target" -Xswiftc -warnings-as-errors)
-        done
-    else
-        (cd "$path" && swift test -Xswiftc -warnings-as-errors)
-    fi
-    mkdir -p "$path/.build"
-    printf '%s\n' "$build_graph_hash" > "$marker"
+    (cd "$path" && swift test -Xswiftc -warnings-as-errors)
+    [[ -z "$changed" ]] \
+        || lyte_record_build_graph "$gate_root" "$package" "$changed"
 }
 
 main() {

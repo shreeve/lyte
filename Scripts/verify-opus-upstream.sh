@@ -16,12 +16,8 @@ committed_root="$repo_root/Common/Sources/COpus"
 work="$(mktemp -d)"
 trap 'rm -rf -- "$work"' EXIT
 
-if command -v shasum >/dev/null 2>&1; then
-    actual_archive_sha="$(shasum -a 256 "$archive" | awk '{print $1}')"
-else
-    actual_archive_sha="$(sha256sum "$archive" | awk '{print $1}')"
-fi
-[[ "$actual_archive_sha" == "$expected_archive_sha" ]] || {
+source "$repo_root/Scripts/lib/sha256.sh"
+[[ "$(lyte_sha256 "$archive")" == "$expected_archive_sha" ]] || {
     echo "Opus verification FAILED: archive SHA-256 mismatch" >&2
     exit 1
 }

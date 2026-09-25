@@ -7,6 +7,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 deploy="$repo_root/Host/Scripts/deploy-host.sh"
 source "$repo_root/Scripts/lib/assert.sh"
+source "$repo_root/Scripts/lib/sha256.sh"
 
 scratch="$(mktemp -d -t lyte-host-deploy-test.XXXXXX)"
 scratch="$(cd "$scratch" && pwd -P)"
@@ -16,14 +17,6 @@ unset XDG_DATA_HOME
 mkdir -p "$HOME"
 versions="$HOME/.local/share/lyte/versions"
 link="$HOME/.local/bin/lyte-host"
-
-sha256_file() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$1" | awk '{print $1}'
-    else
-        shasum -a 256 "$1" | awk '{print $1}'
-    fi
-}
 
 # A release directory whose lyte-host prints $1.
 release() {
@@ -35,7 +28,7 @@ release() {
     printf '%s\n' "$dir"
 }
 
-id_of() { sha256_file "$1/lyte-host" | cut -c1-12; }
+id_of() { lyte_sha256 "$1/lyte-host" | cut -c1-12; }
 active() { basename "$(dirname "$(readlink "$link")")"; }
 refuses() {
     if "$@" >/dev/null 2>&1; then
@@ -54,7 +47,7 @@ id_b="$(id_of "$b")"
 [[ "$(readlink "$link")" == "$versions/$id_a/lyte-host" ]] || fail "wrong target"
 [[ "$("$link")" == alpha ]] || fail "link does not run the deployed binary"
 cmp "$a/lyte-audio-check" "$versions/$id_a/lyte-audio-check"
-[[ "$(sha256_file "$versions/$id_a/lyte-host")" == "$id_a"* ]] \
+[[ "$(lyte_sha256 "$versions/$id_a/lyte-host")" == "$id_a"* ]] \
     || fail "version directory is not named by its digest"
 [[ ! -e "$HOME/.local/share/lyte/previous" ]] || fail "first deploy recorded a previous"
 
@@ -87,7 +80,7 @@ grep -Fxq 'restart lyte-host' "$scratch/systemctl.log" || fail "no restart"
 status="$("$deploy" --status)"
 grep -Fq "active:   $id_b" <<< "$status" || fail "status active"
 grep -Fq "previous: $id_a" <<< "$status" || fail "status previous"
-grep -Fq "sha256:   $(sha256_file "$b/lyte-host")" <<< "$status" || fail "status sha"
+grep -Fq "sha256:   $(lyte_sha256 "$b/lyte-host")" <<< "$status" || fail "status sha"
 
 # Pruning keeps the newest N, always including the active and previous.
 for n in 1 2 3 4 5; do
