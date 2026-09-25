@@ -637,6 +637,17 @@ refute_logged ' apply '
 refute_logged ' remove '
 printf '%s\n' default > "$LYTE_FAKE_TC_STATE"
 
+# A full impaired run judges the JSONL the leg named, whatever witnesses lie
+# beside it, removes the qdisc, and gives every rsync a connect timeout.
+run_netem LYTE_BENCHMARK_PORT=41151 LYTE_BENCHMARK_ALLOW_STANDING_PORT=1 \
+    || fail "an impaired run failed: $(<"$test_root/netem.stderr")"
+grep -Eq '"--netem-profile", "moderate", "[^"]*/motion-fake\.jsonl"' \
+    "$test_root/netem.stdout" \
+    || fail "the netem verdict did not judge the leg's JSONL"
+expect_tc default
+[[ -s "$test_root/rsync.log" ]] || fail "benchmark-netem uploaded no helper"
+refute grep -v -- '-e ssh -o ConnectTimeout=10' "$test_root/rsync.log"
+
 # The handshake leg's host side against the simulated pup, whose HOME holds
 # the protected state: the XDG and pre-XDG identity and the deployed link.
 pup_home="$test_root/pup-home"
