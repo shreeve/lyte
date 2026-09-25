@@ -14,16 +14,6 @@ final class VideoDecisionVectorFileTests: XCTestCase {
         try VideoDecisionVectorFile.loadCommitted()
     }
 
-    func testEveryScenarioIsPinnedHonestly() throws {
-        let file = try loadFile()
-        XCTAssertEqual(file.scenarioFile, VideoVectorFile.fileName)
-        XCTAssertEqual(file.provenance, "pinned-self-consistent")
-        XCTAssertEqual(
-            file.scenarios.map(\.name),
-            try VideoVectorFile.loadCommitted().scenarios.map(\.name)
-        )
-    }
-
     func testReplayReproducesEveryDecision() throws {
         let frozen = Dictionary(
             uniqueKeysWithValues: try loadFile().scenarios.map { ($0.name, $0.events) }

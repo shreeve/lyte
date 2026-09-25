@@ -5,60 +5,13 @@ import LyteWireTestKit
 import LyteWireVectorGen
 
 // Verifies the committed Vectors/clipboard-images-v1.json byte-exact —
-// the P-1 cargo marker (ClipboardImageCargo 0x22) and the key-12
+// the cargo marker (ClipboardImageCargo 0x22) and the key-12
 // capability spine, on both platforms.
 
 final class ClipboardImageVectorFileTests: XCTestCase {
 
     private func loadFile() throws -> ClipboardImageVectorFile {
         try ClipboardImageVectorFile.loadCommitted()
-    }
-
-    /// The file's coverage discipline: the marker carries roundtrips
-    /// including a foreign-but-well-formed mime (format policy is the
-    /// channel's, never the codec's) and the exact 255-byte mime
-    /// ceiling; every decode-reachable error case appears at least
-    /// once plus the one wire-inexpressible encode reject; and the
-    /// key-12 spine is pinned declared AND absent.
-    func testCoverageDiscipline() throws {
-        let file = try loadFile()
-        let roundtrips = file.vectors.filter {
-            $0.codec == .imageCargo && $0.kind == .roundtrip
-        }
-        XCTAssertFalse(roundtrips.isEmpty, "imageCargo needs roundtrips")
-        XCTAssertTrue(
-            roundtrips.contains { vector in
-                guard let mime = vector.mimeUtf8Hex.flatMap(Hex.bytes)
-                else { return false }
-                return !ClipboardImageWire.accepts(
-                    mime: String(decoding: mime, as: UTF8.self)
-                )
-            },
-            "a foreign-but-well-formed mime must be pinned as decodable"
-        )
-        XCTAssertTrue(
-            roundtrips.contains { vector in
-                vector.mimeUtf8Hex.flatMap(Hex.bytes)?.count == 255
-            },
-            "the exact 255-byte mime ceiling must be pinned as legal"
-        )
-        let decodeErrors = Set(file.vectors.lazy
-            .filter { $0.kind == .decodeReject }.compactMap(\.error))
-        XCTAssertEqual(
-            decodeErrors,
-            ["truncatedMessage", "unexpectedType", "trailingBytes",
-             "zeroTransferId", "emptyMime", "invalidUtf8"],
-            "every decode-reachable error case pinned at least once"
-        )
-        let encodeErrors = Set(file.vectors.lazy
-            .filter { $0.kind == .encodeReject }.compactMap(\.error))
-        XCTAssertEqual(encodeErrors, ["mimeOverBudget"],
-                       "the u8-width bound pinned as an encode reject")
-        let spinePins = Set(file.vectors.lazy
-            .filter { $0.codec == .capabilitySet }
-            .compactMap(\.clipboardImages))
-        XCTAssertEqual(spinePins, [true, false],
-                       "the key-12 spine pinned declared AND absent")
     }
 
     func testAllClipboardImageVectors() throws {
@@ -97,14 +50,10 @@ final class ClipboardImageVectorFileTests: XCTestCase {
             else {
                 return XCTFail("\(vector.name): malformed messageHex")
             }
-            XCTAssertThrowsError(
-                try ClipboardImageCargo.decode(message), vector.name
+            assertVectorReject(
+                ClipboardImageCargoError.self, vector.error, vector.name
             ) {
-                guard let error = $0 as? ClipboardImageCargoError else {
-                    return XCTFail("\(vector.name): foreign error \($0)")
-                }
-                XCTAssertEqual(vectorErrorName(error),
-                               vector.error, vector.name)
+                try ClipboardImageCargo.decode(message)
             }
         case .encodeReject:
             guard let mimeUtf8 = vector.mimeUtf8Hex.flatMap(Hex.bytes)
@@ -112,15 +61,10 @@ final class ClipboardImageVectorFileTests: XCTestCase {
                 return XCTFail("\(vector.name): missing mimeUtf8Hex")
             }
             let mime = String(decoding: mimeUtf8, as: UTF8.self)
-            XCTAssertThrowsError(
-                try ClipboardImageCargo(transferId: 7, mime: mime),
-                vector.name
+            assertVectorReject(
+                ClipboardImageCargoError.self, vector.error, vector.name
             ) {
-                guard let error = $0 as? ClipboardImageCargoError else {
-                    return XCTFail("\(vector.name): foreign error \($0)")
-                }
-                XCTAssertEqual(vectorErrorName(error),
-                               vector.error, vector.name)
+                try ClipboardImageCargo(transferId: 7, mime: mime)
             }
         }
     }

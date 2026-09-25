@@ -5,7 +5,7 @@ import LyteWireTestKit
 import LyteWireVectorGen
 
 // Verifies the committed Vectors/capabilities-v1.json byte-exact —
-// the W7 layer both ends code against, on both platforms: the CBOR
+// the capability layer both ends code against, on both platforms: the CBOR
 // profile, the typed set, the intersect algebra as data (checked in
 // BOTH orders — commutativity is frozen, not assumed), and the CTRL
 // codecs 0x0F/0x11/0x12.
@@ -29,15 +29,8 @@ final class CapabilityVectorFileTests: XCTestCase {
                     try Cbor.encode(decoded), bytes, vector.name
                 )
             case .decodeReject:
-                XCTAssertThrowsError(
-                    try Cbor.decode(bytes), vector.name
-                ) { error in
-                    guard let error = error as? CborError else {
-                        return XCTFail("\(vector.name): foreign error")
-                    }
-                    XCTAssertEqual(
-                        vectorErrorName(error), vector.error, vector.name
-                    )
+                assertVectorReject(CborError.self, vector.error, vector.name) {
+                    try Cbor.decode(bytes)
                 }
             }
         }
@@ -68,16 +61,10 @@ final class CapabilityVectorFileTests: XCTestCase {
                 let decoded = try Capabilities.decodeCbor(bytes)
                 XCTAssertTrue(fields.matches(decoded), vector.name)
             case .decodeReject:
-                XCTAssertThrowsError(
-                    try Capabilities.decodeCbor(bytes), vector.name
-                ) { error in
-                    guard let error = error as? CapabilityError else {
-                        return XCTFail("\(vector.name): foreign error")
-                    }
-                    XCTAssertEqual(
-                        vectorErrorName(error), vector.error,
-                        vector.name
-                    )
+                assertVectorReject(
+                    CapabilityError.self, vector.error, vector.name
+                ) {
+                    try Capabilities.decodeCbor(bytes)
                 }
             }
         }
@@ -140,15 +127,10 @@ final class CapabilityVectorFileTests: XCTestCase {
                         _ = try CapabilityUpdateAck.decode(message)
                     }
                 }
-                XCTAssertThrowsError(try attempt(), vector.name) { error in
-                    guard let error = error as? CapabilityMessageError
-                    else {
-                        return XCTFail("\(vector.name): foreign error")
-                    }
-                    XCTAssertEqual(
-                        vectorErrorName(error), vector.error,
-                        vector.name
-                    )
+                assertVectorReject(
+                    CapabilityMessageError.self, vector.error, vector.name
+                ) {
+                    try attempt()
                 }
             }
         }

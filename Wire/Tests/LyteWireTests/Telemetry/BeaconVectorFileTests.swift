@@ -4,9 +4,9 @@ import LyteWire
 import LyteWireTestKit
 import LyteWireVectorGen
 
-// Verifies the committed Vectors/beacon-v1.json byte-exact — the W4a
-// contract CL-3's beacon echo and feedback sender code against before the
-// host exists (master plan §4.12), on both platforms.
+// Verifies the committed Vectors/beacon-v1.json byte-exact — the clock
+// beacon, its echo and the feedback report both ends code against, on
+// both platforms.
 
 final class BeaconVectorFileTests: XCTestCase {
 
@@ -108,11 +108,8 @@ final class BeaconVectorFileTests: XCTestCase {
         let decode: () throws -> Void = vector.decoder == .beacon
             ? { _ = try ClockBeacon.decode(bytes) }
             : { _ = try BeaconEcho.decode(bytes) }
-        XCTAssertThrowsError(try decode(), vector.name) { error in
-            guard let beaconError = error as? BeaconError else {
-                return XCTFail("\(vector.name): non-BeaconError \(error)")
-            }
-            XCTAssertEqual(vectorErrorName(beaconError), expected, vector.name)
+        assertVectorReject(BeaconError.self, expected, vector.name) {
+            try decode()
         }
     }
 
@@ -146,11 +143,8 @@ final class BeaconVectorFileTests: XCTestCase {
             return XCTFail("\(vector.name): malformed encodeReject vector")
         }
         let report = try fields.makeReport()
-        XCTAssertThrowsError(try report.encode(), vector.name) { error in
-            guard let feedbackError = error as? FeedbackError else {
-                return XCTFail("\(vector.name): non-FeedbackError \(error)")
-            }
-            XCTAssertEqual(vectorErrorName(feedbackError), expected, vector.name)
+        assertVectorReject(FeedbackError.self, expected, vector.name) {
+            try report.encode()
         }
     }
 
@@ -162,11 +156,8 @@ final class BeaconVectorFileTests: XCTestCase {
         else {
             return XCTFail("\(vector.name): malformed decodeReject vector")
         }
-        XCTAssertThrowsError(try FeedbackReport.decode(bytes), vector.name) { error in
-            guard let feedbackError = error as? FeedbackError else {
-                return XCTFail("\(vector.name): non-FeedbackError \(error)")
-            }
-            XCTAssertEqual(vectorErrorName(feedbackError), expected, vector.name)
+        assertVectorReject(FeedbackError.self, expected, vector.name) {
+            try FeedbackReport.decode(bytes)
         }
     }
 }

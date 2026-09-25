@@ -17,7 +17,8 @@ final class SessionVectorFileTests: XCTestCase {
     func testAllSessionVectors() throws {
         for vector in try loadFile().vectors {
             guard let message = Hex.bytes(vector.messageHex) else {
-                return XCTFail("\(vector.name): malformed messageHex")
+                XCTFail("\(vector.name): malformed messageHex")
+                continue
             }
             switch vector.codec {
             case .pathChallenge:
@@ -46,13 +47,10 @@ final class SessionVectorFileTests: XCTestCase {
             XCTAssertEqual(try PathChallenge.decode(message).token, token,
                            vector.name)
         case .decodeReject:
-            XCTAssertThrowsError(try PathChallenge.decode(message),
-                                 vector.name) {
-                guard let error = $0 as? PathMessageError else {
-                    return XCTFail("\(vector.name): foreign error \($0)")
-                }
-                XCTAssertEqual(vectorErrorName(error), vector.error,
-                               vector.name)
+            assertVectorReject(
+                PathMessageError.self, vector.error, vector.name
+            ) {
+                try PathChallenge.decode(message)
             }
         }
     }
@@ -71,13 +69,10 @@ final class SessionVectorFileTests: XCTestCase {
             XCTAssertEqual(try PathResponse.decode(message).token, token,
                            vector.name)
         case .decodeReject:
-            XCTAssertThrowsError(try PathResponse.decode(message),
-                                 vector.name) {
-                guard let error = $0 as? PathMessageError else {
-                    return XCTFail("\(vector.name): foreign error \($0)")
-                }
-                XCTAssertEqual(vectorErrorName(error), vector.error,
-                               vector.name)
+            assertVectorReject(
+                PathMessageError.self, vector.error, vector.name
+            ) {
+                try PathResponse.decode(message)
             }
         }
     }
@@ -101,13 +96,10 @@ final class SessionVectorFileTests: XCTestCase {
             XCTAssertEqual(try IdrRequest.decode(message), request,
                            vector.name)
         case .decodeReject:
-            XCTAssertThrowsError(try IdrRequest.decode(message),
-                                 vector.name) {
-                guard let error = $0 as? IdrRequestError else {
-                    return XCTFail("\(vector.name): foreign error \($0)")
-                }
-                XCTAssertEqual(vectorErrorName(error), vector.error,
-                               vector.name)
+            assertVectorReject(
+                IdrRequestError.self, vector.error, vector.name
+            ) {
+                try IdrRequest.decode(message)
             }
         }
     }
@@ -130,15 +122,10 @@ final class SessionVectorFileTests: XCTestCase {
             XCTAssertEqual(try envelope.encode(payload: Array(payload)),
                            message, vector.name)
         case .decodeReject:
-            XCTAssertThrowsError(
-                try ConnectionId.decode(extensions: envelope.extensions),
-                vector.name
+            assertVectorReject(
+                ConnectionIdError.self, vector.error, vector.name
             ) {
-                guard let error = $0 as? ConnectionIdError else {
-                    return XCTFail("\(vector.name): foreign error \($0)")
-                }
-                XCTAssertEqual(vectorErrorName(error), vector.error,
-                               vector.name)
+                try ConnectionId.decode(extensions: envelope.extensions)
             }
         }
     }

@@ -4,7 +4,7 @@ import LyteWire
 import LyteWireTestKit
 import LyteWireVectorGen
 
-// Verifies the committed Vectors/arq-v1.json byte-exact — the W3 frame
+// Verifies the committed Vectors/arq-v1.json byte-exact — the ARQ frame
 // formats (data segment 0x07, ACK 0x08, and the frame-sequence payload
 // rule) both ends code against, on both platforms.
 
@@ -39,16 +39,10 @@ final class ArqVectorFileTests: XCTestCase {
                     "\(vector.name): lenient decode re-encoded identically"
                 )
             case .decodeReject:
-                XCTAssertThrowsError(
-                    try ArqFrame.decodeAll(payload), vector.name
-                ) { error in
-                    guard let frameError = error as? ArqFrameError else {
-                        return XCTFail("\(vector.name): foreign error type")
-                    }
-                    XCTAssertEqual(
-                        vectorErrorName(frameError), vector.error,
-                        vector.name
-                    )
+                assertVectorReject(
+                    ArqFrameError.self, vector.error, vector.name
+                ) {
+                    try ArqFrame.decodeAll(payload)
                 }
             }
         }

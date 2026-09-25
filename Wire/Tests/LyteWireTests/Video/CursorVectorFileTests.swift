@@ -4,7 +4,7 @@ import LyteWire
 import LyteWireTestKit
 import LyteWireVectorGen
 
-// Verifies the committed Vectors/cursor-v1.json byte-exact — the E3
+// Verifies the committed Vectors/cursor-v1.json byte-exact — the
 // cursor-shape codec (CursorShape 0x24) and the key-13 capability
 // spine, on both platforms.
 
@@ -66,7 +66,8 @@ final class CursorVectorFileTests: XCTestCase {
     func testAllCursorVectors() throws {
         for vector in try loadFile().vectors {
             guard let message = Hex.bytes(vector.messageHex) else {
-                return XCTFail("\(vector.name): malformed messageHex")
+                XCTFail("\(vector.name): malformed messageHex")
+                continue
             }
             switch vector.codec {
             case .cursorShape:
@@ -98,14 +99,10 @@ final class CursorVectorFileTests: XCTestCase {
                 try CursorShape.decode(message), shape, vector.name
             )
         case .decodeReject:
-            XCTAssertThrowsError(
-                try CursorShape.decode(message), vector.name
+            assertVectorReject(
+                CursorMessageError.self, vector.error, vector.name
             ) {
-                guard let error = $0 as? CursorMessageError else {
-                    return XCTFail("\(vector.name): foreign error \($0)")
-                }
-                XCTAssertEqual(vectorErrorName(error),
-                               vector.error, vector.name)
+                try CursorShape.decode(message)
             }
         }
     }

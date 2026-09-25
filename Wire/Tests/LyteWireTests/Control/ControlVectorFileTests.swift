@@ -42,7 +42,8 @@ final class ControlVectorFileTests: XCTestCase {
     func testAllControlVectors() throws {
         for vector in try loadFile().vectors {
             guard let message = Hex.bytes(vector.messageHex) else {
-                return XCTFail("\(vector.name): malformed messageHex")
+                XCTFail("\(vector.name): malformed messageHex")
+                continue
             }
             switch vector.codec {
             case .idleFrame:
@@ -89,12 +90,8 @@ final class ControlVectorFileTests: XCTestCase {
             XCTAssertEqual(idle.encode(), message, vector.name)
             XCTAssertEqual(try IdleFrame.decode(message), idle, vector.name)
         case .decodeReject:
-            XCTAssertThrowsError(try IdleFrame.decode(message), vector.name) {
-                guard let error = $0 as? IdleFrameError else {
-                    return XCTFail("\(vector.name): foreign error \($0)")
-                }
-                XCTAssertEqual(vectorErrorName(error), vector.error,
-                               vector.name)
+            assertVectorReject(IdleFrameError.self, vector.error, vector.name) {
+                try IdleFrame.decode(message)
             }
         }
     }
@@ -110,7 +107,7 @@ final class ControlVectorFileTests: XCTestCase {
             let tuples = try rows.map { row -> InputEchoTuple in
                 guard let received = Hex.uint64(row.receivedHex),
                       let injected = Hex.uint64(row.injectedHex) else {
-                    throw XCTSkip("\(vector.name): malformed tuple hex")
+                    throw VectorFileError.malformedField(vector.name)
                 }
                 return InputEchoTuple(
                     seq: row.seq,
@@ -122,12 +119,10 @@ final class ControlVectorFileTests: XCTestCase {
             XCTAssertEqual(echo.encode(), message, vector.name)
             XCTAssertEqual(try InputEcho.decode(message), echo, vector.name)
         case .decodeReject:
-            XCTAssertThrowsError(try InputEcho.decode(message), vector.name) {
-                guard let error = $0 as? InputMessageError else {
-                    return XCTFail("\(vector.name): foreign error \($0)")
-                }
-                XCTAssertEqual(vectorErrorName(error), vector.error,
-                               vector.name)
+            assertVectorReject(
+                InputMessageError.self, vector.error, vector.name
+            ) {
+                try InputEcho.decode(message)
             }
         }
     }
@@ -151,15 +146,10 @@ final class ControlVectorFileTests: XCTestCase {
             XCTAssertEqual(try envelope.encode(payload: Array(payload)),
                            message, vector.name)
         case .decodeReject:
-            XCTAssertThrowsError(
-                try LastInputSeqTlv.decode(extensions: envelope.extensions),
-                vector.name
+            assertVectorReject(
+                InputMessageError.self, vector.error, vector.name
             ) {
-                guard let error = $0 as? InputMessageError else {
-                    return XCTFail("\(vector.name): foreign error \($0)")
-                }
-                XCTAssertEqual(vectorErrorName(error), vector.error,
-                               vector.name)
+                try LastInputSeqTlv.decode(extensions: envelope.extensions)
             }
         }
     }
@@ -177,12 +167,10 @@ final class ControlVectorFileTests: XCTestCase {
             XCTAssertEqual(encode(mode), message, vector.name)
             XCTAssertEqual(try decode(message), mode, vector.name)
         case .decodeReject:
-            XCTAssertThrowsError(try decode(message), vector.name) {
-                guard let error = $0 as? AudioRoutingMessageError else {
-                    return XCTFail("\(vector.name): foreign error \($0)")
-                }
-                XCTAssertEqual(vectorErrorName(error),
-                               vector.error, vector.name)
+            assertVectorReject(
+                AudioRoutingMessageError.self, vector.error, vector.name
+            ) {
+                try decode(message)
             }
         }
     }
@@ -226,12 +214,8 @@ func checkInputEventVector(
         XCTAssertEqual(try InputEvent.decode(message).encode(), message,
                        vector.name)
     case .decodeReject:
-        XCTAssertThrowsError(try InputEvent.decode(message), vector.name) {
-            guard let error = $0 as? InputMessageError else {
-                return XCTFail("\(vector.name): foreign error \($0)")
-            }
-            XCTAssertEqual(vectorErrorName(error), vector.error,
-                           vector.name)
+        assertVectorReject(InputMessageError.self, vector.error, vector.name) {
+            try InputEvent.decode(message)
         }
     }
 }

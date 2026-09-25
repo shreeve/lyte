@@ -37,11 +37,8 @@ final class FecVectorFileTests: XCTestCase {
                 XCTAssertNotEqual(field.encoded, raw, "\(vector.name): should be non-canonical")
             case .decodeReject:
                 let expected = try XCTUnwrap(vector.error)
-                XCTAssertThrowsError(try FecField.decode(raw), vector.name) { error in
-                    guard let fecError = error as? FecError else {
-                        return XCTFail("\(vector.name): non-FecError \(error)")
-                    }
-                    XCTAssertEqual(vectorErrorName(fecError), expected, vector.name)
+                assertVectorReject(FecError.self, expected, vector.name) {
+                    try FecField.decode(raw)
                 }
             }
         }

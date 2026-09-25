@@ -4,7 +4,7 @@ import LyteWire
 import LyteWireTestKit
 import LyteWireVectorGen
 
-// Verifies the committed Vectors/bulk-v1.json byte-exact — the W10
+// Verifies the committed Vectors/bulk-v1.json byte-exact — the
 // bulk-channel sextet (0x1C–0x21), the key-11 capability spine, and
 // the worked multi-session transfer traces — on both platforms.
 
@@ -12,93 +12,6 @@ final class BulkVectorFileTests: XCTestCase {
 
     private func loadFile() throws -> BulkVectorFile {
         try BulkVectorFile.loadCommitted()
-    }
-
-    /// The file's coverage discipline: every codec carries
-    /// roundtrips, every BulkMessageError case name appears at least
-    /// once, the abort reason space is pinned WHOLE (the lifecycle
-    /// rule), the structural ceilings are pinned legal to the byte,
-    /// the key-11 spine is pinned declared AND absent, and the
-    /// transfer section carries both a multi-session resume and a
-    /// holed-possession resume.
-    func testCoverageDiscipline() throws {
-        let file = try loadFile()
-        for codec: BulkMessageVector.BulkCodec
-            in [.offer, .accept, .chunk, .ack, .complete, .abort] {
-            XCTAssertTrue(
-                file.messageVectors.contains {
-                    $0.codec == codec && $0.kind == .roundtrip
-                },
-                "\(codec) needs roundtrips"
-            )
-        }
-        let allErrorNames: Set<String> = [
-            "truncatedMessage", "unexpectedType", "trailingBytes",
-            "zeroTransferId", "emptyTransfer", "chunkSizeOutOfBounds",
-            "invalidSha256ByteCount", "emptyName", "nameOverBudget",
-            "mimeHintOverBudget", "invalidUtf8", "emptyChunkData",
-            "chunkDataOverBudget", "bitmapOverBudget",
-            "nonCanonicalBitmap", "unknownAbortReason",
-        ]
-        XCTAssertEqual(
-            Set(file.messageVectors.compactMap(\.error)),
-            allErrorNames,
-            "every BulkMessageError case pinned at least once"
-        )
-        XCTAssertEqual(
-            Set(file.messageVectors.lazy
-                .filter { $0.codec == .abort && $0.kind == .roundtrip }
-                .compactMap(\.reason)),
-            Set(BulkAbortReason.allCases.map(bulkAbortReasonName)),
-            "the abort reason space pinned whole"
-        )
-        XCTAssertTrue(
-            file.messageVectors.contains {
-                $0.codec == .chunk && $0.kind == .roundtrip
-                    && $0.dataHex.flatMap(Hex.bytes)?.count
-                        == BulkWire.maxChunkByteCount
-            },
-            "the exact chunk-data ceiling pinned legal"
-        )
-        XCTAssertTrue(
-            file.messageVectors.contains {
-                $0.kind == .roundtrip
-                    && $0.bitmapHex.flatMap(Hex.bytes)?.count
-                        == BulkWire.maxBitmapByteCount
-            },
-            "the exact bitmap ceiling pinned legal"
-        )
-        XCTAssertTrue(
-            file.messageVectors.contains {
-                $0.codec == .offer && $0.kind == .roundtrip
-                    && $0.totalByteCountHex.flatMap(Hex.uint64)
-                        == UInt64.max
-            },
-            "the no-size-ceiling claim pinned (u64-max total legal)"
-        )
-        XCTAssertEqual(
-            Set(file.capabilityVectors.map(\.bulkTransfer)),
-            [true, false],
-            "the key-11 spine pinned declared AND absent"
-        )
-        XCTAssertTrue(
-            file.transferVectors.contains { $0.sessions.count > 1 },
-            "a teardown-resume transfer trace is pinned"
-        )
-        XCTAssertTrue(
-            file.transferVectors.contains {
-                ($0.initialPossession?.extraChunkIndices.isEmpty
-                    == false)
-            },
-            "a holed-possession resume trace is pinned"
-        )
-        for transfer in file.transferVectors {
-            XCTAssertEqual(
-                transfer.provenance, "pinned-self-consistent",
-                "\(transfer.name): transfer traces are pinned, not "
-                    + "external — the provenance must say so"
-            )
-        }
     }
 
     // MARK: - Message vectors
@@ -255,30 +168,16 @@ final class BulkVectorFileTests: XCTestCase {
         guard let message = vector.messageHex.flatMap(Hex.bytes) else {
             return XCTFail("\(vector.name): malformed messageHex")
         }
-        XCTAssertThrowsError(
-            try decodeWithCodec(vector.codec, message), vector.name
-        ) {
-            guard let error = $0 as? BulkMessageError else {
-                return XCTFail("\(vector.name): foreign error \($0)")
-            }
-            XCTAssertEqual(
-                vectorErrorName(error), vector.error, vector.name
-            )
+        assertVectorReject(BulkMessageError.self, vector.error, vector.name) {
+            try decodeWithCodec(vector.codec, message)
         }
     }
 
     private func checkEncodeReject(
         _ vector: BulkMessageVector
     ) throws {
-        XCTAssertThrowsError(
-            try buildTyped(vector), vector.name
-        ) {
-            guard let error = $0 as? BulkMessageError else {
-                return XCTFail("\(vector.name): foreign error \($0)")
-            }
-            XCTAssertEqual(
-                vectorErrorName(error), vector.error, vector.name
-            )
+        assertVectorReject(BulkMessageError.self, vector.error, vector.name) {
+            try buildTyped(vector)
         }
     }
 

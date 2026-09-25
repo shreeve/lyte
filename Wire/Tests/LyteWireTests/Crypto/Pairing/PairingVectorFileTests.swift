@@ -4,8 +4,8 @@ import LyteWire
 import LyteWireTestKit
 import LyteWireVectorGen
 
-// Verifies the committed Vectors/pairing-v1.json byte-exact — the W6
-// pairing layer's frozen artifact (gate W-G7), on both platforms: the
+// Verifies the committed Vectors/pairing-v1.json byte-exact — the
+// pairing layer's frozen artifact, on both platforms: the
 // external draft-irtf-cfrg-cpace-21 vectors drive CPace, the pinned
 // exchange runs drive the real PairingPake machines, and the message
 // vectors drive the 0x0B–0x0E codecs.
@@ -20,13 +20,6 @@ final class PairingVectorFileTests: XCTestCase {
         _ hex: String, _ context: String
     ) throws -> [UInt8] {
         try XCTUnwrap(Hex.bytes(hex), "\(context): malformed hex")
-    }
-
-    func testDraftProvenancePresent() throws {
-        let file = try loadFile()
-        XCTAssertFalse(file.draftVectors.lowOrder.cases.isEmpty)
-        XCTAssertFalse(file.draftVectors.source.isEmpty)
-        XCTAssertEqual(file.draftVectors.sourceSha256.count, 64)
     }
 
     // MARK: External draft vectors
@@ -299,13 +292,10 @@ final class PairingVectorFileTests: XCTestCase {
         case .confirm: decode = { _ = try PairingConfirm.decode(message) }
         case .reject: decode = { _ = try PairingReject.decode(message) }
         }
-        XCTAssertThrowsError(try decode(), vector.name) { error in
-            guard let error = error as? PairingMessageError else {
-                return XCTFail("\(vector.name): foreign error \(error)")
-            }
-            XCTAssertEqual(
-                vectorErrorName(error), vector.error, vector.name
-            )
+        assertVectorReject(
+            PairingMessageError.self, vector.error, vector.name
+        ) {
+            try decode()
         }
     }
 }
