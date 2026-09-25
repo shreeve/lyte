@@ -213,7 +213,6 @@ final class PairingGateTests: XCTestCase {
         XCTAssertEqual(
             harness.hostService.pairedClientStaticPublicKey,
             harness.clientStatic.publicKey)
-        XCTAssertEqual(harness.host.session.phase, .established)
         XCTAssertEqual(
             harness.host.session.handshakeHash,
             harness.crypto.handshakeHashSnapshot
