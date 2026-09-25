@@ -259,6 +259,23 @@ final class HandshakeGateTests: XCTestCase {
         XCTAssertEqual(quiet.cookieModeChangedTo, false)
     }
 
+    /// An instant earlier than the window's arrivals ages nothing out: a
+    /// clock step backwards cannot clear the dial.
+    func testAnEarlierInstantDoesNotEmptyTheFloodWindow() {
+        var gate = HandshakeGate(config: .init(
+            cookieSecret: Self.secret,
+            cookieEnterThreshold: 3, cookieExitThreshold: 1,
+            floodWindowNS: 1_000))
+        let msg1 = message1(1)
+        for now: UInt64 in [5_000, 5_001, 5_002, 4_000] {
+            _ = gate.admitMessage1(
+                presentedCookie: nil, clientTuple: Self.tuple,
+                clientAddress: shareKey(Self.tuple),
+                message1: msg1[...], now: now)
+        }
+        XCTAssertTrue(gate.cookieMode)
+    }
+
     /// No secret = the pure token-bucket posture: the bucket admits the
     /// burst and throttles the rest; require-cookie never engages.
     func testDisabledWithoutSecretIsThePureTokenBucket() {

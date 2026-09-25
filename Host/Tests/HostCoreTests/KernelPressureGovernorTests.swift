@@ -78,6 +78,14 @@ final class KernelPressureGovernorTests: XCTestCase {
             "the same debt must keep pre-encode admission closed")
     }
 
+    func testADrainAcrossDaysOfSilenceStaysInsideTheBudget() {
+        var governor = KernelPressureGovernor()
+        _ = governor.observe(sample(now: 0, videoKernel: 100_001))
+        let days: UInt64 = 3 * 86_400 * 1_000 * ms
+        XCTAssertEqual(governor.observe(sample(
+            now: days, videoKernel: 100_000)).state, .calm)
+    }
+
     func testENOBUFSEscalatesAndSheddingIsFreshOnlyAndStaleOnly() {
         var governor = KernelPressureGovernor()
         _ = governor.observe(sample(now: 0))

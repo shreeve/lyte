@@ -117,10 +117,11 @@ public struct KernelPressureGovernor: Sendable {
            sample.videoKernelBytes < prior.videoKernelBytes {
             let drained = prior.videoKernelBytes - sample.videoKernelBytes
             let elapsed = sample.nowNS - prior.nowNS
-            let fullDrain = UInt64(
-                Double(max(sample.videoKernelBytes, 1))
-                    * Double(elapsed) / Double(max(drained, 1)))
-            measuredDrainNS = min(max(fullDrain, elapsed), budget)
+            // Clamped in Double: days between samples overflow UInt64.
+            let fullDrain = Double(max(sample.videoKernelBytes, 1))
+                * Double(elapsed) / Double(max(drained, 1))
+            measuredDrainNS = fullDrain >= Double(budget)
+                ? budget : min(max(UInt64(fullDrain), elapsed), budget)
         }
 
         let overHighWater = sample.videoKernelBytes >= highWater

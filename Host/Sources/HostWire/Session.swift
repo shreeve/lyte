@@ -2986,7 +2986,7 @@ public final class Session {
             answeredHandshake = (Array(message1), message2Body)
             lastAnswerNS = now
         } catch {
-            return [.dropped(.handshakeFailed(String(describing: error)))]
+            return drop(.handshakeFailed(String(describing: error)))
         }
         lifecycleLane.establish(at: now)
         var events: [SessionEvent] = [.handshakeCompleted(

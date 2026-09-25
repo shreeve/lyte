@@ -361,8 +361,8 @@ public struct HandshakeGate: Sendable {
 
     private mutating func noteArrival(now: UInt64) {
         recentArrivals.append(now)
-        while let oldest = recentArrivals.first,
-              now &- oldest > config.floodWindowNS {
+        while let oldest = recentArrivals.first, now > oldest,
+              now - oldest > config.floodWindowNS {
             recentArrivals.removeFirst()
         }
         // The dial only compares against thresholds; keep the newest.
