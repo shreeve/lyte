@@ -68,8 +68,9 @@ struct Options {
     /// `cookieExit`, which must be lower.
     var cookieEnter = 20
     var cookieExit = 5
-    /// The DRM card node whose primary plane is captured.
-    var drmDevice = DirectEyeLeg.Config.defaultDevice
+    /// The DRM card node whose primary plane is captured; nil captures
+    /// the first card that scans out.
+    var drmDevice: String?
     /// File mode's encoder chroma; a session's is the client's.
     var fileChroma: ChromaPosture = .yuv420
 
@@ -80,7 +81,8 @@ struct Options {
           --wire-listen PORT      serve Lyte-UDP sessions on PORT; without
                                   --seconds or --pair, in turn (the service)
           --seconds N             one session, or the file leg, of N s
-          --drm-device PATH       the card to capture (default /dev/dri/card1)
+          --drm-device PATH       the card to capture (default: the one
+                                  scanning out)
           --out PATH              file mode's Annex-B output
           --chroma 420|444        file mode's encoder chroma
         session flags:

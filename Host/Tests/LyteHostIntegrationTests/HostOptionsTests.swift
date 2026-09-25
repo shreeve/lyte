@@ -33,8 +33,7 @@ final class HostOptionsTests: XCTestCase {
     }
 
     func testTheCapturedCardCanBeNamed() throws {
-        XCTAssertEqual(
-            try Options.parse(["lyte-host"]).drmDevice, "/dev/dri/card1")
+        XCTAssertNil(try Options.parse(["lyte-host"]).drmDevice)
         XCTAssertEqual(
             try Options.parse(["lyte-host", "--drm-device", "/dev/dri/card0"])
                 .drmDevice,

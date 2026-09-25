@@ -58,8 +58,6 @@ final class WarmEye {
 
 final class DirectEyeLeg {
     struct Config {
-        /// The card node observed unless --drm-device names another.
-        static let defaultDevice = "/dev/dri/card1"
         /// The leg's wall-clock bound; `.infinity` for a service session.
         var seconds: Double
         var qp: Int32 = 24
@@ -186,7 +184,14 @@ final class DirectEyeLeg {
 
     /// Opens the scanout before the session exists, so its geometry
     /// reaches the input injector before the first client event can.
-    static func openScreen(device: String) throws -> DirectScreenSource {
+    /// Nil discovers the card that scans out.
+    static func openScreen(device named: String?) throws -> DirectScreenSource {
+        guard let device = named ?? DirectScreenSource.discoverCard() else {
+            throw HostError("""
+                direct: no card under /dev/dri scans out a primary plane \
+                — name one with --drm-device
+                """)
+        }
         do {
             let screen = try DirectScreenSource(device: device)
             if screen.renderNodeIsFallback {

@@ -69,8 +69,8 @@ clients never get the radio's address), and `--cookie-enter N` /
 `--cookie-exit N` (the message-1 rates that turn the handshake's
 retry-cookie demand on and off, default 20 and 5). Clipboard and file
 capabilities are declared only when their leaf comes up. Either mode takes
-`--drm-device PATH` (the card to capture, default `/dev/dri/card1`; the
-render node is that GPU's own). `lyte-host --help` prints the one-line
+`--drm-device PATH` (the card to capture; by default the first card whose
+primary plane scans out, and the render node is that GPU's own). `lyte-host --help` prints the one-line
 summary. The host self-checks that its first encoded packet starts with
 VPS/SPS/PPS and an IDR.
 
