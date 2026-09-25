@@ -3,9 +3,9 @@ import XCTest
 import LyteWire
 import LyteWireTestKit
 
-// The W4b lifecycle codecs against hand-computed bytes — the anchor
-// that keeps lifecycle-v1.json honest — plus reject coverage and a
-// never-traps fuzz.
+// The lifecycle codecs against hand-computed bytes — the anchor that
+// keeps lifecycle-v1.json honest — plus a never-traps fuzz. Decode
+// rejects live in the vectors.
 
 final class SessionLifecycleCodecTests: XCTestCase {
 
@@ -59,46 +59,6 @@ final class SessionLifecycleCodecTests: XCTestCase {
         XCTAssertNotEqual(
             CtrlMessageType.sessionTeardown, CtrlMessageType.arqAck
         )
-    }
-
-    // MARK: Rejects
-
-    func testModeTransitionRejects() {
-        assertThrows(LifecycleMessageError.truncatedMessage) {
-            try ModeTransition.decode([0x09])
-        }
-        assertThrows(LifecycleMessageError.trailingBytes) {
-            try ModeTransition.decode([0x09, 0x01, 0x00])
-        }
-        assertThrows(LifecycleMessageError.unexpectedType(0x0A)) {
-            try ModeTransition.decode([0x0A, 0x01])
-        }
-        // 0x00 is the zero-fill bug; 0x03+ would be FROZEN/RECOVERY
-        // leaking onto the wire — both must stay loud.
-        assertThrows(LifecycleMessageError.unknownMode(0)) {
-            try ModeTransition.decode([0x09, 0x00])
-        }
-        assertThrows(LifecycleMessageError.unknownMode(3)) {
-            try ModeTransition.decode([0x09, 0x03])
-        }
-    }
-
-    func testTeardownRejects() {
-        assertThrows(LifecycleMessageError.truncatedMessage) {
-            try SessionTeardown.decode([0x0A])
-        }
-        assertThrows(LifecycleMessageError.trailingBytes) {
-            try SessionTeardown.decode([0x0A, 0x02, 0x00])
-        }
-        assertThrows(LifecycleMessageError.unexpectedType(0x09)) {
-            try SessionTeardown.decode([0x09, 0x01])
-        }
-        assertThrows(LifecycleMessageError.unknownReason(0)) {
-            try SessionTeardown.decode([0x0A, 0x00])
-        }
-        assertThrows(LifecycleMessageError.unknownReason(0x7F)) {
-            try SessionTeardown.decode([0x0A, 0x7F])
-        }
     }
 
     // MARK: Fuzz — hostile bytes throw, never trap

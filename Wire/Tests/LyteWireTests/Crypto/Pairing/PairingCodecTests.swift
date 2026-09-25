@@ -4,7 +4,8 @@ import LyteWireTestKit
 
 // The pairing message codecs (CTRL 0x0B–0x0E), anchored by hand-built
 // byte layouts — the anchor pairing-v1.json's messageVectors are checked
-// against, so vectorgen never grades its own homework.
+// against, so vectorgen never grades its own homework — plus the encode
+// guards. Decode rejects live in the vectors.
 
 final class PairingCodecTests: XCTestCase {
 
@@ -69,42 +70,6 @@ final class PairingCodecTests: XCTestCase {
         }
         assertThrows(PairingMessageError.invalidTagLength(0)) {
             try PairingConfirm(confirmationTag: []).encode()
-        }
-    }
-
-    // MARK: Decode rejects — the fixed-frame discipline
-
-    func testDecodeRejectsHostileBytes() {
-        // Truncation.
-        assertThrows(PairingMessageError.truncatedMessage) {
-            try PairingShareA.decode([0x0B])
-        }
-        assertThrows(PairingMessageError.truncatedMessage) {
-            try PairingShareB.decode([0x0C] + Self.share)
-        }
-        assertThrows(PairingMessageError.truncatedMessage) {
-            try PairingReject.decode([0x0E])
-        }
-        // Trailing bytes.
-        assertThrows(PairingMessageError.trailingBytes) {
-            try PairingShareA.decode([0x0B] + Self.share + [0x00])
-        }
-        assertThrows(PairingMessageError.trailingBytes) {
-            try PairingConfirm.decode([0x0D] + Self.tag + [0x00])
-        }
-        // Foreign type bytes.
-        assertThrows(PairingMessageError.unexpectedType(0x0C)) {
-            try PairingShareA.decode([0x0C] + Self.share)
-        }
-        assertThrows(PairingMessageError.unexpectedType(0x0B)) {
-            try PairingConfirm.decode([0x0B] + Self.tag)
-        }
-        // Reject reasons: zero-fill and unassigned values.
-        assertThrows(PairingMessageError.unknownReason(0x00)) {
-            try PairingReject.decode([0x0E, 0x00])
-        }
-        assertThrows(PairingMessageError.unknownReason(0x7F)) {
-            try PairingReject.decode([0x0E, 0x7F])
         }
     }
 }
