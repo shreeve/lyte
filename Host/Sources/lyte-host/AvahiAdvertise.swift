@@ -289,8 +289,7 @@ final class AvahiAdvertiser {
     }
 
     /// EntryGroup.AddService(i interface, i protocol, u flags, s name,
-    /// s type, s domain, s host, q port, aay txt). Static because it runs
-    /// during init, before all stored properties are set.
+    /// s type, s domain, s host, q port, aay txt).
     private static func addService(bus: SessionBus, groupPath: String,
                                    name: String, port: UInt16,
                                    txtRecords: [String],

@@ -257,12 +257,9 @@ targets += [
             .product(name: "LyteIO", package: "Common"),
             .product(name: "LyteWire", package: "Wire"),
         ],
-        linkerSettings: [
-            .linkedLibrary("dbus-1"),
-            .linkedLibrary("pipewire-0.3"),
-            .linkedLibrary("va"),
-            .linkedLibrary("va-drm"),
-        ]
+        // CPipeWireAudio is C, so nothing autolinks libpipewire for it;
+        // the Swift-imported module maps link their own libraries.
+        linkerSettings: [.linkedLibrary("pipewire-0.3")]
     ),
     .testTarget(
         name: "LyteHostIntegrationTests",
