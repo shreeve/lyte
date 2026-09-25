@@ -52,6 +52,7 @@ case "$1" in
                 --sign) hash="$2"; shift 2 ;;
                 --identifier) identifier="$2"; shift 2 ;;
                 --options) options="$2"; shift 2 ;;
+                --entitlements) /bin/cat "$2" >> "$FAKE_CODESIGN_LOG"; shift 2 ;;
                 --timestamp=none|--timestamp|--force) shift ;;
                 *) target="$1"; shift ;;
             esac
@@ -307,6 +308,24 @@ LYTE_SIGNING_IDENTITY='Lyte Dev' run_signer "$fixture_root/Lyte.app"
 grep -Fq -- '--sign DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD' "$codesign_log"
 expect_security \
     "find-identity $fake_home/Library/Keychains/lyte-signing.keychain-db"
+
+# Only a Lyte Dev app skips library validation (it has no Team ID to match
+# the embedded Sparkle.framework's); its tools and Apple-signed apps never.
+library_validation=com.apple.security.cs.disable-library-validation
+grep -Fq "$library_validation" "$codesign_log" \
+    || fail "a Lyte Dev app was signed without disable-library-validation"
+reset_logs
+LYTE_SIGNING_IDENTITY='Lyte Dev' run_signer "$fixture_root/lyte-cli"
+refute grep -Fq -- --entitlements "$codesign_log"
+for apple in 'Apple Development: Ada One (TEAMONE123)' \
+    'Developer ID Application: Ada One (TEAMCCCC04)'
+do
+    write_apple_and_developer_id
+    reset_logs
+    LYTE_SIGNING_IDENTITY="$apple" run_signer "$fixture_root/Lyte.app"
+    refute grep -Fq -- --entitlements "$codesign_log"
+done
+write_one_apple
 
 : > "$valid_identities"
 reset_logs
