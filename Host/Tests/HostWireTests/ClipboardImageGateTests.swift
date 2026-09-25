@@ -228,8 +228,8 @@ final class ClipboardImageGateTests: XCTestCase {
         XCTAssertEqual(agreed?.clipboardImagesAgreed, true,
                        "images must agree with NO key 11 anywhere")
         XCTAssertEqual(agreed?.bulkTransfer, false)
-        XCTAssertTrue(session.agreedClipboardImages)
-        XCTAssertFalse(session.agreedBulkTransfer)
+        XCTAssertEqual(session.agreedCapabilities?.clipboardImagesAgreed, true)
+        XCTAssertNotEqual(session.agreedCapabilities?.bulkTransfer, true)
 
         // A text-only client degrades v2 to v1 — text agreed, images
         // not, and the host's image mouth stays silent.
@@ -241,8 +241,8 @@ final class ClipboardImageGateTests: XCTestCase {
         let session2 = host2.session
         var t2: UInt64 = 1_000
         try host2.settle(&client2, t: &t2)
-        XCTAssertTrue(session2.agreedClipboardText)
-        XCTAssertFalse(session2.agreedClipboardImages)
+        XCTAssertEqual(session2.agreedCapabilities?.clipboardText, true)
+        XCTAssertNotEqual(session2.agreedCapabilities?.clipboardImagesAgreed, true)
         XCTAssertEqual(
             session2.noteHostClipboardImageChanged(
                 [1, 2, 3], now: t2 * 1_000, hostMicroseconds: t2
@@ -267,7 +267,7 @@ final class ClipboardImageGateTests: XCTestCase {
         let session = host.session
         var t: UInt64 = 1_000
         try host.settle(&client, t: &t)
-        XCTAssertTrue(session.agreedClipboardImages)
+        XCTAssertEqual(session.agreedCapabilities?.clipboardImagesAgreed, true)
 
         // Client → host: a 150 KiB "PNG" (3 chunks — the multi-chunk
         // geometry through the sealed stack).
@@ -430,8 +430,8 @@ final class ClipboardImageGateTests: XCTestCase {
         let session = host.session
         var t: UInt64 = 1_000
         try host.settle(&client, t: &t)
-        XCTAssertTrue(session.agreedBulkTransfer)
-        XCTAssertFalse(session.agreedClipboardImages)
+        XCTAssertEqual(session.agreedCapabilities?.bulkTransfer, true)
+        XCTAssertNotEqual(session.agreedCapabilities?.clipboardImagesAgreed, true)
 
         let cargo = try ClipboardImageCargo(
             transferId: 0xD1, mime: "image/png"

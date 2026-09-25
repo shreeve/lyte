@@ -130,7 +130,7 @@ final class CursorGateTests: XCTestCase {
         }
         XCTAssertEqual(agreed?.cursorShape, true,
                        "mutual key-13 declaration must survive intersection")
-        XCTAssertTrue(session.agreedCursorShape)
+        XCTAssertEqual(session.agreedCapabilities?.cursorShape, true)
         _ = client.take(type: CtrlMessageType.capabilityDeclaration)
 
         // The eye reports a shape: one byte-exact 0x24 reaches the
@@ -206,7 +206,7 @@ final class CursorGateTests: XCTestCase {
             if case .capabilitiesAgreed(let set) = $0 { agreed = set }
         }
         XCTAssertEqual(agreed?.cursorShape, false)
-        XCTAssertFalse(session.agreedCursorShape)
+        XCTAssertNotEqual(session.agreedCapabilities?.cursorShape, true)
         _ = client.take(type: CtrlMessageType.capabilityDeclaration)
 
         // The eye reports — the session stays SILENT (no event, no

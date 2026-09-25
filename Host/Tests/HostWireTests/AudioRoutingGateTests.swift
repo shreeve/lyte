@@ -190,7 +190,7 @@ final class AudioRoutingGateTests: XCTestCase {
         }
         XCTAssertEqual(agreed?.hostAudioRouting, true,
                        "mutual key-9 declaration must survive intersection")
-        XCTAssertTrue(session.agreedHostAudioRouting)
+        XCTAssertEqual(session.agreedCapabilities?.hostAudioRouting, true)
         _ = client.take(type: CtrlMessageType.capabilityDeclaration)
 
         // The client asks for hostMuted on the reliable stream.
@@ -260,7 +260,7 @@ final class AudioRoutingGateTests: XCTestCase {
             if case .capabilitiesAgreed(let set) = $0 { agreed = set }
         }
         XCTAssertEqual(agreed?.hostAudioRouting, false)
-        XCTAssertFalse(session.agreedHostAudioRouting)
+        XCTAssertNotEqual(session.agreedCapabilities?.hostAudioRouting, true)
         _ = client.take(type: CtrlMessageType.capabilityDeclaration)
 
         // It asks anyway (hostile or buggy): dropped loud, no event,

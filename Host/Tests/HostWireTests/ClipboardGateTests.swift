@@ -227,7 +227,7 @@ final class ClipboardGateTests: XCTestCase {
         }
         XCTAssertEqual(agreed?.clipboardText, true,
                        "mutual key-10 declaration must survive intersection")
-        XCTAssertTrue(session.agreedClipboardText)
+        XCTAssertEqual(session.agreedCapabilities?.clipboardText, true)
         _ = client.take(type: CtrlMessageType.capabilityDeclaration)
 
         // The shell wiring this gate proves: the scripted leaf stands
@@ -326,7 +326,7 @@ final class ClipboardGateTests: XCTestCase {
             if case .capabilitiesAgreed(let set) = $0 { agreed = set }
         }
         XCTAssertEqual(agreed?.clipboardText, false)
-        XCTAssertFalse(session.agreedClipboardText)
+        XCTAssertNotEqual(session.agreedCapabilities?.clipboardText, true)
         _ = client.take(type: CtrlMessageType.capabilityDeclaration)
 
         // It sets anyway (hostile or buggy): dropped loud, no event,
@@ -384,7 +384,7 @@ final class ClipboardGateTests: XCTestCase {
         let session = host.session
         var t: UInt64 = 1_000
         try host.settle(&client, t: &t)
-        XCTAssertTrue(session.agreedClipboardText)
+        XCTAssertEqual(session.agreedCapabilities?.clipboardText, true)
         _ = client.take(type: CtrlMessageType.capabilityDeclaration)
 
         let huge = String(

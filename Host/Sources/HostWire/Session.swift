@@ -725,44 +725,12 @@ public final class Session {
     /// The agreed capability set; nil until the client's declaration
     /// lands (a client that sends none stays nil, which is not an error).
     public var agreedCapabilities: Capabilities? { negotiator.agreed }
-    /// True when hostAudioRouting (key 9) survived the intersection.
-    /// Gates 0x18 consumption and 0x19 emission.
-    public var agreedHostAudioRouting: Bool {
-        negotiator.agreed?.hostAudioRouting == true
-    }
-    /// True when audioQuietPosture (key 15) survived the intersection.
-    /// The audio leg gates transmission only under this agreement; a
-    /// legacy client keeps always-on audio, silence included.
-    public var agreedAudioQuietPosture: Bool {
-        negotiator.agreed?.audioQuietPosture == true
-    }
-    /// True when videoQuietPosture (key 16) survived the intersection;
-    /// the keepalive backs off only under this agreement.
-    public var agreedVideoQuietPosture: Bool {
-        negotiator.agreed?.videoQuietPosture == true
-    }
-    /// True when clipboardText (key 10) survived the intersection. Gates
-    /// 0x1A consumption and 0x1B emission.
-    public var agreedClipboardText: Bool {
-        negotiator.agreed?.clipboardText == true
-    }
-    /// True when bulkTransfer (key 11) survived the intersection. Gates
-    /// chan-8 ingest and `sendBulk`; consent is the standing toggle that
-    /// decided whether key 11 was declared.
-    public var agreedBulkTransfer: Bool {
-        negotiator.agreed?.bulkTransfer == true
-    }
-    /// True when the image gate (keys 10 ∧ 12) survived the
-    /// intersection. Gates 0x22 consumption and image cargo emission.
-    /// Key 11 is deliberately not consulted — the file-drop consent
-    /// must not couple to the clipboard tier.
-    public var agreedClipboardImages: Bool {
-        negotiator.agreed?.clipboardImagesAgreed == true
-    }
-    /// True when cursorShape (key 13) survived the intersection. Gates
-    /// 0x24 emission; only the direct eye declares the key.
-    public var agreedCursorShape: Bool {
-        negotiator.agreed?.cursorShape == true
+    /// True when `key` survived the intersection. Each feature's entry
+    /// points and ingest gate on its key (the image gate on keys 10 ∧ 12,
+    /// never on key 11, so file-drop consent cannot couple to the
+    /// clipboard tier).
+    private func agrees(_ key: KeyPath<Capabilities, Bool>) -> Bool {
+        negotiator.agreed?[keyPath: key] == true
     }
 
     /// The loop-prevention/dedupe book, shared by the 0x1A consume path
@@ -1009,7 +977,7 @@ public final class Session {
             // Chan-8 traffic outside both agreements (key 11 files, keys
             // 10∧12 images) uses a capability never negotiated: dropped
             // loud. Message-level routing separates the two lanes.
-            guard agreedBulkTransfer || agreedClipboardImages,
+            guard agrees(\.bulkTransfer) || agrees(\.clipboardImagesAgreed),
                   bulkArqLane != nil else {
                 events += drop(.bulkNotNegotiated)
                 return events
@@ -1633,7 +1601,7 @@ public final class Session {
     public func noteAudioRoutingApplied(
         _ mode: HostAudioRoutingMode, now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
-        guard agreedHostAudioRouting else { return [] }
+        guard agrees(\.hostAudioRouting) else { return [] }
         do {
             try sendReliable(
                 AudioRoutingStatus(mode: mode).encode(),
@@ -1652,7 +1620,7 @@ public final class Session {
     public func noteAudioTrackState(
         _ state: AudioTrackState.State, now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
-        guard agreedAudioQuietPosture else { return [] }
+        guard agrees(\.audioQuietPosture) else { return [] }
         do {
             try sendReliable(
                 AudioTrackState(state: state).encode(),
@@ -1669,7 +1637,7 @@ public final class Session {
     public func noteVideoPostureState(
         _ state: VideoPostureState, now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
-        guard agreedVideoQuietPosture else { return [] }
+        guard agrees(\.videoQuietPosture) else { return [] }
         do {
             try sendReliable(
                 state.encode(), now: now, hostMicroseconds: hostMicroseconds
@@ -1689,7 +1657,7 @@ public final class Session {
     public func noteHostClipboardChanged(
         _ text: String, now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
-        guard agreedClipboardText, !text.isEmpty else { return [] }
+        guard agrees(\.clipboardText), !text.isEmpty else { return [] }
         switch clipboardBook.admitLocalChange(text) {
         case .suppressEcho:
             counters.clipboardAnnouncesSuppressed += 1
@@ -1728,7 +1696,7 @@ public final class Session {
     public func noteCursorShapeChanged(
         _ shape: CursorShape, now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
-        guard agreedCursorShape else { return [] }
+        guard agrees(\.cursorShape) else { return [] }
         guard shape != lastSentCursorShape else {
             counters.cursorShapesSuppressed += 1
             return [.cursorShapeSuppressed(.duplicate)]
@@ -1767,7 +1735,7 @@ public final class Session {
     public func prejudgeHostClipboardImage(
         byteCount: Int, now: UInt64
     ) -> [SessionEvent]? {
-        guard agreedClipboardImages, phase == .established else {
+        guard agrees(\.clipboardImagesAgreed), phase == .established else {
             return []
         }
         guard let refused = clipboardImageChannel
@@ -1787,7 +1755,7 @@ public final class Session {
         _ data: [UInt8], sha256: () -> [UInt8],
         now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
-        guard agreedClipboardImages, phase == .established else {
+        guard agrees(\.clipboardImagesAgreed), phase == .established else {
             return []
         }
         let channelEvents = clipboardImageChannel.shareLocalImage(
@@ -1887,7 +1855,7 @@ public final class Session {
         guard phase == .established else {
             throw SessionError.notEstablished
         }
-        guard agreedBulkTransfer, bulkArqLane != nil else {
+        guard agrees(\.bulkTransfer), bulkArqLane != nil else {
             throw SessionError.bulkNotNegotiated
         }
         try enqueueReliable(on: .bulkTransfer) {
@@ -1955,7 +1923,7 @@ public final class Session {
                 return drop(.malformedBulk)
             }
             // Image cargo without keys 10 ∧ 12 agreed: dropped loud.
-            guard agreedClipboardImages else {
+            guard agrees(\.clipboardImagesAgreed) else {
                 return drop(.clipboardImagesNotNegotiated)
             }
             return processImageEvents(
@@ -1976,7 +1944,7 @@ public final class Session {
                 now: now
             )
         }
-        guard agreedBulkTransfer else {
+        guard agrees(\.bulkTransfer) else {
             // Chan 8 was admitted for the image lane only — a file
             // message without key 11 is still ungated traffic.
             return drop(.bulkNotNegotiated)
@@ -2154,7 +2122,7 @@ public final class Session {
             }
             // A request without hostAudioRouting agreed by both ends uses
             // a capability never negotiated: dropped loud, never fatal.
-            guard agreedHostAudioRouting else {
+            guard agrees(\.hostAudioRouting) else {
                 return drop(.audioRoutingNotNegotiated)
             }
             counters.audioRoutingRequestsReceived += 1
@@ -2164,7 +2132,7 @@ public final class Session {
                 return drop(.malformedCtrl)
             }
             // A set without clipboardText agreed: dropped loud, never fatal.
-            guard agreedClipboardText else {
+            guard agrees(\.clipboardText) else {
                 return drop(.clipboardNotNegotiated)
             }
             counters.clipboardSetsReceived += 1

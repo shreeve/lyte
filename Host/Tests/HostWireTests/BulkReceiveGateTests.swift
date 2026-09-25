@@ -797,7 +797,7 @@ final class BulkReceiveGateTests: XCTestCase {
         }
         XCTAssertEqual(agreed?.bulkTransfer, false,
                        "one-sided key 11 must not survive intersection")
-        XCTAssertFalse(session.agreedBulkTransfer)
+        XCTAssertNotEqual(session.agreedCapabilities?.bulkTransfer, true)
 
         // The client offers anyway (hostile or confused): every chan-8
         // datagram drops loud, no bulk event ever surfaces.
@@ -844,7 +844,7 @@ final class BulkReceiveGateTests: XCTestCase {
         let session = host.session
         var t: UInt64 = 1_000
         try host.settle(&client, t: &t)
-        XCTAssertTrue(session.agreedBulkTransfer)
+        XCTAssertEqual(session.agreedCapabilities?.bulkTransfer, true)
 
         let shell = try BulkReceiveShell(directoryPath: dir)
         let payload = makePayload(count: 9_000, seed: 0xE2E) // 3 chunks
