@@ -25,9 +25,10 @@
 //                        intersect(a, a) == a without understanding
 //                        foreign semantics.
 //
-// Capabilities are fixed after the exchange except keys in
-// `renegotiableKeys`: only maxDatagramBytes, raised on direct paths at an
-// IDR boundary and never past either end's declared ceiling. The raise is
+// Capabilities are fixed after the exchange except maxDatagramBytes, the
+// one renegotiable key (a CapabilityUpdate naming any other rejects):
+// raised on direct paths at an IDR boundary and never past either end's
+// declared ceiling. The raise is
 // dormant in v1: the envelope and transport enforce the WireBudget
 // constants, and no end applies an agreed value past 1152.
 
@@ -107,10 +108,6 @@ public enum CapabilityKey {
     /// toward 30 s, each step announced; damage or client input wakes
     /// it). A host never backs off without it.
     public static let videoQuietPosture: UInt64 = 16
-
-    /// The renegotiable subset. Everything else is connect-time only
-    /// and a CapabilityUpdate naming it rejects.
-    public static let renegotiableKeys: Set<UInt64> = [maxDatagramBytes]
 }
 
 /// Video codec ids for the `videoCodecs` list. Only HEVC is assigned

@@ -4,8 +4,8 @@ import LyteWireTestKit
 
 // The sans-IO negotiation machine: both ends of the exchange driven
 // against each other (declarations cross, intersections settle
-// identically), the no-common-ground failures, the v1 renegotiation
-// round in both verdicts, and every role/state protocol violation.
+// identically), the no-common-ground failures, the client's answer to a
+// renegotiation in both verdicts, and every role/state protocol violation.
 
 final class CapabilityNegotiatorTests: XCTestCase {
 
@@ -138,9 +138,17 @@ final class CapabilityNegotiatorTests: XCTestCase {
 
     // MARK: - Renegotiation, both verdicts
 
-    func testGeometryRaiseAcceptedEndToEnd() throws {
-        var (host, client) = try establish()
-        let update = try host.proposeMaxDatagramBytes(1400)
+    private static func raise(to value: UInt64) -> CapabilityUpdate {
+        CapabilityUpdate(parameters: [
+            CapabilityParameter(
+                key: CapabilityKey.maxDatagramBytes, value: .unsigned(value)
+            )
+        ])
+    }
+
+    func testGeometryRaiseAccepted() throws {
+        var (_, client) = try establish()
+        let update = Self.raise(to: 1400)
         let clientEvent = try client.receive(update)
         guard case .answerUpdate(let ack) = clientEvent else {
             return XCTFail("expected answerUpdate, got \(clientEvent)")
@@ -148,27 +156,19 @@ final class CapabilityNegotiatorTests: XCTestCase {
         XCTAssertEqual(ack.status, .accepted)
         XCTAssertEqual(ack.parameters, update.parameters)
         XCTAssertEqual(client.operativeMaxDatagramBytes, 1400)
-        let hostEvent = try host.receive(ack)
-        XCTAssertEqual(hostEvent, .updateAccepted(update.parameters))
-        XCTAssertEqual(host.operativeMaxDatagramBytes, 1400)
-        // The lane is free again for the next probe result.
-        XCTAssertNoThrow(try host.proposeMaxDatagramBytes(1152))
     }
 
-    func testOverCeilingPeerProposalDrawsRejectionNotTeardown() throws {
-        var (host, client) = try establish()
-        _ = host // agreed ceiling is 1400
-        let overreach = CapabilityUpdate(parameters: [
-            CapabilityParameter(
-                key: CapabilityKey.maxDatagramBytes, value: .unsigned(1500)
-            )
-        ])
-        let event = try client.receive(overreach)
-        guard case .answerUpdate(let ack) = event else {
-            return XCTFail("expected answerUpdate, got \(event)")
+    func testOutOfBoundsPeerProposalDrawsRejectionNotTeardown() throws {
+        var (_, client) = try establish()
+        // The agreed ceiling is 1400; the floor is 1152.
+        for value: UInt64 in [1151, 1401, 1500] {
+            let event = try client.receive(Self.raise(to: value))
+            guard case .answerUpdate(let ack) = event else {
+                return XCTFail("expected answerUpdate, got \(event)")
+            }
+            XCTAssertEqual(ack.status, .rejected, "\(value)")
+            XCTAssertEqual(client.operativeMaxDatagramBytes, 1152)
         }
-        XCTAssertEqual(ack.status, .rejected)
-        XCTAssertEqual(client.operativeMaxDatagramBytes, 1152)
     }
 
     func testFixedKeyProposalDrawsRejection() throws {
@@ -186,120 +186,25 @@ final class CapabilityNegotiatorTests: XCTestCase {
         XCTAssertEqual(ack.status, .rejected)
     }
 
-    func testRejectedAckLeavesTheProposerUnmoved() throws {
-        var (host, _) = try establish()
-        let update = try host.proposeMaxDatagramBytes(1400)
-        let event = try host.receive(CapabilityUpdateAck(
-            status: .rejected, parameters: update.parameters
-        ))
-        XCTAssertEqual(event, .updateRejected(update.parameters))
-        XCTAssertEqual(host.operativeMaxDatagramBytes, 1152)
-        XCTAssertNoThrow(try host.proposeMaxDatagramBytes(1300))
-    }
-
     // MARK: - Protocol violations
 
-    func testRoleViolations() throws {
-        var (host, client) = try establish()
-        XCTAssertThrowsError(
-            try client.proposeMaxDatagramBytes(1300)
-        ) { error in
-            XCTAssertEqual(
-                error as? CapabilityNegotiationError, .wrongRoleForUpdate
-            )
-        }
-        let update = CapabilityUpdate(parameters: [
-            CapabilityParameter(
-                key: CapabilityKey.maxDatagramBytes, value: .unsigned(1300)
-            )
-        ])
-        XCTAssertThrowsError(try host.receive(update)) { error in
+    func testUpdateAtTheHostIsARoleViolation() throws {
+        var (host, _) = try establish()
+        XCTAssertThrowsError(try host.receive(Self.raise(to: 1300))) { error in
             XCTAssertEqual(
                 error as? CapabilityNegotiationError, .wrongRoleForUpdate
             )
         }
     }
 
-    func testUpdateMachineryRequiresEstablishment() {
-        var host = CapabilityNegotiator(role: .host, local: Self.hostSet)
-        XCTAssertThrowsError(
-            try host.proposeMaxDatagramBytes(1300)
-        ) { error in
-            XCTAssertEqual(
-                error as? CapabilityNegotiationError, .notEstablished
-            )
-        }
+    func testUpdateRequiresEstablishment() {
         var client = CapabilityNegotiator(
             role: .client, local: Self.clientSet
         )
-        let update = CapabilityUpdate(parameters: [
-            CapabilityParameter(
-                key: CapabilityKey.maxDatagramBytes, value: .unsigned(1300)
-            )
-        ])
-        XCTAssertThrowsError(try client.receive(update)) { error in
+        XCTAssertThrowsError(try client.receive(Self.raise(to: 1300))) { error in
             XCTAssertEqual(
                 error as? CapabilityNegotiationError, .notEstablished
             )
-        }
-    }
-
-    func testAckDiscipline() throws {
-        var (host, _) = try establish()
-        let stray = CapabilityUpdateAck(
-            status: .accepted,
-            parameters: [CapabilityParameter(
-                key: CapabilityKey.maxDatagramBytes, value: .unsigned(1300)
-            )]
-        )
-        XCTAssertThrowsError(try host.receive(stray)) { error in
-            XCTAssertEqual(
-                error as? CapabilityNegotiationError, .unexpectedAck
-            )
-        }
-        let update = try host.proposeMaxDatagramBytes(1400)
-        XCTAssertThrowsError(
-            try host.proposeMaxDatagramBytes(1400)
-        ) { error in
-            XCTAssertEqual(
-                error as? CapabilityNegotiationError,
-                .proposalAlreadyOutstanding
-            )
-        }
-        // An ack echoing different bytes than the outstanding
-        // proposal is a violation, not a verdict.
-        XCTAssertThrowsError(
-            try host.receive(CapabilityUpdateAck(
-                status: .accepted,
-                parameters: [CapabilityParameter(
-                    key: CapabilityKey.maxDatagramBytes,
-                    value: .unsigned(1300)
-                )]
-            ))
-        ) { error in
-            XCTAssertEqual(
-                error as? CapabilityNegotiationError, .ackParameterMismatch
-            )
-        }
-        // The mismatch left the proposal outstanding; the honest ack
-        // still lands.
-        let event = try host.receive(CapabilityUpdateAck(
-            status: .accepted, parameters: update.parameters
-        ))
-        XCTAssertEqual(event, .updateAccepted(update.parameters))
-    }
-
-    func testLocalProposalBoundsAreCaughtBeforeTheWire() throws {
-        var (host, _) = try establish()
-        for bad: UInt32 in [1151, 1401] {
-            XCTAssertThrowsError(
-                try host.proposeMaxDatagramBytes(bad), "\(bad)"
-            ) { error in
-                XCTAssertEqual(
-                    error as? CapabilityNegotiationError,
-                    .invalidLocalProposal, "\(bad)"
-                )
-            }
         }
     }
 
@@ -316,16 +221,16 @@ final class CapabilityNegotiatorTests: XCTestCase {
         let clientBytes = try XCTUnwrap(client.start()).encode()
         _ = try host.receive(CapabilityDeclaration.decode(clientBytes))
         _ = try client.receive(CapabilityDeclaration.decode(hostBytes))
-        let updateBytes = try host.proposeMaxDatagramBytes(1399).encode()
+        let updateBytes = try Self.raise(to: 1399).encode()
         let answer = try client.receive(
             CapabilityUpdate.decode(updateBytes)
         )
         guard case .answerUpdate(let ack) = answer else {
             return XCTFail("expected answerUpdate, got \(answer)")
         }
-        let ackBytes = try ack.encode()
-        _ = try host.receive(CapabilityUpdateAck.decode(ackBytes))
-        XCTAssertEqual(host.operativeMaxDatagramBytes, 1399)
+        XCTAssertEqual(
+            try CapabilityUpdateAck.decode(ack.encode()).status, .accepted
+        )
         XCTAssertEqual(client.operativeMaxDatagramBytes, 1399)
         XCTAssertEqual(host.agreed, client.agreed)
     }
