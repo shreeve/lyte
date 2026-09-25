@@ -51,7 +51,7 @@ extension InputSenderStats {
     /// a client-capture failure from a host-side one. "Applied on host"
     /// because the measurement includes the network leg.
     public func overlayLine() -> String {
-        var line = "user:    \(eventsSent) "
+        var line = "\(eventsSent) "
             + (eventsSent == 1 ? "event" : "events") + " sent to host"
         let pair = inputToInject.percentiles([0.50, 0.99])
         if let p50 = pair[0], let p99 = pair[1] {

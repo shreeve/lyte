@@ -56,7 +56,7 @@ public enum SessionStatsFormatter {
         }
 
         row("session", sessionLine(core: core, context: context))
-        row("user", userLine(core.input.snapshotStats()))
+        row("user", core.input.snapshotStats().overlayLine())
         row("network", networkLine(demux: endpoint.demux, core: core))
         if let audio = audioLine(core.audio.snapshotStats()) {
             row("audio", audio)
@@ -145,14 +145,6 @@ public enum SessionStatsFormatter {
         }
         if context.radioLoose { mode += " · AWDL LOOSE" }
         return mode
-    }
-
-    /// The input line without its "user:" lead-in; unconditional, since
-    /// "0 events sent" tells a capture failure from a host-side one.
-    private static func userLine(_ stats: InputSenderStats) -> String {
-        let line = stats.overlayLine()
-        guard line.hasPrefix("user:") else { return line }
-        return String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
     }
 
     private static func networkLine(

@@ -172,15 +172,13 @@ public struct PinnedHostStore: Codable, Equatable, Sendable {
         port: UInt16, pairedAt: String
     ) -> Bool {
         let pkh = LyteDiscovery.publicKeyHash(ofStaticPublicKey: staticPublicKey)
-        let hex = Hex.string(staticPublicKey)
         let fresh = hosts[pkh] == nil
-        hosts[pkh] = PinnedHost(
+        var host = hosts[pkh] ?? PinnedHost(
             name: name, address: address, port: port,
-            staticPublicKeyHex: hex, pairedAt: pairedAt,
-            startHostAudioMuted: hosts[pkh]?.startHostAudioMuted,
-            shareClipboard: hosts[pkh]?.shareClipboard,
-            shareClipboardImages: hosts[pkh]?.shareClipboardImages,
-            chromaTier: hosts[pkh]?.chromaTier)
+            staticPublicKeyHex: Hex.string(staticPublicKey), pairedAt: pairedAt)
+        (host.name, host.address, host.port, host.pairedAt) =
+            (name, address, port, pairedAt)
+        hosts[pkh] = host
         return fresh
     }
 
@@ -189,20 +187,14 @@ public struct PinnedHostStore: Codable, Equatable, Sendable {
     public mutating func setStartHostAudioMuted(
         publicKeyHash: String, muted: Bool?
     ) -> Bool {
-        let key = publicKeyHash.lowercased()
-        guard hosts[key] != nil else { return false }
-        hosts[key]?.startHostAudioMuted = muted
-        return true
+        update(publicKeyHash) { $0.startHostAudioMuted = muted }
     }
 
     @discardableResult
     public mutating func setShareClipboard(
         publicKeyHash: String, share: Bool?
     ) -> Bool {
-        let key = publicKeyHash.lowercased()
-        guard hosts[key] != nil else { return false }
-        hosts[key]?.shareClipboard = share
-        return true
+        update(publicKeyHash) { $0.shareClipboard = share }
     }
 
     /// Text-only writes nil.
@@ -210,10 +202,7 @@ public struct PinnedHostStore: Codable, Equatable, Sendable {
     public mutating func setShareClipboardImages(
         publicKeyHash: String, share: Bool?
     ) -> Bool {
-        let key = publicKeyHash.lowercased()
-        guard hosts[key] != nil else { return false }
-        hosts[key]?.shareClipboardImages = share == true ? true : nil
-        return true
+        update(publicKeyHash) { $0.shareClipboardImages = share == true ? true : nil }
     }
 
     /// Good writes nil.
@@ -221,9 +210,15 @@ public struct PinnedHostStore: Codable, Equatable, Sendable {
     public mutating func setChromaTier(
         publicKeyHash: String, tier: ChromaTier
     ) -> Bool {
+        update(publicKeyHash) { $0.chromaTier = tier == .good ? nil : tier.rawValue }
+    }
+
+    private mutating func update(
+        _ publicKeyHash: String, _ body: (inout PinnedHost) -> Void
+    ) -> Bool {
         let key = publicKeyHash.lowercased()
         guard hosts[key] != nil else { return false }
-        hosts[key]?.chromaTier = tier == .good ? nil : tier.rawValue
+        body(&hosts[key]!)
         return true
     }
 
