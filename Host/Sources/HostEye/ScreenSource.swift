@@ -65,8 +65,7 @@ public enum DirectScreenSourceError: Error, CustomStringConvertible {
     }
 }
 
-/// The one DRM/KMS screen source used by both the production direct eye and
-/// the standalone capture witness.
+/// The direct eye's DRM/KMS screen source.
 public final class DirectScreenSource: ScreenSource {
     public let width: Int32
     public let height: Int32

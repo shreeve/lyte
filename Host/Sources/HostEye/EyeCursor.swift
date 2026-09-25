@@ -1,6 +1,6 @@
 // The cursor half of the direct eye. The hardware cursor plane never
 // touches encoded frames (cursor motion produces zero video frames).
-// This watcher polls the plane's FB_ID like the primary doorbell; on
+// This watcher polls the plane's FB_ID like the primary plane's; on
 // change it reads the LINEAR ARGB8888 cursor buffer (GETFB2 + PRIME +
 // mmap), crops it to the content box and hands the BGRA image up.
 // HostCore.CursorHotspot recovers the hotspot (i915 exposes no
@@ -64,7 +64,7 @@ struct CursorFramebufferLatch {
     mutating func latch(_ framebuffer: UInt32) { last = framebuffer }
 }
 
-/// Watches one cursor plane. Poll at the doorbell cadence; the steady
+/// Watches one cursor plane. Poll on the screen beat; the steady
 /// state costs one drmModeGetPlane read.
 public final class EyeCursorWatcher {
     private let fd: Int32
@@ -111,7 +111,7 @@ public final class EyeCursorWatcher {
                 Int(Int64(bitPattern: rawY)))
     }
 
-    /// One doorbell-cadence poll. Reports each fb transition once; a
+    /// One poll. Reports each fb transition once; a
     /// failed grab does not latch the fb, so the next poll retries.
     public func poll() -> CursorPoll {
         let fb: UInt32
