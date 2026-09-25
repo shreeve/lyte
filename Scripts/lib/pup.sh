@@ -17,14 +17,16 @@ lyte_pup_host() {
   printf '%s\n' "${LYTE_PUP_HOST:-pup}"
 }
 
-# Every ssh to pup, rsync's included, carries a connect timeout, including
-# cleanup paths, so a dead link fails the run instead of hanging it.
+# Every ssh to pup, rsync's included, carries a connect timeout and a
+# keepalive, including cleanup paths, so a link that is dead at connect or
+# dies mid-run fails the run instead of hanging it.
 pup_ssh() {
-  ssh -o ConnectTimeout=10 "$PUP" "$@"
+  ssh -o ConnectTimeout=10 -o ServerAliveInterval=10 \
+    -o ServerAliveCountMax=3 "$PUP" "$@"
 }
 
 pup_rsync() {
-  rsync -e 'ssh -o ConnectTimeout=10' "$@"
+  rsync -e 'ssh -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3' "$@"
 }
 
 # pup_run SCRIPT: runs SCRIPT in bash on pup with lib/pup-side.sh loaded.

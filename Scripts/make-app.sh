@@ -172,9 +172,11 @@ if [ -z "$SPARKLE_FRAMEWORK" ]; then
 fi
 ditto "$SPARKLE_FRAMEWORK" "$STAGED_APP/Contents/Frameworks/Sparkle.framework"
 for binary in Sparkle Autoupdate Updater.app/Contents/MacOS/Updater; do
-  lipo -thin arm64 \
-    "$STAGED_APP/Contents/Frameworks/Sparkle.framework/Versions/B/$binary" \
-    -output "$STAGED_APP/Contents/Frameworks/Sparkle.framework/Versions/B/$binary"
+  binary="$STAGED_APP/Contents/Frameworks/Sparkle.framework/Versions/B/$binary"
+  # lipo -thin refuses a binary that is already thin.
+  if [ "$(lipo -archs "$binary")" != arm64 ]; then
+    lipo -thin arm64 "$binary" -output "$binary"
+  fi
 done
 rm -rf "$STAGED_APP/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices" \
   "$STAGED_APP/Contents/Frameworks/Sparkle.framework/XPCServices"
