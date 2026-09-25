@@ -10,12 +10,12 @@ final class IdleListenerLoopbackTests: XCTestCase {
     func testAnIdleListenerPassesAtTheJanitorCadence() throws {
         let hostStatic = NoiseKeyPair.generate()
         let wire = try SessionWire(
-            listener: HostListener(port: 0),
+            listener: HostListener(hostStatic: hostStatic),
             rateBitsPerSecond: 1_000_000)
         defer { wire.shutdown(reason: .shuttingDown, lingerSeconds: 0) }
         var passes = 0
         XCTAssertThrowsError(try wire.awaitClient(
-            hostStatic: hostStatic, timeoutSeconds: 1, idle: { passes += 1 }))
+            timeoutSeconds: 1, idle: { passes += 1 }))
         print("idle listener: \(passes) passes in 1 s")
         XCTAssertGreaterThan(passes, 50, "organs are still serviced")
         XCTAssertLessThan(passes, 150, "no 2 ms spin")
@@ -24,7 +24,7 @@ final class IdleListenerLoopbackTests: XCTestCase {
     func testADialStillWakesTheListenerAtOnce() throws {
         let hostStatic = NoiseKeyPair.generate()
         let wire = try SessionWire(
-            listener: HostListener(port: 0),
+            listener: HostListener(hostStatic: hostStatic),
             rateBitsPerSecond: 1_000_000)
         defer { wire.shutdown(reason: .shuttingDown, lingerSeconds: 0) }
         let client = try LoopbackDialer(
@@ -32,7 +32,7 @@ final class IdleListenerLoopbackTests: XCTestCase {
         try client.dial()
         let start = Date()
         XCTAssertEqual(try awaitClient(
-            wire, hostStatic: hostStatic, timeoutSeconds: 5
+            wire, timeoutSeconds: 5
         ) {
             let reply = try XCTUnwrap(client.awaitMessage2())
             try client.confirm(message2: reply.payload)

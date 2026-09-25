@@ -49,9 +49,9 @@ final class UnprotectableFrameGateTests: XCTestCase {
     private func makeSession(box: Box) -> Session {
         Session(
             config: SessionConfig(
-                crypto: .testPassthrough, rateBitsPerSecond: Self.rate
+                rateBitsPerSecond: Self.rate
             ),
-            clientTuple: Self.tuple,
+            passthroughTo: Self.tuple,
             now: 0,
             rng: SplitMix64(seed: 0x2501)
         ) { [box] datagram in
@@ -197,14 +197,15 @@ final class UnprotectableFrameGateTests: XCTestCase {
             capacity: original.count
         )
         _ = pointer.initialize(from: original)
-        _ = try session.ingestVideoFrame(
-            UnsafeBufferPointer(pointer),
-            captureTimestampMicroseconds: 7_777,
-            isKeyframe: true,
-            now: now
-        )
+        let context = try XCTUnwrap(session.beginVideoFramePreparation(
+            encodedByteCount: original.count))
+        let prepared = try Session.prepareVideoFrame(
+            UnsafeBufferPointer(pointer), isKeyframe: true, context: context)
         pointer.update(repeating: 0xE1)
         pointer.deallocate()
+        try session.commitPreparedVideoFrame(
+            prepared, context: context,
+            captureTimestampMicroseconds: 7_777, now: now)
 
         drain(session, until: 100_000_000, now: &now)
         var assembler = VideoAssembler()

@@ -1,6 +1,7 @@
 import XCTest
 import HostCore
 import HostWire
+import HostWireTestKit
 import LyteWire
 
 // Chan-2 seqs are numbered and sealed at pacer release. Judged by a real

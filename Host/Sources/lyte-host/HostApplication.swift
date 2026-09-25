@@ -286,13 +286,10 @@ func handlePairingEvent(_ event: PairingResponderService.Event) {
 /// file-drop shell.
 final class SessionHost {
     let opts: Options
-    let hostStatic: NoiseKeyPair
-    let allowed: [[UInt8]]?
     let pairingService: PairingResponderService?
     let clipboardLeaf: MutterClipboardLeaf?
     let declared: Capabilities
-    let gateConfig: HandshakeGate.Config
-    /// The listening socket, bound once for the whole run.
+    /// The listening socket and handshake admission, one for the run.
     let listener: HostListener
     let injector: InputInjector?
     /// Releasing it withdraws the record.
@@ -322,7 +319,7 @@ final class SessionHost {
         // instead of a live session.
         let paths = try HostPaths.current()
         let keys = try HostStaticKey.loadOrCreate(paths: paths)
-        hostStatic = keys
+        let allowed: [[UInt8]]?
         if opts.requirePaired {
             let store = try PairedClients.load(paths: paths)
             guard !store.entries.isEmpty else {
@@ -436,9 +433,12 @@ final class SessionHost {
         self.declared = declared
 
         var rng = SystemRandomNumberGenerator()
-        gateConfig = opts.handshakeGateConfig(using: &rng)
-
-        listener = try HostListener(port: port)
+        listener = try HostListener(
+            port: port,
+            acceptor: HandshakeAcceptor.Config(
+                hostStatic: keys,
+                gate: opts.handshakeGateConfig(using: &rng),
+                allowedClientStaticPublicKeys: allowed))
 
         // Up before the first handshake wait; the advertiser re-files
         // the record whenever it is withdrawn (`serviceOrgans`).
@@ -589,8 +589,6 @@ static func serveSession(
         listener: host.listener,
         rateBitsPerSecond: Int(opts.wireRateMbps * 1_000_000),
         capabilities: host.declared,
-        allowedClientStatics: host.allowed,
-        handshakeGateConfig: host.gateConfig,
         pairing: host.pairingService,
         onPairingEvent: handlePairingEvent
     )
@@ -601,7 +599,6 @@ static func serveSession(
         // Unattached, the clipboard leaf still serves host pastes and
         // drains host copies unread.
         awaitOutcome = try w.awaitClient(
-            hostStatic: host.hostStatic,
             timeoutSeconds: nil,
             stopRequested: { lyteTerminationRequested != 0 },
             idle: { host.serviceOrgans() })
@@ -623,16 +620,11 @@ static func serveSession(
     // wire-rate cap, VBV at the unprotectable-frame guard's ceiling, so
     // a restore can never re-open the >255-shard hole.
     let guardBits = w.worstCaseProtectableFrameCeiling * 8
-    // Half-rungs and exact tightens; the native seat applies rate moves
-    // without a reset. The loosening sustain stays slow on purpose: an
-    // eager one chases every climb into a limit cycle.
+    // The native seat applies rate moves without a reset.
     w.armEncoderVbv(EncoderVbvConfig(
         fps: DirectEyeLeg.fps,
-        baselineAverageBitsPerSecond: nil,
         baselineMaxBitsPerSecond: Int(opts.wireRateMbps * 1_000_000),
-        baselineVbvBits: guardBits,
-        rungsPerOctave: 2,
-        exactTighten: true
+        baselineVbvBits: guardBits
     ))
 
     w.shellServiceHook = { [weak host] in
@@ -788,12 +780,11 @@ static func printSessionBooks(
     let c = wire.counters
     let s = wire.sessionCounters
     let o = wire.outboxCounters
+    let h = host.listener.acceptor.counters
     var vbvFinal = ""
     if let d = wire.lastVbvDirective {
-        let avg = d.averageBitsPerSecond
-            .map { " avg \($0 / 1_000) kbps," } ?? ""
         vbvFinal = """
-             — final\(avg) max \(d.maxBitsPerSecond / 1_000) kbps, vbv \
+             — final max \(d.maxBitsPerSecond / 1_000) kbps, vbv \
             \(d.vbvBits / 8) B (ceiling \(d.frameByteCeiling) B)
             """
     }
@@ -863,12 +854,12 @@ static func printSessionBooks(
     \(s.unsealFailures) unseal failures, \
     \(s.ctrlQueueFullRefusals)/\(s.bulkQueueFullRefusals) ctrl/bulk \
     arq queue-full refusals, \
-    \(s.feedbackDatagrams) feedback datagrams, \
-    \(s.handshakesThrottled) msg1 throttled
-    handshake-flood: \(s.handshakeChallengesMinted) cookies minted \
-    (0x13), \(s.handshakeCookiesVerified) verified / \
-    \(s.handshakeCookiesRejected) rejected (0x14), require-cookie now \
-    \(wire.handshakeCookieMode ? "ON" : "off")
+    \(s.feedbackDatagrams) feedback datagrams
+    handshake-flood (since start): \(h.throttled) msg1 throttled, \
+    \(h.answeredBefore) answered before, \(h.challengesMinted) cookies \
+    minted (0x13), \(h.cookiesVerified) verified / \(h.cookiesRejected) \
+    rejected (0x14), require-cookie now \
+    \(host.listener.acceptor.cookieMode ? "ON" : "off")
     lifecycle: \(s.modeTransitionsSent) mode transitions, \
     \(s.videoFramesSuppressed) frames suppressed (FROZEN/closed), \
     \(s.videoFramesUnprotectable) dropped unprotectable \

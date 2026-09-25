@@ -80,8 +80,13 @@ final class SingleOwnerTests: XCTestCase {
                     scope: "Host/Sources/"),
         // Encryption is always on: no production shell selects the
         // session's plaintext test mode.
-        ConfinedUse(tokens: ["testPassthrough"],
+        ConfinedUse(tokens: ["passthroughTo"],
                     owner: .directory("Host/Sources/HostWire/")),
+        // Handshake admission is the listener's: only the acceptor holds
+        // a flood gate, so no session can reset one.
+        ConfinedUse(tokens: ["HandshakeGate", "("],
+                    owner: .declarer(of: "HandshakeAcceptor"),
+                    scope: "Host/Sources/"),
         // No client grows a plaintext option, and the passthrough crypto
         // stays in the client test kit, which this scan never reads.
         ConfinedUse(tokens: ["insecure"],

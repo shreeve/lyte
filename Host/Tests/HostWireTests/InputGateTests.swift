@@ -78,7 +78,6 @@ final class InputGateTests: XCTestCase {
     ) throws -> (host: HostSessionHarness, client: InputClient) {
         let host = HostSessionHarness(
             config: SessionConfig(
-                crypto: .noise(hostStatic: NoiseKeyPair.generate()),
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: beaconIntervalNS,
                 lifecycle: lifecycle
@@ -89,7 +88,6 @@ final class InputGateTests: XCTestCase {
         let client = InputClient(peer: try host.connectClient(
             declaring: clientCapabilities, openChannels: nil
         ))
-        XCTAssertEqual(host.session.phase, .established)
         return (host, client)
     }
 

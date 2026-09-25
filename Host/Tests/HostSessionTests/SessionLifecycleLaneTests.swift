@@ -3,19 +3,9 @@ import XCTest
 import LyteWire
 
 final class SessionLifecycleLaneTests: XCTestCase {
-    func testDormantLaneBeginsAtEstablishmentAndProjectsExactDeadline() {
-        var lane = SessionLifecycleLane(config: SessionMachineConfig())
-
-        XCTAssertFalse(lane.isEstablished)
-        XCTAssertNil(lane.state)
-        XCTAssertNil(lane.nextDeadlineNanoseconds)
-        XCTAssertTrue(lane.videoSendsSuppressed)
-        XCTAssertTrue(lane.audioSendsSuppressed)
-        let dormant = lane.drive(.damage, now: 900)
-        XCTAssertTrue(dormant.actions.isEmpty)
-        XCTAssertNil(dormant.stateChangedTo)
-
-        lane.establish(at: 1_234_567)
+    func testALaneBeginsActiveAtEstablishmentAndProjectsExactDeadline() {
+        var lane = SessionLifecycleLane(
+            config: SessionMachineConfig(), establishedAt: 1_234_567)
         XCTAssertEqual(lane.state, .active)
         XCTAssertNil(lane.nextDeadlineNanoseconds)
         XCTAssertTrue(lane.shouldService(at: 1_234_567))
@@ -40,7 +30,7 @@ final class SessionLifecycleLaneTests: XCTestCase {
                 blackoutSilenceMicroseconds: 350,
                 livenessTimeoutMicroseconds: 30_000
             ),
-            establishedAtNanoseconds: 0
+            establishedAt: 0
         )
         _ = lane.drive(nil, now: 0)
         XCTAssertEqual(lane.nextDeadlineNanoseconds, 350_000)
@@ -63,7 +53,7 @@ final class SessionLifecycleLaneTests: XCTestCase {
                 livenessTimeoutMicroseconds: 1_000,
                 cleanWindowsToRecover: 2
             ),
-            establishedAtNanoseconds: 0
+            establishedAt: 0
         )
         _ = lane.drive(nil, now: 0)
 
@@ -105,17 +95,13 @@ final class SessionLifecycleLaneTests: XCTestCase {
         ])
         XCTAssertNil(lane.nextDeadlineNanoseconds)
         XCTAssertFalse(lane.shouldService(at: .max))
-        XCTAssertTrue(
-            lane.isEstablished,
-            "CLOSED is a terminal established machine, not handshake dormancy"
-        )
         XCTAssertTrue(lane.videoSendsSuppressed)
         XCTAssertTrue(lane.audioSendsSuppressed)
     }
 
     func testIdleAndWakeEachReturnOneFinalStateChangeVerdict() {
         var lane = SessionLifecycleLane(
-            config: SessionMachineConfig(), establishedAtNanoseconds: 0
+            config: SessionMachineConfig(), establishedAt: 0
         )
 
         let converged = lane.drive(.ratchetConverged, now: 1_000)

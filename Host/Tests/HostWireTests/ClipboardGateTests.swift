@@ -127,7 +127,6 @@ final class ClipboardGateTests: XCTestCase {
     ) throws -> (host: HostSessionHarness, client: SealedCtrlPeer<ClientClock>) {
         let host = HostSessionHarness(
             config: SessionConfig(
-                crypto: .noise(hostStatic: NoiseKeyPair.generate()),
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: 1 << 62,
                 capabilities: .wireDefault.declaringClipboardText()
@@ -136,7 +135,6 @@ final class ClipboardGateTests: XCTestCase {
             rng: SplitMix64(seed: 0x1A1B)
         )
         let client = try host.connectClient(declaring: clientCapabilities)
-        XCTAssertEqual(host.session.phase, .established)
         return (host, client)
     }
 

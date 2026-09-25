@@ -3,6 +3,7 @@ import Foundation
 import HostCore
 import HostSession
 @_spi(Testing) import HostWire
+import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
@@ -103,7 +104,6 @@ final class FallPurgeGateTests: XCTestCase {
         var sent: [VideoChannelDatagram] = []
         let session = Session(
             config: SessionConfig(
-                crypto: .testPassthrough,
                 rateBitsPerSecond: 2_000_000,
                 beaconIntervalNS: 1 << 62,
                 // This gate needs room below its deliberately tiny
@@ -113,7 +113,7 @@ final class FallPurgeGateTests: XCTestCase {
                     ceilingBitsPerSecond: 2_000_000,
                     floorBitsPerSecond: 500_000)
             ),
-            clientTuple: FourTuple(
+            passthroughTo: FourTuple(
                 localAddress: "10.0.0.1", localPort: 41000,
                 remoteAddress: "10.0.0.2", remotePort: 42000
             ),
@@ -273,14 +273,13 @@ final class FallPurgeGateTests: XCTestCase {
             remoteAddress: "10.0.0.2", remotePort: 42000)
         let session = Session(
             config: SessionConfig(
-                crypto: .testPassthrough,
                 rateBitsPerSecond: 2_000_000,
                 beaconIntervalNS: 1 << 62,
                 estimator: RateEstimatorConfig(
                     ceilingBitsPerSecond: 2_000_000,
                     floorBitsPerSecond: 500_000)
             ),
-            clientTuple: tuple,
+            passthroughTo: tuple,
             now: 0,
             rng: SplitMix64(seed: 0xD20B),
             sendAccounting: .socketConfirmed
@@ -340,13 +339,12 @@ final class FallPurgeGateTests: XCTestCase {
 
     func testQueueBudgetDefaultsAndImpairedClamp() {
         let defaults = SessionConfig(
-            crypto: .testPassthrough, rateBitsPerSecond: 20_000_000
+            rateBitsPerSecond: 20_000_000
         )
         XCTAssertEqual(defaults.cleanVideoQueueBudgetNS, 50_000_000)
         XCTAssertEqual(defaults.impairedVideoQueueBudgetNS, 100_000_000)
 
         let clamped = SessionConfig(
-            crypto: .testPassthrough,
             rateBitsPerSecond: 20_000_000,
             cleanVideoQueueBudgetNS: 40_000_000,
             impairedVideoQueueBudgetNS: 500_000_000
@@ -396,11 +394,10 @@ final class FallPurgeGateTests: XCTestCase {
         var sent: [VideoChannelDatagram] = []
         let session = Session(
             config: SessionConfig(
-                crypto: .testPassthrough,
                 rateBitsPerSecond: 2_000_000,
                 beaconIntervalNS: 1 << 62
             ),
-            clientTuple: FourTuple(
+            passthroughTo: FourTuple(
                 localAddress: "10.0.0.1", localPort: 41000,
                 remoteAddress: "10.0.0.2", remotePort: 42000
             ),

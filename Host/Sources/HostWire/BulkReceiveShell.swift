@@ -276,8 +276,6 @@ public final class BulkReceiveShell {
         var events: [BulkReceiveShellEvent] = []
         switch promote(offer) {
         case .success(let finalName):
-            store.removeResumeState(transferId: offer.transferId)
-            book.removeAll { $0.transferId == offer.transferId }
             counters.filesCompleted += 1
             events.append(.fileCompleted(
                 name: finalName,
@@ -285,11 +283,15 @@ public final class BulkReceiveShell {
                 byteCount: offer.totalByteCount
             ))
         case .failure(let failure):
-            // Verified and complete on the wire, but the promotion
-            // failed — loud, staging kept (the bytes are sha-good).
+            // Verified and complete on the wire, but no name took it:
+            // loud, and the staging file goes. Nothing would ever resume
+            // or promote it, so kept it would only fill the disk unseen.
             counters.storageFailures += 1
             events.append(.storageFailure("promote: \(failure.detail)"))
+            store.removeStaging(transferId: offer.transferId)
         }
+        store.removeResumeState(transferId: offer.transferId)
+        book.removeAll { $0.transferId == offer.transferId }
         rearm()
         return events
     }

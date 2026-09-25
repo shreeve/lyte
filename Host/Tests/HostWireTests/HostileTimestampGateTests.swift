@@ -17,7 +17,6 @@ final class HostileTimestampGateTests: XCTestCase {
     func testEchoedTimestampsCannotTrapOrPoisonTheRttGate() throws {
         let host = HostSessionHarness(
             config: SessionConfig(
-                crypto: .noise(hostStatic: NoiseKeyPair.generate()),
                 rateBitsPerSecond: 20_000_000,
                 beaconIntervalNS: 1 << 62
             ),

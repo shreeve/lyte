@@ -26,7 +26,10 @@ final class BrowserHostPeer {
     /// Host virtual time in microseconds.
     private(set) var hostMicros: UInt64 = BrowserHostPeer.startMicros
     /// The source tuple client datagrams arrive from; changing it roams.
-    var clientTuple: FourTuple
+    var clientTuple: FourTuple {
+        get { harness.tuple }
+        set { harness.tuple = newValue }
+    }
 
     init(
         lifecycle: SessionMachineConfig = SessionMachineConfig(
@@ -36,11 +39,6 @@ final class BrowserHostPeer {
         capabilities: Capabilities = .wireDefault.declaringClipboardText(),
         clientSkewPartsPerMillion: Int64 = 0
     ) {
-        let tuple = FourTuple(
-            localAddress: "127.0.0.1", localPort: 41_234,
-            remoteAddress: "127.0.0.1", remotePort: 50_000
-        )
-        self.clientTuple = tuple
         self.clientSkewPartsPerMillion = clientSkewPartsPerMillion
         self.pairing = PairingResponderService(
             pin: Array(Self.pin.utf8),
@@ -48,13 +46,15 @@ final class BrowserHostPeer {
         )
         self.harness = HostSessionHarness(
             config: SessionConfig(
-                crypto: .noise(hostStatic: hostStatic),
                 rateBitsPerSecond: 50_000_000,
                 capabilities: capabilities,
                 lifecycle: lifecycle
             ),
-            tuple: tuple,
-            now: Self.startMicros * 1_000,
+            acceptor: HandshakeAcceptor.Config(hostStatic: hostStatic),
+            tuple: FourTuple(
+                localAddress: "127.0.0.1", localPort: 41_234,
+                remoteAddress: "127.0.0.1", remotePort: 50_000
+            ),
             rng: SystemRandomNumberGenerator()
         )
     }
@@ -87,10 +87,7 @@ final class BrowserHostPeer {
 
     /// One client datagram arrives at the host.
     func receive(_ datagram: [UInt8]) {
-        handle(session.receive(
-            datagram, from: clientTuple,
-            now: hostMicros * 1_000, hostMicroseconds: hostMicros))
-        session.pump(now: hostMicros * 1_000)
+        handle(harness.receive(datagram, at: hostMicros))
     }
 
     private func handle(_ produced: [SessionEvent]) {
@@ -129,7 +126,7 @@ final class BrowserHostPeer {
     /// Everything the host has released since the last drain, with the
     /// pacer's metadata (frame number, class).
     func drainReleased() -> [VideoChannelDatagram] {
-        session.pump(now: hostMicros * 1_000)
+        harness.currentSession?.pump(now: hostMicros * 1_000)
         let released = Array(harness.sent[harness.forwarded...])
         harness.forwarded = harness.sent.count
         return released

@@ -18,7 +18,6 @@ final class PreAuthExposureGateTests: XCTestCase {
     private func harness() -> HostSessionHarness {
         HostSessionHarness(
             config: SessionConfig(
-                crypto: .noise(hostStatic: NoiseKeyPair.generate()),
                 rateBitsPerSecond: 20_000_000
             ),
             tuple: Self.tupleA,

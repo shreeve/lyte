@@ -74,10 +74,10 @@ final class AudioGateTests: XCTestCase {
         var sent: [VideoChannelDatagram] = []
         let session = Session(
             config: SessionConfig(
-                crypto: .testPassthrough, rateBitsPerSecond: Self.rateBPS,
+                rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: 1 << 62
             ),
-            clientTuple: Self.tupleA,
+            passthroughTo: Self.tupleA,
             now: 0,
             rng: SplitMix64(seed: 0x15)
         ) { sent.append($0) }
@@ -115,10 +115,10 @@ final class AudioGateTests: XCTestCase {
         var sent: [VideoChannelDatagram] = []
         let session = Session(
             config: SessionConfig(
-                crypto: .testPassthrough, rateBitsPerSecond: 500_000,
+                rateBitsPerSecond: 500_000,
                 beaconIntervalNS: 1 << 62
             ),
-            clientTuple: Self.tupleA,
+            passthroughTo: Self.tupleA,
             now: 0,
             rng: SplitMix64(seed: 0x31)
         ) { sent.append($0) }
@@ -211,7 +211,6 @@ final class AudioGateTests: XCTestCase {
     ) {
         let host = HostSessionHarness(
             config: SessionConfig(
-                crypto: .noise(hostStatic: NoiseKeyPair.generate()),
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: 1 << 62
             ),
@@ -221,7 +220,6 @@ final class AudioGateTests: XCTestCase {
         let client = AudioClient(peer: try host.connectClient(
             declaring: nil, openChannels: nil
         ))
-        XCTAssertEqual(host.session.phase, .established)
         return (host, client)
     }
 
@@ -368,10 +366,10 @@ final class AudioGateTests: XCTestCase {
         var sent: [VideoChannelDatagram] = []
         let session = Session(
             config: SessionConfig(
-                crypto: .testPassthrough, rateBitsPerSecond: Self.rateBPS,
+                rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: 1 << 62
             ),
-            clientTuple: Self.tupleA,
+            passthroughTo: Self.tupleA,
             now: 0,
             rng: SplitMix64(seed: 0xF0)
         ) { sent.append($0) }
@@ -397,9 +395,9 @@ final class AudioGateTests: XCTestCase {
     func testSessionCountsAGroupAbandonedByAPacketSizeStep() throws {
         let session = Session(
             config: SessionConfig(
-                crypto: .testPassthrough, rateBitsPerSecond: Self.rateBPS
+                rateBitsPerSecond: Self.rateBPS
             ),
-            clientTuple: Self.tupleA,
+            passthroughTo: Self.tupleA,
             now: 0,
             rng: SplitMix64(seed: 0xAB)
         ) { _ in }
@@ -415,24 +413,6 @@ final class AudioGateTests: XCTestCase {
         XCTAssertEqual(session.counters.audioGroupsCompleted, 0)
     }
 
-    func testAudioBeforeEstablishmentThrows() throws {
-        let hostStatic = NoiseKeyPair.generate()
-        let session = Session(
-            config: SessionConfig(
-                crypto: .noise(hostStatic: hostStatic),
-                rateBitsPerSecond: Self.rateBPS
-            ),
-            clientTuple: Self.tupleA,
-            now: 0,
-            rng: SplitMix64(seed: 0xA0D1)
-        ) { _ in }
-        XCTAssertThrowsError(try session.ingestAudioPacket(
-            opusPacket(0), captureTimestampMicroseconds: 0, now: 0
-        )) {
-            XCTAssertEqual($0 as? SessionError, .notEstablished)
-        }
-    }
-
     // MARK: - Audio cadence through worst-case IDRs
 
     /// 5 s of virtual time at 20 Mbps: 5 ms audio, steady 60 fps damage
@@ -445,9 +425,9 @@ final class AudioGateTests: XCTestCase {
         var audioSends: [(at: UInt64, envelope: Envelope)] = []
         let session = Session(
             config: SessionConfig(
-                crypto: .testPassthrough, rateBitsPerSecond: Self.rateBPS
+                rateBitsPerSecond: Self.rateBPS
             ),
-            clientTuple: Self.tupleA,
+            passthroughTo: Self.tupleA,
             now: 0,
             rng: SplitMix64(seed: 0x0815)
         ) { datagram in

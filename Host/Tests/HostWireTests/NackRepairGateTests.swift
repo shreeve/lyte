@@ -68,12 +68,12 @@ final class NackRepairGateTests: XCTestCase {
         tweak: (inout SessionConfig) -> Void = { _ in }
     ) -> Session {
         var config = SessionConfig(
-            crypto: .testPassthrough, rateBitsPerSecond: Self.ceiling
+            rateBitsPerSecond: Self.ceiling
         )
         tweak(&config)
         return Session(
             config: config,
-            clientTuple: Self.tupleA,
+            passthroughTo: Self.tupleA,
             now: 0,
             rng: SplitMix64(seed: seed)
         ) { [box] datagram in

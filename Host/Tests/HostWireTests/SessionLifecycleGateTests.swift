@@ -119,7 +119,6 @@ final class SessionLifecycleGateTests: XCTestCase {
     ) throws -> Loopback {
         let host = HostSessionHarness(
             config: SessionConfig(
-                crypto: .noise(hostStatic: NoiseKeyPair.generate()),
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: beaconIntervalNS,
                 capabilities: hostCapabilities,
@@ -134,7 +133,6 @@ final class SessionLifecycleGateTests: XCTestCase {
                 declaring: clientCapabilities, openChannels: nil
             ))
         )
-        XCTAssertEqual(host.session.phase, .established)
         XCTAssertEqual(host.session.lifecycleState, .active,
                        "the machine begins at establishment, in ACTIVE")
         var t: UInt64 = 1_000
@@ -501,10 +499,6 @@ final class SessionLifecycleGateTests: XCTestCase {
             now: t * 1_000, hostMicroseconds: t
         )
         XCTAssertEqual(loop.session.lifecycleState, .closed)
-        XCTAssertEqual(
-            loop.session.phase, .established,
-            "CLOSED is terminal lifecycle state, not handshake dormancy"
-        )
         XCTAssertTrue(loop.hostEvents.contains(
             .sessionClosed(.livenessTimeout)
         ))

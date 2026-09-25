@@ -44,7 +44,6 @@ final class CursorGateTests: XCTestCase {
     ) throws -> (host: HostSessionHarness, client: SealedCtrlPeer<ClientClock>) {
         let host = HostSessionHarness(
             config: SessionConfig(
-                crypto: .noise(hostStatic: NoiseKeyPair.generate()),
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: 1 << 62,
                 capabilities: .wireDefault.declaringCursorShape()
@@ -53,7 +52,6 @@ final class CursorGateTests: XCTestCase {
             rng: SplitMix64(seed: 0x24)
         )
         let client = try host.connectClient(declaring: clientCapabilities)
-        XCTAssertEqual(host.session.phase, .established)
         return (host, client)
     }
 

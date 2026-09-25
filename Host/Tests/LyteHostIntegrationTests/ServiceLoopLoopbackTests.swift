@@ -16,7 +16,7 @@ final class ServiceLoopLoopbackTests: XCTestCase {
 
     func testSessionsInTurnShareTheListenerAndLeaveNoDescriptors() throws {
         let hostStatic = NoiseKeyPair.generate()
-        let listener = try HostListener(port: 0)
+        let listener = try HostListener(hostStatic: hostStatic)
         let port = lyte_netio_local_port(listener.netio)
         let baseline = try openDescriptorCount()
 
@@ -29,7 +29,7 @@ final class ServiceLoopLoopbackTests: XCTestCase {
                     port: port, hostStaticPublicKey: hostStatic.publicKey)
                 try client.dial()
                 XCTAssertEqual(try awaitClient(
-                    wire, hostStatic: hostStatic, timeoutSeconds: 5
+                    wire, timeoutSeconds: 5
                 ) {
                     let reply = try XCTUnwrap(
                         client.awaitMessage2(), "round \(round): message 2")

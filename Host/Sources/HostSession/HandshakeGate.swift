@@ -169,14 +169,6 @@ public struct HandshakeGate: Sendable {
     private var addressBuckets = BoundedFifoMap<[UInt8], TokenBucket>(
         capacity: 256)
 
-    /// RetryChallenges minted in require-cookie mode.
-    public private(set) var challengesMinted = 0
-    /// Cookies presented that verified — the extra-round-trip admits.
-    public private(set) var cookiesVerified = 0
-    /// Cookies presented that did not verify — spoof evidence.
-    public private(set) var cookiesRejected = 0
-    /// Verified cookies dropped as exact replays or over a cookie budget.
-    public private(set) var cookiesThrottled = 0
     /// Whether the gate is currently demanding a cookie (the observable
     /// dial; the caller surfaces its transitions).
     public private(set) var cookieMode = false
@@ -230,10 +222,8 @@ public struct HandshakeGate: Sendable {
                         RetryCookie.defaultLifetimeNanoseconds
                   )
             else {
-                cookiesRejected += 1
                 return decided(.drop(.cookieInvalid))
             }
-            cookiesVerified += 1
             let cookie = Array(presentedCookie)
             var share = addressBuckets[clientAddress] ?? TokenBucket(
                 ratePerSecond: config.cookieAdmissionsPerAddressPerSecond,
@@ -250,7 +240,6 @@ public struct HandshakeGate: Sendable {
             }
             addressBuckets.set(share, for: clientAddress)
             guard spent else {
-                cookiesThrottled += 1
                 return decided(.drop(.throttled))
             }
             admittedCookies.set((), for: cookie)
@@ -269,7 +258,6 @@ public struct HandshakeGate: Sendable {
                 clientTuple: clientTuple, message1: message1,
                 now: now, secret: secret
            ) {
-            challengesMinted += 1
             return decided(.challenge(cookie: cookie))
         }
         // The mint refused a malformed tuple: the bucket still applies.
