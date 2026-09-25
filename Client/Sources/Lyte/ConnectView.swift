@@ -170,47 +170,15 @@ struct ConnectView: View {
         .help(lyteHostTooltip(host, paired: pinned != nil))
         .contextMenu {
             if let pinned {
-                // The per-host session-start posture, applied at connect.
-                // Unset means muted, so this reads `!= false` and writes
-                // both directions explicitly.
-                Toggle("Start with Host Muted", isOn: Binding(
-                    get: {
-                        pinnedStore.host(publicKeyHash: host.publicKeyHash)?
-                            .startHostAudioMuted != false
-                    },
-                    set: { muted in
-                        updatePins(host) {
-                            $0.setStartHostAudioMuted(publicKeyHash: $1, muted: muted)
+                // The per-host defaults, applied at connect.
+                ForEach(HostPreference.allCases, id: \.self) { preference in
+                    Toggle(preference.pickerTitle, isOn: Binding(
+                        get: { preference.value(in: pinned) },
+                        set: { on in
+                            updatePins(host) { preference.set(on, in: &$0, publicKeyHash: $1) }
                         }
-                    }
-                ))
-                // The per-host clipboard consent, applied at connect. Off
-                // by default (clipboards carry passwords).
-                Toggle("Share Clipboard", isOn: Binding(
-                    get: {
-                        pinnedStore.host(publicKeyHash: host.publicKeyHash)?
-                            .shareClipboard == true
-                    },
-                    set: { share in
-                        updatePins(host) {
-                            $0.setShareClipboard(publicKeyHash: $1, share: share ? true : nil)
-                        }
-                    }
-                ))
-                // The images rung — meaningful only with text consent on;
-                // off by default like text.
-                Toggle("Share Clipboard Images", isOn: Binding(
-                    get: {
-                        pinnedStore.host(publicKeyHash: host.publicKeyHash)?
-                            .shareClipboardImages == true
-                    },
-                    set: { share in
-                        updatePins(host) {
-                            $0.setShareClipboardImages(
-                                publicKeyHash: $1, share: share ? true : nil)
-                        }
-                    }
-                ))
+                    ))
+                }
                 Divider()
                 Button("Unpair \(pinned.name)", role: .destructive) {
                     updatePins(host) { $0.unpin(publicKeyHash: $1) != nil }
@@ -228,9 +196,9 @@ struct ConnectView: View {
         _ mutate: (inout PinnedHostStore, String) -> Bool
     ) {
         guard let pkh = host.publicKeyHash else { return }
-        var store = loadPinnedHosts()
+        var store = model.services.loadPins()
         guard mutate(&store, pkh) else { return }
-        try? store.save()
+        try? model.services.savePins(store)
         pinnedStore = store
     }
 
@@ -324,6 +292,16 @@ struct ConnectView: View {
             return "The route may be unavailable, or Local Network access "
                 + "may be off. Check Lyte in System Settings → Privacy & "
                 + "Security → Local Network, then return here to retry."
+        }
+    }
+}
+
+extension HostPreference {
+    var pickerTitle: String {
+        switch self {
+        case .startHostMuted: "Start with Host Muted"
+        case .shareClipboard: "Share Clipboard"
+        case .shareClipboardImages: "Share Clipboard Images"
         }
     }
 }

@@ -42,8 +42,8 @@ struct LyteCommands: Commands {
             // The per-host session-start default (unset means muted),
             // applied at the next connect to this host.
             Toggle("Start Sessions with Host Muted", isOn: Binding(
-                get: { connection?.startHostMutedPreference ?? true },
-                set: { connection?.startHostMutedPreference = $0 }
+                get: { connection?.hostPreference(.startHostMuted) ?? true },
+                set: { connection?.setHostPreference(.startHostMuted, $0) }
             ))
             .disabled(connection?.hostPublicKeyHash == nil)
 
@@ -68,14 +68,14 @@ struct LyteCommands: Commands {
 
             // Per-host consent defaults, applied at the next connect.
             Toggle("Share Clipboard with This Host by Default", isOn: Binding(
-                get: { connection?.shareClipboardPreference ?? false },
-                set: { connection?.shareClipboardPreference = $0 }
+                get: { connection?.hostPreference(.shareClipboard) ?? false },
+                set: { connection?.setHostPreference(.shareClipboard, $0) }
             ))
             .disabled(connection?.hostPublicKeyHash == nil)
 
             Toggle("Share Clipboard Images by Default", isOn: Binding(
-                get: { connection?.shareClipboardImagesPreference ?? false },
-                set: { connection?.shareClipboardImagesPreference = $0 }
+                get: { connection?.hostPreference(.shareClipboardImages) ?? false },
+                set: { connection?.setHostPreference(.shareClipboardImages, $0) }
             ))
             .disabled(connection?.hostPublicKeyHash == nil)
 

@@ -15,9 +15,9 @@ final class ConnectionPreferencesTests: XCTestCase {
         let loads = harness.pinLoads
 
         for _ in 0..<50 {
-            _ = model.startHostMutedPreference
-            _ = model.shareClipboardPreference
-            _ = model.shareClipboardImagesPreference
+            for preference in HostPreference.allCases {
+                _ = model.hostPreference(preference)
+            }
         }
         XCTAssertEqual(harness.pinLoads, loads, "a menu render must not read the disk")
     }
@@ -29,13 +29,13 @@ final class ConnectionPreferencesTests: XCTestCase {
         await model.connectLyte(harness.host)
         let pkh = try XCTUnwrap(harness.host.publicKeyHash)
 
-        XCTAssertTrue(model.startHostMutedPreference, "unset means start muted")
-        XCTAssertFalse(model.shareClipboardPreference, "clipboard defaults off")
+        XCTAssertTrue(model.hostPreference(.startHostMuted), "unset means start muted")
+        XCTAssertFalse(model.hostPreference(.shareClipboard), "clipboard defaults off")
 
-        model.startHostMutedPreference = false
-        model.shareClipboardPreference = true
-        XCTAssertFalse(model.startHostMutedPreference)
-        XCTAssertTrue(model.shareClipboardPreference)
+        model.setHostPreference(.startHostMuted, false)
+        model.setHostPreference(.shareClipboard, true)
+        XCTAssertFalse(model.hostPreference(.startHostMuted))
+        XCTAssertTrue(model.hostPreference(.shareClipboard))
         let stored = try XCTUnwrap(harness.savedPins.host(publicKeyHash: pkh))
         XCTAssertEqual(stored.startHostAudioMuted, false)
         XCTAssertEqual(stored.shareClipboard, true)
