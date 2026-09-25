@@ -18,23 +18,16 @@ source "$repo_root/Scripts/lib/frozen-vectors.sh"
 # run_package_tests PACKAGE: resolve and test PACKAGE in its own scratch
 # directory, cleaning it first when its build graph changed.
 run_package_tests() {
-    local package="$1"
+    local package="$1" changed
     local package_path="$repo_root/$package"
     local scratch_path="$package_path/.build"
-    local marker="$scratch_path/.lyte-build-graph-sha256"
-    local build_graph_hash installed_hash=""
     echo "==> $package tests"
 
-    build_graph_hash="$(lyte_build_graph_hash "$repo_root" "$package")" \
-        || build_graph_hash=""
-    if [[ -z "$build_graph_hash" ]]; then
+    changed="$(lyte_changed_build_graph "$repo_root" "$package")" || {
         echo "macOS gate FAILED: no build-graph identity for $package" >&2
         exit 1
-    fi
-    if [[ -f "$marker" ]]; then
-        installed_hash="$(<"$marker")"
-    fi
-    if [[ "$installed_hash" != "$build_graph_hash" ]]; then
+    }
+    if [[ -n "$changed" ]]; then
         echo "    package or source-path graph changed; invalidating stale SwiftPM build state"
         swift package \
             --package-path "$package_path" \
@@ -52,8 +45,8 @@ run_package_tests() {
         --package-path "$package_path" \
         --scratch-path "$scratch_path" \
         -Xswiftc -warnings-as-errors
-    mkdir -p "$scratch_path"
-    printf '%s\n' "$build_graph_hash" > "$marker"
+    [[ -z "$changed" ]] \
+        || lyte_record_build_graph "$repo_root" "$package" "$changed"
 }
 
 verify_frozen_vectors() {

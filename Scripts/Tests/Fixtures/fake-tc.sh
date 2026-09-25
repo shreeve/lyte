@@ -23,6 +23,10 @@ case "$*" in
                 echo "qdisc netem 1a7f: parent 1a7e:3"
                 ;;
             owned-changed) echo "qdisc prio 1a7e: root refcnt 2 bands 3" ;;
+            owned-without-netem)
+                echo "qdisc prio 1a7e: root refcnt 2 bands 3"
+                echo "qdisc fq_codel 1a70: parent 1a7e:1"
+                ;;
             foreign) echo "qdisc htb 7: root refcnt 2" ;;
         esac
         ;;

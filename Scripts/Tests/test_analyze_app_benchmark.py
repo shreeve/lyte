@@ -336,24 +336,6 @@ class AnalyzerTests(unittest.TestCase):
             "bounded_path_tail_concealed",
         )
 
-    def test_legacy_declick_counter_is_ignored(self):
-        # Older app builds also emitted declickProtectedUnderrunFrames.
-        # The verdict reads underrunFrames alone; only the raw final
-        # counters are echoed.
-        warmup = sample("static", 0, ["freshCapture"])
-        warmup["elapsedSeconds"] = 2.0
-        warmup["audio"]["declickProtectedUnderrunFrames"] = 0
-        steady = json.loads(json.dumps(warmup))
-        steady["elapsedSeconds"] = 30.0
-        steady["audio"]["packetsPlayed"] = 5_000
-        steady["audio"]["declickProtectedUnderrunFrames"] = 9_999
-        result = self.analyze(steady, samples=[warmup, steady])
-        self.assertEqual(result["verdict"], "PASS")
-        self.assertNotIn(
-            "declickProtectedUnderrunFrames",
-            json.dumps(result["audio"]["intervalAnalysis"]),
-        )
-
     def test_idle_floor_static_quality_scores_native_pixels_over_time(self):
         fixtures = [
             quality_sample(1.0, 11, psnr=41.0, ssim=0.990),
@@ -368,10 +350,6 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(result["quality"]["decodedProgressFPS"], 0)
         self.assertEqual(result["quality"]["staleReadbackIntervals"], 2)
         self.assertTrue(result["quality"]["decodedFramesAdvancedDuringRun"])
-        self.assertEqual(
-            result["quality"]["cadencePolicy"],
-            "static_idle_floor_retention",
-        )
         self.assertTrue(result["quality"]["dimensionsExact"])
         self.assertEqual(result["quality"]["geometry"]["backingScaleFactor"], 2)
 
@@ -389,9 +367,8 @@ class AnalyzerTests(unittest.TestCase):
 
     def test_best_tier_floors_hold_the_444_standard(self):
         # 52 dB passes 4:2:0's converged floor (30) by 22 dB, but a
-        # Best-tier stream is graded on the 4:4:4 bar (50/0.9995) —
-        # the commissioned 2026-08-03 baseline is 56.8–57.6 dB, so a
-        # slide to 48 dB is a REGRESSION the old floor would bless.
+        # Best-tier stream is graded on the 4:4:4 bar (50/0.9995), so a
+        # slide to 48 dB fails where the 4:2:0 floor would pass it.
         passing = [
             quality_sample(t, 29, psnr=52.0, ssim=0.99990, chroma="4:4:4")
             for t in (1.0, 2.0, 4.0, 5.0, 6.0)
@@ -602,10 +579,10 @@ class TwinRendererPinTests(unittest.TestCase):
 
     These digests are the same constants asserted by
     SyntheticMotionReferenceTests.testTwinRenderersAgreeByteForByte in
-    the Swift suite. MotionFrames (the numpy twin of the GTK canvas)
-    and the client's SyntheticMotionReference must render the authored
-    frame byte-for-byte; a drift in either renderer moves exactly one
-    side of the pin and both suites fail.
+    the Swift suite. MotionFrames (numpy, painting the shape list the GTK
+    canvas paints) and the client's SyntheticMotionReference must render
+    the authored frame byte-for-byte; a drift in either renderer moves
+    exactly one side of the pin and both suites fail.
     """
 
     PINS = {

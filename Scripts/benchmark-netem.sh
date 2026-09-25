@@ -75,7 +75,7 @@ if grep -q 'qdisc prio 1a7e: root' "$RUN_DIR/qdisc-before.txt"; then
   echo "refusing: a port-netem qdisc is already installed on $PUP/$IFACE" >&2
   exit 1
 fi
-rsync -a "$NETEM_HELPER" "$PUP:$REMOTE_HELPER"
+pup_rsync -a "$NETEM_HELPER" "$PUP:$REMOTE_HELPER"
 
 cleanup() {
   local initial_status="${1:-$?}"
@@ -115,34 +115,21 @@ pup_ssh \
 pup_ssh "sudo -n sh '$REMOTE_HELPER' status '$IFACE'" \
   > "$RUN_DIR/qdisc-impaired.txt"
 
-VERDICT_JSON="$RUN_DIR/analyzer-verdict.json"
 LOG="$RUN_DIR/benchmark.log"
-# The clean-air gates may fail under deliberate impairment (the SLO
-# judgment below is ours), but the leg must actually run.
+# The clean-air gates may fail under deliberate impairment (the leg's own
+# clean-air verdict lands in its log; the SLO judgment below is ours), but
+# the leg must actually run and name its benchmark JSONL.
 LYTE_BENCHMARK_HOST="$HOST" LYTE_BENCHMARK_PORT="$HOST_PORT" \
   LYTE_PUP_HOST="$PUP" "$ROOT/Scripts/benchmark-app.sh" \
   --no-build --out "$RUN_DIR" motion >"$LOG" 2>&1 || true
-shopt -s nullglob
-artifacts=()
-for candidate in "$RUN_DIR"/motion-*.jsonl; do
-  case "$candidate" in
-    *-client-handshake.jsonl|*-motion-source.jsonl) continue ;;
-    *) artifacts+=("$candidate") ;;
-  esac
-done
-shopt -u nullglob
-if (( ${#artifacts[@]} != 1 )); then
-  echo "the impaired benchmark leg produced ${#artifacts[@]} artifacts; expected exactly one — log tail:" >&2
+ARTIFACT="$(sed -n 's/^benchmark JSONL: //p' "$LOG")"
+[[ -f "$ARTIFACT" ]] || {
+  echo "the impaired benchmark leg named no benchmark JSONL — log tail:" >&2
   tail -15 "$LOG" >&2
   exit 1
-fi
-if ! python3 "$ROOT/Scripts/analyze-app-benchmark.py" \
-    "${artifacts[0]}" > "$VERDICT_JSON"; then
-  echo "clean-air analyzer failed as permitted under impairment; applying netem SLO" \
-    >> "$LOG"
-fi
+}
 
 # The impairment SLOs (analyze-app-benchmark.py NETEM_PROFILES) decide.
 python3 "$ROOT/Scripts/analyze-app-benchmark.py" --pretty \
-  --netem-profile "$PROFILE" "${artifacts[0]}" \
+  --netem-profile "$PROFILE" "$ARTIFACT" \
   | tee "$RUN_DIR/netem-verdict.json"

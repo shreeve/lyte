@@ -7,23 +7,15 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 installer="$repo_root/Host/Scripts/install-host.sh"
 uninstaller="$repo_root/Host/Scripts/uninstall-host.sh"
-stage_script="$repo_root/Host/Scripts/stage-host-image.sh"
 verify_script="$repo_root/Host/Scripts/verify-host-image.sh"
 source "$repo_root/Scripts/lib/assert.sh"
+source "$repo_root/Scripts/lib/sha256.sh"
 
 file_mode() {
     if stat -f '%Lp' "$1" >/dev/null 2>&1; then
         stat -f '%Lp' "$1"
     else
         stat -c '%a' "$1"
-    fi
-}
-
-sha256_file() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$1" | awk '{print $1}'
-    else
-        shasum -a 256 "$1" | awk '{print $1}'
     fi
 }
 
@@ -35,7 +27,7 @@ identity_fingerprint() {
         "$home/.config/lyte-host/noise_static.key" \
         "$home/.config/lyte-host/paired_clients"
     do
-        printf '%s %s %s\n' "$file" "$(sha256_file "$file")" "$(file_mode "$file")"
+        printf '%s %s %s\n' "$file" "$(lyte_sha256 "$file")" "$(file_mode "$file")"
     done
 }
 
@@ -160,9 +152,9 @@ exercise_image() {
     # A reinstall refreshes the product but never the operator's conf.
     printf '# operator marker\n' >> "$conf"
     chmod 0600 "$conf"
-    config_before="$(sha256_file "$conf")"
+    config_before="$(lyte_sha256 "$conf")"
     LYTE_ADVERTISE_INTERFACE=en-other0 run_installer "$installer" "$image" >/dev/null
-    [[ "$config_before" == "$(sha256_file "$conf")" ]] \
+    [[ "$config_before" == "$(lyte_sha256 "$conf")" ]] \
         || fail "a reinstall rewrote the operator's conf"
     expect_mode "$conf" 600
     expect_identity
@@ -206,28 +198,14 @@ exercise_image() {
 }
 
 self_test() {
-    local scratch fake_binary crypto_root asn1_root image corrupt empty_root
-    local unsafe_home
+    local scratch image corrupt empty_root unsafe_home
     scratch="$(mktemp -d -t lyte-host-installer-self-test.XXXXXX)"
     self_test_scratch="$scratch"
     cleanup_self_test() { find "$self_test_scratch" -xdev -depth -delete; }
     trap cleanup_self_test EXIT
-    fake_binary="$scratch/lyte-host"
-    printf '#!/bin/sh\necho "fake-host $*"\n' > "$fake_binary"
-    chmod 0755 "$fake_binary"
-    crypto_root="$scratch/swift-crypto"
-    asn1_root="$scratch/swift-asn1"
-    mkdir -p "$crypto_root" "$asn1_root"
-    printf 'crypto license fixture\n' > "$crypto_root/LICENSE.txt"
-    printf 'crypto notice fixture\n' > "$crypto_root/NOTICE.txt"
-    printf 'asn1 license fixture\n' > "$asn1_root/LICENSE.txt"
-    printf 'asn1 notice fixture\n' > "$asn1_root/NOTICE.txt"
     image="$scratch/image"
-    LYTE_REPOSITORY_ROOT="$repo_root" \
-    LYTE_HOST_BINARY="$fake_binary" \
-    LYTE_SWIFT_CRYPTO_ROOT="$crypto_root" \
-    LYTE_SWIFT_ASN1_ROOT="$asn1_root" \
-        "$stage_script" "$image" >/dev/null
+    "$repo_root/Scripts/Tests/test-host-package-image.sh" --stage "$scratch" \
+        >/dev/null
     exercise_image "$image" 1
 
     # A corrupt image installs nothing, anywhere.
