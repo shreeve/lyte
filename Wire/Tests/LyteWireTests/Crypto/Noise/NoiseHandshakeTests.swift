@@ -10,22 +10,10 @@ import LyteWireTestKit
 
 final class NoiseHandshakeTests: XCTestCase {
 
-    private func makeSessions() throws -> (client: NoiseSession, host: NoiseSession) {
-        let clientStatic = NoiseKeyPair.generate()
-        let hostStatic = NoiseKeyPair.generate()
-        let client = try NoiseSession(
-            role: .initiator,
-            staticKeys: clientStatic,
-            remoteStaticPublicKey: hostStatic.publicKey
-        )
-        let host = try NoiseSession(role: .responder, staticKeys: hostStatic)
-        return (client, host)
-    }
-
     // MARK: Success path
 
     func testFullHandshakeAndTransportRoundTrip() throws {
-        var (client, host) = try makeSessions()
+        var (client, host) = try NoisePair.sessions()
 
         let message1 = try client.writeMessage1(
             applicationPayload: Array("hello".utf8)[...]
@@ -71,18 +59,16 @@ final class NoiseHandshakeTests: XCTestCase {
         // The pairing hook: both ends expose the same 32-byte transcript hash,
         // it is stable across makeTransport, and it differs per session
         // (fresh ephemerals) — exactly what CPace needs to bind to.
-        var (client, host) = try makeSessions()
-        _ = try host.readMessage1(try client.writeMessage1()[...])
-        _ = try client.readMessage2(try host.writeMessage2()[...])
+        var (client, host) = try NoisePair.sessions()
+        try NoisePair.complete(&client, &host)
 
         XCTAssertEqual(client.handshakeHash.count, 32)
         XCTAssertEqual(client.handshakeHash, host.handshakeHash)
         XCTAssertEqual(try client.makeTransport().handshakeHash, client.handshakeHash)
         XCTAssertEqual(try host.makeTransport().handshakeHash, host.handshakeHash)
 
-        var (client2, host2) = try makeSessions()
-        _ = try host2.readMessage1(try client2.writeMessage1()[...])
-        _ = try client2.readMessage2(try host2.writeMessage2()[...])
+        var (client2, host2) = try NoisePair.sessions()
+        try NoisePair.complete(&client2, &host2)
         XCTAssertNotEqual(client.handshakeHash, client2.handshakeHash)
     }
 
@@ -115,8 +101,7 @@ final class NoiseHandshakeTests: XCTestCase {
             role: .initiator, staticKeys: clientStatic,
             remoteStaticPublicKey: hostStatic.publicKey
         )
-        _ = try host.readMessage1(try client.writeMessage1()[...])
-        _ = try client.readMessage2(try host.writeMessage2()[...])
+        try NoisePair.complete(&client, &host)
         XCTAssertEqual(try client.makeTransport().handshakeHash,
                        try host.makeTransport().handshakeHash)
     }
@@ -176,7 +161,7 @@ final class NoiseHandshakeTests: XCTestCase {
     /// A low-order `e` in message 1 aborts with invalidPublicKey and
     /// leaves the responder able to take a genuine message 1.
     func testLowOrderInitiatorEphemeralRejectedAndRetryable() throws {
-        var (client, host) = try makeSessions()
+        var (client, host) = try NoisePair.sessions()
         let genuine = try client.writeMessage1()
         for point in Self.lowOrderPoints {
             let forged = point + genuine.dropFirst(32)
@@ -192,7 +177,7 @@ final class NoiseHandshakeTests: XCTestCase {
     /// A low-order `e` in message 2 aborts with invalidPublicKey and
     /// leaves the initiator able to take the genuine message 2.
     func testLowOrderResponderEphemeralRejectedAndRetryable() throws {
-        var (client, host) = try makeSessions()
+        var (client, host) = try NoisePair.sessions()
         _ = try host.readMessage1(try client.writeMessage1()[...])
         let genuine = try host.writeMessage2()
         for point in Self.lowOrderPoints {
@@ -230,7 +215,7 @@ final class NoiseHandshakeTests: XCTestCase {
     /// A failed read is transactional: every tampered message 1 fails on
     /// the SAME responder, which still takes the genuine one afterwards.
     func testTamperedMessage1FailsAndLeavesResponderRetryable() throws {
-        var (client, host) = try makeSessions()
+        var (client, host) = try NoisePair.sessions()
         let message1 = try client.writeMessage1(
             applicationPayload: Array("real".utf8)[...]
         )
@@ -255,7 +240,7 @@ final class NoiseHandshakeTests: XCTestCase {
     /// so tampered answers and garbage on the port must leave the SAME
     /// initiator able to read the genuine message 2.
     func testTamperedMessage2FailsAndLeavesInitiatorRetryable() throws {
-        var (client, host) = try makeSessions()
+        var (client, host) = try NoisePair.sessions()
         _ = try host.readMessage1(try client.writeMessage1()[...])
         let message2 = try host.writeMessage2()
         for index in [0, 31, 32, message2.count - 1] {
@@ -286,7 +271,7 @@ final class NoiseHandshakeTests: XCTestCase {
     // MARK: Malformed input never panics
 
     func testTruncatedAndHostileHandshakeBytesNeverTrap() throws {
-        var (client, host) = try makeSessions()
+        var (client, host) = try NoisePair.sessions()
         let message1 = try client.writeMessage1()
 
         // Every truncation of a real message 1.
@@ -315,7 +300,7 @@ final class NoiseHandshakeTests: XCTestCase {
     }
 
     func testOutOfOrderDrivingThrows() throws {
-        var (client, host) = try makeSessions()
+        var (client, host) = try NoisePair.sessions()
         // Responder writing first, double-write, reuse after completion —
         // all handshakeOutOfOrder, never a trap.
         var hostCopy = host
@@ -336,7 +321,7 @@ final class NoiseHandshakeTests: XCTestCase {
     }
 
     func testMakeTransportBeforeCompletionThrows() throws {
-        let (client, _) = try makeSessions()
+        let (client, _) = try NoisePair.sessions()
         assertThrows(NoiseError.handshakeIncomplete) {
             try client.makeTransport()
         }

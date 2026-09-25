@@ -41,14 +41,9 @@ final class ArqAdversarialTests: XCTestCase {
             let (out, _) = a.poll(now: now)
             sentByA += out.count
             for datagram in out {
-                for event in b.ingest(payload: datagram, now: now) {
-                    if case .message(_, let bytes) = event {
-                        delivered.append(bytes)
-                    }
-                }
+                delivered += b.ingest(payload: datagram, now: now).messages
             }
-            let (acks, _) = b.poll(now: now)
-            for datagram in acks {
+            for datagram in b.poll(now: now).datagrams {
                 _ = a.ingest(payload: datagram, now: now)
             }
             if a.isQuiescent && b.isQuiescent { break }
@@ -178,14 +173,10 @@ final class ArqAdversarialTests: XCTestCase {
             if case .ignored(.tooManyReceiveGroups) = $0 { return true }
             return false
         })
-        let (acks, _) = receiver.poll(now: at(100))
-        let blocks = try acks
-            .flatMap { try ArqFrame.decodeAll($0) }
-            .flatMap { frame -> [ArqAck.Block] in
-                if case .ack(let ack) = frame { return ack.blocks }
-                return []
-            }
-        XCTAssertEqual(blocks.map(\.group), [ArqGroupId(rawValue: 5)])
+        XCTAssertEqual(
+            Array(try ackBlocks(&receiver, now: 100).keys),
+            [ArqGroupId(rawValue: 5)]
+        )
     }
 
     func testPoisonedOneShotIsReclaimedWithoutWaitingForLifetime() throws {
@@ -239,12 +230,9 @@ final class ArqAdversarialTests: XCTestCase {
     /// The groups the next poll acknowledges, with each block.
     private func ackBlocks(_ endpoint: inout Endpoint, now: UInt64) throws
         -> [ArqGroupId: ArqAck.Block] {
-        let (datagrams, _) = endpoint.poll(now: at(now))
         var blocks: [ArqGroupId: ArqAck.Block] = [:]
-        for datagram in datagrams {
-            for case .ack(let ack) in try ArqFrame.decodeAll(datagram) {
-                for block in ack.blocks { blocks[block.group] = block }
-            }
+        for case .ack(let ack) in try endpoint.poll(now: at(now)).datagrams.arqFrames() {
+            for block in ack.blocks { blocks[block.group] = block }
         }
         return blocks
     }
@@ -384,22 +372,10 @@ final class ArqAdversarialTests: XCTestCase {
             _ = a.ingest(payload: datagram, now: at(0))
         }
 
-        var now: UInt64 = 1_000
-        while now < 120_000_000 {
-            var events: [ArqEvent] = []
-            for datagram in a.poll(now: at(now)).datagrams {
-                events += b.ingest(payload: datagram, now: at(now))
-            }
-            XCTAssertFalse(events.contains {
-                if case .message = $0 { return true }
-                return false
-            }, "an expired group never delivers")
-            for datagram in b.poll(now: at(now)).datagrams {
-                for event in a.ingest(payload: datagram, now: at(now)) {
-                    XCTAssertNotEqual(event, .oneShotAcknowledged(group))
-                }
-            }
-            now += 250_000
+        for now in stride(from: UInt64(1_000), to: 120_000_000, by: 250_000) {
+            let (delivered, acked) = a.exchange(with: &b, now: at(now))
+            XCTAssertEqual(delivered.messages, [], "an expired group never delivers")
+            XCTAssertFalse(acked.contains(.oneShotAcknowledged(group)))
         }
     }
 
@@ -424,25 +400,15 @@ final class ArqAdversarialTests: XCTestCase {
               acknowledged.count < sent.count || !a.isQuiescent
                   || !b.isQuiescent {
             now += 1_000
-            let (out, _) = a.poll(now: at(now))
-            for datagram in out {
-                for event in b.ingest(payload: datagram, now: at(now)) {
-                    if case .message(let group, let bytes) = event {
-                        XCTAssertNil(delivered[group], "\(group) delivered twice")
-                        delivered[group] = bytes
-                    }
-                }
+            let (received, acked) = a.exchange(with: &b, now: at(now))
+            for case .message(let group, let bytes) in received {
+                XCTAssertNil(delivered[group], "\(group) delivered twice")
+                delivered[group] = bytes
             }
-            let (acks, _) = b.poll(now: at(now))
-            for datagram in acks {
-                for event in a.ingest(payload: datagram, now: at(now)) {
-                    if case .oneShotAcknowledged(let group) = event {
-                        XCTAssertNotNil(
-                            delivered[group],
-                            "\(group) acknowledged but never delivered")
-                        acknowledged.insert(group)
-                    }
-                }
+            for case .oneShotAcknowledged(let group) in acked {
+                XCTAssertNotNil(
+                    delivered[group], "\(group) acknowledged but never delivered")
+                acknowledged.insert(group)
             }
         }
         XCTAssertEqual(Set(delivered.keys), Set(sent.keys))
