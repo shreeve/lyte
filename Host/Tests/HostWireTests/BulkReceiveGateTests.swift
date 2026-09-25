@@ -552,8 +552,8 @@ final class BulkReceiveGateTests: XCTestCase {
             return false
         })
         XCTAssertEqual(shell.counters.storageFailures, 1)
-        XCTAssertEqual(try visibleEntries(dir), [],
-                       "the sha-good staging bytes stay dotted, nothing lands")
+        XCTAssertEqual(try allEntries(dir), [],
+                       "nothing lands, and no staging file is left to fill the disk")
     }
 
     func testGateOfferPastFreeSpaceRefusesUpFront() throws {
