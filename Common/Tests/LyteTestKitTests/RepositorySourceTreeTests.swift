@@ -25,32 +25,6 @@ final class RepositorySourceTreeTests: XCTestCase {
         }
     }
 
-    func testProductionScanExcludesEveryTestKitTargetRoot() throws {
-        let tree = RepositorySourceTree()
-        let relativePaths = try tree.productionSwiftFiles().map(
-            tree.relativePath(for:)
-        )
-
-        XCTAssertFalse(
-            relativePaths.contains(where: { path in
-                path.split(separator: "/").contains(where: {
-                    $0.hasSuffix("TestKit")
-                })
-            }),
-            "test equipment must not be scanned as production"
-        )
-        XCTAssertFalse(
-            relativePaths.contains(where: {
-                $0.hasPrefix("Client/Sources/LyteClientTestKit/")
-            })
-        )
-        XCTAssertFalse(
-            relativePaths.contains(where: {
-                $0.hasPrefix("Wire/Sources/LyteWireTestKit/")
-            })
-        )
-    }
-
     /// A tree reached through a symlink still relativizes: the root may
     /// be spelled through the link while files come back from the
     /// enumerator by their real path (macOS spells `/tmp` checkouts

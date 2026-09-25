@@ -56,10 +56,7 @@ let package = Package(
         ),
         // Reusable test equipment. Production targets never depend on it.
         .target(name: "LyteTestKit"),
-        .testTarget(
-            name: "LyteCoreTests",
-            dependencies: ["LyteCore", "LyteTestKit"]
-        ),
+        .testTarget(name: "LyteCoreTests", dependencies: ["LyteCore"]),
         .testTarget(
             name: "LyteIOTests",
             dependencies: ["LyteIO"]
@@ -68,6 +65,9 @@ let package = Package(
             name: "LyteTestKitTests",
             dependencies: ["LyteTestKit"]
         ),
-        .testTarget(name: "COpusTests", dependencies: ["COpus"]),
+        .testTarget(
+            name: "COpusTests",
+            dependencies: ["COpus", "LyteCore", "LyteTestKit"]
+        ),
     ]
 )
