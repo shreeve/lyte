@@ -206,14 +206,6 @@ final class SessionLifecycleGateTests: XCTestCase {
         var datagrams: [VideoChannelDatagram] = []
     }
 
-    /// A synthetic frame-shaped Annex-B blob (the SessionGateTests
-    /// pattern): start code + TRAIL_R VCL NAL + non-start-code padding.
-    private func syntheticFrame(byteCount: Int) -> [UInt8] {
-        precondition(byteCount >= 6)
-        return [0, 0, 0, 1, 0x02, 0x01]
-            + [UInt8](repeating: 0xAA, count: byteCount - 6)
-    }
-
     // MARK: Capabilities — the agreement and the typed refusal
 
     func testGateCapabilityIntersectionIsTheAgreement() throws {

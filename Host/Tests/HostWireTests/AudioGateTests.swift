@@ -48,14 +48,6 @@ final class AudioGateTests: XCTestCase {
         (0..<byteCount).map { UInt8(truncatingIfNeeded: n &* 31 &+ $0) }
     }
 
-    /// A synthetic frame-shaped Annex-B blob (the SessionGateTests
-    /// pattern); `irap: true` makes it a genuine IDR-shaped keyframe.
-    private func syntheticFrame(byteCount: Int, irap: Bool = false) -> [UInt8] {
-        precondition(byteCount >= 6)
-        return [0, 0, 0, 1, irap ? 0x26 : 0x02, 0x01]
-            + [UInt8](repeating: 0xAA, count: byteCount - 6)
-    }
-
     // MARK: Leg 1 — the layout, pinned as hand-built bytes
 
     func testConnectionIdTlvRidesEveryAudioDatagram() throws {
@@ -205,10 +197,6 @@ final class AudioGateTests: XCTestCase {
         var audio: [(envelope: Envelope, payload: [UInt8])] = []
         var videoDatagrams = 0
 
-        init(hostStaticPublicKey: [UInt8]) throws {
-            peer = try SealedCtrlPeer(initiatorTo: hostStaticPublicKey)
-        }
-
         mutating func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
             guard case .plain(let envelope, let plaintext) =
                 try peer.absorb(bytes, nowMicros: nowMicros)
@@ -232,77 +220,36 @@ final class AudioGateTests: XCTestCase {
         var datagrams: [VideoChannelDatagram] = []
     }
 
-    /// Handshake + settle: an established Noise session with the audio
-    /// path live and the client's ARQ answering (so lifecycle flips can
-    /// be exercised).
+    /// An established Noise session with the audio path live and the
+    /// client's ARQ answering (so lifecycle flips can be exercised).
     private func establish() throws -> (
-        session: Session, client: AudioClient, box: DatagramBox
+        host: HostSessionHarness, client: AudioClient
     ) {
-        let hostStatic = NoiseKeyPair.generate()
-        let box = DatagramBox()
-        let session = Session(
+        let host = HostSessionHarness(
             config: SessionConfig(
-                crypto: .noise(hostStatic: hostStatic),
+                crypto: .noise(hostStatic: NoiseKeyPair.generate()),
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: 1 << 62
             ),
-            clientTuple: Self.tupleA,
-            now: 0,
-            rng: SplitMix64(seed: 0x1515),
-            send: { box.datagrams.append($0) }
+            tuple: Self.tupleA,
+            rng: SplitMix64(seed: 0x1515)
         )
-        var client = try AudioClient(hostStaticPublicKey: hostStatic.publicKey)
-        _ = session.receive(
-            try client.message1Datagram(clientMicros: 500),
-            from: Self.tupleA, now: 0, hostMicroseconds: 0
-        )
-        XCTAssertEqual(session.phase, .established)
-        session.pump(now: 0)
-        return (session, client, box)
-    }
-
-    /// Lossless exchange passes until both ends quiesce (the lifecycle
-    /// harness's settle, trimmed).
-    private func settle(
-        _ session: Session, _ client: inout AudioClient,
-        _ box: DatagramBox, forwarded: inout Int, t: inout UInt64
-    ) throws {
-        var idle = 0
-        while idle < 3 {
-            t += 2_000
-            let before = forwarded
-            _ = session.advance(now: t * 1_000, hostMicroseconds: t)
-            session.pump(now: t * 1_000)
-            while forwarded < box.datagrams.count {
-                try client.absorb(box.datagrams[forwarded].bytes, nowMicros: t)
-                forwarded += 1
-            }
-            for datagram in try client.pollOut(nowMicros: t) {
-                _ = session.receive(
-                    datagram, from: Self.tupleA,
-                    now: t * 1_000, hostMicroseconds: t
-                )
-                session.pump(now: t * 1_000)
-                while forwarded < box.datagrams.count {
-                    try client.absorb(
-                        box.datagrams[forwarded].bytes, nowMicros: t
-                    )
-                    forwarded += 1
-                }
-            }
-            idle = forwarded == before ? idle + 1 : 0
-        }
+        let client = AudioClient(peer: try host.connectClient(
+            declaring: nil, openChannels: nil
+        ))
+        XCTAssertEqual(host.session.phase, .established)
+        return (host, client)
     }
 
     func testSealedAudioRoundTripsAndRecoversThroughTheClientStack() throws {
-        let (session, clientValue, box) = try establish()
+        let (host, clientValue) = try establish()
         var client = clientValue
-        var forwarded = 0
+        let session = host.session
         var t: UInt64 = 1_000
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try host.settle(&client, t: &t)
 
         // Two full groups of real-shaped packets through the sealed path.
-        let audioStart = forwarded
+        let audioStart = host.forwarded
         let packets = (0..<8).map { opusPacket($0) }
         var captureStamps: [UInt64] = []
         for packet in packets {
@@ -315,11 +262,8 @@ final class AudioGateTests: XCTestCase {
             )
             session.pump(now: t * 1_000)
         }
-        while forwarded < box.datagrams.count {
-            try client.absorb(box.datagrams[forwarded].bytes, nowMicros: t)
-            forwarded += 1
-        }
-        let audioDatagrams = box.datagrams[audioStart...].filter {
+        try host.deliver(to: &client, at: t)
+        let audioDatagrams = host.sent[audioStart...].filter {
             $0.pacerClass == .audio
         }
         XCTAssertEqual(client.audio.count, 12, "2 × (4 data + 2 parity)")
@@ -391,7 +335,7 @@ final class AudioGateTests: XCTestCase {
         }
 
         // A tampered header dies at the AAD check, like every channel.
-        let sample = box.datagrams.last { $0.pacerClass == .audio }!
+        let sample = host.sent.last { $0.pacerClass == .audio }!
         var tampered = sample.bytes
         tampered[8] ^= 0x01 // one timestamp bit
         XCTAssertThrowsError(try client.transport!.openDatagram(tampered))
@@ -400,11 +344,11 @@ final class AudioGateTests: XCTestCase {
     // MARK: Leg 6 — lifecycle: the probe never stops (except closed)
 
     func testAudioFlowsUntilTheSessionCloses() throws {
-        let (session, clientValue, box) = try establish()
+        let (host, clientValue) = try establish()
         var client = clientValue
-        var forwarded = 0
+        let session = host.session
         var t: UInt64 = 1_000
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try host.settle(&client, t: &t)
 
         // Audio is the 5 ms path probe: it flows whatever video does.
         let audioBefore = client.audio.count
@@ -416,17 +360,14 @@ final class AudioGateTests: XCTestCase {
             )
             session.pump(now: t * 1_000)
         }
-        while forwarded < box.datagrams.count {
-            try client.absorb(box.datagrams[forwarded].bytes, nowMicros: t)
-            forwarded += 1
-        }
+        try host.deliver(to: &client, at: t)
         XCTAssertEqual(client.audio.count - audioBefore, 6)
 
         // closed: teardown, then audio is suppressed — counted, silent.
         _ = session.beginTeardown(
             reason: .shuttingDown, now: t * 1_000, hostMicroseconds: t
         )
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try host.settle(&client, t: &t)
         XCTAssertEqual(session.lifecycleState, .closed)
         let sent = session.counters.audioDatagramsEnqueued
         XCTAssertEqual(try session.ingestAudioPacket(

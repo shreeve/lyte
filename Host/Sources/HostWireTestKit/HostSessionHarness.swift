@@ -223,3 +223,12 @@ extension Session {
         !takeFreshKeyframeDemand().isEmpty
     }
 }
+
+/// A frame-shaped Annex-B blob of exactly `byteCount` bytes: a 4-byte start
+/// code, a TRAIL_R NAL header (IDR_W_RADL with `irap`), and padding that can
+/// never form a start code.
+public func syntheticFrame(byteCount: Int, irap: Bool = false) -> [UInt8] {
+    precondition(byteCount >= 6)
+    return [0, 0, 0, 1, irap ? 0x26 : 0x02, 0x01]
+        + [UInt8](repeating: 0xAA, count: byteCount - 6)
+}

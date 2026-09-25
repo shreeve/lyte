@@ -2,6 +2,7 @@ import XCTest
 import HostCore
 import HostSession
 @_spi(Testing) import HostWire
+import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
@@ -46,15 +47,6 @@ final class IdrOfferInFlightGateTests: XCTestCase {
         ) { [box] datagram in
             box.sent.append(datagram)
         }
-    }
-
-    private func syntheticFrame(
-        byteCount: Int, irap: Bool = false
-    ) -> [UInt8] {
-        [0, 0, 0, 1, irap ? 0x26 : 0x02, 0x01]
-            + (0..<(byteCount - 6)).map {
-                UInt8(truncatingIfNeeded: $0 &* 131 &+ 7)
-            }
     }
 
     private var ctrlSeq: UInt16 = 0

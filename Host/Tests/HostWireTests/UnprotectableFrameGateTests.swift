@@ -2,6 +2,7 @@ import XCTest
 import HostCore
 import HostSession
 @_spi(Testing) import HostWire
+import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
@@ -71,17 +72,6 @@ final class UnprotectableFrameGateTests: XCTestCase {
             _ = session.advance(now: now, hostMicroseconds: now / 1_000)
             session.pump(now: now)
         }
-    }
-
-    /// A frame-shaped Annex-B blob with position-dependent bytes (the
-    /// house pattern — a shard swap can never pass byte equality).
-    private func syntheticFrame(
-        byteCount: Int, irap: Bool = false
-    ) -> [UInt8] {
-        [0, 0, 0, 1, irap ? 0x26 : 0x02, 0x01]
-            + (0..<(byteCount - 6)).map {
-                UInt8(truncatingIfNeeded: $0 &* 131 &+ 7)
-            }
     }
 
     // MARK: Leg 1 — the ceiling is the block math, exactly

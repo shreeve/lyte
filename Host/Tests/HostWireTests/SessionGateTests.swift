@@ -3,6 +3,7 @@ import Foundation
 import HostCore
 import HostSession
 @_spi(Testing) import HostWire
+import HostWireTestKit
 import LyteCore
 import LyteWire
 import LyteWireTestKit
@@ -474,16 +475,6 @@ final class SessionGateTests: XCTestCase {
     }
 
     // MARK: Budget boundary and mode-independent geometry
-
-    /// A synthetic frame-shaped Annex-B blob of exactly `byteCount`
-    /// bytes: start code + a TRAIL_R VCL NAL padded with bytes that can
-    /// never form a start code.
-    private func syntheticFrame(byteCount: Int) -> [UInt8] {
-        precondition(byteCount >= 6)
-        // NAL header 0x02 0x01: type (0x02 >> 1) & 0x3F = 1 = TRAIL_R.
-        return [0, 0, 0, 1, 0x02, 0x01]
-            + [UInt8](repeating: 0xAA, count: byteCount - 6)
-    }
 
     // MARK: The capture gate's backlog surface (the fps-ceiling fix)
 

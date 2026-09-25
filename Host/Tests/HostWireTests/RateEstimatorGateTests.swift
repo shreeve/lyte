@@ -2,6 +2,7 @@ import XCTest
 import HostCore
 import HostSession
 @_spi(Testing) import HostWire
+import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
@@ -2564,10 +2565,6 @@ final class RateEstimatorGateTests: XCTestCase {
         while t < horizonNS { events.append((t, .feedback)); t += 25 * ms }
         events.sort { $0.at < $1.at }
 
-        func syntheticFrame(byteCount: Int, irap: Bool = false) -> [UInt8] {
-            [0, 0, 0, 1, irap ? 0x26 : 0x02, 0x01]
-                + [UInt8](repeating: 0xAA, count: byteCount - 6)
-        }
         func opusPacket(_ n: Int) -> [UInt8] {
             (0..<80).map { UInt8(truncatingIfNeeded: n &* 31 &+ $0) }
         }
