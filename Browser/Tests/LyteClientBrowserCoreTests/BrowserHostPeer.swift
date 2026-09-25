@@ -152,13 +152,16 @@ final class BrowserHostPeer {
         return step
     }
 
-    /// Hands host datagrams to the client and its replies back to the host.
+    /// Hands host datagrams to the client and its replies back to the host;
+    /// returns the frames the client's Conductor scheduled.
+    @discardableResult
     func deliver(
         _ datagrams: [[UInt8]], to client: BrowserControlSession,
         notes: inout [String]
-    ) {
-        for datagram in datagrams {
+    ) -> [BrowserVideoPlayout.ScheduledFrame] {
+        datagrams.flatMap { datagram in
             deliver(client.ingest(datagram: datagram, nowMicros: nowMicros), notes: &notes)
+                .scheduled
         }
     }
 
@@ -195,24 +198,22 @@ final class BrowserHostPeer {
 
     // MARK: Media
 
-    /// The host ingests one frame captured now on its clock; every shard
-    /// crosses in 1 ms beats until the client's Conductor schedules it.
+    /// The host ingests one frame captured at `capture` (default: now on
+    /// its clock); every shard crosses in 1 ms beats until the client's
+    /// Conductor schedules it.
     func sendFrame(
-        _ annexB: [UInt8], keyframe: Bool, to client: BrowserControlSession
+        _ annexB: [UInt8], keyframe: Bool, capture: UInt64? = nil,
+        to client: BrowserControlSession
     ) throws -> [BrowserVideoPlayout.ScheduledFrame] {
         try session.ingestVideoFrame(
-            annexB, captureTimestampMicroseconds: hostMicros,
+            annexB, captureTimestampMicroseconds: capture ?? hostMicros,
             isKeyframe: keyframe, now: hostMicros * 1_000
         )
         var scheduled: [BrowserVideoPlayout.ScheduledFrame] = []
         var notes: [String] = []
         for _ in 0..<200 where scheduled.isEmpty {
             advance(microseconds: 1_000)
-            for datagram in drain() {
-                let step = client.ingest(datagram: datagram, nowMicros: nowMicros)
-                scheduled += step.scheduled
-                deliver(step, notes: &notes)
-            }
+            scheduled = deliver(drain(), to: client, notes: &notes)
         }
         return scheduled
     }

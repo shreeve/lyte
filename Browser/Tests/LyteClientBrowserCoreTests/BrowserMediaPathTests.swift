@@ -121,7 +121,7 @@ final class BrowserMediaPathTests: XCTestCase {
         }
         for _ in 0..<50 where scheduled.count < 3 {
             host.advance(microseconds: 1_000)
-            scheduled += deliver(host.drain(), host, client, notes: &notes)
+            scheduled += host.deliver(host.drain(), to: client, notes: &notes).map(\.frameNumber)
         }
 
         XCTAssertTrue(host.events.contains {
@@ -150,7 +150,7 @@ final class BrowserMediaPathTests: XCTestCase {
         XCTAssertTrue(notes.contains { $0.hasPrefix("nack: frame 1 asks") })
         host.advance(microseconds: 150_000)
         for datagram in held { host.receive(datagram) }
-        _ = deliver(host.drain(), host, client, notes: &notes)
+        host.deliver(host.drain(), to: client, notes: &notes)
         host.deliver(client.tick(nowMicros: host.nowMicros), notes: &notes)
 
         XCTAssertGreaterThanOrEqual(host.session.counters.repairRefusalsSent, 1)
@@ -248,19 +248,5 @@ final class BrowserMediaPathTests: XCTestCase {
         guard case .reedSolomon(let index, _) = try FecField.decode(envelope.fec)
         else { return -1 }
         return Int(index)
-    }
-
-    private func deliver(
-        _ datagrams: [[UInt8]], _ host: BrowserHostPeer,
-        _ client: BrowserControlSession, notes: inout [String]
-    ) -> [UInt32] {
-        var scheduled: [UInt32] = []
-        for datagram in datagrams {
-            let step = host.deliver(
-                client.ingest(datagram: datagram, nowMicros: host.nowMicros),
-                notes: &notes)
-            scheduled += step.scheduled.map(\.frameNumber)
-        }
-        return scheduled
     }
 }
