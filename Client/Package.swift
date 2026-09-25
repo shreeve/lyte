@@ -169,6 +169,7 @@ let package = Package(
                 .product(name: "LyteCore", package: "Common"),
                 .product(name: "LyteWire", package: "Wire"),
                 .product(name: "LyteWireTestKit", package: "Wire"),
+                .product(name: "LyteWireVectorGen", package: "Wire"),
             ]
         ),
     ]

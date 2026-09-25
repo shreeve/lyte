@@ -6,6 +6,7 @@ import LyteClientSession
 import LyteTransport
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // The return path tells the truth: reports built from a known demux state
 // carry its exact ledgers and dispersion samples; the cadence is clamped
