@@ -9,6 +9,7 @@ import LyteClientSession
 import LyteTransport
 import LyteUI
 import LyteWire
+import Synchronization
 
 /// The debug shell around the app's own streaming objects: the same
 /// LyteUdpSession and the same VideoRendererHandoff the app's
@@ -37,8 +38,6 @@ struct WireView: AsyncParsableCommand {
     var duration: Int = 0
     @Flag(name: .long, help: "Decode + play the audio channel (AVAudioEngine) and print the audio stats line")
     var audio = false
-    @Option(name: .long, help: "Forcing surface: prime the adaptive jitter target at N packets (~N×5 ms of initial depth) — the percentile controller then decays and WSOLA accelerate drains the surplus; the audio line's depth/accel books are the evidence. 0 = off")
-    var audioPrime: Int = 0
     @Option(name: .long, help: "The session-start posture for the HOST's own speakers — audible|muted. Needs capability key 9 on both ends; against a no-key-9 host the ask is refused client-side (that refusal is the evidence). Omitted = NEUTRAL: take the host's default without asking (the debug-shell posture; the app asks for muted)")
     var hostAudio: String?
     @Flag(name: .long, help: "Share the clipboard (UTF-8 text, both ways) — real NSPasteboard glue behind the sans-IO core's gates. Needs capability key 10 on both ends; against a no-key-10 host every local copy reports notNegotiated (that refusal is the evidence). Payloads are never printed — byte counts only")
@@ -47,24 +46,10 @@ struct WireView: AsyncParsableCommand {
     var clipboardImages = false
     @Option(name: .long, help: "The chroma tier this client DECLARES — 420 (Good, the default) or 444 (Best). Declaration-as-choice: the singleton is the ask; a host without the tier answers the typed noCommonChromaMode teardown (that refusal is the harness's fallback evidence — the debug shell never auto-re-dials; the app does)")
     var chroma: String = "420"
-    @Option(name: .long, help: """
-        Scripted synthetic input, semicolon-separated \
-        "<at_ms> <kind> <args>" entries sent on the reliable stream. Kinds: \
-        `move X Y` (host pixels), `rel DX DY`, `key CODE down|up` (evdev), \
-        `button CODE down|up`, `axis DX DY [finish]`. \
-        Example: --input-script "500 move 120 1150; 1500 key 30 down; 1550 key 30 up"
-        """)
-    var inputScript: String?
 
     func validate() throws {
-        if let inputScript {
-            _ = try InputScript.parse(inputScript)   // fail before the dial
-        }
         if let hostAudio, Self.parseHostAudio(hostAudio) == nil {
             throw ValidationError("--host-audio wants audible|muted, got '\(hostAudio)'")
-        }
-        if audioPrime != 0, !(5...60).contains(audioPrime) {
-            throw ValidationError("--audio-prime wants 5…60 packets (25…300 ms), got \(audioPrime)")
         }
         if Self.parseChroma(chroma) == nil {
             throw ValidationError("--chroma wants 420|444, got '\(chroma)'")
@@ -169,8 +154,8 @@ struct WireView: AsyncParsableCommand {
 
         // Idempotent, and named: four paths converge here and the output
         // must say which one ended the run.
-        let finished = LockedCell(false)
-        let finishBox = LockedCell<(@Sendable (String) -> Void)?>(nil)
+        let finished = Atomic(false)
+        let finishBox = Mutex<(@Sendable (String) -> Void)?>(nil)
 
         // The production session object, event-printed; events fire
         // off-main. Host audio stays neutral unless --host-audio asks,
@@ -184,15 +169,7 @@ struct WireView: AsyncParsableCommand {
         sessionConfig.bindAddress = bind
         // Audio playback is opt-in here so unattended gate runs stay silent.
         sessionConfig.audioPlayback = audio
-        // --audio-prime: playout waits for N packets, so the pipe opens
-        // ~N×5 ms deep and the controller and accelerate earn their way
-        // back down.
-        if audioPrime > 0 {
-            sessionConfig.core.audioJitter.initialTargetPackets = audioPrime
-            sessionConfig.core.audioJitter.maxTargetPackets = max(
-                sessionConfig.core.audioJitter.maxTargetPackets, audioPrime)
-        }
-        let pasteboardBox = LockedCell<PasteboardSync?>(nil)
+        let pasteboardBox = Mutex<PasteboardSync?>(nil)
         // The app's renderer path, exactly: bounded handoff, Conductor
         // playout, recovery flush barrier, IRAP episode close.
         let clockModel = HostClockModel()
@@ -256,7 +233,7 @@ struct WireView: AsyncParsableCommand {
                     // Payloads never print — byte counts only.
                     print("wire-view: host clipboard → pasteboard "
                         + "(\(text.utf8.count) B, 0x1B)")
-                    pasteboardBox.value?.apply(text)
+                    pasteboardBox.withLock { $0 }?.apply(text)
                 case .hostCursorShapeChanged(let shape):
                     print("wire-view: host cursor shape "
                         + (shape.isHidden ? "HIDDEN"
@@ -267,7 +244,7 @@ struct WireView: AsyncParsableCommand {
                     // Sha-verified image cargo; byte count only.
                     print("wire-view: host clipboard image → pasteboard "
                         + "(\(data.count) B, \(mime), 0x22 cargo)")
-                    pasteboardBox.value?.apply(imageData: data)
+                    pasteboardBox.withLock { $0 }?.apply(imageData: data)
                 case .bulkMessageReceived(let message):
                     // The debug shell never offers files, so a chan-8
                     // answer is only worth a line.
@@ -281,7 +258,7 @@ struct WireView: AsyncParsableCommand {
                     break   // its protocol note says which lane
                 case .closed(let reason):
                     print("wire-view: session CLOSED — \(reason)")
-                    finishBox.value?("session closed: \(reason)")
+                    finishBox.withLock { $0 }?("session closed: \(reason)")
                 case .protocolNote(let note):
                     print("wire-view: \(note)")
                 }
@@ -331,30 +308,11 @@ struct WireView: AsyncParsableCommand {
                 sync.setImagesEnabled(true)
             }
             sync.start()
-            pasteboardBox.value = sync
+            pasteboardBox.withLock { $0 = sync }
             print("wire-view: clipboard sharing ON"
                 + (clipboardImages ? " + images" : "")
                 + " — NSPasteboard poll 200 ms (key 10"
                 + (clipboardImages ? "∧12" : "") + " pending agreement)")
-        }
-
-        // Scripted synthetic input through the production sendInput path.
-        if let inputScript {
-            let entries = try InputScript.parse(inputScript)
-            print("wire-view: input script armed — \(entries.count) event(s), "
-                + "first at +\(entries.first!.atMilliseconds) ms")
-            for entry in entries {
-                DispatchQueue.global().asyncAfter(
-                    deadline: .now() + .milliseconds(entry.atMilliseconds)
-                ) {
-                    do {
-                        let seq = try core.sendInput(entry.body)
-                        print("wire-view: input seq \(seq) sent — \(entry.label)")
-                    } catch {
-                        print("wire-view: input '\(entry.label)' refused: \(error)")
-                    }
-                }
-            }
         }
 
         // The renderer's own verdict is the render evidence: it goes
@@ -376,10 +334,10 @@ struct WireView: AsyncParsableCommand {
         let finish: @Sendable (String) -> Void = { trigger in
             // SIGINT, the window, the duration timer, and a session close
             // can race here; exactly one of them finishes.
-            guard !finished.exchange(true) else { return }
+            guard !finished.exchange(true, ordering: .relaxed) else { return }
             print("wire-view: finishing (\(trigger))")
             ticker.cancel()
-            pasteboardBox.value?.stop()
+            pasteboardBox.withLock { $0 }?.stop()
             // A locally-triggered end says goodbye on the wire (typed
             // 0x0A + ACK linger); a session-closed end (peer teardown,
             // liveness) has nothing left to say.
@@ -393,7 +351,7 @@ struct WireView: AsyncParsableCommand {
             // teardown; a global-queue hop exits cleanly from every path.
             DispatchQueue.global().async { Foundation.exit(0) }
         }
-        finishBox.value = finish
+        finishBox.withLock { $0 = finish }
 
         signal(SIGINT, SIG_IGN)
         let sigint = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
@@ -424,18 +382,17 @@ struct WireView: AsyncParsableCommand {
     }
 }
 
-/// The session's books for a human reading a terminal: demux totals, then
-/// the overlay's rows (SessionStatsFormatter, the same text the app shows),
-/// then the engineering books behind them — the wire, render, control
-/// counters, the return path, repair, the reliable sublayer, the clock
-/// model, audio and input detail. One tick per second with new arrivals
-/// (prefixed `…`), a full summary at exit. Nothing parses this output.
+/// The session's books for a human reading a terminal: demux totals, the
+/// overlay's rows (SessionStatsFormatter, the same text the app shows),
+/// then every engineering book as `name=value` over its non-zero fields.
+/// One tick per second with new arrivals (prefixed `…`), a full summary
+/// at exit. Nothing parses this output.
 final class WireViewStatsPrinter: Sendable {
     private let session: LyteUdpSession
     private let recorder: VideoFlightRecorder
     private let deliveryBooks: VideoDeliveryBooks
     private let rendererState: @Sendable () -> String
-    private let lastCount = LockedCell<UInt64>(0)
+    private let lastCount = Atomic<UInt64>(0)
 
     init(session: LyteUdpSession,
          recorder: VideoFlightRecorder,
@@ -450,8 +407,8 @@ final class WireViewStatsPrinter: Sendable {
     func printTick() {
         guard let endpoint = session.endpoint else { return }
         let totals = endpoint.demux.snapshotTotals()
-        guard totals.datagrams != lastCount.value else { return }
-        lastCount.value = totals.datagrams
+        guard lastCount.exchange(totals.datagrams, ordering: .relaxed)
+            != totals.datagrams else { return }
         printSnapshot(prefix: "…", totals: totals)
     }
 
@@ -464,11 +421,7 @@ final class WireViewStatsPrinter: Sendable {
     private func printSnapshot(prefix: String, totals: DemuxTotals) {
         guard let endpoint = session.endpoint,
               let core = session.core else { return }
-        var line = "\(prefix) total \(totals.datagrams) datagrams: \(totals.accepted) ok"
-        if totals.malformed > 0 { line += ", \(totals.malformed) malformed" }
-        if totals.reservedDropped > 0 { line += ", \(totals.reservedDropped) reserved-dropped" }
-        if totals.unsealFailures > 0 { line += ", \(totals.unsealFailures) unseal-failed" }
-        print(line)
+        print("\(prefix) total " + Self.fields(totals).joined(separator: " "))
         var context = SessionStatsContext()
         context.delivery = deliveryBooks.snapshot(
             nowMicroseconds: SystemMonotonicClock.nowMicroseconds)
@@ -476,147 +429,26 @@ final class WireViewStatsPrinter: Sendable {
         for row in SessionStatsFormatter.rows(session: session, context: context) {
             print("\(prefix)   \(row.label): \(row.value)")
         }
-        if let video = endpoint.demux.stats(forChannel: core.pipeline.channel.rawValue) {
-            print("\(prefix)   wire: \(video.datagrams) dg, \(video.payloadBytes) B, " +
-                  "\(video.seqMissing) missing, \(video.seqDuplicates) dup")
-        }
-        let s = core.pipeline.snapshotStats()
-        var render = "\(prefix)   render: \(s.framesDecoded) decoded, \(s.framesSkipped) skipped, " +
-                     "\(s.samplesDelivered) enqueued"
-        if s.samplesWithheld > 0 { render += ", \(s.samplesWithheld) withheld (pre-IDR)" }
-        if s.sampleFailures > 0 { render += ", \(s.sampleFailures) sample-failed" }
-        if s.fecImpossibleCount > 0 { render += ", \(s.fecImpossibleCount) fec-impossible" }
-        if s.repairShardsAccepted > 0 { render += ", \(s.repairShardsAccepted) repair-shards" }
-        if s.evictions > 0 { render += ", \(s.evictions) evicted" }
-        if s.shardsDropped > 0 { render += ", \(s.shardsDropped) shards dropped" }
-        if s.reliableFramesRendered + s.reliableFramesDeduplicated > 0 {
-            render += ", \(s.reliableFramesRendered) idle-rendered"
-            if s.reliableFramesDeduplicated > 0 {
-                render += "/\(s.reliableFramesDeduplicated) idle-deduped"
-            }
-        }
-        if let first = s.firstSampleMicroseconds {
-            render += String(format: " | first frame %.1fms", Double(first) / 1000)
-        }
-        render += " | layer \(rendererState())"
-        print(render)
-
-        // The control books behind the session row's state.
-        let counters = core.snapshotCounters()
-        var control: [String] = [
-            "caps \(core.agreedCapabilities != nil ? "agreed" : "pending")",
+        let books: [(String, Any?)] = [
+            ("wire", endpoint.demux.stats(forChannel: core.pipeline.channel.rawValue)),
+            ("render", core.pipeline.snapshotStats()),
+            ("control", core.snapshotCounters()),
+            ("feedback", core.feedback.snapshotStats()),
+            ("echo", core.echoResponder.snapshotStats()),
+            ("idr", core.idrRequester.snapshotStats()),
+            ("nack", core.nackPolicy.snapshotStats()),
+            ("arq", core.reliable.snapshotStats()),
+            ("audio", core.audio.snapshotStats()),
+            ("player", session.audioPlayer?.snapshotStats()),
+            ("input", core.input.snapshotStats()),
         ]
-        if core.state == .closed { control.append("CLOSED") }
-        if core.agreedCapabilities != nil {
-            if !core.hostAudioRoutingNegotiated {
-                control.append("host-audio unnegotiated")
-            }
-            if !core.clipboardNegotiated {
-                control.append("clipboard unnegotiated")
+        for case let (label, book?) in books {
+            let fields = Self.fields(book)
+            if !fields.isEmpty {
+                print("\(prefix)   \(label): " + fields.joined(separator: " "))
             }
         }
-        if counters.modeTransitionsReceived > 0 {
-            control.append("\(counters.modeTransitionsReceived) mode msgs")
-        }
-        if counters.idleFramesReceived > 0 {
-            control.append("\(counters.idleFramesReceived) idle frames")
-        }
-        if counters.unknownReliableTypes > 0 {
-            control.append("\(counters.unknownReliableTypes) unknown-reliable")
-        }
-        if counters.malformedReliableMessages > 0 {
-            control.append(
-                "\(counters.malformedReliableMessages) malformed-reliable")
-        }
-        if counters.audioRoutingRequestsSent
-            + counters.audioRoutingStatusesReceived > 0 {
-            control.append("routing \(counters.audioRoutingRequestsSent) asks/"
-                + "\(counters.audioRoutingStatusesReceived) statuses")
-        }
-        if counters.audioRoutingDropsLoud > 0 {
-            control.append("\(counters.audioRoutingDropsLoud) routing-drops")
-        }
-        if counters.clipboardIgnoredDisabled > 0 {
-            control.append("\(counters.clipboardIgnoredDisabled) clip-ignored")
-        }
-        if counters.clipboardDropsLoud > 0 {
-            control.append("\(counters.clipboardDropsLoud) clip-drops")
-        }
-        print("\(prefix)   control: " + control.joined(separator: ", "))
-
-        // The return leg: what went back to the host.
-        let fb = core.feedback.snapshotStats()
-        let echo = core.echoResponder.snapshotStats()
-        let idr = core.idrRequester.snapshotStats()
-        var back = "\(prefix)   sent: \(fb.reportsSent) feedback " +
-                   "(\(fb.dispersionSamplesReported) dispersion samples), " +
-                   "\(echo.echoesSent) echoes, \(idr.requestsSent) IDR-requests " +
-                   "(\(idr.verdicts) verdicts)"
-        if echo.clockSamples > 0 {
-            back += ", \(echo.clockSamples) clock samples"
-            if let last = core.clockModel.recentSamples(1).last {
-                // Interpolation, not %d: varargs %d truncates Int64 to
-                // 32 bits and boot-epoch offsets are ~10¹⁰ µs.
-                let sign = last.offsetMicroseconds >= 0 ? "+" : ""
-                back += " (last offset \(sign)\(last.offsetMicroseconds) µs, " +
-                        "rtt \(last.rttMicroseconds) µs)"
-            }
-        }
-        print(back)
-
-        // The targeted-repair line, whenever the policy stirred.
-        let nack = core.nackPolicy.snapshotStats()
-        if nack.pastParityFrames + nack.repairShardsReceived
-            + nack.whollyLostEscalations > 0 {
-            var line = "\(prefix)   nack: \(nack.pastParityFrames) past-parity, " +
-                       "\(nack.nackEntriesEmitted) asks (\(nack.shardsAsked) shards), " +
-                       "\(nack.repairShardsReceived) repairs rx, " +
-                       "\(nack.framesCompletedByRepair) frames repaired"
-            if nack.asksSuppressedStale > 0 {
-                line += ", \(nack.asksSuppressedStale) stale-suppressed"
-            }
-            if nack.framesEscalatedToIdr > 0 {
-                line += ", \(nack.framesEscalatedToIdr) expired→IDR"
-            }
-            if nack.whollyLostEscalations > 0 {
-                line += ", \(nack.whollyLostEscalations) whole-loss→IDR"
-            }
-            // Explicit host refusals — acted asks skip the
-            // 250 ms deadline entirely.
-            if nack.refusalsReceived > 0 {
-                line += ", \(nack.refusalsReceived) refusals rx " +
-                        "(\(nack.refusalsActedOn) acted→IDR" +
-                        (nack.refusalsIgnored > 0
-                            ? ", \(nack.refusalsIgnored) ignored)"
-                            : ")")
-            }
-            if nack.fecImpossibleDeferred > 0 {
-                line += ", \(nack.fecImpossibleDeferred) idr-deferred"
-            }
-            // Answers for frames no longer needed.
-            if nack.repairsLate + nack.repairsDuplicate
-                + nack.repairsSuperseded > 0 {
-                line += ", answers unneeded \(nack.repairsLate) late/" +
-                        "\(nack.repairsDuplicate) dup/" +
-                        "\(nack.repairsSuperseded) superseded"
-            }
-            print(line)
-        }
-
-        // The reliable sublayer, when it has done anything at all.
-        let arq = core.reliable.snapshotStats()
-        if arq.messagesSent + arq.messagesDelivered + arq.datagramsSent > 0 {
-            var line = "\(prefix)   arq: \(arq.messagesSent) sent, " +
-                       "\(arq.messagesDelivered) delivered, " +
-                       "\(arq.oneShotsAcknowledged) one-shot-acked, " +
-                       "\(arq.datagramsSent) datagrams" +
-                       (core.reliable.isQuiescent ? ", quiescent" : ", in flight")
-            if arq.ingestIgnored > 0 { line += ", \(arq.ingestIgnored) ignored" }
-            if arq.sendFailures > 0 { line += ", \(arq.sendFailures) send-failed" }
-            print(line)
-        }
-
-        // The clock model line.
+        print("\(prefix)   layer: \(rendererState())")
         if let fit = core.clockModel.estimate() {
             let sign = fit.offsetMicroseconds >= 0 ? "+" : ""
             print("\(prefix)   clock: offset \(sign)\(fit.offsetMicroseconds) µs, " +
@@ -626,181 +458,33 @@ final class WireViewStatsPrinter: Sendable {
                   "\(fit.acceptedSamples)/\(fit.windowSamples) samples " +
                   "(min rtt \(fit.minRttMicroseconds) µs)")
         }
+    }
 
-        // The audio line, whenever the channel carried anything.
-        let audio = core.audio.snapshotStats()
-        if audio.depacketizer.datagramsIngested > 0 {
-            let d = audio.depacketizer
-            let j = audio.jitter
-            var line = "\(prefix)   audio books: \(d.datagramsIngested) dg → " +
-                       "\(d.packetsEmitted) pkts"
-            if d.packetsRebuilt > 0 {
-                line += " (\(d.packetsRebuilt) rebuilt/" +
-                        "\(d.groupsRecovered) groups)"
-            }
-            if d.packetsUnrecoverable > 0 {
-                line += ", \(d.packetsUnrecoverable) fec-impossible"
-            }
-            if j.latePacketsDropped > 0 { line += ", \(j.latePacketsDropped) late" }
-            if j.recenterEvents > 0 {
-                line += ", \(j.recenterEvents) recenter" +
-                        "(-\(j.packetsDroppedInRecenter) pkts)"
-            }
-            line += " (target \(j.targetPackets))"
-            line += String(format: ", jitter σ %.0f µs",
-                           j.interArrivalStdDevMicroseconds)
-            if j.skewPartsPerMillion != 0 {
-                line += String(format: ", skew %+.0f ppm",
-                               j.skewPartsPerMillion)
-            }
-            // Above-floor: capture→render minus the session's fastest
-            // observed path (graph-clock epoch is unmappable; the
-            // beacon min-RTT bounds the floor itself).
-            line += Self.latency(" | pipe", audio.captureToRender)
-            if let player = session.audioPlayer {
-                let p = player.snapshotStats()
-                line += ", ring \(p.ringDepthFrames * 1000 / 48_000) ms"
-                if p.underrunFrames > 0 {
-                    line += ", underrun \(p.underrunFrames) frames"
-                }
-                // The accelerate books.
-                if p.accelerate.removalOps > 0
-                    || audio.accelerateEngagements > 0 {
-                    line += ", accel \(p.accelerate.removalOps) ops "
-                        + "(−\(p.accelerate.millisecondsDrained) ms, "
-                        + "\(audio.accelerateEngagements) engage)"
-                }
-                if p.routeChangesHandled + p.routeChangeFailures > 0 {
-                    line += ", route \(p.routeChangesHandled) rebuilt"
-                    if p.routeChangeFailures > 0 {
-                        line += "/\(p.routeChangeFailures) failed"
-                    }
-                }
-                if p.lastWindowRmsDbfs > -120 {
-                    line += String(format: ", sig %.1f dBFS ~%.0f Hz",
-                                   p.lastWindowRmsDbfs,
-                                   p.lastWindowZeroCrossingHz)
-                }
-            }
-            print(line)
+    /// `name=value` for each non-zero scalar of a stats snapshot, nested
+    /// books as `outer.inner=value`, latency histograms as p50/p99 ms.
+    static func fields(_ book: Any, prefix: String = "") -> [String] {
+        let mirror = Mirror(reflecting: book)
+        if mirror.displayStyle == .optional {
+            return mirror.children.first.map { fields($0.value, prefix: prefix) } ?? []
         }
-
-        // The input line, when any input rode this session.
-        let input = core.input.snapshotStats()
-        if input.eventsSent > 0 || input.echoTuplesReceived > 0 {
-            var line = "\(prefix)   input: \(input.eventsSent) sent, " +
-                       "\(input.echoTuplesReceived) echoes"
-            if core.input.pendingEchoCount > 0 {
-                line += " (\(core.input.pendingEchoCount) pending)"
-            }
-            if input.sendFailures > 0 { line += ", \(input.sendFailures) send-failed" }
-            if input.unmatchedEchoTuples > 0 {
-                line += ", \(input.unmatchedEchoTuples) unmatched"
-            }
-            if input.echoesWithoutClockFit > 0 {
-                line += ", \(input.echoesWithoutClockFit) no-clock-fit"
-            }
-            if input.malformedFrameStamps > 0 {
-                line += ", \(input.malformedFrameStamps) bad-stamps"
-            }
-            if let stamp = input.lastStampSeen {
-                line += ", frame stamp \(stamp)"
-            }
-            line += Self.latency(" | inject", input.inputToInject)
-            line += Self.latency(", photon", input.inputToPhoton)
-            line += Self.latency(", host rx→inject", input.hostReceiveToInject)
-            print(line)
-        }
-    }
-
-    /// "label p50/p99 A/B ms" for one recorded edge; empty pre-samples.
-    private static func latency(
-        _ label: String, _ hist: Histogram<UInt64>
-    ) -> String {
-        guard let p50 = hist.p50, let p99 = hist.p99 else { return "" }
-        return String(format: "%@ p50/p99 %.1f/%.1f ms",
-                      label, Double(p50) / 1000, Double(p99) / 1000)
-    }
-}
-
-/// The --input-script DSL (the synthetic input surface): semicolon-
-/// separated "<at_ms> <kind> <args>" entries. Parsed up front so a typo
-/// fails the command, never a mid-run surprise.
-enum InputScript {
-    struct Entry {
-        let atMilliseconds: Int
-        let body: InputEvent.Body
-        let label: String
-    }
-
-    static func parse(_ script: String) throws -> [Entry] {
-        var entries: [Entry] = []
-        for raw in script.split(separator: ";") {
-            let words = raw.split(separator: " ").map(String.init)
-            guard words.count >= 2, let at = Int(words[0]), at >= 0 else {
-                throw ValidationError(
-                    "input-script entry '\(raw.trimmingCharacters(in: .whitespaces))' — want '<at_ms> <kind> <args>'")
-            }
-            let body: InputEvent.Body
-            switch (words[1], words.count) {
-            case ("move", 4):
-                body = .pointerMotionAbsolute(
-                    x: try double(words[2], in: raw),
-                    y: try double(words[3], in: raw))
-            case ("rel", 4):
-                body = .pointerMotionRelative(
-                    dx: try double(words[2], in: raw),
-                    dy: try double(words[3], in: raw))
-            case ("key", 4):
-                body = .keyKeycode(
-                    keycode: try code(words[2], in: raw),
-                    pressed: try pressed(words[3], in: raw))
-            case ("button", 4):
-                body = .pointerButton(
-                    button: try code(words[2], in: raw),
-                    pressed: try pressed(words[3], in: raw))
-            case ("axis", 4), ("axis", 5):
-                body = .pointerAxis(
-                    dx: try double(words[2], in: raw),
-                    dy: try double(words[3], in: raw),
-                    finish: words.count == 5 && words[4] == "finish")
+        return mirror.children.flatMap { child -> [String] in
+            guard let label = child.label, label != "config" else { return [] }
+            let name = prefix + label
+            switch child.value {
+            case let histogram as Histogram<UInt64>:
+                guard let p50 = histogram.p50, let p99 = histogram.p99 else { return [] }
+                return [String(format: "%@=%.1f/%.1fms",
+                               name, Double(p50) / 1000, Double(p99) / 1000)]
+            case let number as any BinaryInteger:
+                return Int64(truncatingIfNeeded: number) == 0 ? [] : ["\(name)=\(number)"]
+            case let number as Double:
+                return number == 0 || !number.isFinite
+                    ? [] : [String(format: "%@=%.1f", name, number)]
+            case let flag as Bool:
+                return flag ? [name] : []
             default:
-                throw ValidationError(
-                    "input-script entry '\(raw.trimmingCharacters(in: .whitespaces))' — unknown kind/arity")
+                return fields(child.value, prefix: name + ".")
             }
-            entries.append(Entry(
-                atMilliseconds: at, body: body,
-                label: words.dropFirst().joined(separator: " ")))
-        }
-        guard !entries.isEmpty else {
-            throw ValidationError("input-script parsed to zero entries")
-        }
-        return entries.sorted { $0.atMilliseconds < $1.atMilliseconds }
-    }
-
-    private static func double(_ word: String, in entry: Substring) throws -> Double {
-        guard let value = Double(word) else {
-            throw ValidationError("input-script '\(entry)': '\(word)' is not a number")
-        }
-        return value
-    }
-
-    private static func code(_ word: String, in entry: Substring) throws -> UInt32 {
-        let value = word.hasPrefix("0x")
-            ? UInt32(word.dropFirst(2), radix: 16)
-            : UInt32(word)
-        guard let value else {
-            throw ValidationError("input-script '\(entry)': '\(word)' is not a keycode")
-        }
-        return value
-    }
-
-    private static func pressed(_ word: String, in entry: Substring) throws -> Bool {
-        switch word {
-        case "down": return true
-        case "up": return false
-        default:
-            throw ValidationError("input-script '\(entry)': want down|up, got '\(word)'")
         }
     }
 }
@@ -814,22 +498,3 @@ final class WindowCloser: NSObject, NSWindowDelegate {
 /// Strong refs for objects whose owners (NSApp, NSWindow) hold them weakly,
 /// alive for the life of the process.
 @MainActor var streamRetainer: [Any] = []
-
-/// Lock-boxed value for cross-queue state.
-final class LockedCell<T>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var stored: T
-    init(_ value: T) { stored = value }
-    var value: T {
-        get { lock.withLock { stored } }
-        set { lock.withLock { stored = newValue } }
-    }
-
-    /// Stores `new` and returns the previous value, atomically.
-    func exchange(_ new: T) -> T {
-        lock.withLock {
-            defer { stored = new }
-            return stored
-        }
-    }
-}

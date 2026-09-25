@@ -6,8 +6,8 @@ import LyteUI
 struct LyteCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "lyte-cli",
-        abstract: "Lyte development CLI — discover, pair with, and stream from Lyte-UDP hosts.",
-        subcommands: [WireView.self, WireDiscover.self, WirePair.self, WireUnpair.self]
+        abstract: "Lyte development CLI — pair with and stream from Lyte-UDP hosts.",
+        subcommands: [WireView.self, WirePair.self]
     )
 }
 

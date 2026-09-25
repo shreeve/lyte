@@ -128,6 +128,7 @@ let package = Package(
             name: "LyteCLITests",
             dependencies: [
                 "lyte-cli",
+                .product(name: "LyteCore", package: "Common"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
