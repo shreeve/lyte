@@ -62,7 +62,7 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
         hostPort: UInt16,
         hostStaticPublicKey: [UInt8],
         staticKeys: NoiseKeyPair? = nil,
-        retry: ClientHandshakeInitiator.Retry
+        retry: ClientHandshakeInitiator.Retry = .init()
     ) throws {
         guard hostStaticPublicKey.count == 32 else {
             throw TransportCryptoError.invalidHostKey(
@@ -73,26 +73,6 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
         self.hostStaticPublicKey = hostStaticPublicKey
         self.staticKeys = staticKeys ?? NoiseKeyPair.generate()
         self.retry = retry
-    }
-
-    /// The same, with the schedule spelled as attempts × milliseconds.
-    public convenience init(
-        hostAddress: String,
-        hostPort: UInt16,
-        hostStaticPublicKey: [UInt8],
-        staticKeys: NoiseKeyPair? = nil,
-        attempts: Int = 5,
-        attemptTimeoutMilliseconds: Int = 1_000
-    ) throws {
-        try self.init(
-            hostAddress: hostAddress,
-            hostPort: hostPort,
-            hostStaticPublicKey: hostStaticPublicKey,
-            staticKeys: staticKeys,
-            retry: .init(
-                attempts: attempts,
-                intervalMicroseconds:
-                    UInt64(max(1, attemptTimeoutMilliseconds)) * 1_000))
     }
 
     /// The static public key message 1 will present to the host.

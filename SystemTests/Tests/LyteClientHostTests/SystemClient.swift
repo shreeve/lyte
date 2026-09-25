@@ -29,7 +29,7 @@ final class SystemClient: @unchecked Sendable {
             hostAddress: "10.0.0.249", hostPort: 41_081,
             hostStaticPublicKey: host.staticKeys.publicKey,
             staticKeys: NoiseKeyPair.generate(),
-            attempts: 3, attemptTimeoutMilliseconds: 200)
+            retry: .init(attempts: 3, intervalMicroseconds: 200_000))
         try crypto.performHandshake(io: host)
         self.crypto = crypto
         self.demux = ReceiveDemux(crypto: crypto)

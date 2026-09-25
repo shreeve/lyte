@@ -42,7 +42,7 @@ final class PairingGateTests: XCTestCase {
                 hostAddress: "10.0.0.249", hostPort: 41_007,
                 hostStaticPublicKey: host.staticKeys.publicKey,
                 staticKeys: clientStatic,
-                attempts: 2, attemptTimeoutMilliseconds: 200)
+                retry: .init(attempts: 2, intervalMicroseconds: 200_000))
             try crypto.performHandshake(io: host)
             self.host = host
             self.hostService = hostService

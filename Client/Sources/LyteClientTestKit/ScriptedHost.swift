@@ -174,7 +174,7 @@ public final class ClientCoreHarness<Host: ScriptedHost>: @unchecked Sendable {
             hostAddress: hostAddress, hostPort: hostPort,
             hostStaticPublicKey: host.staticKeys.publicKey,
             staticKeys: clientKeys,
-            attempts: 3, attemptTimeoutMilliseconds: 200)
+            retry: .init(attempts: 3, intervalMicroseconds: 200_000))
         try crypto.performHandshake(io: host)
         self.crypto = crypto
         self.demux = ReceiveDemux(crypto: crypto)

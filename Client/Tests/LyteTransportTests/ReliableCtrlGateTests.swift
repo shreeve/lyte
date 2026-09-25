@@ -160,7 +160,7 @@ final class ReliableCtrlGateTests: XCTestCase {
             let crypto = try NoiseTransportCrypto(
                 hostAddress: "10.0.0.249", hostPort: 41_005,
                 hostStaticPublicKey: host.staticKeys.publicKey,
-                attempts: 2, attemptTimeoutMilliseconds: 200)
+                retry: .init(attempts: 2, intervalMicroseconds: 200_000))
             try crypto.performHandshake(io: host)
             let outbound = LockedBytePile()
             let sender = TransportSender(crypto: crypto, transmit: {
