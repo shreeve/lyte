@@ -18,95 +18,43 @@ final class AudioRoutingClientGateTests: XCTestCase {
 
     // MARK: - The scripted host
 
-    /// A key-9-capable host stand-in: Noise responder, host-clock ARQ,
-    /// capability negotiator (declaration = first reliable word), and
-    /// HS-18's routing rules — the starting 0x19 at agreement, one
-    /// 0x19 per applied flip, a scriptable FAILED flip that re-reports
-    /// the old posture. No video/beacons: this gate is about the
-    /// ordered CTRL stream.
-    fileprivate final class RoutingHostStandIn: ScriptedHost {
-        var peer: SealedCtrlPeer<HostClock>
-        var handshakeOutbox: [[UInt8]] = []
-        let localCapabilities: Capabilities
-
+    /// A key-9 host: the starting 0x19 at agreement, one 0x19 per applied
+    /// flip, and a scriptable failed flip that re-reports the old posture.
+    fileprivate final class RoutingHostStandIn: DeclaringHost {
         /// The host's shell posture (--host-audio seeds it live).
         var posture: HostAudioRoutingMode = .hostAudible
-        /// Scripted failure: a 0x18 is "attempted", the flip fails,
-        /// and the 0x19 answer reports the OLD posture (HS-18's rule).
         var flipFails = false
-
-        // Evidence.
-        var agreed: Capabilities?
         var requestsReceived: [[UInt8]] = []
-        var receivedReliableTypes: [UInt8] = []
         var statusesSent: [HostAudioRoutingMode] = []
 
-        var progressMark: Int { receivedReliableTypes.count }
-
         init(localCapabilities: Capabilities) {
-            var rng = SplitMix64(seed: 0xC1_13)
-            peer = SealedCtrlPeer(
-                connectionId: ConnectionId.random(using: &rng))
-            peer.openChannels = [.ctrl]
-            self.localCapabilities = localCapabilities
+            super.init(localCapabilities: localCapabilities, seed: 0xC1_13)
         }
 
-        /// HS-11's rule, load-bearing here: the host's declaration is
-        /// the FIRST reliable word at establishment — BEFORE any client
-        /// message can be consumed. Queuing it lazily would let the
-        /// agreement's 0x19 jump ahead of it on the ordered stream, and
-        /// the client would (rightly) drop that loud.
-        func didEstablish() throws {
-            try declare(localCapabilities)
-        }
-
-        /// One client datagram: unseal → the ARQ ingest → HS-18's
-        /// dispatch. Feedback/echoes/IDRs are not this gate's business.
-        func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
-            guard case .reliable(_, _, let events) =
-                try peer.absorb(bytes, nowMicros: nowMicros)
-            else { return }
-            for case .message(_, let message) in events {
-                receivedReliableTypes.append(message.first ?? 0)
-                try dispatchReliable(message, nowMicros: nowMicros)
-            }
-        }
-
-        private func dispatchReliable(
-            _ message: [UInt8], nowMicros: UInt64
+        override func receive(
+            _ message: [UInt8], on channel: ChannelId, nowMicros: UInt64
         ) throws {
             switch message.first {
-            case CtrlMessageType.capabilityDeclaration:
-                guard let declaration =
-                    try? CapabilityDeclaration.decode(message)
-                else { return XCTFail("malformed client declaration") }
-                if case .agreed(let intersection) =
-                    try peer.negotiator!.receive(declaration) {
-                    agreed = intersection
-                    // HS-18: the starting posture rides a 0x19 at
-                    // capability agreement — negotiated sessions only.
-                    if intersection.hostAudioRouting {
-                        statusesSent.append(posture)
-                        try injectReliable(
-                            AudioRoutingStatus(mode: posture).encode(),
-                            nowMicros: nowMicros)
-                    }
-                }
+            case CtrlMessageType.capabilityDeclaration
+                where agreed?.hostAudioRouting == true:
+                try sendStatus(nowMicros: nowMicros)
             case CtrlMessageType.audioRoutingRequest:
                 requestsReceived.append(message)
-                guard agreed?.hostAudioRouting == true else {
-                    return   // the host's rule-3 drop, silent here
-                }
+                // Without key 9 the host drops the ask.
+                guard agreed?.hostAudioRouting == true else { return }
                 let request = try AudioRoutingRequest.decode(message)
                 if !flipFails { posture = request.mode }
-                // Applied (or failed — old posture) → one 0x19.
-                statusesSent.append(posture)
-                try injectReliable(
-                    AudioRoutingStatus(mode: posture).encode(),
-                    nowMicros: nowMicros)
+                try sendStatus(nowMicros: nowMicros)
             default:
                 break
             }
+        }
+
+        private func sendStatus(nowMicros: UInt64) throws {
+            statusesSent.append(posture)
+            try injectReliable(
+                AudioRoutingStatus(mode: posture).encode(),
+                nowMicros: nowMicros)
         }
     }
 
@@ -128,11 +76,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         var config = LyteUdpSessionCoreConfig()
         config.desiredHostAudioRouting = nil
         let harness = try Harness(host: host, coreConfig: config)
-        var t: UInt64 = 1_000
-        harness.clock.value = t
-
-        try harness.core.open(now: ClientTimestamp(microseconds: t))
-        try harness.settle(t: &t)
+        var t = try harness.openAndSettle()
 
         // Mutual key-9 declaration survived intersection, both views.
         XCTAssertEqual(host.agreed?.hostAudioRouting, true,
@@ -189,10 +133,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         var config = LyteUdpSessionCoreConfig()
         config.desiredHostAudioRouting = nil
         let h1 = try Harness(host: legacy, coreConfig: config)
-        var t: UInt64 = 1_000
-        h1.clock.value = t
-        try h1.core.open(now: ClientTimestamp(microseconds: t))
-        try h1.settle(t: &t)
+        var t = try h1.openAndSettle()
         XCTAssertTrue(h1.core.hostAudioRoutingNegotiated)
         XCTAssertEqual(h1.core.agreedCapabilities?.audioStreamOff, false)
         XCTAssertThrowsError(try h1.core.requestHostAudioRouting(
@@ -211,10 +152,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
             localCapabilities: .wireDefault
                 .declaringHostAudioRouting().declaringAudioStreamOff())
         let h2 = try Harness(host: modern, coreConfig: config)
-        var t2: UInt64 = 1_000
-        h2.clock.value = t2
-        try h2.core.open(now: ClientTimestamp(microseconds: t2))
-        try h2.settle(t: &t2)
+        var t2 = try h2.openAndSettle()
         XCTAssertEqual(h2.core.agreedCapabilities?.audioStreamOff, true)
         try h2.core.requestHostAudioRouting(
             .streamOff, now: ClientTimestamp(microseconds: t2))
@@ -232,11 +170,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         var config = LyteUdpSessionCoreConfig()
         config.desiredHostAudioRouting = .hostMuted
         let harness = try Harness(host: host, coreConfig: config)
-        var t: UInt64 = 1_000
-        harness.clock.value = t
-
-        try harness.core.open(now: ClientTimestamp(microseconds: t))
-        try harness.settle(t: &t)
+        var t = try harness.openAndSettle()
 
         // The host's default (audible) differed from the desire
         // (muted): exactly ONE 0x18 left right after the starting
@@ -268,11 +202,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         var config = LyteUdpSessionCoreConfig()
         config.desiredHostAudioRouting = .hostMuted
         let harness = try Harness(host: host, coreConfig: config)
-        var t: UInt64 = 1_000
-        harness.clock.value = t
-
-        try harness.core.open(now: ClientTimestamp(microseconds: t))
-        try harness.settle(t: &t)
+        try harness.openAndSettle()
 
         // Desire == the host's default: nothing to say.
         XCTAssertEqual(host.requestsReceived, [])
@@ -289,11 +219,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         // Even a configured desire must stay quiet without the key.
         config.desiredHostAudioRouting = .hostMuted
         let harness = try Harness(host: host, coreConfig: config)
-        var t: UInt64 = 1_000
-        harness.clock.value = t
-
-        try harness.core.open(now: ClientTimestamp(microseconds: t))
-        try harness.settle(t: &t)
+        var t = try harness.openAndSettle()
 
         // Intersection dropped key 9; the strip's button never exists.
         XCTAssertEqual(host.agreed?.hostAudioRouting, false)
@@ -311,7 +237,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         try harness.settle(t: &t)
         XCTAssertEqual(host.requestsReceived, [])
         XCTAssertFalse(
-            host.receivedReliableTypes
+            host.reliableTypes
                 .contains(CtrlMessageType.audioRoutingRequest),
             "no 0x18 may ever reach an unnegotiated host")
 
@@ -365,10 +291,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         var config = LyteUdpSessionCoreConfig()
         config.desiredHostAudioRouting = nil
         let harness = try Harness(host: host, coreConfig: config)
-        var t: UInt64 = 1_000
-        harness.clock.value = t
-        try harness.core.open(now: ClientTimestamp(microseconds: t))
-        try harness.settle(t: &t)
+        var t = try harness.openAndSettle()
 
         // Key 15 survived intersection, both views.
         XCTAssertEqual(host.agreed?.audioQuietPosture, true,
@@ -426,10 +349,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         var config = LyteUdpSessionCoreConfig()
         config.desiredHostAudioRouting = nil
         let harness = try Harness(host: host, coreConfig: config)
-        var t: UInt64 = 1_000
-        harness.clock.value = t
-        try harness.core.open(now: ClientTimestamp(microseconds: t))
-        try harness.settle(t: &t)
+        var t = try harness.openAndSettle()
         XCTAssertEqual(
             harness.core.agreedCapabilities?.audioQuietPosture, false)
 
@@ -463,10 +383,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         var config = LyteUdpSessionCoreConfig()
         config.desiredHostAudioRouting = nil
         let harness = try Harness(host: host, coreConfig: config)
-        var t: UInt64 = 1_000
-        harness.clock.value = t
-        try harness.core.open(now: ClientTimestamp(microseconds: t))
-        try harness.settle(t: &t)
+        var t = try harness.openAndSettle()
         XCTAssertEqual(
             harness.core.agreedCapabilities?.videoQuietPosture, true)
         XCTAssertNil(harness.core.control.announcedVideoPosture,
@@ -498,10 +415,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         let legacyHost = RoutingHostStandIn(
             localCapabilities: .wireDefault.declaringHostAudioRouting())
         let legacy = try Harness(host: legacyHost, coreConfig: config)
-        var t2: UInt64 = 1_000
-        legacy.clock.value = t2
-        try legacy.core.open(now: ClientTimestamp(microseconds: t2))
-        try legacy.settle(t: &t2)
+        var t2 = try legacy.openAndSettle()
         try legacyHost.injectReliable(
             VideoPostureState(posture: .quiet, keepaliveSeconds: 30).encode(),
             nowMicros: t2)

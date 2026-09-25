@@ -18,21 +18,11 @@ import LyteWireTestKit
 
 final class VideoPipelineTests: XCTestCase {
 
-    private static var corpusDirectory: String {
-        ClientTestPaths.videoCorpus
-    }
-
     /// The decodable 10-frame prefix, in order (IDR first).
     private func loadPrefix() throws -> [[UInt8]] {
-        let names = try FileManager.default
-            .contentsOfDirectory(atPath: Self.corpusDirectory)
-            .filter { $0.hasPrefix("frame-0") && $0.hasSuffix(".annexb") }
-            .sorted()
-        XCTAssertEqual(names.count, 10, "the corpus prefix is ten access units")
-        return try names.map {
-            [UInt8](try Data(contentsOf: URL(
-                fileURLWithPath: Self.corpusDirectory + "/" + $0)))
-        }
+        let frames = try ClientTestPaths.videoCorpusFrames()
+        XCTAssertEqual(frames.count, 10, "the corpus prefix is ten access units")
+        return frames
     }
 
     private func packetizePrefix(
@@ -85,17 +75,6 @@ final class VideoPipelineTests: XCTestCase {
         }
     }
 
-    private final class SampleBox: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [CMSampleBuffer] = []
-        func append(_ sample: CMSampleBuffer) {
-            lock.lock(); stored.append(sample); lock.unlock()
-        }
-        var first: CMSampleBuffer? {
-            lock.lock(); defer { lock.unlock() }; return stored.first
-        }
-    }
-
     private final class StepClock: @unchecked Sendable {
         private let lock = NSLock()
         private var value: UInt64 = 0
@@ -142,7 +121,7 @@ final class VideoPipelineTests: XCTestCase {
         let frame = try XCTUnwrap(loadPrefix().first)
         let shards = try XCTUnwrap(try packetizePrefix([frame]).first)
         let clock = StepClock()
-        let samples = SampleBox()
+        let samples = Locked<[CMSampleBuffer]>()
         let pipeline = LyteVideoPipeline(
             nowNanoseconds: { clock.read() },
             sink: HeadlessVideoSink { sample, _ in samples.append(sample) })
@@ -154,7 +133,7 @@ final class VideoPipelineTests: XCTestCase {
                 now: ClientTimestamp(microseconds: 1_000))
         }
 
-        let sample = try XCTUnwrap(samples.first)
+        let sample = try XCTUnwrap(samples.all.first)
         let telemetry = try XCTUnwrap(
             VideoSampleTiming.buildTelemetry(from: sample))
         XCTAssertEqual(telemetry.assemblyLockHoldMicroseconds, 1)

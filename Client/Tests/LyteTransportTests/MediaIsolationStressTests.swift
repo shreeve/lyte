@@ -5,19 +5,10 @@ import XCTest
 @testable import LyteTransport
 
 final class MediaIsolationStressTests: XCTestCase {
-    private static var corpusDirectory: String {
-        ClientTestPaths.videoCorpus
-    }
-
     /// A sample build stalled at the renderer seam holds only the sample
     /// worker: ingest (the receive thread) returns with it still blocked.
     func testVideoBuildBackpressureNeverHoldsTheReceiveThread() throws {
-        let idrName = try FileManager.default
-            .contentsOfDirectory(atPath: Self.corpusDirectory)
-            .filter { $0.hasPrefix("frame-0") && $0.hasSuffix(".annexb") }
-            .sorted().first!
-        let idr = [UInt8](try Data(contentsOf: URL(
-            fileURLWithPath: Self.corpusDirectory + "/" + idrName)))
+        let idr = try ClientTestPaths.videoCorpusFrames(1)[0]
         var packetizer = VideoPacketizer()
         let shards = try packetizer.packetize(
             frame: idr,

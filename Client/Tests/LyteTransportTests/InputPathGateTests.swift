@@ -15,24 +15,6 @@ import LyteWireTestKit
 
 final class InputPathGateTests: XCTestCase {
 
-    // MARK: - Corpus
-
-    private static var corpusDirectory: String {
-        ClientTestPaths.videoCorpus
-    }
-
-    private func loadCorpus(_ count: Int) throws -> [[UInt8]] {
-        let names = try FileManager.default
-            .contentsOfDirectory(atPath: Self.corpusDirectory)
-            .filter { $0.hasPrefix("frame-0") && $0.hasSuffix(".annexb") }
-            .sorted()
-            .prefix(count)
-        return try names.map {
-            [UInt8](try Data(contentsOf: URL(
-                fileURLWithPath: Self.corpusDirectory + "/" + $0)))
-        }
-    }
-
     // MARK: - The keymap speaks evdev position codes
 
     func testMacEvdevKeyMapPins() {
@@ -256,14 +238,14 @@ final class InputPathGateTests: XCTestCase {
 
     /// Concurrent callers get unique seqs, enqueued in ascending order.
     func testConcurrentSendsNeverShareOrReorderASeq() throws {
-        let enqueued = UInt32Pile()
+        let enqueued = Locked<[UInt32]>()
         let sender = InputSender(clockModel: HostClockModel()) {
             message, _ in
             let event = try InputEvent.decode(message)
             usleep(20)
             enqueued.append(event.seq)
         }
-        let returned = UInt32Pile()
+        let returned = Locked<[UInt32]>()
         DispatchQueue.concurrentPerform(iterations: 8) { _ in
             for _ in 0..<50 {
                 if let seq = try? sender.send(
@@ -297,7 +279,7 @@ final class InputPathGateTests: XCTestCase {
     }
 
     func testOrderedInputSenderPreservesOrderAndStopsQueuedWork() {
-        let delivered = UInt32Pile()
+        let delivered = Locked<[UInt32]>()
         let sender = OrderedInputSender { body, _ in
             guard case .keyKeycode(let code, _) = body else { return }
             delivered.append(code)
@@ -319,8 +301,8 @@ final class InputPathGateTests: XCTestCase {
     }
 
     func testOrderedInputAcceptanceRacesFinishWithoutLosingAcceptedWork() {
-        let delivered = UInt32Pile()
-        let accepted = UInt32Pile()
+        let delivered = Locked<[UInt32]>()
+        let accepted = Locked<[UInt32]>()
         let sender = OrderedInputSender { body, _ in
             guard case .keyKeycode(let code, _) = body else { return }
             delivered.append(code)
@@ -603,21 +585,10 @@ final class InputPathGateTests: XCTestCase {
         }
     }
 
-    final class UInt32Pile: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [UInt32] = []
-        func append(_ value: UInt32) {
-            lock.lock(); stored.append(value); lock.unlock()
-        }
-        var all: [UInt32] {
-            lock.lock(); defer { lock.unlock() }; return stored
-        }
-    }
-
     // MARK: - The full loop through the W-G4 storm
 
     func testGateSyntheticInputThroughStormWithEchoesAndPhotonLoop() throws {
-        let corpus = try loadCorpus(2)
+        let corpus = try ClientTestPaths.videoCorpusFrames(2)
         let host = HostInputStandIn()
         let harness = try Harness(host: host)
         var net = SimNet(

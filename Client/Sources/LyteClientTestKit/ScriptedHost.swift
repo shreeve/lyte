@@ -65,6 +65,64 @@ extension ScriptedHost {
     }
 }
 
+/// A scripted host that declares `localCapabilities` as its first reliable
+/// word, records the agreement, and hands every reliable message (the
+/// client's declaration included, after `agreed` is set) to `receive`.
+/// Subclasses keep the evidence their gate asserts.
+open class DeclaringHost: ScriptedHost {
+    public var peer: SealedCtrlPeer<HostClock>
+    public var handshakeOutbox: [[UInt8]] = []
+    public let localCapabilities: Capabilities
+    public var agreed: Capabilities?
+    /// The type byte of every reliable CTRL message, in order.
+    public var reliableTypes: [UInt8] = []
+    /// Reliable messages received on any channel.
+    public var reliableCount = 0
+
+    open var progressMark: Int { reliableCount }
+
+    /// Without `carriesBulk` only CTRL is opened.
+    public init(
+        localCapabilities: Capabilities,
+        seed: UInt64,
+        staticKeys: NoiseKeyPair = .generate(),
+        carriesBulk: Bool = false
+    ) {
+        var rng = SplitMix64(seed: seed)
+        peer = SealedCtrlPeer(
+            responderWith: staticKeys,
+            connectionId: ConnectionId.random(using: &rng),
+            carriesBulk: carriesBulk)
+        if !carriesBulk { peer.openChannels = [.ctrl] }
+        self.localCapabilities = localCapabilities
+    }
+
+    open func didEstablish() throws {
+        try declare(localCapabilities)
+    }
+
+    open func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
+        guard case .reliable(let envelope, _, let events) =
+            try peer.absorb(bytes, nowMicros: nowMicros)
+        else { return }
+        for case .message(_, let message) in events {
+            reliableCount += 1
+            if envelope.channel == .ctrl {
+                reliableTypes.append(message.first ?? 0)
+                if message.first == CtrlMessageType.capabilityDeclaration,
+                   let intersection = try peer.receiveDeclaration(message) {
+                    agreed = intersection
+                }
+            }
+            try receive(message, on: envelope.channel, nowMicros: nowMicros)
+        }
+    }
+
+    open func receive(
+        _ message: [UInt8], on channel: ChannelId, nowMicros: UInt64
+    ) throws {}
+}
+
 /// Virtual microseconds a production core reads through its `now` closure.
 public final class ManualMicrosClock: Sendable {
     private let stored: Mutex<UInt64>
@@ -159,6 +217,17 @@ public final class ClientCoreHarness<Host: ScriptedHost>: @unchecked Sendable {
             try host.absorb(collected.outbound[forwarded], nowMicros: t)
             forwarded += 1
         }
+    }
+
+    /// Opens the core at 1 ms (its declaration leaves) and settles;
+    /// returns the settled instant.
+    @discardableResult
+    public func openAndSettle() throws -> UInt64 {
+        var t: UInt64 = 1_000
+        clock.value = t
+        try core.open(now: ClientTimestamp(microseconds: t))
+        try settle(t: &t)
+        return t
     }
 
     /// Direct-pipe beats 2 ms apart until three in a row move nothing:

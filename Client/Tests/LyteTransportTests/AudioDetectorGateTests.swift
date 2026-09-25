@@ -30,35 +30,9 @@ final class AudioDetectorGateTests: XCTestCase {
         }
     }
 
-    private final class EventLog: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [LyteUdpSessionEvent] = []
-        func append(_ event: LyteUdpSessionEvent) {
-            lock.lock()
-            stored.append(event)
-            lock.unlock()
-        }
-        var all: [LyteUdpSessionEvent] {
-            lock.lock()
-            defer { lock.unlock() }
-            return stored
-        }
-    }
-
-    private final class RecoveryLog: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [(VideoRecoveryCause, FrameNumber)] = []
-        func append(_ cause: VideoRecoveryCause, _ frame: FrameNumber) {
-            lock.lock(); stored.append((cause, frame)); lock.unlock()
-        }
-        var all: [(VideoRecoveryCause, FrameNumber)] {
-            lock.lock(); defer { lock.unlock() }; return stored
-        }
-    }
-
     private func makeCore(
         clock: VirtualClock,
-        events: EventLog,
+        events: Locked<[LyteUdpSessionEvent]>,
         config: LyteUdpSessionCoreConfig = LyteUdpSessionCoreConfig(),
         onVideoRecoveryDemand: @escaping @Sendable (
             VideoRecoveryCause, FrameNumber
@@ -93,7 +67,7 @@ final class AudioDetectorGateTests: XCTestCase {
 
     func testNoAudioKeepsTheBeaconBoundedDetector() {
         let clock = VirtualClock()
-        let events = EventLog()
+        let events = Locked<[LyteUdpSessionEvent]>()
         let core = makeCore(clock: clock, events: events)
         XCTAssertFalse(core.control.detectorTightened)
 
@@ -113,7 +87,7 @@ final class AudioDetectorGateTests: XCTestCase {
 
     func testAudioEvidenceTightensTo350Milliseconds() throws {
         let clock = VirtualClock()
-        let events = EventLog()
+        let events = Locked<[LyteUdpSessionEvent]>()
         let core = makeCore(clock: clock, events: events)
 
         // The first authenticated chan-1 arrival is the evidence gate.
@@ -160,12 +134,12 @@ final class AudioDetectorGateTests: XCTestCase {
     }
 
     func testRendererRecoverySeamJoinsOneCoalescedIdrEpisode() {
-        let demands = RecoveryLog()
+        let demands = Locked<[(VideoRecoveryCause, FrameNumber)]>()
         let core = makeCore(
             clock: VirtualClock(),
-            events: EventLog(),
+            events: Locked<[LyteUdpSessionEvent]>(),
             onVideoRecoveryDemand: { cause, frame in
-                demands.append(cause, frame)
+                demands.append((cause, frame))
             })
         core.requestVideoRecovery(
             after: FrameNumber(rawValue: 40), cause: .rendererFailure)
@@ -187,7 +161,7 @@ final class AudioDetectorGateTests: XCTestCase {
 
     func testTighteningPreservesTheWireMode() throws {
         let clock = VirtualClock()
-        let events = EventLog()
+        let events = Locked<[LyteUdpSessionEvent]>()
         let core = makeCore(clock: clock, events: events)
 
         // Drive the receiver machine to IDLE the wire way: a real ARQ
@@ -227,7 +201,7 @@ final class AudioDetectorGateTests: XCTestCase {
 
     func testNilTightenedConfigDisablesTheTightening() throws {
         let clock = VirtualClock()
-        let events = EventLog()
+        let events = Locked<[LyteUdpSessionEvent]>()
         var config = LyteUdpSessionCoreConfig()
         config.tightenedBlackoutSilenceMicroseconds = nil
         let core = makeCore(clock: clock, events: events, config: config)

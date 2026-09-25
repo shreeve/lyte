@@ -17,61 +17,19 @@ final class ClipboardClientGateTests: XCTestCase {
 
     // MARK: - The scripted host
 
-    /// A key-10-capable host stand-in: Noise responder, host-clock
-    /// ARQ, capability negotiator (declaration = first reliable word),
-    /// and the host's clipboard rules — consumed 0x1A bytes recorded
-    /// verbatim, announces scripted by the test. No video/beacons.
-    fileprivate final class ClipboardHostStandIn: ScriptedHost {
-        var peer: SealedCtrlPeer<HostClock>
-        var handshakeOutbox: [[UInt8]] = []
-        let localCapabilities: Capabilities
-
-        // Evidence.
-        var agreed: Capabilities?
+    /// A key-10 host that records every 0x1A it consumes.
+    fileprivate final class ClipboardHostStandIn: DeclaringHost {
         var setsReceived: [[UInt8]] = []
-        var receivedReliableTypes: [UInt8] = []
-
-        var progressMark: Int { receivedReliableTypes.count }
 
         init(localCapabilities: Capabilities) {
-            var rng = SplitMix64(seed: 0xC1_15)
-            peer = SealedCtrlPeer(
-                connectionId: ConnectionId.random(using: &rng))
-            peer.openChannels = [.ctrl]
-            self.localCapabilities = localCapabilities
+            super.init(localCapabilities: localCapabilities, seed: 0xC1_15)
         }
 
-        /// HS-11's first-word rule, load-bearing: the declaration queues
-        /// at establishment, before any client word could be consumed.
-        func didEstablish() throws {
-            try declare(localCapabilities)
-        }
-
-        /// One client datagram: unseal → ARQ ingest → record.
-        func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
-            guard case .reliable(_, _, let events) =
-                try peer.absorb(bytes, nowMicros: nowMicros)
-            else { return }
-            for case .message(_, let message) in events {
-                receivedReliableTypes.append(message.first ?? 0)
-                try dispatchReliable(message)
-            }
-        }
-
-        private func dispatchReliable(_ message: [UInt8]) throws {
-            switch message.first {
-            case CtrlMessageType.capabilityDeclaration:
-                guard let declaration =
-                    try? CapabilityDeclaration.decode(message)
-                else { return XCTFail("malformed client declaration") }
-                if case .agreed(let intersection) =
-                    try peer.negotiator!.receive(declaration) {
-                    agreed = intersection
-                }
-            case CtrlMessageType.clipboardSet:
+        override func receive(
+            _ message: [UInt8], on channel: ChannelId, nowMicros: UInt64
+        ) throws {
+            if message.first == CtrlMessageType.clipboardSet {
                 setsReceived.append(message)
-            default:
-                break
             }
         }
     }
@@ -88,11 +46,7 @@ final class ClipboardClientGateTests: XCTestCase {
         var config = LyteUdpSessionCoreConfig()
         config.shareClipboard = true   // the per-host default, ON
         let harness = try Harness(host: host, coreConfig: config)
-        var t: UInt64 = 1_000
-        harness.clock.value = t
-
-        try harness.core.open(now: ClientTimestamp(microseconds: t))
-        try harness.settle(t: &t)
+        var t = try harness.openAndSettle()
 
         XCTAssertEqual(host.agreed?.clipboardText, true,
                        "the host must see key 10 in the client's 0x0F")
@@ -167,11 +121,7 @@ final class ClipboardClientGateTests: XCTestCase {
             localCapabilities: .wireDefault.declaringClipboardText())
         // Default config: consent OFF (no per-host default set).
         let harness = try Harness(host: host)
-        var t: UInt64 = 1_000
-        harness.clock.value = t
-
-        try harness.core.open(now: ClientTimestamp(microseconds: t))
-        try harness.settle(t: &t)
+        var t = try harness.openAndSettle()
         XCTAssertTrue(harness.core.clipboardNegotiated,
                       "capability negotiates regardless — dialect, not consent")
         XCTAssertFalse(harness.core.control.clipboardSharingEnabled)
@@ -218,11 +168,7 @@ final class ClipboardClientGateTests: XCTestCase {
         var config = LyteUdpSessionCoreConfig()
         config.shareClipboard = true   // even with consent on
         let harness = try Harness(host: host, coreConfig: config)
-        var t: UInt64 = 1_000
-        harness.clock.value = t
-
-        try harness.core.open(now: ClientTimestamp(microseconds: t))
-        try harness.settle(t: &t)
+        var t = try harness.openAndSettle()
         XCTAssertEqual(host.agreed?.clipboardText, false)
         XCTAssertFalse(harness.core.clipboardNegotiated)
 
@@ -260,10 +206,7 @@ final class ClipboardClientGateTests: XCTestCase {
         onConfig.shareClipboard = true
         let negotiated = try Harness(
             host: negotiatedHost, coreConfig: onConfig)
-        var t2: UInt64 = 1_000
-        negotiated.clock.value = t2
-        try negotiated.core.open(now: ClientTimestamp(microseconds: t2))
-        try negotiated.settle(t: &t2)
+        var t2 = try negotiated.openAndSettle()
         let oneOver = String(
             repeating: "a", count: ClipboardWire.maxTextByteCount + 1)
         XCTAssertEqual(

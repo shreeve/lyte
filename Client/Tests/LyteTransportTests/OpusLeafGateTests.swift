@@ -30,7 +30,7 @@ final class OpusLeafGateTests: XCTestCase {
     }
 
     func testToneRoundTripsThroughDecoderAtExpectedLevelAndPitch() throws {
-        let encoder = makeEncoderOrFail()
+        let encoder = try makeEncoderOrFail()
         defer { opus_encoder_destroy(encoder) }
         let decoder = try OpusStreamDecoder()
 
@@ -83,7 +83,7 @@ final class OpusLeafGateTests: XCTestCase {
     }
 
     func testPlcConcealsAndRecoversWithoutHardSilence() throws {
-        let encoder = makeEncoderOrFail()
+        let encoder = try makeEncoderOrFail()
         defer { opus_encoder_destroy(encoder) }
         let decoder = try OpusStreamDecoder()
 
@@ -119,12 +119,11 @@ final class OpusLeafGateTests: XCTestCase {
         XCTAssertEqual(decoder.decodeFailures, 1)
     }
 
-    private func makeEncoderOrFail() -> OpaquePointer {
+    private func makeEncoderOrFail() throws -> OpaquePointer {
         var status: Int32 = 0
         let encoder = opus_encoder_create(
             48_000, 2, OPUS_APPLICATION_RESTRICTED_LOWDELAY, &status)
-        precondition(encoder != nil && status == OPUS_OK,
-                     "libopus encoder unavailable (\(status))")
-        return encoder!
+        return try XCTUnwrap(status == OPUS_OK ? encoder : nil,
+                             "libopus encoder unavailable (\(status))")
     }
 }

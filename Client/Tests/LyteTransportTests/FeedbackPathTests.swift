@@ -347,7 +347,7 @@ final class FeedbackPathTests: XCTestCase {
     // with the codec promotion; the policy tests stay here.)
 
     func testIdrRecoveryEpisodeCoversBurstUntilAcceptedIrap() {
-        let emitted = LockedRequests()
+        let emitted = Locked<[IdrRequest]>()
         let requester = IdrRequester(retryIntervalMilliseconds: 500,
                                      emit: { emitted.append($0) })
         let base: UInt64 = 10_000_000
@@ -397,7 +397,7 @@ final class FeedbackPathTests: XCTestCase {
     }
 
     func testIdrRecoveryEpisodeRetriesLostFirstIdrAt500ms() {
-        let emitted = LockedRequests()
+        let emitted = Locked<[IdrRequest]>()
         let requester = IdrRequester(retryIntervalMilliseconds: 500,
                                      emit: { emitted.append($0) })
         let base = ClientTimestamp(microseconds: 20_000_000)
@@ -437,24 +437,10 @@ final class FeedbackPathTests: XCTestCase {
         XCTAssertFalse(stats.recoveryOutstanding)
     }
 
-    private final class LockedRequests: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [IdrRequest] = []
-        func append(_ r: IdrRequest) { lock.lock(); stored.append(r); lock.unlock() }
-        var all: [IdrRequest] { lock.lock(); defer { lock.unlock() }; return stored }
-    }
-
     // MARK: - Beacon echo
 
-    private final class LockedEchoes: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [BeaconEcho] = []
-        func append(_ e: BeaconEcho) { lock.lock(); stored.append(e); lock.unlock() }
-        var all: [BeaconEcho] { lock.lock(); defer { lock.unlock() }; return stored }
-    }
-
     func testBeaconDecodesEchoRoundTripsFourTimestamps() throws {
-        let echoes = LockedEchoes()
+        let echoes = Locked<[BeaconEcho]>()
         // Injected client clock: t3 is pinned.
         let responder = BeaconEchoResponder(
             now: { ClientTimestamp(microseconds: 1_253_500) },
@@ -490,7 +476,7 @@ final class FeedbackPathTests: XCTestCase {
     func testBeaconMirrorClosesSamplesIntoTheClockModel() {
         // Deterministic client clock, advancing per call.
         let clock = TickingClock(start: 1_253_500)
-        let echoes = LockedEchoes()
+        let echoes = Locked<[BeaconEcho]>()
         let model = HostClockModel()
         let responder = BeaconEchoResponder(
             now: { clock.next() },
@@ -530,7 +516,7 @@ final class FeedbackPathTests: XCTestCase {
     }
 
     func testNonBeaconAndMalformedCtrlPayloadsAreHandledQuietly() {
-        let echoes = LockedEchoes()
+        let echoes = Locked<[BeaconEcho]>()
         let responder = BeaconEchoResponder(
             now: { ClientTimestamp(microseconds: 0) },
             emit: { echoes.append($0) })

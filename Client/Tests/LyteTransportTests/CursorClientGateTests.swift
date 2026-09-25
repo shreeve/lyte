@@ -20,40 +20,9 @@ final class CursorClientGateTests: XCTestCase {
 
     // MARK: - The scripted host
 
-    fileprivate final class CursorHostStandIn: ScriptedHost {
-        var peer: SealedCtrlPeer<HostClock>
-        var handshakeOutbox: [[UInt8]] = []
-        let localCapabilities: Capabilities
-
-        // Evidence.
-        var agreed: Capabilities?
-        var receivedReliableTypes: [UInt8] = []
-
-        var progressMark: Int { receivedReliableTypes.count }
-
+    fileprivate final class CursorHostStandIn: DeclaringHost {
         init(localCapabilities: Capabilities) {
-            var rng = SplitMix64(seed: 0xE3_24)
-            peer = SealedCtrlPeer(
-                connectionId: ConnectionId.random(using: &rng))
-            peer.openChannels = [.ctrl]
-            self.localCapabilities = localCapabilities
-        }
-
-        func didEstablish() throws {
-            try declare(localCapabilities)
-        }
-
-        func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
-            guard case .reliable(_, _, let events) =
-                try peer.absorb(bytes, nowMicros: nowMicros)
-            else { return }
-            for case .message(_, let message) in events {
-                receivedReliableTypes.append(message.first ?? 0)
-                if message.first == CtrlMessageType.capabilityDeclaration,
-                   let intersection = try peer.receiveDeclaration(message) {
-                    agreed = intersection
-                }
-            }
+            super.init(localCapabilities: localCapabilities, seed: 0xE3_24)
         }
     }
 
@@ -67,11 +36,7 @@ final class CursorClientGateTests: XCTestCase {
         let host = CursorHostStandIn(
             localCapabilities: .wireDefault.declaringCursorShape())
         let harness = try Harness(host: host)
-        var t: UInt64 = 1_000
-        harness.clock.value = t
-
-        try harness.core.open(now: ClientTimestamp(microseconds: t))
-        try harness.settle(t: &t)
+        var t = try harness.openAndSettle()
 
         XCTAssertEqual(host.agreed?.cursorShape, true,
                        "the host must see key 13 in the client's 0x0F")
@@ -100,11 +65,7 @@ final class CursorClientGateTests: XCTestCase {
         // A host that never declared key 13 (a portal-era host).
         let host = CursorHostStandIn(localCapabilities: .wireDefault)
         let harness = try Harness(host: host)
-        var t: UInt64 = 1_000
-        harness.clock.value = t
-
-        try harness.core.open(now: ClientTimestamp(microseconds: t))
-        try harness.settle(t: &t)
+        var t = try harness.openAndSettle()
         XCTAssertEqual(host.agreed?.cursorShape, false)
 
         // An out-of-agreement 0x24: dropped, no event — nothing can

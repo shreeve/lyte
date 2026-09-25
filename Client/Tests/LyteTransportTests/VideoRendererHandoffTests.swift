@@ -15,13 +15,7 @@ final class VideoRendererHandoffTests: XCTestCase {
     private var corpus: [[UInt8]] = []
 
     override func setUpWithError() throws {
-        let directory = ClientTestPaths.videoCorpus
-        let names = try FileManager.default.contentsOfDirectory(atPath: directory)
-            .filter { $0.hasPrefix("frame-") && $0.hasSuffix(".annexb") }
-            .sorted()
-        corpus = try names.prefix(8).map {
-            [UInt8](try Data(contentsOf: URL(fileURLWithPath: directory + "/" + $0)))
-        }
+        corpus = try ClientTestPaths.videoCorpusFrames(8)
         XCTAssertGreaterThanOrEqual(corpus.count, 6)
     }
 
@@ -341,14 +335,6 @@ final class VideoRendererHandoffTests: XCTestCase {
 }
 
 // MARK: - Rig
-
-private final class Locked<Value>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var stored: Value
-    init(_ value: Value) { stored = value }
-    var value: Value { lock.withLock { stored } }
-    func mutate(_ body: (inout Value) -> Void) { lock.withLock { body(&stored) } }
-}
 
 private final class Rig {
     let queue = DispatchQueue(label: "test.video.delivery")

@@ -97,7 +97,7 @@ final class BulkSendClientGateTests: XCTestCase {
     /// The receiving role driven exactly like TestKit's harness:
     /// auto-consent, synchronous stores, honest digests of what was
     /// ACTUALLY stored.
-    private final class ScriptedReceiver {
+    final class ScriptedReceiver {
         var engine: BulkReceiveEngine
         var store: [UInt64: [UInt8]] = [:]
         /// receiver→sender messages awaiting delivery.
@@ -151,7 +151,7 @@ final class BulkSendClientGateTests: XCTestCase {
 
     /// A synchronous payload-backed reader — the whole transfer runs
     /// in virtual time; reads and closes are recorded for the pins.
-    private final class RecordingReader: BulkChunkReading, @unchecked Sendable {
+    final class RecordingReader: BulkChunkReading, @unchecked Sendable {
         private let payload: [UInt8]
         private let lock = NSLock()
         private var recordedOffsets: [UInt64] = []
@@ -256,7 +256,7 @@ final class BulkSendClientGateTests: XCTestCase {
             name: "happy.bin")
         let reader = RecordingReader(payload: payload)
         let wire = WireBox()
-        let events = EventBox()
+        let events = Locked<[BulkSendShellEvent]>()
         let shell = BulkSendShell(
             offer: offer, reader: reader, send: wire.sendClosure,
             onEvent: { events.append($0) })
@@ -268,7 +268,7 @@ final class BulkSendClientGateTests: XCTestCase {
                    delivered: &delivered) { shell.ingest($0) }
 
         XCTAssertEqual(shell.state, .completed)
-        XCTAssertTrue(events.contains { if case .completed = $0 { return true }; return false })
+        XCTAssertTrue(events.all.contains { if case .completed = $0 { return true }; return false })
         XCTAssertEqual(receiver.assembledDigest(), offer.sha256,
                        "the file landed sha-exact")
         XCTAssertEqual(shell.progress.fraction, 1.0)
@@ -341,7 +341,7 @@ final class BulkSendClientGateTests: XCTestCase {
             name: "shrunk.bin")
         let reader = ShrunkReader()
         let wire = WireBox()
-        let events = EventBox()
+        let events = Locked<[BulkSendShellEvent]>()
         let shell = BulkSendShell(
             offer: offer, reader: reader, send: wire.sendClosure,
             onEvent: { events.append($0) })
@@ -352,7 +352,7 @@ final class BulkSendClientGateTests: XCTestCase {
                    delivered: &delivered) { shell.ingest($0) }
 
         XCTAssertEqual(shell.state, .aborted(.cancelled, byRemote: false))
-        XCTAssertTrue(events.contains {
+        XCTAssertTrue(events.all.contains {
             if case .readFailed = $0 { return true }; return false
         })
         XCTAssertTrue(reader.closed)
@@ -360,47 +360,11 @@ final class BulkSendClientGateTests: XCTestCase {
 
     // MARK: - Coordinator harness (sync executor = virtual time)
 
-    private final class EventBox: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [BulkSendShellEvent] = []
-        func append(_ event: BulkSendShellEvent) {
-            lock.lock(); stored.append(event); lock.unlock()
-        }
-        func contains(_ predicate: (BulkSendShellEvent) -> Bool) -> Bool {
-            lock.lock(); defer { lock.unlock() }
-            return stored.contains(where: predicate)
-        }
-    }
-
-    private final class NoticeBox: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [String] = []
-        func append(_ notice: String) {
-            lock.lock(); stored.append(notice); lock.unlock()
-        }
-        var all: [String] {
-            lock.lock(); defer { lock.unlock() }
-            return stored
-        }
-    }
-
     private struct CoordinatorRig {
         let coordinator: BulkSendCoordinator
-        let notices: NoticeBox
-        let readers: ReaderBook
+        let notices: Locked<[String]>
+        let readers: Locked<[RecordingReader]>
         let prepareCount: Counter
-    }
-
-    private final class ReaderBook: @unchecked Sendable {
-        private let lock = NSLock()
-        private var made: [RecordingReader] = []
-        func note(_ reader: RecordingReader) {
-            lock.lock(); made.append(reader); lock.unlock()
-        }
-        var all: [RecordingReader] {
-            lock.lock(); defer { lock.unlock() }
-            return made
-        }
     }
 
     private final class Counter: @unchecked Sendable {
@@ -425,8 +389,8 @@ final class BulkSendClientGateTests: XCTestCase {
         payloads: [String: [UInt8]],
         chunkByteCount: UInt32 = 4_096
     ) -> CoordinatorRig {
-        let notices = NoticeBox()
-        let readers = ReaderBook()
+        let notices = Locked<[String]>()
+        let readers = Locked<[RecordingReader]>()
         let prepareCount = Counter()
         let idMint = Counter()
         let coordinator = BulkSendCoordinator(
@@ -448,7 +412,7 @@ final class BulkSendClientGateTests: XCTestCase {
                     throw BulkPrepareError.unreadable("no such fixture")
                 }
                 let reader = RecordingReader(payload: payload)
-                readers.note(reader)
+                readers.append(reader)
                 return reader
             },
             runInBackground: { work in work() },
@@ -694,62 +658,31 @@ final class BulkSendClientGateTests: XCTestCase {
 
     // MARK: - The scripted key-11 host
 
-    /// A bulk-capable host stand-in: Noise responder, capability
-    /// negotiator, and TWO host-clock ArqEndpoints — CTRL for the
-    /// declaration, chan 8 for bulk carriage. Decoded chan-8 messages
-    /// are recorded verbatim; bulk answers are scripted by the test.
-    /// No video/beacons.
-    fileprivate final class BulkHostStandIn: ScriptedHost {
-        var peer: SealedCtrlPeer<HostClock>
-        var handshakeOutbox: [[UInt8]] = []
-        let localCapabilities: Capabilities
-
-        // Evidence.
-        var agreed: Capabilities?
+    /// A key-11 host with its own chan-8 ARQ that records every bulk
+    /// message and counts chan-8 datagrams.
+    fileprivate final class BulkHostStandIn: DeclaringHost {
         var bulkReceived: [BulkMessage] = []
         var bulkDatagramCount = 0
-        var ctrlReliableTypes: [UInt8] = []
-
-        var progressMark: Int { bulkReceived.count }
 
         init(localCapabilities: Capabilities) {
-            var rng = SplitMix64(seed: 0xF4_11)
-            peer = SealedCtrlPeer(
-                connectionId: ConnectionId.random(using: &rng),
+            super.init(
+                localCapabilities: localCapabilities, seed: 0xF4_11,
                 carriesBulk: true)
-            self.localCapabilities = localCapabilities
         }
 
-        func didEstablish() throws {
-            try declare(localCapabilities)
-        }
-
-        /// One client datagram: unseal → the CHANNEL's ARQ → record.
-        func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
-            switch try peer.absorb(bytes, nowMicros: nowMicros) {
-            case .reliable(let envelope, _, let events)
-                where envelope.channel == .bulkTransfer:
+        override func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
+            if try Envelope.decode(bytes).0.channel == .bulkTransfer {
                 bulkDatagramCount += 1
-                for case .message(_, let message) in events {
-                    bulkReceived.append(try BulkMessage.decode(message))
-                }
-            case .reliable(_, _, let events):
-                for case .message(_, let message) in events {
-                    ctrlReliableTypes.append(message.first ?? 0)
-                    dispatchCtrlPlain(message)
-                }
-            case .plain(_, let plaintext):
-                dispatchCtrlPlain(plaintext)
-            case .handshakeCompleted, .duplicate, .unopened:
-                break
             }
+            try super.absorb(bytes, nowMicros: nowMicros)
         }
 
-        private func dispatchCtrlPlain(_ message: [UInt8]) {
-            guard message.first == CtrlMessageType.capabilityDeclaration,
-                  let intersection = try? peer.receiveDeclaration(message)
-            else { return }
-            agreed = intersection
+        override func receive(
+            _ message: [UInt8], on channel: ChannelId, nowMicros: UInt64
+        ) throws {
+            if channel == .bulkTransfer {
+                bulkReceived.append(try BulkMessage.decode(message))
+            }
         }
     }
 
@@ -765,11 +698,7 @@ final class BulkSendClientGateTests: XCTestCase {
         let host = BulkHostStandIn(
             localCapabilities: .wireDefault.declaringBulkTransfer())
         let harness = try Harness(host: host)
-        var t: UInt64 = 1_000
-        harness.clock.value = t
-
-        try harness.core.open(now: ClientTimestamp(microseconds: t))
-        try harness.settle(t: &t)
+        var t = try harness.openAndSettle()
         XCTAssertEqual(host.agreed?.bulkTransfer, true,
                        "the host must see key 11 in the client's 0x0F")
         XCTAssertTrue(harness.core.control.agreedCapabilities?.bulkTransfer == true)
@@ -788,7 +717,7 @@ final class BulkSendClientGateTests: XCTestCase {
                        "the offer reassembles byte-exact off chan 8")
         XCTAssertGreaterThan(host.bulkDatagramCount, 0)
         XCTAssertFalse(
-            host.ctrlReliableTypes.contains(CtrlMessageType.bulkOffer),
+            host.reliableTypes.contains(CtrlMessageType.bulkOffer),
             "chan 8 has its OWN ArqEndpoint pair — bulk never rides CTRL")
 
         // A full 65,536-byte chunk crosses real ARQ segmentation +
@@ -826,11 +755,7 @@ final class BulkSendClientGateTests: XCTestCase {
     func testGateInVivoRefusesBulkAgainstNoKeyElevenHost() throws {
         let host = BulkHostStandIn(localCapabilities: .wireDefault)
         let harness = try Harness(host: host)
-        var t: UInt64 = 1_000
-        harness.clock.value = t
-
-        try harness.core.open(now: ClientTimestamp(microseconds: t))
-        try harness.settle(t: &t)
+        var t = try harness.openAndSettle()
         XCTAssertEqual(host.agreed?.bulkTransfer, false)
         XCTAssertFalse(harness.core.control.agreedCapabilities?.bulkTransfer == true)
 

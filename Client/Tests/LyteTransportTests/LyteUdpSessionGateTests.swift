@@ -33,25 +33,6 @@ import LyteWireTestKit
 
 final class LyteUdpSessionGateTests: XCTestCase {
 
-    // MARK: - Corpus
-
-    private static var corpusDirectory: String {
-        ClientTestPaths.videoCorpus
-    }
-
-    /// The decodable corpus prefix, in order (IDR first).
-    private func loadCorpus(_ count: Int) throws -> [[UInt8]] {
-        let names = try FileManager.default
-            .contentsOfDirectory(atPath: Self.corpusDirectory)
-            .filter { $0.hasPrefix("frame-0") && $0.hasSuffix(".annexb") }
-            .sorted()
-            .prefix(count)
-        return try names.map {
-            [UInt8](try Data(contentsOf: URL(
-                fileURLWithPath: Self.corpusDirectory + "/" + $0)))
-        }
-    }
-
     // MARK: - The host stand-in
 
     /// The HS-11 host discipline from LyteWire parts: Noise responder
@@ -511,7 +492,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
     // MARK: - The full lifecycle gate
 
     func testGateFullLifecycleIdleCyclesBlackoutPillAndHostTeardown() throws {
-        let corpus = try loadCorpus(5)
+        let corpus = try ClientTestPaths.videoCorpusFrames(5)
         let host = HostStandIn()
         let harness = try Harness(host: host)
         var net = SimNet(
@@ -887,7 +868,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
     // MARK: - The reliable-frame seam's bootstrap withhold
 
     func testIdleFrameBeforeAnyIdrIsWithheldNotRendered() throws {
-        let corpus = try loadCorpus(2)
+        let corpus = try ClientTestPaths.videoCorpusFrames(2)
         let collected = LockedBytePile()   // count via appends
         let pipeline = LyteVideoPipeline(
             nowNanoseconds: { 0 },

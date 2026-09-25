@@ -150,7 +150,7 @@ final class ReliableCtrlGateTests: XCTestCase {
         /// Everything the client transmitted, in order (the SimNet
         /// forwarding cursor reads from here).
         let outbound: LockedBytePile
-        private let capturedEvents: LockedEvents
+        private let capturedEvents: Locked<[ArqEvent]>
 
         var beaconSeqsSeen: [UInt32] = []
         var replayDrops = 0
@@ -167,7 +167,7 @@ final class ReliableCtrlGateTests: XCTestCase {
                 outbound.append($0)
                 return true
             })
-            let captured = LockedEvents()
+            let captured = Locked<[ArqEvent]>()
             self.host = host
             self.crypto = crypto
             self.demux = ReceiveDemux(crypto: crypto)
@@ -217,13 +217,6 @@ final class ReliableCtrlGateTests: XCTestCase {
                 return nil
             }
         }
-    }
-
-    private final class LockedEvents: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [ArqEvent] = []
-        func append(_ e: ArqEvent) { lock.lock(); stored.append(e); lock.unlock() }
-        var all: [ArqEvent] { lock.lock(); defer { lock.unlock() }; return stored }
     }
 
     // MARK: The gate — 5% loss, duplication, reorder, both directions

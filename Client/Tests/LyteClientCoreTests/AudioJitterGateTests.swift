@@ -422,7 +422,7 @@ final class AudioJitterGateTests: XCTestCase {
 
     // MARK: Stall + burst: bounded depth, re-centered latency
 
-    func testStallBurstRecentersInsteadOfGrowingLatencyForever() {
+    func testStallBurstRecentersInsteadOfGrowingLatencyForever() throws {
         let buffer = AudioJitterBuffer()
         var arrivals: [(UInt64, AudioPacket)] = []
         // 100 steady packets…
@@ -450,12 +450,11 @@ final class AudioJitterGateTests: XCTestCase {
         XCTAssertGreaterThan(stats.packetsDroppedInRecenter, 0)
         // After the re-center the buffer sits at/below target + slack.
         let config = AudioJitterConfig()
-        if let depthMax = stats.depthPackets.maxValue {
-            XCTAssertLessThanOrEqual(
-                Int(depthMax),
-                config.maxTargetPackets + config.slackPackets,
-                "pending depth stays bounded through the burst")
-        }
+        let depthMax = try XCTUnwrap(stats.depthPackets.maxValue)
+        XCTAssertLessThanOrEqual(
+            Int(depthMax),
+            config.maxTargetPackets + config.slackPackets,
+            "pending depth stays bounded through the burst")
         // The tail plays contiguously (post-recenter numbers ordered).
         XCTAssertEqual(result.played, result.played.sorted())
         XCTAssertTrue(result.played.contains(259), "the stream resumed")

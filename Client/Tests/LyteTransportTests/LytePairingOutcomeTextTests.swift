@@ -1,4 +1,5 @@
 import Foundation
+import LyteClientTestKit
 import LyteWire
 import XCTest
 @testable import LyteTransport
@@ -34,7 +35,7 @@ final class LytePairingOutcomeTextTests: XCTestCase {
     /// A PIN that is not six ASCII digits is refused before the socket
     /// opens, so it never spends one of the host's guesses.
     func testNonAsciiPinIsRefusedBeforeDialing() {
-        let progress = LockedLines()
+        let progress = Locked<[String]>()
         let outcome = LytePairing.run(LytePairing.Config(
             hostAddress: "127.0.0.1", hostPort: 9,
             hostStaticPublicKey: [UInt8](repeating: 7, count: 32),
@@ -46,13 +47,6 @@ final class LytePairingOutcomeTextTests: XCTestCase {
             return XCTFail("expected a refusal, got \(outcome)")
         }
         XCTAssertTrue(message.contains("6 digits"), message)
-        XCTAssertTrue(progress.lines.isEmpty, "\(progress.lines)")
+        XCTAssertTrue(progress.all.isEmpty, "\(progress.all)")
     }
-}
-
-private final class LockedLines: @unchecked Sendable {
-    private let lock = NSLock()
-    private var stored: [String] = []
-    func append(_ line: String) { lock.lock(); stored.append(line); lock.unlock() }
-    var lines: [String] { lock.lock(); defer { lock.unlock() }; return stored }
 }

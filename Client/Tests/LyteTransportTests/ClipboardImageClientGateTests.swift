@@ -34,18 +34,13 @@ final class ClipboardImageClientGateTests: XCTestCase {
     // MARK: - The scripted images-tier host (the REAL Wire
     // ClipboardImageChannel)
 
-    fileprivate final class ImageHostStandIn: ScriptedHost {
-        var peer: SealedCtrlPeer<HostClock>
-        var handshakeOutbox: [[UInt8]] = []
-        let localCapabilities: Capabilities
-
+    fileprivate final class ImageHostStandIn: DeclaringHost {
         // The production lane logic — the host's real seam.
         var channel = ClipboardImageChannel()
         var book = ClipboardSyncBook()
         var imageRng = SplitMix64(seed: 0xB01)
 
         // Evidence.
-        var agreed: Capabilities?
         /// Bulk messages the channel did NOT claim — the file lane's.
         var bulkReceived: [BulkMessage] = []
         /// Images the channel applied, byte-exact.
@@ -53,37 +48,21 @@ final class ClipboardImageClientGateTests: XCTestCase {
         /// The channel's non-send, non-apply events, in order.
         var imageEvents: [ClipboardImageEvent] = []
 
-        var progressMark: Int {
+        override var progressMark: Int {
             bulkReceived.count + applied.count + imageEvents.count
         }
 
         init(localCapabilities: Capabilities) {
-            var rng = SplitMix64(seed: 0x0122)
-            peer = SealedCtrlPeer(
-                connectionId: ConnectionId.random(using: &rng),
+            super.init(
+                localCapabilities: localCapabilities, seed: 0x0122,
                 carriesBulk: true)
-            self.localCapabilities = localCapabilities
         }
 
-        func didEstablish() throws {
-            try declare(localCapabilities)
-        }
-
-        /// One client datagram: unseal → the CHANNEL's ARQ → route.
-        func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
-            switch try peer.absorb(bytes, nowMicros: nowMicros) {
-            case .reliable(let envelope, _, let events):
-                for case .message(_, let message) in events {
-                    if envelope.channel == .bulkTransfer {
-                        try consumeBulkStream(message, nowMicros: nowMicros)
-                    } else {
-                        dispatchCtrlPlain(message)
-                    }
-                }
-            case .plain(_, let plaintext):
-                dispatchCtrlPlain(plaintext)
-            case .handshakeCompleted, .duplicate, .unopened:
-                break
+        override func receive(
+            _ message: [UInt8], on channel: ChannelId, nowMicros: UInt64
+        ) throws {
+            if channel == .bulkTransfer {
+                try consumeBulkStream(message, nowMicros: nowMicros)
             }
         }
 
@@ -135,13 +114,6 @@ final class ClipboardImageClientGateTests: XCTestCase {
                 nowMicros: nowMicros
             )
         }
-
-        private func dispatchCtrlPlain(_ message: [UInt8]) {
-            guard message.first == CtrlMessageType.capabilityDeclaration,
-                  let intersection = try? peer.receiveDeclaration(message)
-            else { return }
-            agreed = intersection
-        }
     }
 
     // MARK: - The client harness
@@ -160,11 +132,7 @@ final class ClipboardImageClientGateTests: XCTestCase {
         config.shareClipboard = true
         config.shareClipboardImages = true
         let harness = try Harness(host: host, coreConfig: config)
-        var t: UInt64 = 1_000
-        harness.clock.value = t
-
-        try harness.core.open(now: ClientTimestamp(microseconds: t))
-        try harness.settle(t: &t)
+        var t = try harness.openAndSettle()
         XCTAssertEqual(host.agreed?.clipboardImagesAgreed, true,
                        "10∧12 must agree — and with NO key 11 in the "
                         + "stand-in's declaration")
@@ -236,11 +204,7 @@ final class ClipboardImageClientGateTests: XCTestCase {
         var config = LyteUdpSessionCoreConfig()
         config.shareClipboard = true   // Text only — the middle tier.
         let harness = try Harness(host: host, coreConfig: config)
-        var t: UInt64 = 1_000
-        harness.clock.value = t
-
-        try harness.core.open(now: ClientTimestamp(microseconds: t))
-        try harness.settle(t: &t)
+        var t = try harness.openAndSettle()
         XCTAssertTrue(harness.core.control.clipboardImagesNegotiated,
                       "capability negotiates regardless — dialect")
         XCTAssertFalse(harness.core.control.clipboardImageSharingEnabled)
@@ -296,10 +260,7 @@ final class ClipboardImageClientGateTests: XCTestCase {
         config.shareClipboard = true
         config.shareClipboardImages = true   // consent on — not enough
         let harness = try Harness(host: textHost, coreConfig: config)
-        var t: UInt64 = 1_000
-        harness.clock.value = t
-        try harness.core.open(now: ClientTimestamp(microseconds: t))
-        try harness.settle(t: &t)
+        var t = try harness.openAndSettle()
         XCTAssertFalse(harness.core.control.clipboardImagesNegotiated)
         XCTAssertEqual(
             harness.core.shareLocalClipboardImage(
@@ -325,10 +286,7 @@ final class ClipboardImageClientGateTests: XCTestCase {
         config2.shareClipboard = true
         config2.shareClipboardImages = true
         let harness2 = try Harness(host: imagesHost, coreConfig: config2)
-        var t2: UInt64 = 1_000
-        harness2.clock.value = t2
-        try harness2.core.open(now: ClientTimestamp(microseconds: t2))
-        try harness2.settle(t: &t2)
+        var t2 = try harness2.openAndSettle()
         XCTAssertFalse(harness2.core.control.agreedCapabilities?.bulkTransfer == true)
         XCTAssertTrue(harness2.core.control.clipboardImagesNegotiated)
         let fileOffer = try BulkOffer(
@@ -441,10 +399,7 @@ final class ClipboardImageClientGateTests: XCTestCase {
             host: host, coreConfig: config,
             imageHasher: { probe.makeHasher() })
         probe.core = harness.core
-        var t: UInt64 = 1_000
-        harness.clock.value = t
-        try harness.core.open(now: ClientTimestamp(microseconds: t))
-        try harness.settle(t: &t)
+        var t = try harness.openAndSettle()
         let now = ClientTimestamp(microseconds: t)
 
         let oneOver = [UInt8](
@@ -492,10 +447,7 @@ final class ClipboardImageClientGateTests: XCTestCase {
         let harness = try Harness(
             host: host, coreConfig: config,
             imageHasher: { probe.makeHasher() })
-        var t: UInt64 = 1_000
-        harness.clock.value = t
-        try harness.core.open(now: ClientTimestamp(microseconds: t))
-        try harness.settle(t: &t)
+        var t = try harness.openAndSettle()
 
         let hostImage = makePayload(count: 150_000, seed: 0xCAFE)
         try host.shareImage(hostImage, nowMicros: t)

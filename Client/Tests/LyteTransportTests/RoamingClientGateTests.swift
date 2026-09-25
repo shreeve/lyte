@@ -56,14 +56,15 @@ final class RoamingClientGateTests: XCTestCase {
         // order is canonicalized.
         typealias Sig = NetworkPathWatcher.Signature
         let wifi = Sig(isSatisfied: true, interfaceNames: ["en0"])
-        let wifiReordered = Sig(isSatisfied: true, interfaceNames: ["en0"])
         let hotel = Sig(isSatisfied: true, interfaceNames: ["en1", "en0"])
         let hotelSorted = Sig(isSatisfied: true, interfaceNames: ["en0", "en1"])
         let dead = Sig(isSatisfied: false, interfaceNames: [])
         XCTAssertFalse(NetworkPathWatcher.shouldNotify(
             previous: nil, current: wifi))
         XCTAssertFalse(NetworkPathWatcher.shouldNotify(
-            previous: wifi, current: wifiReordered))
+            previous: wifi, current: wifi))
+        XCTAssertFalse(NetworkPathWatcher.shouldNotify(
+            previous: hotel, current: hotelSorted))
         XCTAssertTrue(NetworkPathWatcher.shouldNotify(
             previous: wifi, current: hotel))
         XCTAssertTrue(NetworkPathWatcher.shouldNotify(
@@ -76,52 +77,24 @@ final class RoamingClientGateTests: XCTestCase {
     // INJECTED — the same identity must answer at "address B" that
     // answered at "A"
 
-    fileprivate final class RoamHostStandIn: ScriptedHost {
-        var peer: SealedCtrlPeer<HostClock>
-        var handshakeOutbox: [[UInt8]] = []
-        let localCapabilities: Capabilities
-
-        var agreed: Capabilities?
+    fileprivate final class RoamHostStandIn: DeclaringHost {
         var bulkReceived: [BulkMessage] = []
 
-        var progressMark: Int { bulkReceived.count }
+        override var progressMark: Int { bulkReceived.count }
 
         init(staticKeys: NoiseKeyPair, localCapabilities: Capabilities,
              seed: UInt64) {
-            var rng = SplitMix64(seed: seed)
-            peer = SealedCtrlPeer(
-                responderWith: staticKeys,
-                connectionId: ConnectionId.random(using: &rng),
-                carriesBulk: true)
-            self.localCapabilities = localCapabilities
+            super.init(
+                localCapabilities: localCapabilities, seed: seed,
+                staticKeys: staticKeys, carriesBulk: true)
         }
 
-        func didEstablish() throws {
-            try declare(localCapabilities)
-        }
-
-        func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
-            switch try peer.absorb(bytes, nowMicros: nowMicros) {
-            case .reliable(let envelope, _, let events):
-                for case .message(_, let message) in events {
-                    if envelope.channel == .bulkTransfer {
-                        bulkReceived.append(try BulkMessage.decode(message))
-                    } else {
-                        dispatchCtrlPlain(message)
-                    }
-                }
-            case .plain(_, let plaintext):
-                dispatchCtrlPlain(plaintext)
-            case .handshakeCompleted, .duplicate, .unopened:
-                break
+        override func receive(
+            _ message: [UInt8], on channel: ChannelId, nowMicros: UInt64
+        ) throws {
+            if channel == .bulkTransfer {
+                bulkReceived.append(try BulkMessage.decode(message))
             }
-        }
-
-        private func dispatchCtrlPlain(_ message: [UInt8]) {
-            guard message.first == CtrlMessageType.capabilityDeclaration,
-                  let intersection = try? peer.receiveDeclaration(message)
-            else { return }
-            agreed = intersection
         }
     }
 
@@ -131,108 +104,8 @@ final class RoamingClientGateTests: XCTestCase {
 
     private typealias RoamHarness = ClientCoreHarness<RoamHostStandIn>
 
-    // MARK: - The scripted receiving end (a REAL BulkReceiveEngine,
-    // the F-4 harness verbatim)
-
-    private final class ScriptedReceiver {
-        var engine: BulkReceiveEngine
-        var store: [UInt64: [UInt8]] = [:]
-        var outbox: [BulkMessage] = []
-        var offer: BulkOffer?
-
-        init(window: Int, resumeBook: [BulkResumeState] = []) {
-            engine = BulkReceiveEngine(
-                config: BulkTransferConfig(receiveWindowChunks: window),
-                resumeBook: resumeBook)
-        }
-
-        func absorb(_ message: BulkMessage) throws {
-            try pump(engine.ingest(message))
-        }
-
-        func pump(_ actions: [BulkReceiveEngine.Action]) throws {
-            for action in actions {
-                switch action {
-                case .offered(let incoming, _):
-                    offer = incoming
-                    try pump(engine.accept())
-                case .emit(let message):
-                    outbox.append(message)
-                case .store(let index, let data):
-                    store[index] = data
-                    try pump(engine.chunkStored(index: index))
-                case .verify:
-                    try pump(engine.verificationResult(
-                        digest: assembledDigest()))
-                case .completed, .aborted, .violated:
-                    break
-                }
-            }
-        }
-
-        func assembledDigest() -> [UInt8] {
-            guard let offer else { return [] }
-            var assembled: [UInt8] = []
-            for index in 0..<offer.chunkCount {
-                assembled += store[index] ?? []
-            }
-            return Sha256.digest(assembled)
-        }
-    }
-
-    private final class RecordingReader: BulkChunkReading, @unchecked Sendable {
-        private let payload: [UInt8]
-        private let lock = NSLock()
-        private var recordedOffsets: [UInt64] = []
-
-        init(payload: [UInt8]) { self.payload = payload }
-
-        var readOffsets: [UInt64] {
-            lock.lock(); defer { lock.unlock() }
-            return recordedOffsets
-        }
-
-        func read(
-            offset: UInt64, byteCount: Int,
-            completion: @escaping @Sendable (Result<[UInt8], Error>) -> Void
-        ) {
-            lock.lock()
-            recordedOffsets.append(offset)
-            lock.unlock()
-            let start = Int(offset)
-            guard start + byteCount <= payload.count else {
-                completion(.failure(BulkChunkReadError.shortRead(
-                    offset: offset, wanted: byteCount,
-                    got: max(0, payload.count - start))))
-                return
-            }
-            completion(.success(Array(payload[start..<start + byteCount])))
-        }
-
-        func close() {}
-    }
-
-    private final class PrepareCounter: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored = 0
-        func bump() { lock.lock(); stored += 1; lock.unlock() }
-        var count: Int {
-            lock.lock(); defer { lock.unlock() }
-            return stored
-        }
-    }
-
-    private final class ReaderBook: @unchecked Sendable {
-        private let lock = NSLock()
-        private var made: [RecordingReader] = []
-        func note(_ reader: RecordingReader) {
-            lock.lock(); made.append(reader); lock.unlock()
-        }
-        var all: [RecordingReader] {
-            lock.lock(); defer { lock.unlock() }
-            return made
-        }
-    }
+    private typealias ScriptedReceiver = BulkSendClientGateTests.ScriptedReceiver
+    private typealias RecordingReader = BulkSendClientGateTests.RecordingReader
 
     /// Bridges the stand-in's recorded chan-8 messages into the real
     /// receive engine and its answers back through the harness —
@@ -252,7 +125,7 @@ final class RoamingClientGateTests: XCTestCase {
                 seen += 1
                 progressed = true
                 if let cap, seen > cap { continue }   // dark
-                try receiver.absorb(message)
+                try receiver.absorb(message.encode())
             }
             while !receiver.outbox.isEmpty {
                 try harness.host.injectBulk(
@@ -292,12 +165,12 @@ final class RoamingClientGateTests: XCTestCase {
 
         // The coordinator with synchronous seams (the F-4 rig): one
         // 32 KiB fixture in 4 KiB chunks.
-        let readers = ReaderBook()
-        let prepared = PrepareCounter()
+        let readers = Locked<[RecordingReader]>()
+        let prepared = Locked(0)
         let coordinator = BulkSendCoordinator(
             chunkByteCount: 4_096,
             prepare: { url, transferId, chunk in
-                prepared.bump()
+                prepared.mutate { $0 += 1 }
                 return try BulkOffer(
                     transferId: transferId,
                     totalByteCount: UInt64(payload.count),
@@ -307,7 +180,7 @@ final class RoamingClientGateTests: XCTestCase {
             },
             makeReader: { _ in
                 let reader = RecordingReader(payload: payload)
-                readers.note(reader)
+                readers.append(reader)
                 return reader
             },
             runInBackground: { work in work() },
@@ -384,15 +257,13 @@ final class RoamingClientGateTests: XCTestCase {
         XCTAssertTrue(closed, "30 s of nothing draws the liveness close")
         coordinator.sessionEnded()
         XCTAssertEqual(coordinator.snapshot().phase, .awaitingReconnect)
-        var onClose = policy.sessionClosed(now: t)
         // The probe dial at the last-known address draws silence —
         // the host isn't there anymore.
-        if onClose.contains(where: {
+        if policy.sessionClosed(now: t).contains(where: {
             if case .dial = $0 { return true }; return false
         }) {
-            onClose = policy.dialFailed(now: t + 1_500_000)
+            _ = policy.dialFailed(now: t + 1_500_000)
         }
-        _ = onClose
 
         // REDISCOVERY: the same identity appears at address B — the
         // policy dials it at once.
@@ -449,7 +320,7 @@ final class RoamingClientGateTests: XCTestCase {
         }
         XCTAssertEqual(secondOffer.transferId, firstOffer.transferId,
                        "the SAME transfer id — the resume identity")
-        XCTAssertEqual(prepared.count, 1,
+        XCTAssertEqual(prepared.value, 1,
                        "no re-hash — the prepared offer re-offered verbatim")
         XCTAssertEqual(receiver2.assembledDigest(), secondOffer.sha256,
                        "the roamed transfer finished sha-exact")

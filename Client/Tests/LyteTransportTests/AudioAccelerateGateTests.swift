@@ -337,7 +337,7 @@ final class AudioAccelerateGateTests: XCTestCase {
         XCTAssertLessThanOrEqual(maxAdjacentDelta(result.output),
                                  cleanCeiling * 2)
         // The books agree with the receiver's own counters.
-        XCTAssertEqual(stats.pullsAccelerated > 0, true)
+        XCTAssertGreaterThan(stats.pullsAccelerated, 0)
     }
 
     // MARK: The skew estimate converges, both signs, clamped
