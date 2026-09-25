@@ -24,9 +24,7 @@
 # ~/.config/environment.d/90-lyte-screencast.conf is obsolete and this
 # script offers its removal.)
 set -euo pipefail
-
-ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
-todo() { printf '  \033[33m→\033[0m %s\n' "$1"; }
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/lib/host-common.sh"
 
 echo "lyte-host machine setup"
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Verify the complete Linux host image before any privileged installation.
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/lib/host-common.sh"
 
 [[ $# -eq 1 ]] || {
     echo "usage: Host/Scripts/verify-host-image.sh IMAGE" >&2
@@ -13,14 +14,6 @@ image="$1"
     exit 1
 }
 image="$(cd "$image" && pwd -P)"
-
-sha256_file() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$1" | awk '{print $1}'
-    else
-        shasum -a 256 "$1" | awk '{print $1}'
-    fi
-}
 
 file_mode() {
     if stat -f '%Lp' "$1" >/dev/null 2>&1; then

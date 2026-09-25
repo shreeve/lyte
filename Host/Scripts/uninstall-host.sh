@@ -5,6 +5,7 @@
 # paired_clients — new and pre-XDG locations alike) is never removed. Run as
 # the seat user; only the unit removal escalates.
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/lib/host-common.sh"
 
 purge=0
 case "${1:-}" in
@@ -22,31 +23,14 @@ fail() {
 [[ "${HOME:-}" == /* && "$HOME" != / && -d "$HOME" ]] \
     || fail "HOME must be an existing absolute directory"
 
-install_root="${LYTE_INSTALL_ROOT:-}"
-if [[ -n "$install_root" ]]; then
-    [[ "$install_root" == /* && -d "$install_root" && ! -L "$install_root" ]] \
-        || fail "LYTE_INSTALL_ROOT must be a real absolute directory"
-    install_root="$(cd "$install_root" && pwd -P)"
-    [[ "$install_root" != / ]] \
-        || fail "use an empty LYTE_INSTALL_ROOT for the real root"
-    as_root() { "$@"; }
-else
-    as_root() { sudo "$@"; }
-fi
-systemctl_command="${LYTE_SYSTEMCTL:-systemctl}"
+system_side
 
-xdg_home() {
-    local value="$1" fallback="$2"
-    if [[ "$value" == /* ]]; then printf '%s\n' "${value%/}"; else printf '%s\n' "$fallback"; fi
-}
 home="${HOME%/}"
 config_dir="$(xdg_home "${XDG_CONFIG_HOME:-}" "$home/.config")/lyte"
 state_dir="$(xdg_home "${XDG_STATE_HOME:-}" "$home/.local/state")/lyte"
 data_dir="$(xdg_home "${XDG_DATA_HOME:-}" "$home/.local/share")/lyte"
 unit="$install_root/etc/systemd/system/lyte-host.service"
 link="$home/.local/bin/lyte-host"
-
-ok() { printf '  \033[32m✓\033[0m %s\n' "$1"; }
 
 remove_tree() {
     local path="$1"

@@ -29,6 +29,7 @@ fail() {
 [[ $# -le 1 ]] || usage
 
 host_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source "$host_root/Scripts/lib/host-common.sh"
 stage_script="$host_root/Scripts/stage-host-image.sh"
 verify_script="$host_root/Scripts/verify-host-image.sh"
 deploy_script="$host_root/Scripts/deploy-host.sh"
@@ -59,31 +60,13 @@ fi
 "$verify_script" "$image"
 image="$(cd "$image" && pwd -P)"
 
-# LYTE_INSTALL_ROOT is a test/package-construction seam for the system side
-# only: the unit lands under that prefix, nothing escalates, and only the
-# injected LYTE_SYSTEMCTL is contacted.
-install_root="${LYTE_INSTALL_ROOT:-}"
-if [[ -n "$install_root" ]]; then
-    [[ "$install_root" == /* && -d "$install_root" && ! -L "$install_root" ]] \
-        || fail "LYTE_INSTALL_ROOT must be a real absolute directory"
-    install_root="$(cd "$install_root" && pwd -P)"
-    [[ "$install_root" != / ]] \
-        || fail "use an empty LYTE_INSTALL_ROOT for the real root"
-    as_root() { "$@"; }
-else
-    as_root() { sudo "$@"; }
-fi
-systemctl_command="${LYTE_SYSTEMCTL:-systemctl}"
+system_side
 
 seat_user="${LYTE_SEAT_USER:-$(id -un)}"
 seat_uid="${LYTE_SEAT_UID:-$(id -u)}"
 [[ "$seat_user" =~ ^[A-Za-z0-9._-]+$ && "$seat_uid" =~ ^[0-9]+$ ]] \
     || fail "invalid seat identity"
 
-xdg_home() {
-    local value="$1" fallback="$2"
-    if [[ "$value" == /* ]]; then printf '%s\n' "${value%/}"; else printf '%s\n' "$fallback"; fi
-}
 home="${HOME%/}"
 config_home="$(xdg_home "${XDG_CONFIG_HOME:-}" "$home/.config")"
 state_home="$(xdg_home "${XDG_STATE_HOME:-}" "$home/.local/state")"
@@ -107,9 +90,6 @@ fi
 config_file="$config_home/lyte/host.conf"
 document_destination="$data_home/lyte/doc"
 unit_destination="$install_root/etc/systemd/system/lyte-host.service"
-
-ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
-todo() { printf '  \033[33m→\033[0m %s\n' "$1"; }
 
 echo "lyte-host image install (user $seat_user, uid $seat_uid, home $home)"
 
