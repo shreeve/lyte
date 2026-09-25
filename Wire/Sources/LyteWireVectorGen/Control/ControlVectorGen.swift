@@ -172,8 +172,7 @@ public func makeControlVectorFile() throws -> ControlVectorFile {
            "A count of 1 over 3 tuple bytes rejects.", "1701010203",
            "bodyLengthMismatch")
 
-    // MARK: lastInputSeq TLV (0x03, whole-datagram vectors — the
-    // conn-id precedent)
+    // MARK: lastInputSeq TLV (0x03, whole-datagram vectors)
 
     vectors.append(ControlVector(
         name: "lastinputseq-tagged-datagram",

@@ -1,11 +1,9 @@
-# video-corpus-v1 — the W2 golden HEVC corpus
+# video-corpus-v1 — the golden HEVC corpus
 
-Real Annex-B HEVC access units captured from the H0a file-output host
+Real Annex-B HEVC access units captured from the host's file-output path
 (`lyte-host`: portal ScreenCast → PipeWire → hevc_nvenc, the plain
-non-ratchet path), published as first-class W2 artifacts (master plan
-§4.12): client CL-2 and host HS-5 code against these frames and the
-packetize/assembly vectors in `../video-v1.json` before either end sends
-a live datagram.
+non-ratchet path). `../video-v1.json` packetizes these frames and pins
+each by sha256.
 
 **Freeze policy** is the vector policy: committed corpus files never
 change. `video-v1.json` pins each referenced file by sha256 and the test

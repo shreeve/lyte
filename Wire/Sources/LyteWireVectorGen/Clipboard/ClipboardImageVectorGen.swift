@@ -96,8 +96,7 @@ public func makeClipboardImageVectorFile() throws -> ClipboardImageVectorFile {
         error: "mimeOverBudget"
     ))
 
-    // MARK: Capability key 12 (the forward-compat spine as data —
-    // the key-10/key-11 files' precedent)
+    // MARK: Capability key 12 (the forward-compat spine as data)
 
     for (name, description, set) in [
         ("capability-key12-declared",

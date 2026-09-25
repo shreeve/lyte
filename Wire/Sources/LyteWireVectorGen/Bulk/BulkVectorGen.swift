@@ -438,8 +438,7 @@ private func mutating(
     return copy
 }
 
-// MARK: - Capability vectors (the key-11 spine — the key-9/key-10
-// precedent, third verse)
+// MARK: - Capability vectors (the key-11 spine)
 
 private func makeBulkCapabilityVectors() throws -> [BulkCapabilityVector] {
     try [

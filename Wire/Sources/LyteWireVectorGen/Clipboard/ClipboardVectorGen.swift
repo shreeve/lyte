@@ -88,8 +88,7 @@ public func makeClipboardVectorFile() throws -> ClipboardVectorFile {
         ))
     }
 
-    // MARK: Capability key 10 (the forward-compat spine as data —
-    // the key-9 file's precedent)
+    // MARK: Capability key 10 (the forward-compat spine as data)
 
     for (name, description, set) in [
         ("capability-key10-declared",
