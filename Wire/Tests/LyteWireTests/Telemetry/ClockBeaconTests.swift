@@ -3,7 +3,8 @@ import LyteWire
 
 // The anchor bytes below were computed by hand from the layout comment in
 // ClockBeacon.swift, not by running the codec — same circularity-breaking
-// rule as EnvelopeTests/FecFieldTests.
+// rule as EnvelopeTests/FecFieldTests. Decode rejects and the leniency
+// rules live in beacon-v1.json.
 
 final class ClockBeaconTests: XCTestCase {
 
@@ -53,129 +54,25 @@ final class ClockBeaconTests: XCTestCase {
         )
     }
 
-    func testBeaconAnchorEncode() {
+    func testBeaconAnchor() throws {
         XCTAssertEqual(beaconAnchor.encode(), beaconAnchorBytes)
         XCTAssertEqual(beaconAnchorBytes.count, ClockBeacon.encodedByteCount)
-    }
-
-    func testBeaconAnchorDecode() throws {
         XCTAssertEqual(try ClockBeacon.decode(beaconAnchorBytes), beaconAnchor)
     }
 
-    func testEchoAnchorEncode() {
+    func testEchoAnchor() throws {
         XCTAssertEqual(echoAnchor.encode(), echoAnchorBytes)
         XCTAssertEqual(echoAnchorBytes.count, BeaconEcho.encodedByteCount)
-    }
-
-    func testEchoAnchorDecode() throws {
         XCTAssertEqual(try BeaconEcho.decode(echoAnchorBytes), echoAnchor)
     }
 
-    // MARK: First beacon (no echo yet)
-
-    func testBeaconWithoutEchoRoundTrip() throws {
-        let first = ClockBeacon(
-            beaconSeq: 0,
-            hostSend: HostTimestamp(microseconds: 1_000_000_000)
-        )
-        let bytes = first.encode()
-        XCTAssertEqual(bytes.count, ClockBeacon.encodedByteCount)
-        XCTAssertEqual(bytes[1], 0, "flags must be 0 without lastEcho")
-        XCTAssertTrue(
-            bytes[14...].allSatisfy { $0 == 0 },
-            "absent lastEcho fields must be zero on the wire"
-        )
-        XCTAssertEqual(try ClockBeacon.decode(bytes), first)
-    }
-
-    func testNonZeroAbsentEchoFieldsRejected() {
-        // Flip one byte in each absent-echo field of a flags=0 beacon.
-        var bytes = ClockBeacon(
-            beaconSeq: 3, hostSend: HostTimestamp(microseconds: 42)
-        ).encode()
-        for index in [14, 20, 30] {
-            var corrupt = bytes
-            corrupt[index] = 0xAA
-            assertThrows(BeaconError.nonZeroAbsentEchoFields) {
-                try ClockBeacon.decode(corrupt)
-            }
-        }
-        // And the same bytes decode fine once the flag admits them.
-        bytes[1] = 0x01
-        XCTAssertNoThrow(try ClockBeacon.decode(bytes))
-    }
-
-    // MARK: Flags and type dispatch
-
-    func testReservedFlagBitsIgnoredOnDecode() throws {
-        var bytes = beaconAnchorBytes
-        bytes[1] = 0x81 // bit0 kept, reserved bit set
-        XCTAssertEqual(try ClockBeacon.decode(bytes), beaconAnchor)
-    }
-
-    func testWrongTypeRejected() {
-        assertThrows(BeaconError.unexpectedType(0x02)) {
-            try ClockBeacon.decode(echoAnchorBytes + [0, 0, 0, 0, 0])
-        }
-        var badEcho = echoAnchorBytes
-        badEcho[0] = 0x7F
-        assertThrows(BeaconError.unexpectedType(0x7F)) {
-            try BeaconEcho.decode(badEcho)
-        }
+    func testTypePeekDispatches() {
         XCTAssertEqual(CtrlMessageType.peek(beaconAnchorBytes), 0x01)
         XCTAssertEqual(CtrlMessageType.peek(echoAnchorBytes), 0x02)
         XCTAssertNil(CtrlMessageType.peek([]))
     }
 
-    // MARK: Size strictness
-
-    func testTruncationRejected() {
-        for cut in 0..<beaconAnchorBytes.count {
-            assertThrows(BeaconError.truncatedMessage, "cut \(cut)") {
-                try ClockBeacon.decode(Array(beaconAnchorBytes.prefix(cut)))
-            }
-        }
-        for cut in 0..<echoAnchorBytes.count {
-            assertThrows(BeaconError.truncatedMessage, "cut \(cut)") {
-                try BeaconEcho.decode(Array(echoAnchorBytes.prefix(cut)))
-            }
-        }
-    }
-
-    func testTrailingBytesRejected() {
-        assertThrows(BeaconError.trailingBytes) {
-            try ClockBeacon.decode(beaconAnchorBytes + [0x00])
-        }
-        assertThrows(BeaconError.trailingBytes) {
-            try BeaconEcho.decode(echoAnchorBytes + [0x00])
-        }
-    }
-
-    // MARK: The offset/RTT sample (the README worked example)
-
-    func testClockSampleWorkedExample() {
-        // True offset (client − host) 250,000 µs; forward path 3,000 µs,
-        // reverse 5,000 µs, client turnaround 500 µs:
-        //   t1 = 1,000,000                       (host send)
-        //   t2 = t1 + 250,000 + 3,000 = 1,253,000 (client receive)
-        //   t3 = t2 + 500             = 1,253,500 (client send)
-        //   t4 = t3 − 250,000 + 5,000 = 1,008,500 (host receive)
-        //   rtt    = (t4−t1) − (t3−t2) = 8,500 − 500 = 8,000
-        //   offset = ((t2−t1) + (t3−t4)) / 2 = (253,000 + 245,000) / 2
-        //          = 249,000 — 1,000 µs shy of truth, exactly the path
-        //   asymmetry / 2 the timing doc's min-filter accepts.
-        let echo = BeaconEcho(
-            beaconSeq: 12,
-            hostSend: HostTimestamp(microseconds: 1_000_000),
-            clientReceive: ClientTimestamp(microseconds: 1_253_000),
-            clientSend: ClientTimestamp(microseconds: 1_253_500)
-        )
-        let sample = echo.clockSample(
-            hostReceive: HostTimestamp(microseconds: 1_008_500)
-        )
-        XCTAssertEqual(sample.offsetMicroseconds, 249_000)
-        XCTAssertEqual(sample.rttMicroseconds, 8_000)
-    }
+    // MARK: The offset/RTT sample (the worked example is beacon-v1.json's)
 
     func testClockSampleNegativeOffsetAndWrap() {
         // Client clock BEHIND the host by 1 s, symmetric 2 ms path, and

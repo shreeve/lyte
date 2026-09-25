@@ -3,7 +3,9 @@ import LyteWire
 
 // The anchor bytes below were computed by hand from the layout comment in
 // FeedbackReport.swift, not by running the codec — same circularity-
-// breaking rule as EnvelopeTests/FecFieldTests/ClockBeaconTests.
+// breaking rule as EnvelopeTests/FecFieldTests/ClockBeaconTests. The
+// empty-section, bounds-maxed and bitmap decode cases live in
+// beacon-v1.json's feedback vectors.
 
 final class FeedbackReportTests: XCTestCase {
 
@@ -71,37 +73,9 @@ final class FeedbackReportTests: XCTestCase {
         )
     }
 
-    func testAnchorEncode() throws {
+    func testAnchor() throws {
         XCTAssertEqual(try anchorReport().encode(), anchorBytes)
-    }
-
-    func testAnchorDecode() throws {
         XCTAssertEqual(try FeedbackReport.decode(anchorBytes), try anchorReport())
-    }
-
-    // MARK: Empty sections
-
-    func testEmptyReportRoundTrip() throws {
-        let report = FeedbackReport(
-            clientTimestamp: ClientTimestamp(microseconds: 123_456)
-        )
-        let bytes = try report.encode()
-        XCTAssertEqual(bytes.count, FeedbackBounds.fixedHeaderByteCount)
-        XCTAssertTrue(
-            bytes[10..<18].allSatisfy { $0 == 0 },
-            "dispersionBase must be zero without samples"
-        )
-        XCTAssertEqual(try FeedbackReport.decode(bytes), report)
-    }
-
-    func testNonZeroBaseWithoutSamplesRejected() throws {
-        var bytes = try FeedbackReport(
-            clientTimestamp: ClientTimestamp(microseconds: 1)
-        ).encode()
-        bytes[10] = 0x01
-        assertThrows(FeedbackError.nonZeroBaseWithoutSamples) {
-            try FeedbackReport.decode(bytes)
-        }
     }
 
     func testEmptyDispersionSectionRejectedAtEncode() {
@@ -237,42 +211,10 @@ final class FeedbackReportTests: XCTestCase {
         XCTAssertEqual(try FeedbackReport.decode(bytes), report)
     }
 
-    func testNonCanonicalBitmapRejected() throws {
-        // frame 1, bitmapByteCount 2, bitmap 0x01 0x00: zero final byte.
-        let bytes = try FeedbackReport(
-            clientTimestamp: ClientTimestamp(microseconds: 1)
-        ).encode()
-        var corrupt = Array(bytes[..<20]) + [1]
-            + [0x01, 0x00, 0x00, 0x00, 0x02, 0x01, 0x00]
-        assertThrows(FeedbackError.nonCanonicalNackBitmap) {
-            try FeedbackReport.decode(corrupt)
-        }
-        // bitmapByteCount 0 and 33 both reject on the count itself.
-        corrupt = Array(bytes[..<20]) + [1] + [0x01, 0x00, 0x00, 0x00, 0x00]
-        assertThrows(FeedbackError.nackBitmapByteCountOutOfRange(0)) {
-            try FeedbackReport.decode(corrupt)
-        }
-        corrupt = Array(bytes[..<20]) + [1] + [0x01, 0x00, 0x00, 0x00, 33]
-            + [UInt8](repeating: 0xFF, count: 33)
-        assertThrows(FeedbackError.nackBitmapByteCountOutOfRange(33)) {
-            try FeedbackReport.decode(corrupt)
-        }
-    }
-
     // MARK: Budget
 
-    func testBoundsMaxedReportFitsTheShardBudget() throws {
-        XCTAssertEqual(FeedbackBounds.maxEncodedByteCountWithoutExtensions, 1035)
-        let maxed = try maxedReport()
-        let bytes = try maxed.encode()
-        XCTAssertEqual(bytes.count, 1035)
-        XCTAssertLessThanOrEqual(
-            bytes.count, WireBudget.maxPlaintextShardByteCount
-        )
-        XCTAssertEqual(try FeedbackReport.decode(bytes), maxed)
-    }
-
     func testOverBudgetViaExtensionsRejected() throws {
+        XCTAssertEqual(FeedbackBounds.maxEncodedByteCountWithoutExtensions, 1035)
         var report = try maxedReport()
         // 1035 structural + 1 TLV-count + (2 + 75) = 1113 > 1112.
         report.extensions = [try WireExtension(
@@ -286,13 +228,6 @@ final class FeedbackReportTests: XCTestCase {
             type: 0x7F, value: [UInt8](repeating: 0xEE, count: 74)
         )]
         XCTAssertEqual(try report.encode().count, 1112)
-    }
-
-    func testTrailingBytesRejected() throws {
-        let bytes = try anchorReport().encode()
-        assertThrows(FeedbackError.trailingBytes) {
-            try FeedbackReport.decode(bytes + [0x00])
-        }
     }
 
     func testTruncationSweepNeverTraps() throws {
