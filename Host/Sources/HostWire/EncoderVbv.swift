@@ -342,15 +342,14 @@ public final class EncoderVbvPolicy {
         // LOOSEN: wanted while the ceiling rides above the applied rung
         // (a clean ceiling wants the restore); the want must hold for
         // the sustain window and targets the window's MINIMUM ceiling.
-        // In exact mode a ceiling more than a deadband above the applied
-        // max also arms it (the mirror of materialFall).
-        let materialRise = config.exactTighten
-            && ceilingRate > appliedMaxBitsPerSecond
+        // In exact mode only a ceiling more than a deadband above the
+        // applied max arms it (the mirror of materialFall): a rung
+        // boundary is no evidence there.
+        let wantsLooser = clean || (config.exactTighten
+            ? ceilingRate > appliedMaxBitsPerSecond
                 + Int(Double(appliedMaxBitsPerSecond)
                     * config.deadbandFraction)
-        let wantsLooser = clean
-            || rungIndex(for: ceilingRate) < appliedIndex
-            || materialRise
+            : rungIndex(for: ceilingRate) < appliedIndex)
         guard wantsLooser else {
             looserWantedSince = nil
             return absorb()

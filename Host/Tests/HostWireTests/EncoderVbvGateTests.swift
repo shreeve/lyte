@@ -733,6 +733,21 @@ final class EncoderVbvGateTests: XCTestCase {
         XCTAssertEqual(policy.directivesIssued, 1)
     }
 
+    func testExactModeRiseInsideTheDeadbandParksAcrossARungBoundary() {
+        let policy = exactPolicy()
+        // 15,312 B ⇒ 4,899,840 b/s, just under the 5 Mbps rung.
+        _ = policy.note(frameByteCeiling: 15_312, now: 0)
+        // 15,700 B ⇒ 5,024,000 b/s: +2.5%, inside the deadband even
+        // though it crosses the rung boundary.
+        for seconds: UInt64 in [1, 11, 12, 20] {
+            XCTAssertNil(policy.note(
+                frameByteCeiling: 15_700, now: seconds * Self.sec
+            ))
+        }
+        XCTAssertEqual(policy.directivesIssued, 1)
+        XCTAssertEqual(policy.appliedMaxBitsPerSecond, 4_899_840)
+    }
+
     func testLadderModeIsUnmovedByTheWithinBandRise() {
         // The control: in ladder mode the applied max IS the rung rate
         // (5 Mbps here), so a 4.5 Mbps ceiling sits under the posture
