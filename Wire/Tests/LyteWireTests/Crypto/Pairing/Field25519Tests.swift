@@ -2,13 +2,12 @@ import XCTest
 import LyteWire
 import LyteWireTestKit
 
-// The pre-H1 Crypto/ review's direct pins on the hand-written
-// GF(2²⁵⁵ − 19) arithmetic: canonical-form enforcement at the
-// decode/encode boundary (non-canonical inputs at every public entry),
-// the constant-time zero mask and select primitives, and arithmetic
-// identities that would catch a broken carry chain. The draft-vector
-// end-to-end pins live in CPaceCoreTests; this file is where a
-// field-arithmetic regression names itself.
+// Direct pins on the hand-written GF(2²⁵⁵ − 19) arithmetic:
+// canonical-form enforcement at the decode/encode boundary (non-canonical
+// inputs at every public entry), the constant-time zero mask and select
+// primitives, and arithmetic identities that would catch a broken carry
+// chain. The draft-vector end-to-end pins live in PairingVectorFileTests;
+// this file is where a field-arithmetic regression names itself.
 
 final class Field25519Tests: XCTestCase {
 
@@ -159,26 +158,13 @@ final class Field25519Tests: XCTestCase {
         )
     }
 
-    func testMapToCurveOfZeroIsWellDefined() {
-        // r = 0: denominator = 1, v = −A, ε = legendre(−A³ + A³ − A)
-        // = legendre(−A)… the point is only that the output is a
-        // stable, canonical 32 bytes — the exceptional SELECT path is
-        // unreachable (see Elligator2.swift) and r = 0 does not hit it.
-        let u = Elligator2.mapToCurve(littleEndian(0))
-        XCTAssertEqual(u.count, 32)
-        XCTAssertEqual(u, Elligator2.mapToCurve(littleEndian(0)))
-        // The output must itself be canonical: decode/encode fixed point.
-        XCTAssertEqual(Fe25519.fromBytes(u).toBytes(), u)
-    }
-
     func testMapToCurveOutputsAreCanonical() {
-        // Every map output is an encode of toBytes — spot-check the
-        // canonical fixed-point property across assorted inputs.
+        // Every map output is an encode of toBytes — the canonical
+        // fixed-point property, from r = 0 and assorted inputs.
         var rng = SplitMix64(seed: 0xE11162)
-        for _ in 0..<16 {
-            let input = (0..<32).map { _ in UInt8(truncatingIfNeeded: rng.next()) }
+        for input in [littleEndian(0)] + (0..<16).map({ _ in rng.bytes(32) }) {
             let u = Elligator2.mapToCurve(input)
-            XCTAssertEqual(Fe25519.fromBytes(u).toBytes(), u)
+            XCTAssertEqual(Fe25519.fromBytes(u).toBytes(), u, "\(input)")
         }
     }
 }

@@ -119,7 +119,8 @@ final class AudioInteriorTests: XCTestCase {
             }
             for n in 0..<4 {
                 guard let out = received[UInt32(n)] else {
-                    return XCTFail("pattern \(lost): packet \(n) missing")
+                    XCTFail("pattern \(lost): packet \(n) missing")
+                    continue
                 }
                 XCTAssertEqual(out.bytes, packets[n],
                                "pattern \(lost): packet \(n) not byte-exact")

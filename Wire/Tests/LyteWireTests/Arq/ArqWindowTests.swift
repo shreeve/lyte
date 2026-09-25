@@ -54,7 +54,8 @@ final class ArqWindowTests: XCTestCase {
             }
             let acks = try frames(b.poll(now: at(1_000)).datagrams)
             guard acks.count == 1, case .ack(let ack) = acks[0] else {
-                return XCTFail("one ACK frame expected, got \(acks)")
+                XCTFail("one ACK frame expected, got \(acks)")
+                continue
             }
             let block = try XCTUnwrap(ack.blocks.first)
             XCTAssertEqual(block.cumulative.rawValue, 0xFFFF)
