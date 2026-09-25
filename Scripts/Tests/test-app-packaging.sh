@@ -66,6 +66,10 @@ sparkle="$app/Contents/Frameworks/Sparkle.framework"
 [[ -d "$sparkle" ]] || fail "no embedded Sparkle.framework"
 [[ ! -e "$sparkle/Versions/B/XPCServices" ]] \
     || fail "Sparkle's XPC services are embedded"
+for binary in Sparkle Autoupdate Updater.app/Contents/MacOS/Updater; do
+    [[ "$(lipo -archs "$sparkle/Versions/B/$binary")" == arm64 ]] \
+        || fail "Sparkle's $binary is not arm64-only"
+done
 [[ "$(plutil -extract SUEnableInstallerLauncherService raw -o - "$plist")" == false ]] \
     || fail "SUEnableInstallerLauncherService is not false"
 codesign --verify --strict "$sparkle" || fail "Sparkle.framework does not verify"

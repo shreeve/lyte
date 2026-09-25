@@ -170,8 +170,12 @@ if [ -z "$SPARKLE_FRAMEWORK" ]; then
   echo "error: no Sparkle.framework under .build/artifacts/sparkle" >&2
   exit 1
 fi
-ditto --arch arm64 "$SPARKLE_FRAMEWORK" \
-  "$STAGED_APP/Contents/Frameworks/Sparkle.framework"
+ditto "$SPARKLE_FRAMEWORK" "$STAGED_APP/Contents/Frameworks/Sparkle.framework"
+for binary in Sparkle Autoupdate Updater.app/Contents/MacOS/Updater; do
+  lipo -thin arm64 \
+    "$STAGED_APP/Contents/Frameworks/Sparkle.framework/Versions/B/$binary" \
+    -output "$STAGED_APP/Contents/Frameworks/Sparkle.framework/Versions/B/$binary"
+done
 rm -rf "$STAGED_APP/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices" \
   "$STAGED_APP/Contents/Frameworks/Sparkle.framework/XPCServices"
 install_name_tool -add_rpath "@executable_path/../Frameworks" \
