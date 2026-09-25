@@ -179,9 +179,5 @@ public struct RendererRecoveryFlushBarrier: Sendable, Equatable {
         isFlushInProgress = false
     }
 
-    public mutating func reset() {
-        isFlushInProgress = false
-    }
-
     public var mayEnqueue: Bool { !isFlushInProgress }
 }

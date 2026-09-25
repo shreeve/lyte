@@ -50,10 +50,7 @@ let package = Package(
         // LyteTestKitTests/SansIOArchitectureTests.
         .target(name: "LyteCore"),
         // Shared OS adapters only: both ends consume every admitted organ.
-        .target(
-            name: "LyteIO",
-            dependencies: ["LyteCore"]
-        ),
+        .target(name: "LyteIO"),
         // Reusable test equipment. Production targets never depend on it.
         .target(name: "LyteTestKit"),
         .testTarget(name: "LyteCoreTests", dependencies: ["LyteCore"]),

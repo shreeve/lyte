@@ -2,7 +2,6 @@
 // mechanism only: timing policy remains in sans-IO cores with injected stamps.
 
 import Dispatch
-import LyteCore
 
 /// The process-wide monotonic clock used by client and host shells.
 ///
