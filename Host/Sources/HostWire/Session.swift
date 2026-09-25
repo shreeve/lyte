@@ -1507,13 +1507,10 @@ public final class Session {
             + socketPending.videoByteCount
     }
 
+    /// Accepted and discarded: nothing reads per-frame flight records.
     public func annotateVideoFrameTelemetry(
         frame: FrameNumber, averageQP: Int?, idrCauses: [String]
-    ) {
-        channel.annotateFrameTelemetry(
-            frame: frame, averageQP: averageQP, idrCauses: idrCauses
-        )
-    }
+    ) {}
 
     /// Queue latency budget currently in force. The FEC regime is the
     /// existing clean/impaired posture, so admission and fall purge use
@@ -2847,10 +2844,6 @@ public final class Session {
 
     /// Bytes retained for repair (the retention ring's live size).
     public var repairStoreBytes: Int { channel.repairStoreBytes }
-
-    public func takeFrameTransmitTelemetry() -> [VideoFrameTransmitTelemetry] {
-        channel.takeFrameTransmitTelemetry()
-    }
 
     // MARK: Handshake (responder)
 
