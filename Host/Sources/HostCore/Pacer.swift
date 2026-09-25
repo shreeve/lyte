@@ -18,8 +18,7 @@
 import LyteCore
 
 /// Send classes in strict priority order; lower raw value drains first.
-/// Bulk sits last (mirrors `WirePriority.bulk`): a file transfer can
-/// always wait.
+/// Bulk sits last: a file transfer can always wait.
 public enum PacerClass: Int, CaseIterable, Comparable, Sendable {
     case control = 0
     case audio = 1

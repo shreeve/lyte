@@ -43,7 +43,7 @@ final class PathMigrationGateTests: XCTestCase {
         }, "an authenticated tagged datagram from a new tuple is probed")
 
         for datagram in host.takeReadyControlDatagrams() {
-            client.absorb(datagram, tMicros: t)
+            client.deliver(datagram, at: t)
         }
         try client.pumpOutboundToHost(forwarded: &forwarded)
 

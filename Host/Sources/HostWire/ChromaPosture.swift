@@ -7,7 +7,6 @@
 // 4:2:0. An EMPTY intersection never reaches here: the negotiator raises
 // `noCommonChromaMode` and a typed teardown follows.
 
-import LyteCore
 import LyteWire
 
 /// The encoder posture a session opens with: Good = 4:2:0, Best = 4:4:4
@@ -18,9 +17,7 @@ public enum ChromaPosture: String, Equatable, Sendable {
 
     /// nil = no agreement (yet, or ever).
     public static func from(agreedChromaModes: [UInt64]?) -> ChromaPosture {
-        agreedChromaModes
-            == ChromaPairing.bestSingleton(CapabilityChroma.yuv444)
-            ? .yuv444 : .yuv420
+        agreedChromaModes == [CapabilityChroma.yuv444] ? .yuv444 : .yuv420
     }
 
     /// How long the capture leg holds its first encode for the client's
