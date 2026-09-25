@@ -258,9 +258,8 @@ final class NackRepairGateTests: XCTestCase {
 
     func testNackPastFreezeBudgetDelegatesRecoveryToClientEpisode() throws {
         let box = Box()
-        // Pin the budget via the override: this test
-        // tests the refusal behavior, not the derivation (which has
-        // its own legs below).
+        // Pin the budget via the override: this is the refusal
+        // behavior, not the derivation (which has its own tests below).
         let session = makeSession(box: box) {
             $0.repairFreezeBudgetOverrideNS = 33_333_333
         }

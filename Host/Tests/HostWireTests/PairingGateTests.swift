@@ -214,8 +214,7 @@ final class PairingGateTests: XCTestCase {
         try client.absorb(handshake[2].bytes, nowMicros: 800)
         XCTAssertNotNil(client.transport)
         // The capability declaration rides ahead of everything; ack it
-        // so the pairing tests start from a
-        // quiescent reliable stream.
+        // so the pairing tests start from a quiescent reliable stream.
         XCTAssertEqual(client.delivered.count, 1)
         XCTAssertEqual(client.delivered.first?.first,
                        CtrlMessageType.capabilityDeclaration)

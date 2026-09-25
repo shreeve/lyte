@@ -142,8 +142,8 @@ final class ArqCtrlGateTests: XCTestCase {
         try client.absorb(handshake[2].bytes, nowMicros: 800)
         XCTAssertNotNil(client.transport)
         // The capability declaration is the host's first reliable word.
-        // Acknowledge it and clear the
-        // baseline so the gates below start from a quiescent stream.
+        // Acknowledge it and clear the baseline so the tests below start
+        // from a quiescent stream.
         XCTAssertEqual(client.received.count, 1)
         XCTAssertEqual(client.received.first?.bytes.first,
                        CtrlMessageType.capabilityDeclaration)
