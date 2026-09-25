@@ -16,12 +16,12 @@ cd "$repo_root"
 source Scripts/lib/pup.sh
 PUP="$(lyte_pup_host)"
 pup_gate_root="src/lyte-gates/deterministic"
-# The packages pup builds. Browser needs Swift 6.2 (JavaScriptKit) and
-# SystemTests needs the macOS client, so neither is built; Common's
-# repository lints still scan every manifest and Browser's sources, so those
-# two are mirrored as manifest and Sources only.
-packages="Client Common Wire Host"
-scanned_packages="Browser SystemTests"
+# The packages pup builds. Off macOS, Browser's manifest keeps only its
+# sans-IO core and suite (no JavaScriptKit). SystemTests needs the macOS
+# client, so it is not built; Common's repository lints still scan every
+# manifest, so it is mirrored as manifest and Sources only.
+packages="Client Common Wire Host Browser"
+scanned_packages="SystemTests"
 local_state="$(mktemp -d)"
 trap 'rm -rf -- "$local_state"' EXIT
 lock_token="lyte-pup-gate-locked-$$-$RANDOM$RANDOM"
@@ -197,6 +197,7 @@ run_gate() {
     # Off macOS the Client manifest keeps only its IO-free policy targets.
     run_package_tests Client
     run_package_tests Host
+    run_package_tests Browser
 
     echo "==> plain Host build"
     (cd "$gate_root/Host" && swift build -Xswiftc -warnings-as-errors)
@@ -263,7 +264,8 @@ fi
 
 echo "==> sync $packages, $scanned_packages and Scripts to $PUP:$pup_gate_root"
 for package in $packages; do
-    pup_rsync -a --delete --exclude .build \
+    pup_rsync -a --delete --exclude .build --exclude .serve \
+        --exclude node_modules \
         "$package/" "$PUP:$pup_gate_root/$package/"
 done
 # Everything else under a scanned package is deleted from the mirror, so the
