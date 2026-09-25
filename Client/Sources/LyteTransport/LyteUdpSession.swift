@@ -257,3 +257,26 @@ extension LyteUdpSession: VideoRecoveryPeer {
         core?.ensureVideoRecoveryOpen(after: frame, cause: cause)
     }
 }
+
+extension LyteUdpSession {
+    /// A session rendering through `handoff`, bound as its recovery peer,
+    /// with its recovery trace in the handoff's flight recorder.
+    public convenience init(
+        crypto: any TransportCrypto, config: Config,
+        handoff: VideoRendererHandoff,
+        onEvent: @escaping @Sendable (LyteUdpSessionEvent) -> Void
+    ) {
+        self.init(
+            crypto: crypto, config: config, clockModel: handoff.clockModel,
+            onVideoRecoveryDemand: { [weak handoff] cause, frame in
+                handoff?.beginRecovery(cause: cause, after: frame)
+            },
+            onVideoRecoveryTrace: { [recorder = handoff.recorder] event in
+                recorder.recordRecoveryLifecycle(
+                    kind: event.kind, frame: event.frame.rawValue,
+                    cause: event.cause, isRandomAccess: event.isRandomAccess)
+            },
+            videoSink: handoff, onEvent: onEvent)
+        handoff.bind(self)
+    }
+}

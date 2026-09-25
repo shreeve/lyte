@@ -101,7 +101,7 @@ public final class LyteVideoPipeline: @unchecked Sendable {
 
     private let sink: any VideoSink
     private let onFecImpossible: (@Sendable (FrameNumber, _ presumedLostDataShards: Int, _ bestCaseParityShards: Int) -> Void)?
-    /// The NackPolicy's feed.
+    /// The NACK policy's feed.
     private let onRepairSignal: (@Sendable (VideoRepairSignal, ClientTimestamp) -> Void)?
     /// A decoded frame that CoreMedia refused to wrap: the reference chain
     /// is broken although the repair policy heard it decoded.
@@ -114,7 +114,7 @@ public final class LyteVideoPipeline: @unchecked Sendable {
     ///     worker. The owner assigns local presentation time.
     ///   - onFecImpossible: fired once per frame the assembler writes off
     ///     as unrecoverable from plausible arrivals.
-    ///   - onRepairSignal: the NackPolicy's event feed.
+    ///   - onRepairSignal: the NACK policy's event feed.
     ///   - onSampleFailure: fired once per decoded frame whose sample (or
     ///     format description) failed to build, on the sample worker.
     ///   - nowNanoseconds: the shell's monotonic clock. All convenience

@@ -1,6 +1,7 @@
 import XCTest
 import Foundation
 import HostWire
+import LyteClientSession
 import LyteClientTestKit
 import LyteCore
 import LyteTransport
@@ -182,7 +183,7 @@ final class NackRepairClientGateTests: XCTestCase {
         XCTAssertEqual(host.session.counters.idrRequests, 0,
                        "repair healed the frame — no IDR")
 
-        let stats = harness.core.nackPolicy.snapshotStats()
+        let stats = harness.core.nackStats
         XCTAssertEqual(stats.pastParityFrames, 1)
         XCTAssertGreaterThanOrEqual(stats.shardsAsked, UInt64(dropCount))
         XCTAssertEqual(host.session.counters.repairDatagramsEnqueued, dropCount,
@@ -221,7 +222,7 @@ final class NackRepairClientGateTests: XCTestCase {
         // A tightened budget stands in for a slow path: with the frame
         // 150 ms old at verdict time, the 100 ms budget refuses the ask.
         var config = LyteUdpSessionCoreConfig()
-        config.nackPolicy = NackPolicyConfig(
+        config.nackPolicy = ClientNackPolicy.Config(
             staleBudgetMicroseconds: 100_000)
         let harness = try SystemClient(host: host, coreConfig: config)
 
@@ -264,7 +265,7 @@ final class NackRepairClientGateTests: XCTestCase {
                        "a stale frame must not be asked for")
         XCTAssertGreaterThanOrEqual(host.session.counters.idrRequests, 1,
                                     "staleness is answered with the IDR")
-        let stats = harness.core.nackPolicy.snapshotStats()
+        let stats = harness.core.nackStats
         XCTAssertEqual(stats.asksSuppressedStale, 1)
         XCTAssertEqual(stats.shardsAsked, 0)
         XCTAssertEqual(stats.fecImpossibleDeferred, 0,
@@ -298,8 +299,7 @@ final class NackRepairClientGateTests: XCTestCase {
             after: FrameNumber(rawValue: 11), cause: .fecAssemblerDamage)
         try harness.pumpOutboundToHost(forwarded: &forwarded)
         XCTAssertEqual(host.session.counters.idrRequests, 1)
-        XCTAssertTrue(
-            harness.core.idrRequester.snapshotStats().recoveryOutstanding)
+        XCTAssertTrue(harness.core.idrStats.recoveryOutstanding)
 
         // An already-built dependent P frame cannot cross the core's render
         // seam while that episode is outstanding.
@@ -329,12 +329,10 @@ final class NackRepairClientGateTests: XCTestCase {
             $0.kind == "coreForwardedIrap"
                 && $0.frame.rawValue == 2
         })
-        XCTAssertTrue(
-            harness.core.idrRequester.snapshotStats().recoveryOutstanding)
+        XCTAssertTrue(harness.core.idrStats.recoveryOutstanding)
         harness.core.noteVideoIrapEnqueued(
             frame: FrameNumber(rawValue: 2))
-        XCTAssertFalse(
-            harness.core.idrRequester.snapshotStats().recoveryOutstanding)
+        XCTAssertFalse(harness.core.idrStats.recoveryOutstanding)
         XCTAssertTrue(harness.recoveryTrace.contains {
             $0.kind == "coreRecoveryClosedAfterIrapEnqueue"
                 && $0.frame.rawValue == 2
@@ -348,9 +346,8 @@ final class NackRepairClientGateTests: XCTestCase {
         try harness.pumpOutboundToHost(forwarded: &forwarded)
         XCTAssertEqual(host.session.counters.idrRequests, 1)
         harness.clock.advance(to: base + 800_001)
-        harness.core.idrRequester.recordRecoveryDemand(
-            frame: FrameNumber(rawValue: 12),
-            now: ClientTimestamp(microseconds: base + 800_001))
+        harness.core.requestVideoRecovery(
+            after: FrameNumber(rawValue: 12), cause: .fecAssemblerDamage)
         try harness.pumpOutboundToHost(forwarded: &forwarded)
         XCTAssertEqual(host.session.counters.idrRequests, 2)
     }
@@ -429,7 +426,7 @@ final class NackRepairClientGateTests: XCTestCase {
         }
         // The storm produced past-parity frames and the loop healed at
         // least one of them via repair (seed-pinned).
-        let stats = harness.core.nackPolicy.snapshotStats()
+        let stats = harness.core.nackStats
         XCTAssertGreaterThan(stats.pastParityFrames, 0,
                              "12% loss must push frames past parity")
         XCTAssertGreaterThan(stats.repairShardsReceived, 0)
@@ -519,7 +516,7 @@ final class NackRepairClientGateTests: XCTestCase {
         // answer late.
         XCTAssertEqual(harness.samples.map(\.frameNumber.rawValue),
                        [0, 1, 2], "a late answer must never re-deliver")
-        let stats = harness.core.nackPolicy.snapshotStats()
+        let stats = harness.core.nackStats
         XCTAssertEqual(stats.pastParityFrames, 1)
         XCTAssertEqual(stats.repairsLate, UInt64(repairs.count))
         XCTAssertEqual(stats.repairsDuplicate, 0)
@@ -606,7 +603,7 @@ final class NackRepairClientGateTests: XCTestCase {
         XCTAssertEqual(harness.samples.map(\.frameNumber.rawValue),
                        [0],
                        "an answer for a dead frame must change nothing")
-        let stats = harness.core.nackPolicy.snapshotStats()
+        let stats = harness.core.nackStats
         XCTAssertEqual(stats.repairsSuperseded,
                        UInt64(repairs.count))
         XCTAssertGreaterThan(stats.repairsSuperseded, 0)
@@ -699,7 +696,7 @@ final class NackRepairClientGateTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(
             host.session.counters.idrRequests, 1,
             "the refusal goes straight to the IDR path — no deadline burned")
-        let stats = harness.core.nackPolicy.snapshotStats()
+        let stats = harness.core.nackStats
         XCTAssertEqual(stats.refusalsReceived, UInt64(refusalCount))
         XCTAssertEqual(stats.refusalsActedOn, 1)
         XCTAssertEqual(

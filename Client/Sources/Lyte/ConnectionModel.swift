@@ -425,11 +425,9 @@ final class ConnectionModel {
         displayLayer.videoGravity = .resizeAspect
         displayLayer.backgroundColor = CGColor(gray: 0, alpha: 1)
         VideoRendererHandoff.attachHostClockTimebase(to: displayLayer)
-        let clockModel = HostClockModel()
         let handoff = VideoRendererHandoff(
             renderer: displayLayer.sampleBufferRenderer,
             queue: videoDeliveryQueue,
-            clockModel: clockModel,
             books: videoDeliveryBooks,
             recorder: videoFlightRecorder,
             onDimensionsChanged: { [weak self] width, height in
@@ -446,28 +444,15 @@ final class ConnectionModel {
         pendingTerminal = nil
         hostPoisonedStream = false
         let epoch = sessionEpoch
-        let session = LyteUdpSession(
+        return LyteUdpSession(
             crypto: crypto,
             config: config,
-            clockModel: clockModel,
-            onVideoRecoveryDemand: { [weak handoff] cause, frame in
-                handoff?.beginRecovery(cause: cause, after: frame)
-            },
-            onVideoRecoveryTrace: { [videoFlightRecorder] event in
-                videoFlightRecorder.recordRecoveryLifecycle(
-                    kind: event.kind,
-                    frame: event.frame.rawValue,
-                    cause: event.cause,
-                    isRandomAccess: event.isRandomAccess)
-            },
-            videoSink: handoff,
+            handoff: handoff,
             onEvent: { [weak self] event in
                 Task { @MainActor [weak self] in
                     self?.handleLyteEvent(event, epoch: epoch)
                 }
             })
-        handoff.bind(session)
-        return session
     }
 
     /// A started session becomes the window's — the one attach path for
@@ -858,7 +843,7 @@ final class ConnectionModel {
         let session = lyteSession
         let core = session?.core
         let pipeline = core?.pipeline.snapshotStats()
-        let idr = core?.idrRequester.snapshotStats()
+        let idr = core?.idrStats
         let receiver = core?.audio.snapshotStats()
         let player = session?.audioPlayer?.snapshotStats()
         let counters = core?.snapshotCounters()

@@ -76,12 +76,12 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
 
     private let renderer: any VideoRendererPort
     private let queue: DispatchQueue
-    private let clockModel: HostClockModel
+    let clockModel: HostClockModel
     /// The Conductor is scheduled on the submitting thread and told of
     /// IRAPs on the delivery queue.
     private let playout: Mutex<VideoBeatConductor>
     private let books: VideoDeliveryBooks
-    private let recorder: VideoFlightRecorder
+    let recorder: VideoFlightRecorder
     private let onDimensionsChanged: @Sendable (Int32, Int32) -> Void
     private let dimensions = Mutex<(width: Int32, height: Int32)>((0, 0))
     private let peer = Mutex(WeakPeer())
@@ -104,7 +104,7 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
     public init(
         renderer: any VideoRendererPort,
         queue: DispatchQueue,
-        clockModel: HostClockModel,
+        clockModel: HostClockModel = HostClockModel(),
         books: VideoDeliveryBooks,
         recorder: VideoFlightRecorder,
         onDimensionsChanged: @escaping @Sendable (Int32, Int32) -> Void = { _, _ in },

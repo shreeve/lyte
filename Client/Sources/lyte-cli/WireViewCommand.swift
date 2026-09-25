@@ -172,31 +172,18 @@ struct WireView: AsyncParsableCommand {
         let pasteboardBox = Mutex<PasteboardSync?>(nil)
         // The app's renderer path, exactly: bounded handoff, Conductor
         // playout, recovery flush barrier, IRAP episode close.
-        let clockModel = HostClockModel()
         let recorder = VideoFlightRecorder(
             nowMicroseconds: { SystemMonotonicClock.nowMicroseconds })
         let deliveryBooks = VideoDeliveryBooks()
         let handoff = VideoRendererHandoff(
             renderer: displayLayer.sampleBufferRenderer,
             queue: DispatchQueue(label: "lyte.video.delivery", qos: .userInteractive),
-            clockModel: clockModel,
             books: deliveryBooks,
             recorder: recorder)
         let session = LyteUdpSession(
             crypto: crypto,
             config: sessionConfig,
-            clockModel: clockModel,
-            onVideoRecoveryDemand: { [weak handoff] cause, frame in
-                handoff?.beginRecovery(cause: cause, after: frame)
-            },
-            onVideoRecoveryTrace: { event in
-                recorder.recordRecoveryLifecycle(
-                    kind: event.kind,
-                    frame: event.frame.rawValue,
-                    cause: event.cause,
-                    isRandomAccess: event.isRandomAccess)
-            },
-            videoSink: handoff,
+            handoff: handoff,
             onEvent: { event in
                 switch event {
                 case .capabilitiesAgreed(let agreed):
@@ -263,7 +250,6 @@ struct WireView: AsyncParsableCommand {
                     print("wire-view: \(note)")
                 }
             })
-        handoff.bind(session)
 
         print("wire-view: Noise IK handshake → \(host):\(hostPort == 0 ? port : hostPort) …")
         do {
@@ -435,8 +421,8 @@ final class WireViewStatsPrinter: Sendable {
             ("control", core.snapshotCounters()),
             ("feedback", core.feedback.snapshotStats()),
             ("echo", core.echoResponder.snapshotStats()),
-            ("idr", core.idrRequester.snapshotStats()),
-            ("nack", core.nackPolicy.snapshotStats()),
+            ("idr", core.idrStats),
+            ("nack", core.nackStats),
             ("arq", core.reliable.snapshotStats()),
             ("audio", core.audio.snapshotStats()),
             ("player", session.audioPlayer?.snapshotStats()),

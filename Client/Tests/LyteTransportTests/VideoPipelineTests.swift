@@ -1,4 +1,5 @@
 import XCTest
+import LyteClientSession
 import LyteClientTestKit
 import CoreMedia
 import Foundation
@@ -195,24 +196,25 @@ final class VideoPipelineTests: XCTestCase {
             return XCTFail("packetizer emitted a non-RS fec field")
         }
 
-        let policy = NackPolicy(
-            rtt: { 1_000 },
-            emit: { _ in },
-            escalate: { _, _ in }
-        )
+        let policy = Locked(ClientNackPolicy())
         let now = ClientTimestamp(microseconds: 1_000)
-        policy.handle(.nackCandidates(
-            frame: FrameNumber(rawValue: 0),
-            missingShardIndices: (0...geometry.parityShards).map(UInt8.init),
-            parityShards: geometry.parityShards,
-            frameAgeMicroseconds: 0
-        ), now: now)
+        policy.mutate {
+            $0.handle(.nackCandidates(
+                frame: FrameNumber(rawValue: 0),
+                missingShardIndices:
+                    (0...geometry.parityShards).map(UInt8.init),
+                parityShards: geometry.parityShards,
+                frameAgeMicroseconds: 0
+            ), rttMicroseconds: 1_000, now: now)
+        }
 
         let pipeline = LyteVideoPipeline(
             nowNanoseconds: { 0 },
             sink: HeadlessVideoSink(),
             onRepairSignal: { signal, instant in
-                policy.handle(signal, now: instant)
+                policy.mutate {
+                    $0.handle(signal, rttMicroseconds: 1_000, now: instant)
+                }
             }
         )
         // Shard 1 establishes the original sequence base while shard 0
@@ -242,7 +244,7 @@ final class VideoPipelineTests: XCTestCase {
         let pipelineStats = pipeline.snapshotStats()
         XCTAssertEqual(pipelineStats.repairShardsAccepted, 1)
         XCTAssertEqual(pipelineStats.shardsDropped, 1)
-        let policyStats = policy.snapshotStats()
+        let policyStats = policy.value.stats
         XCTAssertEqual(policyStats.repairShardsReceived, 1)
         XCTAssertEqual(policyStats.repairsDuplicate, 1)
     }
