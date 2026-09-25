@@ -30,7 +30,6 @@ final class EncoderVbvGateTests: XCTestCase {
         if let vbv {
             XCTAssertEqual(directive?.vbvBits, vbv, file: file, line: line)
         }
-        XCTAssertNil(directive?.averageBitsPerSecond, file: file, line: line)
     }
 
     func testFrameBudgetWindowPinned() {

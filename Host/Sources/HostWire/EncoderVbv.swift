@@ -34,8 +34,6 @@ public struct EncoderRateDirective: Equatable, Sendable {
         /// The squeeze→clean return to the opening posture.
         case restore
     }
-    /// Always nil: the posture is a capped VBR with no average.
-    public var averageBitsPerSecond: Int? { nil }
     /// New hard cap, bits/s (the encoder's VBR envelope).
     public var maxBitsPerSecond: Int
     /// New VBV budget, bits: the encoder's HRD buffer is bounded by it
@@ -54,23 +52,9 @@ public struct EncoderVbvConfig: Sendable {
     /// The opening VBV: the one-FEC-group guard ceiling.
     public var baselineVbvBits: Int
 
-    /// `baselineAverageBitsPerSecond`, `rungsPerOctave` and `exactTighten`
-    /// name the one posture there is (nil, 2, true); any other value traps.
-    public init(
-        fps: Int,
-        baselineAverageBitsPerSecond: Int? = nil,
-        baselineMaxBitsPerSecond: Int,
-        baselineVbvBits: Int,
-        rungsPerOctave: Int = 2,
-        exactTighten: Bool = true
-    ) {
+    public init(fps: Int, baselineMaxBitsPerSecond: Int, baselineVbvBits: Int) {
         precondition(fps > 0)
         precondition(baselineMaxBitsPerSecond > 0)
-        precondition(
-            baselineAverageBitsPerSecond == nil && rungsPerOctave == 2
-                && exactTighten,
-            "only the capped, exact posture exists"
-        )
         self.fps = fps
         self.baselineMaxBitsPerSecond = baselineMaxBitsPerSecond
         self.baselineVbvBits = baselineVbvBits

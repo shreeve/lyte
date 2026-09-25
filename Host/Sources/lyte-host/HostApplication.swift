@@ -620,16 +620,11 @@ static func serveSession(
     // wire-rate cap, VBV at the unprotectable-frame guard's ceiling, so
     // a restore can never re-open the >255-shard hole.
     let guardBits = w.worstCaseProtectableFrameCeiling * 8
-    // Half-rungs and exact tightens; the native seat applies rate moves
-    // without a reset. The loosening sustain stays slow on purpose: an
-    // eager one chases every climb into a limit cycle.
+    // The native seat applies rate moves without a reset.
     w.armEncoderVbv(EncoderVbvConfig(
         fps: DirectEyeLeg.fps,
-        baselineAverageBitsPerSecond: nil,
         baselineMaxBitsPerSecond: Int(opts.wireRateMbps * 1_000_000),
-        baselineVbvBits: guardBits,
-        rungsPerOctave: 2,
-        exactTighten: true
+        baselineVbvBits: guardBits
     ))
 
     w.shellServiceHook = { [weak host] in
@@ -788,10 +783,8 @@ static func printSessionBooks(
     let h = host.listener.acceptor.counters
     var vbvFinal = ""
     if let d = wire.lastVbvDirective {
-        let avg = d.averageBitsPerSecond
-            .map { " avg \($0 / 1_000) kbps," } ?? ""
         vbvFinal = """
-             — final\(avg) max \(d.maxBitsPerSecond / 1_000) kbps, vbv \
+             — final max \(d.maxBitsPerSecond / 1_000) kbps, vbv \
             \(d.vbvBits / 8) B (ceiling \(d.frameByteCeiling) B)
             """
     }
