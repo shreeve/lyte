@@ -14,6 +14,37 @@ import XCTest
 /// window whose lifecycle has moved on.
 @MainActor
 final class ConnectionLifecycleTests: XCTestCase {
+    // MARK: - Paired hosts discovery did not see
+
+    func testUnsightedPinsAreListedByNameAtTheirPinnedAddress() {
+        var store = PinnedHostStore()
+        for (seed, name) in [(1, "zed"), (2, "alpha"), (3, "pup")] {
+            _ = store.pin(
+                staticPublicKey: [UInt8](repeating: UInt8(seed), count: 32),
+                name: name, address: "10.0.0.\(seed)", port: 41_000,
+                pairedAt: "2026-09-01T00:00:00Z")
+        }
+        let pup = LyteDiscovery.publicKeyHash(
+            ofStaticPublicKey: [UInt8](repeating: 3, count: 32))
+        let sighted = DiscoveredLyteHost(
+            name: "pup", address: "10.0.0.99", port: 41_000, wireVersion: 1,
+            publicKeyHash: pup)
+        let rows = store.unsighted(excluding: [sighted])
+        XCTAssertEqual(rows.map(\.name), ["alpha", "zed"])
+        XCTAssertEqual(rows.map(\.address), ["10.0.0.2", "10.0.0.1"])
+    }
+
+    func testALastSeenRowDialsThePinnedAddressWithNothingSighted() async throws {
+        let harness = LifecycleHarness()
+        harness.startPlan = [.succeed]
+        let model = ConnectionModel(services: harness.services)
+        let row = try XCTUnwrap(
+            harness.savedPins.unsighted(excluding: []).first)
+        await model.connectLyte(row)
+        XCTAssertNotNil(model.lyteSession)
+        XCTAssertEqual(model.hostAddress, "10.9.9.9")
+    }
+
     // MARK: - Connect fencing
 
     func testDisconnectWhileDialingClosesTheLateSessionInsteadOfStreaming() async throws {

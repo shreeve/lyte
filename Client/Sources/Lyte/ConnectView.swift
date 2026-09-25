@@ -85,6 +85,13 @@ struct ConnectView: View {
                 ForEach(lyteHosts) { host in
                     lyteHostRow(host)
                 }
+                // Paired hosts this scan did not see still dial their
+                // last-known address.
+                if !browsing {
+                    ForEach(pinnedStore.unsighted(excluding: lyteHosts), id: \.publicKeyHash) { host in
+                        lyteHostRow(host, lastSeen: true)
+                    }
+                }
                 Button("Search Again") { Task { await browse() } }
                     .controlSize(.small)
                     .buttonStyle(.borderless)
@@ -140,14 +147,16 @@ struct ConnectView: View {
 /// One Lyte host row: unpaired opens the pairing sheet; paired dials the
 /// pinned static with the Keychain identity and opens the stream.
     @ViewBuilder
-    private func lyteHostRow(_ host: DiscoveredLyteHost) -> some View {
+    private func lyteHostRow(
+        _ host: DiscoveredLyteHost, lastSeen: Bool = false
+    ) -> some View {
         let pinned = pinnedStore.host(publicKeyHash: host.publicKeyHash)
         Group {
             if pinned != nil {
                 Button {
                     Task { await model.connectLyte(host) }
                 } label: {
-                    lyteHostLabel(host, paired: true)
+                    lyteHostLabel(host, paired: true, lastSeen: lastSeen)
                         .frame(maxWidth: 340)
                 }
                 .controlSize(.large)
@@ -226,11 +235,14 @@ struct ConnectView: View {
     }
 
     @ViewBuilder
-    private func lyteHostLabel(_ host: DiscoveredLyteHost, paired: Bool) -> some View {
+    private func lyteHostLabel(
+        _ host: DiscoveredLyteHost, paired: Bool, lastSeen: Bool = false
+    ) -> some View {
         HStack(spacing: 8) {
             Circle().fill(.indigo).frame(width: 8, height: 8)
             Text(host.name).fontWeight(.medium)
-            Text("\(host.address):\(String(host.port))")
+            Text((lastSeen ? "last seen at " : "")
+                + "\(host.address):\(String(host.port))")
                 .foregroundStyle(.secondary)
             Text("Lyte")
                 .font(.caption2.weight(.semibold))
@@ -313,5 +325,20 @@ struct ConnectView: View {
                 + "may be off. Check Lyte in System Settings → Privacy & "
                 + "Security → Local Network, then return here to retry."
         }
+    }
+}
+
+extension PinnedHostStore {
+    /// The paired hosts no sighting carries, by name, as rows that dial
+    /// the pinned address and port.
+    func unsighted(excluding sighted: [DiscoveredLyteHost]) -> [DiscoveredLyteHost] {
+        let seen = Set(sighted.compactMap(\.publicKeyHash))
+        return hosts.filter { !seen.contains($0.key) }
+            .map {
+                DiscoveredLyteHost(
+                    name: $0.value.name, address: $0.value.address,
+                    port: $0.value.port, wireVersion: nil, publicKeyHash: $0.key)
+            }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 }
