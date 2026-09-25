@@ -109,7 +109,6 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         // Constructed only after the handshake, so the machine starts ACTIVE.
         self.controlSession = ClientControlSession(
             localCapabilities: config.capabilities,
-            machineConfig: config.machineConfig,
             desiredHostAudioRouting: config.desiredHostAudioRouting,
             clipboardSharingAtStart: config.shareClipboard,
             clipboardImageSharingAtStart: config.shareClipboardImages,

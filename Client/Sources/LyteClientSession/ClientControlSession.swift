@@ -52,6 +52,13 @@ public struct ClientControlSessionDecision: Hashable, Sendable {
 /// re-arms it at the tightened bound, and an announced audio quiet relaxes
 /// it until audio resumes. A host without audio never tightens.
 public struct ClientControlSession: Sendable {
+    /// The receiver timing every client shell runs: the baseline blackout
+    /// bound sits past an idle host's 1 Hz beacons.
+    public static let baselineMachineConfig = SessionMachineConfig(
+        blackoutSilenceMicroseconds: 2_500_000)
+    /// The blackout bound once authenticated audio arrives.
+    public static let tightenedBlackoutSilenceMicroseconds: Int64 = 350_000
+
     private let machineConfig: SessionMachineConfig
     private let tightenedBlackoutSilenceMicroseconds: Int64?
     public private(set) var detectorTightened = false
@@ -64,11 +71,12 @@ public struct ClientControlSession: Sendable {
 
     public init(
         localCapabilities: Capabilities,
-        machineConfig: SessionMachineConfig,
+        machineConfig: SessionMachineConfig = baselineMachineConfig,
         desiredHostAudioRouting: HostAudioRoutingMode?,
         clipboardSharingAtStart: Bool = false,
         clipboardImageSharingAtStart: Bool = false,
-        tightenedBlackoutSilenceMicroseconds: Int64? = nil,
+        tightenedBlackoutSilenceMicroseconds: Int64? =
+            ClientControlSession.tightenedBlackoutSilenceMicroseconds,
         now: ClientTimestamp
     ) {
         self.machineConfig = machineConfig
