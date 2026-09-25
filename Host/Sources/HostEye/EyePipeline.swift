@@ -4,8 +4,6 @@
 // 4:4:4), and native encode. Pacing, damage policy and delivery stay
 // with the callers.
 
-#if os(Linux)
-
 import CVA
 import Glibc
 import LyteIO
@@ -21,6 +19,9 @@ public final class EyePipeline {
         /// The display geometry no longer matches the pipeline's.
         case geometryChanged(width: UInt32, height: UInt32)
     }
+
+    /// The encoder's frame rate: one frame per screen beat.
+    public static let fps = 60
 
     public let width: Int32
     public let height: Int32
@@ -61,7 +62,7 @@ public final class EyePipeline {
         self.chroma444 = chroma444
         gl = try EyeGL(renderNode: renderNode)
         encoder = try EyeVaapiEncoder(
-            width: width, height: height, fps: 60, qp: qp,
+            width: width, height: height, fps: Int32(Self.fps), qp: qp,
             renderNode: renderNode,
             bitrateBitsPerSecond: bitrateBitsPerSecond,
             hrdBufferBits: hrdBufferBits,
@@ -210,7 +211,7 @@ public final class EyePipeline {
         retainedSurface = nil
         freshEncodes = 0
         encoder = try EyeVaapiEncoder(
-            width: width, height: height, fps: 60, qp: qp,
+            width: width, height: height, fps: Int32(Self.fps), qp: qp,
             renderNode: renderNode,
             bitrateBitsPerSecond: bitrateBitsPerSecond,
             hrdBufferBits: openingHrdBufferBits,
@@ -230,5 +231,3 @@ public final class EyePipeline {
         gl.resetFingerprint()
     }
 }
-
-#endif

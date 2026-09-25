@@ -1,5 +1,3 @@
-#if os(Linux)
-
 @testable import HostEye
 import XCTest
 
@@ -32,5 +30,3 @@ final class EyeBookkeepingTests: XCTestCase {
         XCTAssertEqual(latch.last, 12)
     }
 }
-
-#endif

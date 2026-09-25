@@ -6,14 +6,13 @@
 // frame), rate directives (no reset), the agreed chroma posture, the quiet
 // video posture, and pre-encode admission against the latency budget.
 
-#if os(Linux)
-
 import LyteIO
 import Foundation
 import Glibc
 import HostCore
 import HostEye
 import HostWire
+import LyteCore
 import LyteWire
 
 /// The eye that outlives sessions: the GL context and the pipeline open
@@ -100,10 +99,7 @@ final class DirectEyeLeg {
     /// Quiet-desktop heartbeat: one retained re-encode per second keeps
     /// the clock model fed and the wire warm.
     static let keepaliveSeconds = 1.0
-    /// The screen beat and the encoder's frame rate.
-    static let fps = 60
-    /// The cursor plane's poll period: one 60 Hz beat.
-    static let cursorPollMicroseconds: UInt64 = 16_667
+    static let fps = EyePipeline.fps
     /// How often a running session's janitor bounds host.log.
     static let logCheckIntervalMicros: UInt64 = 60_000_000
     private var lastDeliverySeconds = 0.0
@@ -408,7 +404,7 @@ final class DirectEyeLeg {
             }
             // The cursor plane is read on the 60 Hz grid, not every poll.
             let cursorStart = SystemMonotonicClock.nowMicroseconds
-            if cursorStart &- lastCursorPollUs >= Self.cursorPollMicroseconds {
+            if cursorStart &- lastCursorPollUs >= ScoreBeat.periodMicroseconds {
                 lastCursorPollUs = cursorStart
                 pollCursor(cursorWatcher)
                 lastStages.cursorUs =
@@ -564,6 +560,9 @@ final class DirectEyeLeg {
         }
 
         // No drain: the encoder is 1-in-1-out.
+        serviceLock.lock()
+        let serviceMaxUs = serviceMaxMicroseconds
+        serviceLock.unlock()
         print("""
             direct: eye closed — \(frames) frames, \(bytes) bytes, \
             \(keyframes) IDRs, missed_grabs=\(missedGrabs), \
@@ -571,25 +570,17 @@ final class DirectEyeLeg {
             static_idrs=\(staticIdrsServed), \
             keepalives=\(keepalivesSent), \
             observations=\(observations), \
+            skip_events=\(observationSkipEvents), \
+            beats_skipped=\(skippedObservationBeats), \
             framebuffer_transitions=\(framebufferTransitions), \
             pixel_changes=\(changedObservations), \
-            observation_beats_skipped=\(skippedObservationBeats), \
             posture_announcements=\(postureAnnouncements), \
             delivery_failures=\(deliveryFailures), \
             admission_skips=\(admission.skipped), \
             cursor_shapes=\(cursorShapesSeen), \
-            hotspot_corrections=\(cursorHotspotCorrections)
-            """)
-        serviceLock.lock()
-        let serviceMaxUs = serviceMaxMicroseconds
-        serviceLock.unlock()
-        print("""
-            direct: observation-book — beats=\(observations), \
-            skip_events=\(observationSkipEvents), \
-            beats_skipped=\(skippedObservationBeats), \
-            pixel_changes=\(changedObservations), \
+            hotspot_corrections=\(cursorHotspotCorrections), \
             stage_max[\(maxStages.described())] ms, \
-            service_max=\(StageClocks.ms(serviceMaxUs)) ms (janitor thread)
+            service_max=\(StageClocks.ms(serviceMaxUs)) ms
             """)
     }
 
@@ -749,5 +740,3 @@ final class DirectEyeLeg {
         return true
     }
 }
-
-#endif

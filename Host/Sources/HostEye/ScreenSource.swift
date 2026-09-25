@@ -1,5 +1,3 @@
-#if os(Linux)
-
 import CDRM
 import Glibc
 import HostCore
@@ -167,5 +165,3 @@ public final class DirectScreenSource: ScreenSource {
             fd: fileDescriptor, fbId: observation.framebufferIdentity)
     }
 }
-
-#endif

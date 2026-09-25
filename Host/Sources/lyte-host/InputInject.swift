@@ -5,14 +5,12 @@
 // Kernel injection is compositor-agnostic and costs one write(2) per
 // event.
 
+import CInputUinput
 import Foundation
 import HostCore
 import HostWire
 import LyteIO
 import LyteWire
-
-#if os(Linux)
-import CInputUinput
 
 /// One injected event sink. `inject` throws loudly — the caller counts
 /// and reports; a failed injection never unwinds the session.
@@ -178,7 +176,6 @@ func makeInputInjector(_ choice: InputBackendChoice) -> InputInjector? {
         }
     }
 }
-#endif
 
 /// What one wire event asks of the uinput leaf, in the leaf's units.
 enum UinputCall: Equatable {

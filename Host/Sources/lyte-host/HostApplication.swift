@@ -367,17 +367,8 @@ final class SessionHost {
                 )
                 try leaf.start()
                 leafUp = leaf
-                let tier = opts.clipboardImages
-                    ? """
-                        text + images (PNG, \
-                        \(ClipboardImageWire.maxImageByteCount) B image ceiling)
-                        """
-                    : "text only"
-                print("""
-                    clipboard: leaf up — RemoteDesktop-session \
-                    clipboard (Mutter), \(tier), \
-                    \(ClipboardWire.maxTextByteCount) B text ceiling
-                    """)
+                let tier = opts.clipboardImages ? "text + images" : "text only"
+                print("clipboard: leaf up — \(tier)")
             } catch {
                 print("""
                     clipboard: leaf unavailable (\(error)) — \
@@ -397,11 +388,7 @@ final class SessionHost {
             do {
                 firstBulkShell = try BulkReceiveShell(directoryPath: dropDir)
                 drop = dropDir
-                print("""
-                    files: accepting incoming transfers → \(dropDir) \
-                    (staging + fsync + atomic rename, resumable; \
-                    one transfer at a time)
-                    """)
+                print("files: accepting incoming transfers → \(dropDir)")
             } catch {
                 print("""
                     files: drop directory unavailable (\(error)) — \
@@ -440,21 +427,14 @@ final class SessionHost {
             declared.chromaModes = [
                 CapabilityChroma.yuv420, CapabilityChroma.yuv444,
             ]
-            print("""
-                chroma: Main444 probe GREEN — declaring \
-                [420, 444] (Best tier open, Rext native pens)
-                """)
+            print("chroma: declaring [420, 444]")
         } else {
-            print("chroma: no Main444 encode entrypoint — declaring [420] only")
+            print("chroma: no Main444 encode entrypoint — declaring [420]")
         }
         self.declared = declared
 
         var rng = SystemRandomNumberGenerator()
         gateConfig = opts.handshakeGateConfig(using: &rng)
-        print("""
-            handshake: retry-cookie dial armed (require-cookie engages \
-            at \(opts.cookieEnter) msg1/s, clears at \(opts.cookieExit)/s)
-            """)
 
         listener = try HostListener(port: port)
 
@@ -473,10 +453,7 @@ final class SessionHost {
         if let injector {
             injector.noteMonitorExtent(
                 width: UInt32(screen.width), height: UInt32(screen.height))
-            print("""
-                input: injection via \(injector.name) \
-                (echo tuples + lastInputSeq stamping active)
-                """)
+            print("input: injection via \(injector.name)")
         }
     }
 
@@ -535,14 +512,7 @@ static func run(arguments: [String]) throws {
 
     let destination = opts.wireListen
         .map { "lyte-udp sessions on :\($0) (noise)" } ?? opts.outputPath
-    print("""
-        lyte-host — direct eye (GPU pixel observation + EGL blit) → \
-        native VAAPI (our pens) → \(destination)
-        """)
-    print("""
-        encoder: native VAAPI seat — rate directives ride the \
-        next frame's RC buffer (no libavcodec in the video path)
-        """)
+    print("lyte-host — direct eye → native VAAPI → \(destination)")
 
     // The scanout opens first: its geometry scales the injector's
     // absolute moves. It and the eye's GL context live for the run.
@@ -561,11 +531,7 @@ static func run(arguments: [String]) throws {
         pairing: opts.pair,
         seconds: opts.seconds))
     if loop.posture == .service {
-        print("""
-            service: serving sessions in turn with no session clock — \
-            the eye, listening socket, advertisement and input devices \
-            stay up between sessions
-            """)
+        print("service: serving sessions in turn")
     }
     while true {
         let served = try serveSession(
@@ -648,10 +614,7 @@ static func serveSession(
             end: .terminatedBeforeHandshake,
             leg: .init(frames: 0, firstPacketStartsStream: false))
     }
-    print("""
-        session: up — pacer \(opts.wireRateMbps) Mbps, per-packet TOS (video \
-        0xA0 / ctrl+audio+repairs 0xC0), 1 Hz beacon on CTRL
-        """)
+    print("session: up — pacer ceiling \(opts.wireRateMbps) Mbps")
 
     // The estimator's ceiling reaches the encoder as rate directives.
     // The baseline mirrors the encoder's opening posture: VBR under the
@@ -742,12 +705,9 @@ static func serveSession(
                 return running
             }
             let capture = opts.hostAudio == .hostMuted
-                ? "\"Lyte Audio\" virtual-sink capture (host MUTED)"
-                : "default-sink monitor capture (host audible)"
-            print("""
-                audio: \(capture) → opus \(opts.audioBitrate / 1_000) kbps \
-                hard CBR → 5 ms packets → RS 4+2 → chan 1 (TOS 0xC0 / DSCP 48)
-                """)
+                ? "\"Lyte Audio\" sink (host muted)"
+                : "default-sink monitor (host audible)"
+            print("audio: \(capture) → opus \(opts.audioBitrate / 1_000) kbps")
         } catch {
             print("audio: unavailable (\(error)) — video-only session")
         }
@@ -808,15 +768,9 @@ static func printLegSummary(
         leg.firstPacket)
     if leg.frames > 0 {
         print("""
-
-        done: \(leg.frames) frames encoded (direct eye), \(leg.keyframes) IDR, \
-        \(leg.bytes) bytes, missed_grabs \(leg.missedGrabs), rate directives \
-        applied \(leg.directivesApplied)
-        """)
-        print("first packet NALs: \(AnnexBCheck.summary(of: leg.firstPacket))")
-        if startsStream {
-            print("first packet starts with parameter sets + IDR: OK")
-        }
+            first packet NALs: \(AnnexBCheck.summary(of: leg.firstPacket))\
+            \(startsStream ? " — parameter sets + IDR: OK" : "")
+            """)
     }
     return HostServiceLoop.LegEvidence(
         frames: leg.frames, firstPacketStartsStream: startsStream)
@@ -1003,12 +957,10 @@ static func printSessionBooks(
     \(s.fallPurges) fall purges (\(s.fallPurgedVideoBytes) B dropped \
     pre-stale); frameByteCeiling@\(DirectEyeLeg.fps)fps \
     \(wire.frameByteCeiling(fps: DirectEyeLeg.fps)) B; borrowed ingress \
-    \(wire.borrowedFrameBytesIngested) B (entry-copy bytes avoided)
+    \(wire.borrowedFrameBytesIngested) B
     encoder-vbv: \(wire.vbvDirectivesIssued) directives, \
     \(leg.directivesApplied) applied, \
-    \(wire.vbvRateMovesAbsorbed) rate moves absorbed \
-    (pacer-only, no encoder reset); applied live — native seat, \
-    zero reset, zero IDR by construction\(vbvFinal)
+    \(wire.vbvRateMovesAbsorbed) rate moves absorbed (pacer-only)\(vbvFinal)
     idr-demand: \(wire.freshKeyframeDemandCounts.demands) consumed \
     (path \(wire.freshKeyframeDemandCounts.pathPromotions), \
     client \(wire.freshKeyframeDemandCounts.clientRequests), \

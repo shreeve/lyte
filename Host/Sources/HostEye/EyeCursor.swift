@@ -6,8 +6,6 @@
 // HostCore.CursorHotspot recovers the hotspot (i915 exposes no
 // HOTSPOT_X/Y). CRTC_X/Y require DRM_CLIENT_CAP_ATOMIC on the DRM fd.
 
-#if os(Linux)
-
 import CDRM
 import Glibc
 
@@ -234,5 +232,3 @@ public final class EyeCursorWatcher {
         _ = ioctl(fd, DMA_BUF_IOCTL_SYNC, &flags)
     }
 }
-
-#endif

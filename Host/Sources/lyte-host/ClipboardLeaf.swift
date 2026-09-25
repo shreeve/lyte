@@ -33,6 +33,7 @@
 // a client image becomes ownership with the PNG flavor. Text wins when
 // both are offered. Off the images tier, image flavors are never touched.
 
+import CDBus
 import LyteIO
 import Foundation
 import HostWire
@@ -54,9 +55,6 @@ struct TransferStall {
         now - lastProgressAt > Self.timeoutSeconds
     }
 }
-
-#if os(Linux)
-import CDBus
 
 final class MutterClipboardLeaf: HostClipboardLeaf {
     var onLocalChange: ((String) -> Void)?
@@ -99,7 +97,6 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
         }
     }
     private var owned: OwnedContent = .none
-    private var sessionIsOwner = false
     /// A session is live: foreign copies are read and reported.
     private var attached = false
 
@@ -301,7 +298,6 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
 
     private func handleOwnerChanged(_ msg: OpaquePointer) {
         let (mimeTypes, isOwner) = Self.parseOwnerChanged(msg)
-        sessionIsOwner = isOwner
         if !isOwner {
             // Another owner took the selection: nothing is ours to serve.
             owned = .none
@@ -434,8 +430,8 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
     // MARK: - Selection transfers (serving what a 0x1A applied)
 
     private func handleTransfer(_ msg: OpaquePointer) {
-        guard let (mime, serial) = Self.parseTransfer(msg) else { return }
-        _ = mime // every offered flavor is served as the owned bytes
+        // Every offered flavor is served as the owned bytes.
+        guard let serial = Self.transferSerial(msg) else { return }
         do {
             let reply = try bus.call(
                 dest: Self.rdService, path: rdSession,
@@ -604,22 +600,16 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
     }
 
     /// SelectionTransfer carries (s mime_type, u serial).
-    private static func parseTransfer(
-        _ msg: OpaquePointer
-    ) -> (mime: String, serial: UInt32)? {
+    private static func transferSerial(_ msg: OpaquePointer) -> UInt32? {
         var iter = DBusMessageIter()
         guard dbus_message_iter_init(msg, &iter) != 0,
-              dbus_message_iter_get_arg_type(&iter) == DType.string
-        else { return nil }
-        var ptr: UnsafePointer<CChar>?
-        dbus_message_iter_get_basic(&iter, &ptr)
-        let mime = ptr.map { String(cString: $0) } ?? ""
-        guard dbus_message_iter_next(&iter) != 0,
+              dbus_message_iter_get_arg_type(&iter) == DType.string,
+              dbus_message_iter_next(&iter) != 0,
               dbus_message_iter_get_arg_type(&iter) == DType.uint32
         else { return nil }
         var serial: UInt32 = 0
         dbus_message_iter_get_basic(&iter, &serial)
-        return (mime, serial)
+        return serial
     }
 
     private static func setNonBlocking(_ fd: Int32) {
@@ -627,4 +617,3 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
         _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
     }
 }
-#endif

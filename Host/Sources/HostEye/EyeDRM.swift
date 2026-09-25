@@ -1,8 +1,6 @@
 // The kernel-facing half of the direct eye: plane discovery, the FB_ID
 // import identity, and the scanout ticket (GETFB2 + dmabuf export).
 
-#if os(Linux)
-
 import CDRM
 import Foundation
 import Glibc
@@ -170,5 +168,3 @@ private func closeGemHandles(fd: Int32, _ handles: [UInt32]) {
         _ = drmCloseBufferHandle(fd, handle)
     }
 }
-
-#endif

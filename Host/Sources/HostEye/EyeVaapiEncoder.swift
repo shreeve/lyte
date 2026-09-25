@@ -14,8 +14,6 @@
 // next frame: no reset and no IDR. The HRD buffer is four frames of the
 // cap unless the caller bounds it (HostWire.EncoderHrd).
 
-#if os(Linux)
-
 import CVA
 import Foundation
 import Glibc
@@ -698,5 +696,3 @@ public final class EyeVaapiEncoder {
         return id
     }
 }
-
-#endif

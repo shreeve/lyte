@@ -33,7 +33,6 @@ import LyteWire
 /// SCHED_RR → per-thread nice −10 → default CFS (said once). Unprivileged
 /// runs need an rtprio rlimit; the host must run fine without one.
 func elevateCurrentThread(_ label: String, rtPriority: Int32) {
-    #if os(Linux)
     var param = sched_param()
     param.sched_priority = rtPriority
     if pthread_setschedparam(pthread_self(), Int32(SCHED_RR), &param) == 0 {
@@ -53,7 +52,6 @@ func elevateCurrentThread(_ label: String, rtPriority: Int32) {
         sched: \(label) thread NOT elevated (unprivileged, no \
         RLIMIT_NICE) — running at default CFS priority
         """)
-    #endif
 }
 
 /// The listening service's socket, bound once and never connected, so a
@@ -1776,16 +1774,7 @@ final class SessionWire {
                 }
             }
         case .handshakeCookieModeChanged(let requireCookie):
-            emit(requireCookie
-                ? """
-                    handshake: FLOOD — require-cookie mode ENGAGED \
-                    (msg1 rate crossed the enter threshold; \
-                    un-cookied msg1s now answered with 0x13, no Noise)
-                    """
-                : """
-                    handshake: pressure cleared — require-cookie mode \
-                    DISENGAGED (back to the token-bucket posture)
-                    """)
+            emit("handshake: require-cookie \(requireCookie ? "ENGAGED" : "cleared")")
         // A flood would print per datagram; the final stats line carries
         // these counts instead.
         case .handshakeChallenged:
@@ -1837,21 +1826,8 @@ final class SessionWire {
         case .teardownSent(let reason):
             emit("session: teardown 0x0A queued (\(reason))")
         case .lifecycleChanged(let state):
-            switch state {
-            case .frozen:
-                emit("""
-                    lifecycle: FROZEN — 350 ms of media-path silence; \
-                    datagram video suspended, CTRL stays alive
-                    """)
-            case .recovery:
-                emit("""
-                    lifecycle: RECOVERY — evidence returned; fresh IDR \
-                    at the half-stale rate, sends resume
-                    """)
-            case .active, .idle:
+            if state != .closed { // .sessionClosed carries the reason
                 emit("lifecycle: \(state)")
-            case .closed:
-                break // .sessionClosed carries the reason
             }
         case .sessionClosed(let reason):
             emit("session: CLOSED (\(reason))")
@@ -1954,19 +1930,12 @@ final class SessionWire {
         case .clipboardSetReceived(let text):
             // The core's gate and echo book already ran. Buffer only: the
             // apply runs off-lock in service(). Never logs the payload.
-            if clipboardApplyHandler != nil {
-                emit("""
-                    clipboard: 0x1A set received (\(text.utf8.count) B) — \
-                    applying to the host clipboard
-                    """)
-                pendingClipboardApplies.append(text)
-            } else {
-                // Defensive: a leafless shell never declares key 10.
-                emit("""
-                    clipboard: 0x1A set received (\(text.utf8.count) B) — no \
-                    clipboard leaf, ignored
-                    """)
-            }
+            let leaf = clipboardApplyHandler != nil
+            emit("""
+                clipboard: set received (\(text.utf8.count) B)\
+                \(leaf ? "" : " — no leaf, ignored")
+                """)
+            if leaf { pendingClipboardApplies.append(text) }
         case .clipboardAnnounceSent(let byteCount):
             emit("clipboard: announce sent (\(byteCount) B, 0x1B)")
         case .clipboardAnnounceSuppressed(let reason):
@@ -1989,28 +1958,16 @@ final class SessionWire {
         case .clipboardImageReceived(let data, let mime):
             // Sha-verified; buffered for the off-lock apply. Never logs
             // the payload.
-            if clipboardImageApplyHandler != nil {
-                emit("""
-                    clipboard: image received (\(data.count) B, \
-                    \(mime)) — applying to the host clipboard
-                    """)
-                pendingClipboardImageApplies.append(data)
-            } else {
-                // Defensive: an imageless shell never declares key 12.
-                emit("""
-                    clipboard: image received (\(data.count) B) — \
-                    no image leaf, ignored
-                    """)
-            }
+            let leaf = clipboardImageApplyHandler != nil
+            emit("""
+                clipboard: image received (\(data.count) B, \(mime))\
+                \(leaf ? "" : " — no image leaf, ignored")
+                """)
+            if leaf { pendingClipboardImageApplies.append(data) }
         case .clipboardImageShareStarted(let byteCount):
-            emit("""
-                clipboard: image share started (\(byteCount) B as chan-8 cargo)
-                """)
+            emit("clipboard: image share started (\(byteCount) B)")
         case .clipboardImageShareCompleted(let byteCount):
-            emit("""
-                clipboard: image share completed (\(byteCount) B, \
-                sha-verified by the client)
-                """)
+            emit("clipboard: image share completed (\(byteCount) B)")
         case .clipboardImageShareAborted(let reason, let byRemote):
             emit("""
                 clipboard: image share aborted (\(reason), \
@@ -2026,10 +1983,7 @@ final class SessionWire {
         case .clipboardImageRefused(let reason):
             emit("clipboard: image refused (\(reason))")
         case .clipboardImageViolation(let violation):
-            emit("""
-                clipboard: image lane protocol violation \
-                (\(violation)) — aborted
-                """)
+            emit("clipboard: image lane violation (\(violation)) — aborted")
         }
     }
 
