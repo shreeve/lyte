@@ -18,11 +18,24 @@ public enum HelperCodeIdentity {
     /// daemon reads it once at startup, before any rebuild can replace the
     /// file under it.
     public static func currentProcessCodeHash() throws -> String {
+        try codeHash(of: currentStaticCode())
+    }
+
+    /// The running process's code on disk; `validated` first checks the
+    /// running code's signature.
+    static func currentStaticCode(validated: Bool = false) throws -> SecStaticCode {
         var code: SecCode?
         var status = SecCodeCopySelf([], &code)
         guard status == errSecSuccess, let code else {
             throw HelperClientRequirementError.security(
                 operation: "SecCodeCopySelf", status: status)
+        }
+        if validated {
+            status = SecCodeCheckValidity(code, [], nil)
+            guard status == errSecSuccess else {
+                throw HelperClientRequirementError.security(
+                    operation: "SecCodeCheckValidity", status: status)
+            }
         }
         var staticCode: SecStaticCode?
         status = SecCodeCopyStaticCode(code, [], &staticCode)
@@ -30,7 +43,7 @@ public enum HelperCodeIdentity {
             throw HelperClientRequirementError.security(
                 operation: "SecCodeCopyStaticCode", status: status)
         }
-        return try codeHash(of: staticCode)
+        return staticCode
     }
 
     /// The code hash of the signed code at `url`.
