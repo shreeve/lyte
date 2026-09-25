@@ -490,6 +490,57 @@ final class ArqEndpointTests: XCTestCase {
         XCTAssertFalse(a.isQuiescent)
     }
 
+    /// An ACK naming a group this endpoint never sent on is forgery-shaped;
+    /// a late duplicate ACK for a one-shot it already completed is routine
+    /// silence.
+    func testAckForUnknownGroupVersusCompletedOneShot() throws {
+        var a = Endpoint(channel: .videoIdle)
+        var b = Endpoint(channel: .videoIdle)
+        let group = try a.sendOneShot(message: [0x31, 1], now: at(0))
+        _ = shuttle(from: &a, to: &b, now: at(1_000))
+        let (acks, _) = b.poll(now: at(1_000))
+        XCTAssertEqual(
+            a.ingest(payload: acks[0], now: at(2_000)),
+            [.oneShotAcknowledged(group)]
+        )
+        XCTAssertEqual(a.ingest(payload: acks[0], now: at(3_000)), [])
+
+        for unknown in [ArqGroupId(rawValue: group.rawValue + 1), .orderedStream] {
+            let forged = try ArqAck(blocks: [
+                ArqAck.Block(
+                    channel: .videoIdle, group: unknown,
+                    cumulative: ArqSegmentSeq(rawValue: 0)
+                )
+            ])
+            XCTAssertEqual(
+                a.ingest(payload: forged.encode(), now: at(4_000)),
+                [.ignored(.ackForUnknownGroup(unknown))]
+            )
+        }
+    }
+
+    /// A segment past the receive window is refused, neither buffered nor
+    /// acknowledged; the window's last seq is still taken.
+    func testSegmentBeyondReceiveWindowIgnored() throws {
+        var b = Endpoint(channel: .ctrl)
+        let window = UInt16(b.config.receiveWindowSegments)
+        func segment(_ seq: UInt16) throws -> [UInt8] {
+            try ArqSegment(
+                group: .orderedStream, seq: ArqSegmentSeq(rawValue: seq),
+                endOfMessage: true, body: [1]
+            ).encode()
+        }
+        XCTAssertEqual(
+            b.ingest(payload: try segment(window), now: at(0)),
+            [.ignored(.beyondReceiveWindow(
+                .orderedStream, ArqSegmentSeq(rawValue: window)
+            ))]
+        )
+        XCTAssertEqual(b.poll(now: at(0)).datagrams, [])
+        XCTAssertEqual(b.ingest(payload: try segment(window - 1), now: at(0)), [])
+        XCTAssertEqual(b.poll(now: at(0)).datagrams.count, 1)
+    }
+
     func testForeignChannelAckIgnored() throws {
         var a = Endpoint(channel: .ctrl)
         try a.send(message: [0x2A, 0], now: at(0))
