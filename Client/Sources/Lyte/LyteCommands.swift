@@ -94,17 +94,13 @@ struct LyteCommands: Commands {
             // dormant Better row has no wire id and stays disabled.
             Menu("Chroma") {
                 ForEach(ChromaTier.allCases, id: \.self) { tier in
-                    Toggle(
-                        "\(tier.displayName) (\(tier.samplingLabel))"
-                        + (tier.isSelectable
-                            ? "" : " — Not Yet Available"),
-                        isOn: Binding(
-                            get: { connection?.chromaTier == tier },
-                            set: { on in
-                                if on { connection?.setChromaTier(tier) }
-                            }
-                        ))
-                        .disabled(!tier.isSelectable)
+                    Toggle(tier.menuTitle, isOn: Binding(
+                        get: { connection?.chromaTier == tier },
+                        set: { on in
+                            if on { connection?.setChromaTier(tier) }
+                        }
+                    ))
+                    .disabled(!tier.isSelectable)
                 }
             }
             .disabled(connection?.canReconnect != true)

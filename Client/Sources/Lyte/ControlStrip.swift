@@ -68,31 +68,22 @@ struct StreamContainer: View {
                     if let line = model.roamingStatusLine {
                         Label(line, systemImage: "arrow.triangle.2.circlepath")
                             .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(Capsule().fill(.ultraThinMaterial))
                             .foregroundStyle(.orange)
-                            .transition(.opacity)
+                            .statusPill()
                     } else if model.lyteFrozen {
                         Label("Connection interrupted…",
                               systemImage: "wifi.exclamationmark")
                             .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(Capsule().fill(.ultraThinMaterial))
                             .foregroundStyle(.orange)
-                            .transition(.opacity)
+                            .statusPill()
                     }
                     // The chroma fallback banner: the host lacked the
                     // declared tier and the session re-dialed at Good.
                     if let notice = model.chromaNotice {
                         Label(notice, systemImage: "camera.filters")
                             .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(Capsule().fill(.ultraThinMaterial))
                             .foregroundStyle(.orange)
-                            .transition(.opacity)
+                            .statusPill()
                     }
                     // The link-health pill: only terminal, uncorrectable
                     // presentation misses or renderer failures, folded to
@@ -145,10 +136,7 @@ struct StreamContainer: View {
                     if let notice = model.bulkNotice {
                         Text(notice)
                             .font(.caption)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(Capsule().fill(.ultraThinMaterial))
-                            .transition(.opacity)
+                            .statusPill()
                     }
                 }
                 .padding(12)
@@ -311,9 +299,8 @@ struct ControlStrip: View {
                             : "Mute host speakers (\(hostLabel)) — audio keeps streaming here"),
                     action: { model.setHostMuted(!model.hostMuted) },
                     label: {
-                        mutableGlyph(base: "hifispeaker.fill",
-                                     muted: model.hostMuted,
-                                     caption: "HOST")
+                        CaptionedGlyph(
+                            systemImage: "hifispeaker.fill", caption: "HOST", slashed: model.hostMuted)
                     }
                 )
                 .disabled(model.hostAudioPosture == nil)
@@ -331,9 +318,8 @@ struct ControlStrip: View {
                             : "Turn the audio stream off — no sound crosses the network at all"),
                     action: { model.setHostAudioOff(!model.hostAudioOff) },
                     label: {
-                        mutableGlyph(base: "waveform",
-                                     muted: model.hostAudioOff,
-                                     caption: "WIRE")
+                        CaptionedGlyph(
+                            systemImage: "waveform", caption: "WIRE", slashed: model.hostAudioOff)
                     }
                 )
                 .disabled(model.hostAudioPosture == nil)
@@ -347,9 +333,8 @@ struct ControlStrip: View {
                     : "Mute playback on this Mac (the host's speakers are unaffected)",
                 action: { model.muted.toggle() },
                 label: {
-                    mutableGlyph(base: "headphones",
-                                 muted: model.muted,
-                                 caption: "MAC")
+                    CaptionedGlyph(
+                        systemImage: "headphones", caption: "MAC", slashed: model.muted)
                 }
             )
 
@@ -438,32 +423,6 @@ struct ControlStrip: View {
         .overlay(Capsule().strokeBorder(.white.opacity(0.12)))
     }
 
-    /// A muteable audio endpoint's glyph: the base symbol (distinct
-    /// per machine), the shared diagonal-slash mute treatment, and a
-    /// tiny caption naming whose sound this is.
-    @ViewBuilder
-    private func mutableGlyph(
-        base: String, muted: Bool, caption: String
-    ) -> some View {
-        VStack(spacing: 1) {
-            Image(systemName: base)
-                .font(.system(size: 14, weight: .medium))
-                .overlay {
-                    if muted {
-                        Image(systemName: "line.diagonal")
-                            .font(.system(size: 17, weight: .bold))
-                            .rotationEffect(.degrees(90))
-                    }
-                }
-                .frame(height: 17)
-            Text(caption)
-                .font(.system(size: 7, weight: .semibold))
-                .kerning(0.5)
-                .opacity(0.75)
-        }
-        .frame(width: 28, height: 28)
-    }
-
     @ViewBuilder
     private func stripButton(
         systemImage: String,
@@ -514,24 +473,17 @@ struct ChromaStripMenu: View {
                     model.setChromaTier(tier)
                 } label: {
                     if model.chromaTier == tier {
-                        Label(rowTitle(tier), systemImage: "checkmark")
+                        Label(tier.menuTitle, systemImage: "checkmark")
                     } else {
-                        Text(rowTitle(tier))
+                        Text(tier.menuTitle)
                     }
                 }
                 .disabled(!tier.isSelectable)
             }
         } label: {
-            VStack(spacing: 1) {
-                Image(systemName: "camera.filters")
-                    .font(.system(size: 14, weight: .medium))
-                    .frame(height: 17)
-                Text(model.chromaTier.samplingLabel)
-                    .font(.system(size: 7, weight: .semibold))
-                    .kerning(0.5)
-                    .opacity(0.75)
-            }
-            .frame(width: 28, height: 28)
+            CaptionedGlyph(
+                systemImage: "camera.filters",
+                caption: model.chromaTier.samplingLabel)
             .foregroundStyle(model.chromaTier != .good
                 ? AnyShapeStyle(.orange) : AnyShapeStyle(.primary))
             .contentShape(Rectangle())
@@ -542,11 +494,51 @@ struct ChromaStripMenu: View {
         .help("Chroma — Good 4:2:0 / Better 4:2:2 / Best 4:4:4 "
             + "(changing the tier reconnects)")
     }
+}
 
-    private func rowTitle(_ tier: ChromaTier) -> String {
-        let base = "\(tier.displayName) (\(tier.samplingLabel))"
-        return tier.isSelectable
-            ? base : base + " — not yet available"
+extension ChromaTier {
+    /// The tier's row in the strip's and the Actions menu's chroma lists.
+    var menuTitle: String {
+        "\(displayName) (\(samplingLabel))"
+            + (isSelectable ? "" : " — Not Yet Available")
+    }
+}
+
+/// A strip glyph over a tiny caption naming what it controls; `slashed`
+/// adds the shared diagonal mute slash.
+struct CaptionedGlyph: View {
+    let systemImage: String
+    let caption: String
+    var slashed = false
+
+    var body: some View {
+        VStack(spacing: 1) {
+            Image(systemName: systemImage)
+                .font(.system(size: 14, weight: .medium))
+                .overlay {
+                    if slashed {
+                        Image(systemName: "line.diagonal")
+                            .font(.system(size: 17, weight: .bold))
+                            .rotationEffect(.degrees(90))
+                    }
+                }
+                .frame(height: 17)
+            Text(caption)
+                .font(.system(size: 7, weight: .semibold))
+                .kerning(0.5)
+                .opacity(0.75)
+        }
+        .frame(width: 28, height: 28)
+    }
+}
+
+extension View {
+    /// An overlay status pill: padded on a thin-material capsule.
+    func statusPill() -> some View {
+        padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(Capsule().fill(.ultraThinMaterial))
+            .transition(.opacity)
     }
 }
 
