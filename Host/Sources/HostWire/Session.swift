@@ -87,8 +87,7 @@ public struct SessionConfig: Sendable {
     /// retransmit serialization still fit inside what remains of it,
     /// measured from the frame's last shard release. Derived as
     ///
-    ///   budget = repairBudgetCadenceMultiplier × observedCadence
-    ///            + repairBudgetJitterAllowanceNS
+    ///   budget = 1.5 × observedCadence + 15 ms
     ///
     /// where observedCadence is an EWMA (α = 1/8) of feedback-report
     /// inter-arrival clamped to the wire's 25–50 ms cadence, starting at
@@ -99,10 +98,6 @@ public struct SessionConfig: Sendable {
     /// horizon, so an honored repair is still usable. Non-nil overrides
     /// the derivation (tests, ops).
     public var repairFreezeBudgetOverrideNS: UInt64?
-    /// The derived budget's cadence multiplier.
-    public var repairBudgetCadenceMultiplier: Double
-    /// The derived budget's scheduling-jitter allowance.
-    public var repairBudgetJitterAllowanceNS: UInt64
     /// Bounds on the opening-IDR exemption: until a frame has plausibly
     /// completed at the client, the last IDR stays repairable regardless
     /// of the freeze budget (on black glass a late repair beats a later
@@ -144,8 +139,6 @@ public struct SessionConfig: Sendable {
         lifecycle: SessionMachineConfig = SessionMachineConfig(),
         estimator: RateEstimatorConfig? = nil,
         repairFreezeBudgetOverrideNS: UInt64? = nil,
-        repairBudgetCadenceMultiplier: Double = 1.5,
-        repairBudgetJitterAllowanceNS: UInt64 = 15_000_000,
         openingRepairMaxAttempts: Int = 4,
         openingRepairMaxBytes: Int = 2 << 20,
         repairRetentionNS: UInt64 = 4_000_000_000,
@@ -168,8 +161,6 @@ public struct SessionConfig: Sendable {
         self.lifecycle = lifecycle
         self.estimator = estimator
         self.repairFreezeBudgetOverrideNS = repairFreezeBudgetOverrideNS
-        self.repairBudgetCadenceMultiplier = repairBudgetCadenceMultiplier
-        self.repairBudgetJitterAllowanceNS = repairBudgetJitterAllowanceNS
         self.openingRepairMaxAttempts = openingRepairMaxAttempts
         self.openingRepairMaxBytes = openingRepairMaxBytes
         self.repairRetentionNS = repairRetentionNS
@@ -2483,10 +2474,7 @@ public final class Session {
     /// derivation documented on `repairFreezeBudgetOverrideNS`.
     public var repairFreezeBudgetNS: UInt64 {
         repairBudget.freezeBudgetNanoseconds(
-            override: config.repairFreezeBudgetOverrideNS,
-            cadenceMultiplier: config.repairBudgetCadenceMultiplier,
-            jitterAllowanceNanoseconds:
-                config.repairBudgetJitterAllowanceNS
+            override: config.repairFreezeBudgetOverrideNS
         )
     }
 

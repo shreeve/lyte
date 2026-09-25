@@ -89,184 +89,148 @@ public struct RateEstimatorConfig: Sendable {
     public var floorBitsPerSecond: Int
     /// Where the standing rate starts. Nil = the ceiling.
     public var initialRateBitsPerSecond: Int?
-    /// Delivery-rate samples and delay baselines older than this expire.
-    public var sampleWindowNS: UInt64
-    /// The MINIMUM send-spacing gap that splits trains. The effective gap
-    /// is at least 3 × one datagram's wire time at the standing rate:
-    /// at low rates the pacer itself spaces datagrams beyond a fixed gap,
-    /// and no train would ever form to justify a climb.
-    public var trainGapNS: UInt64
-    /// Trains below this packet count weigh ×0.5 in the max filter and
-    /// get no anchor vote (short-train dispersion is noisy).
-    public var minTrainPackets: Int
-    /// How many recent full-train samples the anchor medians span (raw
-    /// and honest). 3 with 2 consecutive overuse reports: a genuine drop
-    /// fills two slots by fire time, a lone outlier is outvoted.
-    public var overuseAnchorSampleCount: Int
-    /// Queuing-delay inflation that reads as overuse, µs.
-    public var overuseThresholdMicroseconds: Int64
-    /// Consecutive inflated reports before the overuse verdict fires.
-    public var overuseConsecutiveReports: Int
-    /// "Standing backlog" = at least this much wire time of queued bytes
-    /// at the standing rate (more than mid-batch residue, far less than
-    /// one squeezed IDR's drain).
-    public var selfReferenceBacklogWindowNS: UInt64
-    /// The largest inflation-streak peak still booked as a stall hold
-    /// (Wi-Fi scan dwells run 70–100 ms; longer is real degradation).
-    public var stallGapCeilingMicroseconds: Int64
-    /// A full train at least this multiple of its pace is a COMPRESSED
-    /// drain: packets accumulated and were released together (above
-    /// pacing noise, far below any real AP drain).
-    public var stallBurstRateFactor: Double
-    /// How fresh drain evidence must be to book a stall hold.
-    public var stallEvidenceWindowNS: UInt64
-    /// Invariant 1: a full train measuring at or above (1 − this) × the
-    /// pace recorded at its release is CENSORED — it measures our own
-    /// pacing, may raise the belief, and never votes in a fall anchor.
-    public var censoredSampleMarginFraction: Double
-    /// A slow path stretches a train uniformly; a radio hole opens ONE
-    /// dominating gap. A train whose largest inter-arrival exceeds this
-    /// fraction of its arrival span measured a hole: it keeps its other
-    /// roles but gets no honest vote. 0.5 sits far above a uniform
-    /// train's share (≈1/(n−1)) and below a stall's (>0.9).
-    public var stretchGapDominanceFraction: Double
-    /// A path-capacity witness must span more than one socket microburst.
-    /// Datagrams accepted by one sendmmsg share one timestamp; receiver-side
-    /// serialization of that burst is frame geometry, not a sustained-rate
-    /// probe. One millisecond requires evidence across pacer quanta.
-    public var honestMinSendSpanNS: UInt64
-    /// Invariant 2: how long overuse pressure must persist before an
-    /// uncorroborated fall may execute — a full fall-limiter window, so
-    /// the evidence spans ≥2 windows. A dwell cannot sustain it.
-    public var beliefDemotionSustainNS: UInt64
-    /// Honest votes older than this expire, so a healed dip cannot
-    /// demote the belief later.
-    public var honestVoteWindowNS: UInt64
-    /// Pre-FEC loss fraction below which the window reads clean.
-    public var lossCleanThreshold: Double
-    /// Pre-FEC loss fraction above which the rate falls ×(1 − loss/2).
-    /// Between the two thresholds the rate HOLDS (FEC absorbs it).
-    public var lossDownshiftThreshold: Double
-    /// The loss accounting window.
-    public var lossWindowNS: UInt64
-    /// Post-FEC loss fraction (NACKed shards / video datagrams
-    /// attempted, over `lossWindowNS`) above which rung 3 fires: a
-    /// downshift plus an FEC regime step up.
-    public var postFecDownshiftThreshold: Double
-    /// Post-FEC loss below which the window reads clean for the regime
-    /// ladder and lastGoodRate.
-    public var postFecCleanThreshold: Double
-    /// How long post-FEC loss must sit below `postFecCleanThreshold`
-    /// before the regime steps back down to clean.
-    public var regimeStepDownHoldNS: UInt64
-    /// Multiplicative downshift factor and its rate limit.
-    public var downshiftFactor: Double
-    public var downshiftMinIntervalNS: UInt64
-    /// Upshift budget per second toward the ceiling (≤10%/s).
-    public var upshiftPerSecond: Double
-    /// The probe ceiling is min(ceiling, belief × this): the climb may
-    /// probe above the belief (how the belief grows) without slamming a
-    /// wall it already located. Must exceed 1.0.
-    public var probeHeadroomFactor: Double
-    /// After a fall that fired while probing near the belief (rate ≥
-    /// belief / probeHeadroomFactor: a failed probe), rises back into
-    /// that band wait this long (BBR PROBE_BW's cadence). Below the band
-    /// the climb stays continuous.
-    public var probeCadenceNS: UInt64
-    /// No upshift this long after a downshift (queue drain time).
-    public var upshiftHoldAfterDownshiftNS: UInt64
-    /// Delivery evidence must be at most this old for the rate to rise.
-    public var upshiftEvidenceWindowNS: UInt64
-    /// The RECOVERY verdict window.
-    public var recoveryWindowNS: UInt64
-    /// Send-ledger capacity (datagrams). 8192 covers >600 ms at the
-    /// 20 Mbps shard rate — far beyond any 25–50 ms report cadence.
-    public var sendLedgerCapacity: Int
-    /// The higher-class reserves frameByteCeiling subtracts: audio's
-    /// wire rate (131 B × 300/s ≈ 315 kbps at defaults) and control.
-    public var audioReserveBitsPerSecond: Int
-    public var controlReserveBitsPerSecond: Int
 
     public init(
         ceilingBitsPerSecond: Int,
         floorBitsPerSecond: Int = 2_000_000,
-        initialRateBitsPerSecond: Int? = nil,
-        sampleWindowNS: UInt64 = 10_000_000_000,
-        trainGapNS: UInt64 = 2_000_000,
-        minTrainPackets: Int = 8,
-        overuseAnchorSampleCount: Int = 3,
-        overuseThresholdMicroseconds: Int64 = 15_000,
-        overuseConsecutiveReports: Int = 2,
-        selfReferenceBacklogWindowNS: UInt64 = 5_000_000,
-        stallGapCeilingMicroseconds: Int64 = 150_000,
-        stallBurstRateFactor: Double = 1.25,
-        stallEvidenceWindowNS: UInt64 = 500_000_000,
-        censoredSampleMarginFraction: Double = 0.2,
-        stretchGapDominanceFraction: Double = 0.5,
-        honestMinSendSpanNS: UInt64 = 1_000_000,
-        beliefDemotionSustainNS: UInt64 = 500_000_000,
-        honestVoteWindowNS: UInt64 = 2_000_000_000,
-        lossCleanThreshold: Double = 0.02,
-        lossDownshiftThreshold: Double = 0.10,
-        lossWindowNS: UInt64 = 1_000_000_000,
-        postFecDownshiftThreshold: Double = 0.02,
-        postFecCleanThreshold: Double = 0.005,
-        regimeStepDownHoldNS: UInt64 = 5_000_000_000,
-        downshiftFactor: Double = 0.85,
-        downshiftMinIntervalNS: UInt64 = 500_000_000,
-        upshiftPerSecond: Double = 0.10,
-        probeHeadroomFactor: Double = 1.10,
-        probeCadenceNS: UInt64 = 10_000_000_000,
-        upshiftHoldAfterDownshiftNS: UInt64 = 1_000_000_000,
-        upshiftEvidenceWindowNS: UInt64 = 2_000_000_000,
-        recoveryWindowNS: UInt64 = 25_000_000,
-        sendLedgerCapacity: Int = 8_192,
-        audioReserveBitsPerSecond: Int = 320_000,
-        controlReserveBitsPerSecond: Int = 500_000
+        initialRateBitsPerSecond: Int? = nil
     ) {
         precondition(ceilingBitsPerSecond > 0)
         precondition(floorBitsPerSecond > 0)
         self.ceilingBitsPerSecond = ceilingBitsPerSecond
         self.floorBitsPerSecond = min(floorBitsPerSecond, ceilingBitsPerSecond)
         self.initialRateBitsPerSecond = initialRateBitsPerSecond
-        self.sampleWindowNS = sampleWindowNS
-        self.trainGapNS = trainGapNS
-        self.minTrainPackets = minTrainPackets
-        self.overuseAnchorSampleCount = max(overuseAnchorSampleCount, 1)
-        self.overuseThresholdMicroseconds = overuseThresholdMicroseconds
-        self.overuseConsecutiveReports = max(overuseConsecutiveReports, 1)
-        self.selfReferenceBacklogWindowNS = selfReferenceBacklogWindowNS
-        self.stallGapCeilingMicroseconds = stallGapCeilingMicroseconds
-        self.stallBurstRateFactor = stallBurstRateFactor
-        self.stallEvidenceWindowNS = stallEvidenceWindowNS
-        self.censoredSampleMarginFraction = censoredSampleMarginFraction
-        self.stretchGapDominanceFraction = stretchGapDominanceFraction
-        self.honestMinSendSpanNS = honestMinSendSpanNS
-        self.beliefDemotionSustainNS = beliefDemotionSustainNS
-        self.honestVoteWindowNS = honestVoteWindowNS
-        self.lossCleanThreshold = lossCleanThreshold
-        self.lossDownshiftThreshold = max(
-            lossDownshiftThreshold, lossCleanThreshold
-        )
-        self.lossWindowNS = lossWindowNS
-        self.postFecDownshiftThreshold = postFecDownshiftThreshold
-        self.postFecCleanThreshold = min(
-            postFecCleanThreshold, postFecDownshiftThreshold
-        )
-        self.regimeStepDownHoldNS = regimeStepDownHoldNS
-        self.downshiftFactor = downshiftFactor
-        self.downshiftMinIntervalNS = downshiftMinIntervalNS
-        precondition(probeHeadroomFactor > 1.0)
-        self.upshiftPerSecond = upshiftPerSecond
-        self.probeHeadroomFactor = probeHeadroomFactor
-        self.probeCadenceNS = probeCadenceNS
-        self.upshiftHoldAfterDownshiftNS = upshiftHoldAfterDownshiftNS
-        self.upshiftEvidenceWindowNS = upshiftEvidenceWindowNS
-        self.recoveryWindowNS = recoveryWindowNS
-        self.sendLedgerCapacity = max(sendLedgerCapacity, 64)
-        self.audioReserveBitsPerSecond = audioReserveBitsPerSecond
-        self.controlReserveBitsPerSecond = controlReserveBitsPerSecond
     }
+}
+
+/// The control law's constants.
+extension RateEstimator {
+    /// Delivery-rate samples and delay baselines older than this expire.
+    static let sampleWindowNS: UInt64 = 10_000_000_000
+
+    /// The MINIMUM send-spacing gap that splits trains. The effective gap
+    /// is at least 3 × one datagram's wire time at the standing rate:
+    /// at low rates the pacer itself spaces datagrams beyond a fixed gap,
+    /// and no train would ever form to justify a climb.
+    static let trainGapNS: UInt64 = 2_000_000
+
+    /// Trains below this packet count weigh ×0.5 in the max filter and
+    /// get no anchor vote (short-train dispersion is noisy).
+    static let minTrainPackets: Int = 8
+
+    /// How many recent full-train samples the anchor medians span (raw
+    /// and honest). 3 with 2 consecutive overuse reports: a genuine drop
+    /// fills two slots by fire time, a lone outlier is outvoted.
+    static let overuseAnchorSampleCount: Int = 3
+
+    /// Queuing-delay inflation that reads as overuse, µs.
+    static let overuseThresholdMicroseconds: Int64 = 15_000
+
+    /// Consecutive inflated reports before the overuse verdict fires.
+    static let overuseConsecutiveReports: Int = 2
+
+    /// "Standing backlog" = at least this much wire time of queued bytes
+    /// at the standing rate (more than mid-batch residue, far less than
+    /// one squeezed IDR's drain).
+    static let selfReferenceBacklogWindowNS: UInt64 = 5_000_000
+
+    /// The largest inflation-streak peak still booked as a stall hold
+    /// (Wi-Fi scan dwells run 70–100 ms; longer is real degradation).
+    static let stallGapCeilingMicroseconds: Int64 = 150_000
+
+    /// A full train at least this multiple of its pace is a COMPRESSED
+    /// drain: packets accumulated and were released together (above
+    /// pacing noise, far below any real AP drain).
+    static let stallBurstRateFactor: Double = 1.25
+
+    /// How fresh drain evidence must be to book a stall hold.
+    static let stallEvidenceWindowNS: UInt64 = 500_000_000
+
+    /// Invariant 1: a full train measuring at or above (1 − this) × the
+    /// pace recorded at its release is CENSORED — it measures our own
+    /// pacing, may raise the belief, and never votes in a fall anchor.
+    static let censoredSampleMarginFraction: Double = 0.2
+
+    /// A slow path stretches a train uniformly; a radio hole opens ONE
+    /// dominating gap. A train whose largest inter-arrival exceeds this
+    /// fraction of its arrival span measured a hole: it keeps its other
+    /// roles but gets no honest vote. 0.5 sits far above a uniform
+    /// train's share (≈1/(n−1)) and below a stall's (>0.9).
+    static let stretchGapDominanceFraction: Double = 0.5
+
+    /// A path-capacity witness must span more than one socket microburst.
+    /// Datagrams accepted by one sendmmsg share one timestamp; receiver-side
+    /// serialization of that burst is frame geometry, not a sustained-rate
+    /// probe. One millisecond requires evidence across pacer quanta.
+    static let honestMinSendSpanNS: UInt64 = 1_000_000
+
+    /// Invariant 2: how long overuse pressure must persist before an
+    /// uncorroborated fall may execute — a full fall-limiter window, so
+    /// the evidence spans ≥2 windows. A dwell cannot sustain it.
+    static let beliefDemotionSustainNS: UInt64 = 500_000_000
+
+    /// Honest votes older than this expire, so a healed dip cannot
+    /// demote the belief later.
+    static let honestVoteWindowNS: UInt64 = 2_000_000_000
+
+    /// Pre-FEC loss fraction below which the window reads clean.
+    static let lossCleanThreshold: Double = 0.02
+
+    /// Pre-FEC loss fraction above which the rate falls ×(1 − loss/2).
+    /// Between the two thresholds the rate HOLDS (FEC absorbs it).
+    static let lossDownshiftThreshold: Double = 0.10
+
+    /// The loss accounting window.
+    static let lossWindowNS: UInt64 = 1_000_000_000
+
+    /// Post-FEC loss fraction (NACKed shards / video datagrams
+    /// attempted, over `lossWindowNS`) above which rung 3 fires: a
+    /// downshift plus an FEC regime step up.
+    static let postFecDownshiftThreshold: Double = 0.02
+
+    /// Post-FEC loss below which the window reads clean for the regime
+    /// ladder and lastGoodRate.
+    static let postFecCleanThreshold: Double = 0.005
+
+    /// How long post-FEC loss must sit below `postFecCleanThreshold`
+    /// before the regime steps back down to clean.
+    static let regimeStepDownHoldNS: UInt64 = 5_000_000_000
+
+    /// Multiplicative downshift factor and its rate limit.
+    static let downshiftFactor: Double = 0.85
+    static let downshiftMinIntervalNS: UInt64 = 500_000_000
+
+    /// Upshift budget per second toward the ceiling (≤10%/s).
+    static let upshiftPerSecond: Double = 0.10
+
+    /// The probe ceiling is min(ceiling, belief × this): the climb may
+    /// probe above the belief (how the belief grows) without slamming a
+    /// wall it already located. Must exceed 1.0.
+    static let probeHeadroomFactor: Double = 1.10
+
+    /// After a fall that fired while probing near the belief (rate ≥
+    /// belief / probeHeadroomFactor: a failed probe), rises back into
+    /// that band wait this long (BBR PROBE_BW's cadence). Below the band
+    /// the climb stays continuous.
+    static let probeCadenceNS: UInt64 = 10_000_000_000
+
+    /// No upshift this long after a downshift (queue drain time).
+    static let upshiftHoldAfterDownshiftNS: UInt64 = 1_000_000_000
+
+    /// Delivery evidence must be at most this old for the rate to rise.
+    static let upshiftEvidenceWindowNS: UInt64 = 2_000_000_000
+
+    /// The RECOVERY verdict window.
+    static let recoveryWindowNS: UInt64 = 25_000_000
+
+    /// Send-ledger capacity (datagrams). 8192 covers >600 ms at the
+    /// 20 Mbps shard rate — far beyond any 25–50 ms report cadence.
+    static let sendLedgerCapacity: Int = 8_192
+
+    /// The higher-class reserves frameByteCeiling subtracts: audio's
+    /// wire rate (131 B × 300/s ≈ 315 kbps at defaults) and control.
+    public static let audioReserveBitsPerSecond: Int = 320_000
+    public static let controlReserveBitsPerSecond: Int = 500_000
 }
 
 /// What one ingested report did to the estimate — the session applies
@@ -547,7 +511,7 @@ public final class RateEstimator {
     public init(config: RateEstimatorConfig, now: UInt64) {
         self.config = config
         self.recentRawDeliveries = BoundedRing(
-            capacity: config.overuseAnchorSampleCount
+            capacity: Self.overuseAnchorSampleCount
         )
         let initial = min(
             max(config.initialRateBitsPerSecond ?? config.ceilingBitsPerSecond,
@@ -558,7 +522,7 @@ public final class RateEstimator {
         self.lastGoodRate = initial
         self.lastAdjustAt = now
         self.ledger = [SendRecord?](
-            repeating: nil, count: config.sendLedgerCapacity
+            repeating: nil, count: Self.sendLedgerCapacity
         )
     }
 
@@ -639,7 +603,7 @@ public final class RateEstimator {
         let lossFraction = currentLossFraction()
         let postFecLossFraction = currentPostFecLossFraction()
         let overuse = inflated
-            && consecutiveInflatedReports >= config.overuseConsecutiveReports
+            && consecutiveInflatedReports >= Self.overuseConsecutiveReports
         if overuse { stats.overuseVerdicts += 1 }
 
         let oldRate = rateBitsPerSecond
@@ -806,8 +770,8 @@ public final class RateEstimator {
         let budgetSeconds = Double(budgetNS) / 1e9
         let gross = Double(rateBitsPerSecond) * budgetSeconds / 8
         let reserves = Double(
-            config.audioReserveBitsPerSecond
-                + config.controlReserveBitsPerSecond
+            Self.audioReserveBitsPerSecond
+                + Self.controlReserveBitsPerSecond
         ) * budgetSeconds / 8
         let availableWireBytes = max(Int(gross - reserves), 0)
         let totalShardBudget = availableWireBytes
@@ -865,7 +829,7 @@ public final class RateEstimator {
     private func expireWindows(now: UInt64) {
         let oldDeliveryCount = deliveryWindow.count
         deliveryWindow.removeAll {
-            now &- $0.at > config.sampleWindowNS
+            now &- $0.at > Self.sampleWindowNS
         }
         if deliveryWindow.count != oldDeliveryCount {
             var maximum: Double?
@@ -881,24 +845,24 @@ public final class RateEstimator {
         var index = delayBaselineWindows.values.startIndex
         while index != delayBaselineWindows.values.endIndex {
             delayBaselineWindows.values[index].removeAll {
-                now &- $0.at > config.sampleWindowNS
+                now &- $0.at > Self.sampleWindowNS
             }
             index = delayBaselineWindows.values.index(after: index)
         }
         lossWindow.removeAll {
-            now &- $0.at > config.lossWindowNS
+            now &- $0.at > Self.lossWindowNS
         }
         postFecWindow.removeAll {
-            now &- $0.at > config.lossWindowNS
+            now &- $0.at > Self.lossWindowNS
         }
         recentNackShards = recentNackShards.filter {
-            now &- $0.value <= config.lossWindowNS
+            now &- $0.value <= Self.lossWindowNS
         }
         recentHonestDeliveries.removeAll {
-            now &- $0.at > config.honestVoteWindowNS
+            now &- $0.at > Self.honestVoteWindowNS
         }
         while let credit = hostDroppedVideoCredits.first,
-              now > credit.at, now - credit.at > config.lossWindowNS {
+              now > credit.at, now - credit.at > Self.lossWindowNS {
             hostDroppedVideoCredits.removeFirst()
         }
     }
@@ -1061,7 +1025,7 @@ public final class RateEstimator {
         let wirePerDatagramNS = UInt64(
             Double(1_152 * 8) / Double(rateBitsPerSecond) * 1e9
         )
-        let gapNS = max(config.trainGapNS, 3 * wirePerDatagramNS)
+        let gapNS = max(Self.trainGapNS, 3 * wirePerDatagramNS)
         func closeTrain(_ range: Range<Int>) {
             let train = matched[range]
             guard train.first?.deliveryFrame != nil else { return }
@@ -1091,7 +1055,7 @@ public final class RateEstimator {
             // Only FULL trains vote or touch the belief: micro-trains
             // measure their own pacing. Short trains still feed the
             // windowed max (×0.5) and evidence freshness.
-            if train.count >= config.minTrainPackets {
+            if train.count >= Self.minTrainPackets {
                 recentRawDeliveries.append(rate)
                 // Freshest reading, not a max: a squeeze right after a
                 // drain must not inherit the drain's super-rate sample.
@@ -1103,7 +1067,7 @@ public final class RateEstimator {
                     paceBits > 0 ? paceBits : rateBitsPerSecond
                 )
                 let honest = rate
-                    < pace * (1 - config.censoredSampleMarginFraction)
+                    < pace * (1 - Self.censoredSampleMarginFraction)
                 if honest {
                     let sendSpan = lastSend - firstSend
                     // See `stretchGapDominanceFraction`: a hole-
@@ -1116,8 +1080,8 @@ public final class RateEstimator {
                     }
                     let span = arrivals.last! - arrivals.first!
                     let holeDominated = Double(maxGap)
-                        > config.stretchGapDominanceFraction * Double(span)
-                    if sendSpan < config.honestMinSendSpanNS {
+                        > Self.stretchGapDominanceFraction * Double(span)
+                    if sendSpan < Self.honestMinSendSpanNS {
                         // One sendmmsg/pacer microburst shows receiver
                         // serialization, not sustained capacity.
                         stats.burstGeometryTrainsRecused += 1
@@ -1127,7 +1091,7 @@ public final class RateEstimator {
                         stats.honestSamples += 1
                         recentHonestDeliveries.append((at: now, rate: rate))
                         if recentHonestDeliveries.count
-                            > config.overuseAnchorSampleCount {
+                            > Self.overuseAnchorSampleCount {
                             recentHonestDeliveries.removeFirst()
                         }
                     }
@@ -1135,7 +1099,7 @@ public final class RateEstimator {
                     // Censored (≈ our pace) or compressed (a drain):
                     // either way it can only prove capacity ≥ itself.
                     stats.censoredSamples += 1
-                    if rate >= pace * config.stallBurstRateFactor {
+                    if rate >= pace * Self.stallBurstRateFactor {
                         // A COMPRESSED drain: a hole just closed, so
                         // every earlier stretched reading measured the
                         // hole, not the path. Purge those votes.
@@ -1153,7 +1117,7 @@ public final class RateEstimator {
                 }
             }
             stats.deliverySamples += 1
-            let weighted = train.count >= config.minTrainPackets
+            let weighted = train.count >= Self.minTrainPackets
                 ? rate : rate * 0.5
             deliveryWindow.append(DeliverySample(at: now, rate: weighted))
             if deliveryWindowMax.map({ weighted > $0 }) ?? true {
@@ -1249,7 +1213,7 @@ public final class RateEstimator {
             return false
         }
         queuingDelayMicroseconds = worstInflation
-        if worstInflation > config.overuseThresholdMicroseconds {
+        if worstInflation > Self.overuseThresholdMicroseconds {
             if consecutiveInflatedReports == 0 {
                 inflatedStreakStartMicros = worstInflation
                 inflatedStreakPeakMicros = worstInflation
@@ -1277,7 +1241,7 @@ public final class RateEstimator {
     /// reverse a one-way ratchet.
     private func hasFreshDeliveryEvidence(now: UInt64) -> Bool {
         lastDeliveryAt.map {
-            now &- $0 <= config.upshiftEvidenceWindowNS
+            now &- $0 <= Self.upshiftEvidenceWindowNS
         } ?? false
     }
 
@@ -1289,12 +1253,12 @@ public final class RateEstimator {
         now: UInt64
     ) -> RateEstimatorVerdict.Change? {
         let downshiftAllowed = lastDownshiftAt.map {
-            now &- $0 >= config.downshiftMinIntervalNS
+            now &- $0 >= Self.downshiftMinIntervalNS
         } ?? true
         let deliveryFresh = hasFreshDeliveryEvidence(now: now)
         let backlogFloorBytes = max(1, Int(
             Double(rateBitsPerSecond)
-                * Double(config.selfReferenceBacklogWindowNS) / 8e9
+                * Double(Self.selfReferenceBacklogWindowNS) / 8e9
         ))
         let backlogStanding = pacerBacklogBytes >= backlogFloorBytes
         let fallEvidence = deliveryFresh || backlogStanding
@@ -1310,7 +1274,7 @@ public final class RateEstimator {
             let anchor = overuseAnchorRate.map(Int.init) ?? rateBitsPerSecond
             let queueGrew = inflatedStreakStartMicros.map {
                 saturatingDifference(queuingDelayMicroseconds ?? 0, $0)
-                    >= config.overuseThresholdMicroseconds
+                    >= Self.overuseThresholdMicroseconds
             } ?? false
             let honestMedian = honestAnchorRate
             let belief = beliefBits ?? Double(rateBitsPerSecond)
@@ -1320,10 +1284,10 @@ public final class RateEstimator {
             // or post-FEC past rung 3. Milder post-FEC waits for
             // persistence: a closed hole echoes a percent or two of
             // NACKs for frames that already drained.
-            let instant = lossFraction >= config.lossCleanThreshold
-                || postFecLossFraction > config.postFecDownshiftThreshold
+            let instant = lossFraction >= Self.lossCleanThreshold
+                || postFecLossFraction > Self.postFecDownshiftThreshold
             let persisted = now &- (inflatedStreakSinceNS ?? now)
-                >= config.beliefDemotionSustainNS
+                >= Self.beliefDemotionSustainNS
             let wouldFall = instant
                 || (persisted && (queueGrew || honestLow || !selfExplaining))
 
@@ -1365,14 +1329,14 @@ public final class RateEstimator {
                 )
                 // A fall inside the belief's headroom band is a failed
                 // probe: arm the cadence.
-                let bandFloor = demoted / config.probeHeadroomFactor
+                let bandFloor = demoted / Self.probeHeadroomFactor
                 if Double(rateBitsPerSecond) >= bandFloor {
-                    cadenceHoldUntilNS = now &+ config.probeCadenceNS
+                    cadenceHoldUntilNS = now &+ Self.probeCadenceNS
                     cadenceBandFloorBits = bandFloor
                 }
                 rateBitsPerSecond = clamp(min(
-                    Int(demoted * config.downshiftFactor),
-                    Int(Double(rateBitsPerSecond) * config.downshiftFactor)
+                    Int(demoted * Self.downshiftFactor),
+                    Int(Double(rateBitsPerSecond) * Self.downshiftFactor)
                 ))
                 lastDownshiftAt = now
                 lastAdjustAt = now
@@ -1387,14 +1351,14 @@ public final class RateEstimator {
                 // when fresh drain evidence sits inside a bounded hole.
                 let holePeak = inflatedStreakPeakMicros ?? Int64.max
                 let drainFresh = lastFullTrainAt.map {
-                    now &- $0 <= config.stallEvidenceWindowNS
+                    now &- $0 <= Self.stallEvidenceWindowNS
                 } ?? false
                 let drainOutranPace = drainFresh
                     && (lastFullTrainRate ?? 0)
                         >= Double(rateBitsPerSecond)
-                        * config.stallBurstRateFactor
+                        * Self.stallBurstRateFactor
                 if drainOutranPace,
-                   holePeak <= config.stallGapCeilingMicroseconds {
+                   holePeak <= Self.stallGapCeilingMicroseconds {
                     stats.stallHolds += 1
                 } else {
                     stats.fallDeferrals += 1
@@ -1402,7 +1366,7 @@ public final class RateEstimator {
             }
         }
 
-        if lossFraction > config.lossDownshiftThreshold, downshiftAllowed {
+        if lossFraction > Self.lossDownshiftThreshold, downshiftAllowed {
             guard fallEvidence else {
                 stats.sparseEvidenceHolds += 1
                 lastAdjustAt = now
@@ -1420,7 +1384,7 @@ public final class RateEstimator {
             return .loss
         }
 
-        if postFecLossFraction > config.postFecDownshiftThreshold,
+        if postFecLossFraction > Self.postFecDownshiftThreshold,
            downshiftAllowed {
             guard fallEvidence else {
                 stats.sparseEvidenceHolds += 1
@@ -1429,7 +1393,7 @@ public final class RateEstimator {
             }
             // Rung 3: loss FEC could not absorb, so no hold band.
             rateBitsPerSecond = clamp(Int(
-                Double(rateBitsPerSecond) * config.downshiftFactor
+                Double(rateBitsPerSecond) * Self.downshiftFactor
             ))
             lastDownshiftAt = now
             lastAdjustAt = now
@@ -1440,8 +1404,8 @@ public final class RateEstimator {
 
         // Only the stricter post-FEC clean column updates lastGoodRate;
         // mild NACK echo may still climb below.
-        if !overuse, lossFraction < config.lossCleanThreshold,
-           postFecLossFraction <= config.postFecCleanThreshold {
+        if !overuse, lossFraction < Self.lossCleanThreshold,
+           postFecLossFraction <= Self.postFecCleanThreshold {
             lastGoodRate = rateBitsPerSecond
         }
 
@@ -1450,17 +1414,17 @@ public final class RateEstimator {
         let probeCeiling = beliefBits.map {
             min(config.ceilingBitsPerSecond,
                 max(config.floorBitsPerSecond,
-                    Int($0 * config.probeHeadroomFactor)))
+                    Int($0 * Self.probeHeadroomFactor)))
         } ?? config.ceilingBitsPerSecond
-        let mildPostFec = postFecLossFraction > config.postFecCleanThreshold
-            && postFecLossFraction <= config.postFecDownshiftThreshold
+        let mildPostFec = postFecLossFraction > Self.postFecCleanThreshold
+            && postFecLossFraction <= Self.postFecDownshiftThreshold
         guard rateBitsPerSecond < probeCeiling,
-              !overuse, lossFraction < config.lossCleanThreshold,
-              postFecLossFraction <= config.postFecDownshiftThreshold,
+              !overuse, lossFraction < Self.lossCleanThreshold,
+              postFecLossFraction <= Self.postFecDownshiftThreshold,
               let deliveredAt = lastDeliveryAt,
-              now &- deliveredAt <= config.upshiftEvidenceWindowNS,
+              now &- deliveredAt <= Self.upshiftEvidenceWindowNS,
               lastDownshiftAt.map({
-                  now &- $0 >= config.upshiftHoldAfterDownshiftNS
+                  now &- $0 >= Self.upshiftHoldAfterDownshiftNS
               }) ?? true
         else {
             lastAdjustAt = now
@@ -1476,7 +1440,7 @@ public final class RateEstimator {
         }
         let elapsedSeconds = Double(now &- lastAdjustAt) / 1e9
         guard elapsedSeconds > 0 else { return nil }
-        let factor = 1 + config.upshiftPerSecond * min(elapsedSeconds, 1)
+        let factor = 1 + Self.upshiftPerSecond * min(elapsedSeconds, 1)
         let wanted = Int(Double(rateBitsPerSecond) * factor)
         if wanted > probeCeiling, probeCeiling < config.ceilingBitsPerSecond {
             stats.upshiftsDamped += 1
@@ -1493,12 +1457,12 @@ public final class RateEstimator {
     private func stepRegime(
         postFecLossFraction: Double, sawNacks: Bool, now: UInt64
     ) -> FecRegime? {
-        if sawNacks || postFecLossFraction >= config.postFecCleanThreshold {
+        if sawNacks || postFecLossFraction >= Self.postFecCleanThreshold {
             lastPostFecEvidenceAt = now
         }
         switch fecRegime {
         case .clean:
-            guard postFecLossFraction > config.postFecDownshiftThreshold
+            guard postFecLossFraction > Self.postFecDownshiftThreshold
             else { return nil }
             fecRegime = .lossy
             stats.regimeSteps += 1
@@ -1506,8 +1470,8 @@ public final class RateEstimator {
         case .lossy:
             // Every fresh NACK re-anchors the step-down hold.
             guard let lastEvidence = lastPostFecEvidenceAt,
-                  now &- lastEvidence >= config.regimeStepDownHoldNS,
-                  postFecLossFraction < config.postFecCleanThreshold
+                  now &- lastEvidence >= Self.regimeStepDownHoldNS,
+                  postFecLossFraction < Self.postFecCleanThreshold
             else { return nil }
             fecRegime = .clean
             stats.regimeSteps += 1
@@ -1528,7 +1492,7 @@ public final class RateEstimator {
         }
         recoveryWindowSawLoss = recoveryWindowSawLoss || sawLoss
         recoveryWindowSawOveruse = recoveryWindowSawOveruse || sawOveruse
-        guard now &- start >= config.recoveryWindowNS else { return [] }
+        guard now &- start >= Self.recoveryWindowNS else { return [] }
         let clean = !recoveryWindowSawLoss && !recoveryWindowSawOveruse
         recoveryWindowStartNS = now
         recoveryWindowSawLoss = false

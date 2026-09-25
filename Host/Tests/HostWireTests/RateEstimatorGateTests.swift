@@ -2574,12 +2574,10 @@ final class RateEstimatorGateTests: XCTestCase {
     }
 
     func testRecoveryReanchorsNinetyMegabitBeliefBeforeFiveMegabitPath() {
-        var config = RateEstimatorConfig(
+        let estimator = RateEstimator(config: RateEstimatorConfig(
             ceilingBitsPerSecond: 100_000_000,
             initialRateBitsPerSecond: 90_000_000
-        )
-        config.overuseConsecutiveReports = 2
-        let estimator = RateEstimator(config: config, now: 0)
+        ), now: 0)
 
         let oldPath = train(
             estimator, seqStart: 0, count: 16,
@@ -2679,8 +2677,8 @@ final class RateEstimatorGateTests: XCTestCase {
         let grossWireBytes = Int(
             Double(config.floorBitsPerSecond) * budgetSeconds / 8)
         let protectedBytes = Int(Double(
-            config.audioReserveBitsPerSecond
-                + config.controlReserveBitsPerSecond
+            RateEstimator.audioReserveBitsPerSecond
+                + RateEstimator.controlReserveBitsPerSecond
         ) * budgetSeconds / 8)
         let worstMinimumFlightBytes =
             3 * WireBudget.maxDatagramByteCount // k=1 + lossy m=2
@@ -3177,7 +3175,6 @@ final class RateEstimatorGateTests: XCTestCase {
         let estimator = makeEstimator {
             $0.ceilingBitsPerSecond = 50_000_000
             $0.initialRateBitsPerSecond = 20_000_000
-            $0.probeCadenceNS = 5_000_000_000
         }
         let driver = EstimatorDriver(self, estimator)
         for _ in 0..<10 {
@@ -3208,9 +3205,9 @@ final class RateEstimatorGateTests: XCTestCase {
             Double(estimator.rateBitsPerSecond), bandFloor + 0.1e6,
             "the climb re-entered the failed band inside the cadence")
         XCTAssertGreaterThanOrEqual(estimator.stats.upshiftsCadenceHeld, 1)
-        // The cadence expires (5 s): the next probe fires and the rate
+        // The cadence expires (10 s): the next probe fires and the rate
         // re-enters the band.
-        for _ in 0..<130 {
+        for _ in 0..<360 {
             driver.beat(bottleneckMbps: 20)
         }
         XCTAssertGreaterThan(
@@ -3229,7 +3226,6 @@ final class RateEstimatorGateTests: XCTestCase {
         let estimator = makeEstimator {
             $0.ceilingBitsPerSecond = 50_000_000
             $0.initialRateBitsPerSecond = 20_000_000
-            $0.probeCadenceNS = 10_000_000_000
         }
         let driver = EstimatorDriver(self, estimator)
 
@@ -3267,34 +3263,6 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertGreaterThan(estimator.rateBitsPerSecond, rateBefore)
         XCTAssertEqual(estimator.stats.upshiftsCadenceHeld, heldBefore,
             "RECOVERY carried an old-path cadence band into the new path")
-    }
-
-    /// The headroom knob is honored: factor 1.5 parks the climb at
-    /// belief × 1.5 instead of the default 1.1.
-    func testProbeHeadroomKnobHonored() {
-        let estimator = makeEstimator {
-            $0.ceilingBitsPerSecond = 50_000_000
-            $0.initialRateBitsPerSecond = 20_000_000
-            $0.probeHeadroomFactor = 1.5
-        }
-        let driver = EstimatorDriver(self, estimator)
-        for _ in 0..<10 {
-            driver.beat(bottleneckMbps: 20)
-        }
-        for _ in 0..<400 {
-            driver.beat(bottleneckMbps: 20)
-        }
-        let belief = Double(estimator.capacityBeliefBitsPerSecond ?? 0)
-        let parked = Double(estimator.rateBitsPerSecond)
-        XCTAssertLessThanOrEqual(parked, belief * 1.5 + 0.1e6)
-        XCTAssertGreaterThanOrEqual(parked, belief * 1.3,
-            "factor 1.5 should park the climb well past the 1.1 default")
-
-        print("""
-            HS-29 gate (knob): factor 1.5 parked the climb at \
-            \(Int(parked) / 1_000) kbps over a \
-            \(Int(belief) / 1_000) kbps belief
-            """)
     }
 }
 

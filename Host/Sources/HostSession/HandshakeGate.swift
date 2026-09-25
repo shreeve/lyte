@@ -58,9 +58,6 @@ public struct HandshakeGate: Sendable {
         public var cookieExitThreshold: Int
         /// The sliding window the flood detector counts arrivals over.
         public var floodWindowNS: UInt64
-        /// How long a minted cookie verifies (RetryCookie's own default
-        /// is generous against Wi-Fi power-save latencies).
-        public var cookieLifetimeNS: UInt64
         /// Sustained verified-cookie admissions per second. Each honest
         /// client needs one; the budget caps the Noise work a cookie
         /// holder can buy.
@@ -79,7 +76,6 @@ public struct HandshakeGate: Sendable {
             cookieEnterThreshold: Int = 20,
             cookieExitThreshold: Int = 5,
             floodWindowNS: UInt64 = 1_000_000_000,
-            cookieLifetimeNS: UInt64 = RetryCookie.defaultLifetimeNanoseconds,
             cookieAdmissionsPerSecond: Int = 50,
             cookieAdmissionBurst: Int = 50,
             cookieAdmissionsPerAddressPerSecond: Int = 2
@@ -92,7 +88,6 @@ public struct HandshakeGate: Sendable {
                 max(cookieExitThreshold, 0), max(cookieEnterThreshold, 1) - 1
             )
             self.floodWindowNS = floodWindowNS
-            self.cookieLifetimeNS = cookieLifetimeNS
             self.cookieAdmissionsPerSecond = cookieAdmissionsPerSecond
             self.cookieAdmissionBurst = cookieAdmissionBurst
             self.cookieAdmissionsPerAddressPerSecond =
@@ -233,7 +228,8 @@ public struct HandshakeGate: Sendable {
                     message1: message1,
                     now: now,
                     secrets: [secret],
-                    lifetimeNanoseconds: config.cookieLifetimeNS
+                    lifetimeNanoseconds:
+                        RetryCookie.defaultLifetimeNanoseconds
                   )
             else {
                 cookiesRejected += 1

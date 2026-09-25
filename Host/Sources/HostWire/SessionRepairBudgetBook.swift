@@ -66,16 +66,13 @@ public struct SessionRepairBudgetBook: Equatable, Sendable {
         }
     }
 
-    /// The config override when present, otherwise the cadence-derived budget.
-    public func freezeBudgetNanoseconds(
-        override: UInt64?,
-        cadenceMultiplier: Double,
-        jitterAllowanceNanoseconds: UInt64
-    ) -> UInt64 {
+    /// The config override when present, otherwise 1.5 × the observed
+    /// cadence (50 ms before any) plus a 15 ms scheduling-jitter
+    /// allowance.
+    public func freezeBudgetNanoseconds(override: UInt64?) -> UInt64 {
         if let override { return override }
         let cadence = observedFeedbackCadenceNanoseconds ?? 50_000_000
-        let scaled = UInt64(cadenceMultiplier * Double(cadence))
-        return scaled &+ jitterAllowanceNanoseconds
+        return cadence * 3 / 2 + 15_000_000
     }
 
     /// Whether this repair may bypass the ordinary freeze-budget gate.

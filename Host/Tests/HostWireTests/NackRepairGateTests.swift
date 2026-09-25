@@ -831,11 +831,10 @@ final class NackRepairGateTests: XCTestCase {
     }
 
     func testEstimatorPostFecLossDownshiftsAndStepsRegime() throws {
-        var config = RateEstimatorConfig(
-            ceilingBitsPerSecond: Self.ceiling
+        let estimator = RateEstimator(
+            config: RateEstimatorConfig(ceilingBitsPerSecond: Self.ceiling),
+            now: 0
         )
-        config.regimeStepDownHoldNS = 1_000 * Self.ms
-        let estimator = RateEstimator(config: config, now: 0)
 
         func report(
             received: UInt32, nackFrame: UInt32? = nil,
@@ -896,7 +895,7 @@ final class NackRepairGateTests: XCTestCase {
         // the regime steps back down.
         var stepDown: FecRegime?
         var received: UInt32 = 300
-        for beat in 1...30 {
+        for beat in 1...70 {
             received += 100
             let v = estimator.ingest(
                 try report(received: received,
@@ -913,11 +912,10 @@ final class NackRepairGateTests: XCTestCase {
     }
 
     func testNackEvidenceHoldsRecoveryWindows() throws {
-        var config = RateEstimatorConfig(
-            ceilingBitsPerSecond: Self.ceiling
+        let estimator = RateEstimator(
+            config: RateEstimatorConfig(ceilingBitsPerSecond: Self.ceiling),
+            now: 0
         )
-        config.recoveryWindowNS = 25 * Self.ms
-        let estimator = RateEstimator(config: config, now: 0)
 
         func report(
             nacked: Bool, frame: UInt32, clientMicros: UInt64

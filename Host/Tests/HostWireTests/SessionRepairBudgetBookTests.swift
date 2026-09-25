@@ -24,11 +24,7 @@ final class SessionRepairBudgetBookTests: XCTestCase {
 
     func testCadenceSamplesClampThenEwmaAndDeriveTheBudget() {
         var book = SessionRepairBudgetBook()
-        XCTAssertEqual(book.freezeBudgetNanoseconds(
-            override: nil,
-            cadenceMultiplier: 1.5,
-            jitterAllowanceNanoseconds: 15_000_000
-        ), 90_000_000)
+        XCTAssertEqual(book.freezeBudgetNanoseconds(override: nil), 90_000_000)
 
         book.noteFeedback(report(), now: 0)
         XCTAssertNil(book.observedFeedbackCadenceNanoseconds)
@@ -36,16 +32,8 @@ final class SessionRepairBudgetBookTests: XCTestCase {
         XCTAssertEqual(book.observedFeedbackCadenceNanoseconds, 25_000_000)
         book.noteFeedback(report(), now: 100_000_000)
         XCTAssertEqual(book.observedFeedbackCadenceNanoseconds, 28_125_000)
-        XCTAssertEqual(book.freezeBudgetNanoseconds(
-            override: nil,
-            cadenceMultiplier: 2,
-            jitterAllowanceNanoseconds: 5_000_000
-        ), 61_250_000)
-        XCTAssertEqual(book.freezeBudgetNanoseconds(
-            override: 123,
-            cadenceMultiplier: 2,
-            jitterAllowanceNanoseconds: 5_000_000
-        ), 123)
+        XCTAssertEqual(book.freezeBudgetNanoseconds(override: nil), 57_187_500)
+        XCTAssertEqual(book.freezeBudgetNanoseconds(override: 123), 123)
     }
 
     func testOpeningGeometryIsFirstOnlyAndGlassEvidenceIsSticky() {
