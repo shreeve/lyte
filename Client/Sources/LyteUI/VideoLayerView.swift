@@ -29,6 +29,15 @@ public final class VideoLayerView: NSView {
         didSet { window?.invalidateCursorRects(for: self) }
     }
 
+    /// Called after every size change, so size-dependent dressing (the
+    /// host cursor's scale) re-fits.
+    public var onResize: (@MainActor () -> Void)?
+
+    public override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        onResize?()
+    }
+
     public override func resetCursorRects() {
         if let hostCursor {
             addCursorRect(bounds, cursor: hostCursor)
