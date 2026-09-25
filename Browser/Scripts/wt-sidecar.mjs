@@ -165,16 +165,27 @@ const MAX_PENDING_AGE_MS = 50;
 const MAX_PENDING_WT_WRITES = 256;
 const MAX_SESSIONS = 8;
 
+// A session that relays nothing either way for this long is closed, so a
+// stalled handshake or an abandoned session cannot hold a slot.
+const IDLE_TIMEOUT_MS = 10_000;
+
 /**
  * One WebTransport session ↔ its own UDP socket, so each session has its own
  * 4-tuple toward the peer and hears only the peer's replies to it.
  */
 async function relaySession(session, host, destination) {
-  await session.ready;
-  const relay = await listenUdp(host);
-  const writer = session.datagrams.writable.getWriter();
-  const reader = session.datagrams.readable.getReader();
+  let lastActivity = performance.now();
+  let expire;
+  const expired = new Promise((_, reject) => (expire = reject));
+  expired.catch(() => {});
+  const idle = setInterval(() => {
+    if (performance.now() - lastActivity < IDLE_TIMEOUT_MS) return;
+    session.close?.({ closeCode: 0, reason: "idle" });
+    expire(new Error("idle"));
+  }, 1_000);
   const pending = [];
+  let relay = null;
+  let writer = null;
   let open = true;
   let draining = false;
   let udpIn = 0;
@@ -212,29 +223,36 @@ async function relaySession(session, host, destination) {
     }
   };
 
-  relay.on("message", (msg, rinfo) => {
-    if (rinfo.port !== destination.port || rinfo.address !== destination.address) return;
-    udpIn += 1;
-    if (pending.length >= MAX_PENDING_WT_WRITES) {
-      pending.shift();
-      dropped += 1;
-    }
-    pending.push({ bytes: new Uint8Array(msg), queuedAt: performance.now() });
-    void drainWrites();
-  });
+  try {
+    await Promise.race([session.ready, expired]);
+    relay = await listenUdp(host);
+    writer = session.datagrams.writable.getWriter();
+    const reader = session.datagrams.readable.getReader();
 
-  session.closed
-    ?.catch(() => {})
-    .finally(() => {
-      open = false;
-      pending.length = 0;
+    relay.on("message", (msg, rinfo) => {
+      if (rinfo.port !== destination.port || rinfo.address !== destination.address) return;
+      udpIn += 1;
+      lastActivity = performance.now();
+      if (pending.length >= MAX_PENDING_WT_WRITES) {
+        pending.shift();
+        dropped += 1;
+      }
+      pending.push({ bytes: new Uint8Array(msg), queuedAt: performance.now() });
+      void drainWrites();
     });
 
-  try {
+    session.closed
+      ?.catch(() => {})
+      .finally(() => {
+        open = false;
+        pending.length = 0;
+      });
+
     for (;;) {
-      const { value, done } = await reader.read();
+      const { value, done } = await Promise.race([reader.read(), expired]);
       if (done) break;
       if (!value) continue;
+      lastActivity = performance.now();
       await new Promise((resolve, reject) => {
         relay.send(value, destination.port, destination.host, (err) =>
           err ? reject(err) : resolve()
@@ -242,12 +260,13 @@ async function relaySession(session, host, destination) {
       });
     }
   } catch {
-    // Session closed or reset.
+    // Session closed, reset or idle.
   } finally {
+    clearInterval(idle);
     open = false;
-    relay.close();
+    relay?.close();
     try {
-      writer.releaseLock();
+      writer?.releaseLock();
     } catch {
       /* already released */
     }
