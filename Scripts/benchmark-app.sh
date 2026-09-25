@@ -449,7 +449,7 @@ trap 'handle_signal 143' TERM
 start_motion() {
   local run_id="$1"
   local freeze="${2:-}"
-  local monitor_state discovered refresh scale summary
+  local monitor_state discovered scale summary
   local presenter="$ROOT/Scripts/motion-presenter.py"
   local definition="$ROOT/Scripts/motion-definition.json"
   refuse_if_lyte_is_running
@@ -472,9 +472,9 @@ logical = re.search(
 )
 if not mode or not logical:
     raise SystemExit("no current physical/logical monitor state")
-print(mode.group(1), mode.group(2), mode.group(3), logical.group(3))
+print(mode.group(1), mode.group(2), logical.group(3))
 ')"
-  read -r QUALITY_WIDTH QUALITY_HEIGHT refresh scale <<< "$discovered"
+  read -r QUALITY_WIDTH QUALITY_HEIGHT scale <<< "$discovered"
   pup_ssh \
     'python3 -c '"'"'import gi, numpy
 gi.require_version("Gdk", "4.0")
@@ -504,7 +504,7 @@ gi.require_version("Gtk", "4.0")
 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
 WAYLAND_DISPLAY=wayland-0 nohup python3 '$REMOTE_MOTION_PRESENTER' \
 --definition '$REMOTE_MOTION_DEFINITION' \
---width '$QUALITY_WIDTH' --height '$QUALITY_HEIGHT' --refresh '$refresh' \
+--width '$QUALITY_WIDTH' --height '$QUALITY_HEIGHT' \
 ${freeze:+--freeze $freeze} \
 --log '$REMOTE_MOTION_LOG' >'$REMOTE_MOTION_LOG.stderr' 2>&1 & echo \$!")"
   [[ "$PRESENTER_PID" =~ ^[0-9]+$ ]] || {

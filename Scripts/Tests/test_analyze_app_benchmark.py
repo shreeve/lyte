@@ -602,10 +602,10 @@ class TwinRendererPinTests(unittest.TestCase):
 
     These digests are the same constants asserted by
     SyntheticMotionReferenceTests.testTwinRenderersAgreeByteForByte in
-    the Swift suite. MotionFrames (the numpy twin of the GTK canvas)
-    and the client's SyntheticMotionReference must render the authored
-    frame byte-for-byte; a drift in either renderer moves exactly one
-    side of the pin and both suites fail.
+    the Swift suite. MotionFrames (numpy, painting the shape list the GTK
+    canvas paints) and the client's SyntheticMotionReference must render
+    the authored frame byte-for-byte; a drift in either renderer moves
+    exactly one side of the pin and both suites fail.
     """
 
     PINS = {
