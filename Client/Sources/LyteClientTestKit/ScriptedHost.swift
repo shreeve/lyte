@@ -4,18 +4,25 @@ import LyteTransport
 import LyteWire
 import LyteWireTestKit
 
+/// What a `ClientCoreHarness` needs of the host it dials: an in-process
+/// Noise handshake answerer, its static key, and a sink for client
+/// datagrams.
+public protocol CoreHarnessHost: AnyObject, NoiseHandshakeIO {
+    var staticKeys: NoiseKeyPair { get }
+    /// One client datagram, judged by the gate.
+    func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws
+}
+
 /// A scripted host for client gates: a `SealedCtrlPeer` responder that
 /// answers the client's pre-thread Noise handshake in process, then
 /// speaks sealed CTRL (and chan 8) with whatever evidence the gate keeps.
-public protocol ScriptedHost: AnyObject, NoiseHandshakeIO {
+public protocol ScriptedHost: CoreHarnessHost {
     var peer: SealedCtrlPeer<HostClock> { get set }
     /// Message 2 waiting for the client's handshake read.
     var handshakeOutbox: [[UInt8]] { get set }
     /// Runs once the responder transport exists, before message 2 is
     /// read — where a host queues its first reliable word.
     func didEstablish() throws
-    /// One client datagram, judged by the gate.
-    func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws
     /// Grows whenever the host records evidence; `settle` stops once
     /// nothing moves.
     var progressMark: Int { get }
@@ -141,13 +148,17 @@ public final class ManualMicrosClock: Sendable {
 private final class CoreCollected: @unchecked Sendable {
     var outbound: [[UInt8]] = []
     var events: [LyteUdpSessionEvent] = []
+    var samples: [DecodeUnit] = []
+    var recoveryDemands: [(VideoRecoveryCause, FrameNumber)] = []
+    var recoveryTrace: [VideoRecoveryTraceEvent] = []
 }
 
 /// The REAL `LyteUdpSessionCore` minus the socket, on a virtual clock,
-/// piped directly to a `ScriptedHost`: the handshake runs through the
-/// production `NoiseTransportCrypto`, outbound datagrams collect in
-/// `outbound`, and `settle` shuttles both ways until quiet.
-public final class ClientCoreHarness<Host: ScriptedHost>: @unchecked Sendable {
+/// piped directly to its host: the handshake runs through the production
+/// `NoiseTransportCrypto`, outbound datagrams collect in `outbound`, what
+/// the core delivers and every recovery demand and trace are kept, and
+/// with a `ScriptedHost` `settle` shuttles both ways until quiet.
+public final class ClientCoreHarness<Host: CoreHarnessHost>: @unchecked Sendable {
     public let host: Host
     public let crypto: NoiseTransportCrypto
     public let demux: ReceiveDemux
@@ -189,7 +200,11 @@ public final class ClientCoreHarness<Host: ScriptedHost>: @unchecked Sendable {
             config: coreConfig,
             now: { ClientTimestamp(microseconds: clock.value) },
             imageHasher: imageHasher,
-            videoSink: HeadlessVideoSink(),
+            onVideoRecoveryDemand: { collected.recoveryDemands.append(($0, $1)) },
+            onVideoRecoveryTrace: { collected.recoveryTrace.append($0) },
+            videoSink: HeadlessVideoSink(receive: { _, unit in
+                collected.samples.append(unit)
+            }),
             onEvent: { event in collected.events.append(event) })
     }
 
@@ -202,13 +217,24 @@ public final class ClientCoreHarness<Host: ScriptedHost>: @unchecked Sendable {
         set { collected.events = newValue }
     }
 
+    /// Units the core delivered to its video sink, in order.
+    public var samples: [DecodeUnit] { collected.samples }
+    public var recoveryDemands: [(VideoRecoveryCause, FrameNumber)] {
+        collected.recoveryDemands
+    }
+    public var recoveryTrace: [VideoRecoveryTraceEvent] {
+        collected.recoveryTrace
+    }
+
     /// One host datagram through the real receive path.
-    public func absorb(_ bytes: [UInt8], tMicros: UInt64) {
+    @discardableResult
+    public func absorb(_ bytes: [UInt8], tMicros: UInt64) -> IngestOutcome {
         let outcome = demux.ingest(
             datagram: bytes[...], arrivalMicroseconds: tMicros)
         if case .accepted = outcome {
             core.handleDatagram(outcome, arrivalMicroseconds: tMicros)
         }
+        return outcome
     }
 
     /// Hands every not-yet-forwarded client datagram to the host.
@@ -218,7 +244,9 @@ public final class ClientCoreHarness<Host: ScriptedHost>: @unchecked Sendable {
             forwarded += 1
         }
     }
+}
 
+extension ClientCoreHarness where Host: ScriptedHost {
     /// Opens the core at 1 ms (its declaration leaves) and settles;
     /// returns the settled instant.
     @discardableResult

@@ -1,88 +1,61 @@
 import XCTest
-import Foundation
 import LyteClientTestKit
 import LyteTransport
 import LyteWire
 
-/// The REAL native client core on one guarded virtual clock, wired to a
-/// `SystemHostSession`: the handshake runs through the production
-/// `NoiseTransportCrypto`, host datagrams enter through the real
-/// `ReceiveDemux`, and everything the client sends collects in `outbound`.
-final class SystemClient: @unchecked Sendable {
-    let host: SystemHostSession
-    let crypto: NoiseTransportCrypto
-    let demux: ReceiveDemux
-    var core: LyteUdpSessionCore!
-    let outbound = LockedBytePile()
-    let clock = SystemClientClock()
-    var samples: [DecodeUnit] = []
-    var notes: [String] = []
-    var recoveryDemands: [(VideoRecoveryCause, FrameNumber)] = []
-    var recoveryTrace: [VideoRecoveryTraceEvent] = []
+/// The REAL native client core on one guarded virtual clock, dialed into a
+/// `SystemHostSession`: the kit's core harness, whose host is the real
+/// HostWire session.
+typealias SystemClient = ClientCoreHarness<SystemHostSession>
 
-    init(
+extension SystemHostSession: CoreHarnessHost {
+    func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
+        try absorb(bytes, clientMicros: nowMicros)
+    }
+}
+
+extension ClientCoreHarness where Host == SystemHostSession {
+    convenience init(
         host: SystemHostSession,
         coreConfig: LyteUdpSessionCoreConfig = LyteUdpSessionCoreConfig()
     ) throws {
-        self.host = host
-        let crypto = try NoiseTransportCrypto(
-            hostAddress: "10.0.0.249", hostPort: 41_081,
-            hostStaticPublicKey: host.staticKeys.publicKey,
-            staticKeys: NoiseKeyPair.generate(),
-            retry: .init(attempts: 3, intervalMicroseconds: 200_000))
-        try crypto.performHandshake(io: host)
-        self.crypto = crypto
-        self.demux = ReceiveDemux(crypto: crypto)
-        let outbound = self.outbound
-        let clock = self.clock
-        let sender = TransportSender(crypto: crypto, transmit: {
-            outbound.append($0)
-            return true
-        })
-        self.core = LyteUdpSessionCore(
-            demux: demux,
-            sender: sender,
-            config: coreConfig,
-            now: { ClientTimestamp(microseconds: clock.value) },
-            onVideoRecoveryDemand: { [weak self] cause, frame in
-                self?.recoveryDemands.append((cause, frame))
-            },
-            onVideoRecoveryTrace: { [weak self] event in
-                self?.recoveryTrace.append(event)
-            },
-            videoSink: HeadlessVideoSink(receive: {
-                [weak self] _, unit in
-                self?.samples.append(unit)
-            }),
-            onEvent: { [weak self] event in
-                if case .protocolNote(let note) = event {
-                    self?.notes.append(note)
-                }
-            })
+        try self.init(host: host, hostPort: 41_081, coreConfig: coreConfig)
     }
 
-    func absorb(_ bytes: [UInt8], tMicros: UInt64) {
+    var notes: [String] {
+        events.compactMap {
+            guard case .protocolNote(let note) = $0 else { return nil }
+            return note
+        }
+    }
+
+    /// One host datagram, arriving no earlier than the host sent it; the
+    /// client clock moves to the arrival. Anything but acceptance or a
+    /// superseded key fails the test.
+    func deliver(_ bytes: [UInt8], at tMicros: UInt64) {
         let arrival = max(tMicros, host.nowMicroseconds)
         clock.advance(to: arrival)
-        let outcome = demux.ingest(
-            datagram: bytes[...], arrivalMicroseconds: arrival)
-        switch outcome {
-        case .accepted:
-            core.handleDatagram(outcome, arrivalMicroseconds: arrival)
-        case .unsealFailed:
+        switch absorb(bytes, tMicros: arrival) {
+        case .accepted, .unsealFailed:
             break
-        default:
+        case let outcome:
             XCTFail("host datagram refused: \(outcome)")
+        }
+    }
+
+    /// Frame `number`, packetized by the host at `t`, delivered whole.
+    func deliverFrame(_ annexB: [UInt8], number: UInt32, at t: UInt64) throws {
+        for datagram in try host.videoDatagrams(
+            annexB: annexB, frameNumber: number, hostMicros: t
+        ) {
+            deliver(datagram, at: t)
         }
     }
 
     /// Forwards everything the client sent to the host, in order.
     func pumpOutboundToHost(forwarded: inout Int) throws {
         while forwarded < outbound.count {
-            try host.absorb(
-                outbound.all[forwarded],
-                clientMicros: clock.value
-            )
+            try host.absorb(outbound[forwarded], clientMicros: clock.value)
             forwarded += 1
         }
     }
@@ -92,45 +65,23 @@ final class SystemClient: @unchecked Sendable {
     /// path and seeds the host's actual SRTT estimator.
     func settleStartup(forwarded: inout Int, at t: UInt64) throws {
         clock.advance(to: t)
-        for datagram in host.takeControlDatagrams(
-            maxAdvanceNS: 5_000_000
-        ) {
-            absorb(datagram, tMicros: t)
+        for datagram in host.takeControlDatagrams(maxAdvanceNS: 5_000_000) {
+            deliver(datagram, at: t)
         }
         try pumpOutboundToHost(forwarded: &forwarded)
         XCTAssertNotNil(
             host.session.srttMicroseconds,
-            "the real startup beacon/echo must seed host SRTT"
-        )
+            "the real startup beacon/echo must seed host SRTT")
     }
 }
 
-final class SystemClientClock: @unchecked Sendable {
-    private let lock = NSLock()
-    private var stored: UInt64 = 1_000
-    var value: UInt64 {
-        lock.lock()
-        defer { lock.unlock() }
-        return stored
-    }
-
+extension ManualMicrosClock {
+    /// Moves forward to `next`; a retreat fails the test and holds.
     func advance(
-        to next: UInt64,
-        file: StaticString = #filePath,
-        line: UInt = #line
+        to next: UInt64, file: StaticString = #filePath, line: UInt = #line
     ) {
-        lock.lock()
-        guard next >= stored else {
-            let previous = stored
-            lock.unlock()
-            XCTFail(
-                "client clock retreated from \(previous) to \(next)",
-                file: file,
-                line: line
-            )
-            return
-        }
-        stored = next
-        lock.unlock()
+        XCTAssertGreaterThanOrEqual(
+            next, value, "client clock retreated", file: file, line: line)
+        value = max(value, next)
     }
 }
