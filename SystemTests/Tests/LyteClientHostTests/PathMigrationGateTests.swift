@@ -29,7 +29,7 @@ final class PathMigrationGateTests: XCTestCase {
 
         // The Mac changes networks: every later datagram arrives from the
         // new tuple. A reliable word carries the learned conn-id tag.
-        host.clientTuple = Self.roamedTuple
+        host.harness.tuple = Self.roamedTuple
         t += 10_000
         client.clock.advance(to: t)
         try client.core.sendInput(

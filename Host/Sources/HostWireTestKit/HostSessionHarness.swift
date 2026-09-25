@@ -146,6 +146,43 @@ public final class HostSessionHarness {
         return events
     }
 
+    /// Runs the session's timers wake by wake, each rounded up to a whole
+    /// µs and at least 1 µs on, until `done` or the next wake passes
+    /// virtual µs `horizon`; returns their events.
+    @discardableResult
+    public func service(
+        t: inout UInt64, through horizon: UInt64,
+        until done: () -> Bool = { false }
+    ) -> [SessionEvent] {
+        var events: [SessionEvent] = []
+        currentSession?.pump(now: t * 1_000)
+        while !done(), let wake = currentSession?.nextWake(now: t * 1_000) {
+            let next = max(t + 1, (wake + 999) / 1_000)
+            guard next <= horizon else { break }
+            t = next
+            events += advance(to: t)
+        }
+        return events
+    }
+
+    /// Removes and returns, in order, the not-yet-forwarded datagrams
+    /// `selectedBy` picks; the rest stay queued for `deliver`.
+    public func take(
+        where selectedBy: (VideoChannelDatagram) -> Bool
+    ) -> [VideoChannelDatagram] {
+        let pending = outbox.datagrams[forwarded...]
+        outbox.datagrams.removeSubrange(forwarded...)
+        var taken: [VideoChannelDatagram] = []
+        for datagram in pending {
+            if selectedBy(datagram) {
+                taken.append(datagram)
+            } else {
+                outbox.datagrams.append(datagram)
+            }
+        }
+        return taken
+    }
+
     /// Hands every not-yet-forwarded datagram to the client.
     public func deliver<Client: HostSessionClient>(
         to client: inout Client, at t: UInt64
