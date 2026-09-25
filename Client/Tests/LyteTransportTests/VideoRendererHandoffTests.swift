@@ -47,8 +47,9 @@ final class VideoRendererHandoffTests: XCTestCase {
     func testTheGateClosingIrapEndsTheCoresEpisode() throws {
         let rig = Rig()
         let core = rig.bindCore()
-        core.requestVideoRecovery(
-            after: FrameNumber(rawValue: 11), cause: .fecAssemblerDamage)
+        core.beginVideoRecovery(
+            cause: .fecAssemblerDamage, frame: FrameNumber(rawValue: 11),
+            now: Rig.coreNow)
         rig.barrier()
         try rig.submit(frame: 12, idr: true, bytes: corpus[0])
         rig.barrier()
@@ -73,8 +74,9 @@ final class VideoRendererHandoffTests: XCTestCase {
 
         rig.queue.suspend()
         rig.renderer.becomeReady()
-        core.requestVideoRecovery(
-            after: FrameNumber(rawValue: 11), cause: .fecAssemblerDamage)
+        core.beginVideoRecovery(
+            cause: .fecAssemblerDamage, frame: FrameNumber(rawValue: 11),
+            now: Rig.coreNow)
         rig.queue.resume()
         rig.barrier()
 
@@ -98,8 +100,9 @@ final class VideoRendererHandoffTests: XCTestCase {
     func testAGateReopenedAfterItsIrapClosedTheEpisodeReassertsIt() throws {
         let rig = Rig()
         let core = rig.bindCore()
-        core.requestVideoRecovery(
-            after: FrameNumber(rawValue: 5), cause: .fecAssemblerDamage)
+        core.beginVideoRecovery(
+            cause: .fecAssemblerDamage, frame: FrameNumber(rawValue: 5),
+            now: Rig.coreNow)
         rig.barrier()
         rig.renderer.ready = false
         try rig.submit(frame: 12, idr: true, bytes: corpus[0])
@@ -107,8 +110,9 @@ final class VideoRendererHandoffTests: XCTestCase {
 
         rig.queue.suspend()
         rig.renderer.becomeReady()
-        core.requestVideoRecovery(
-            after: FrameNumber(rawValue: 11), cause: .fecAssemblerDamage)
+        core.beginVideoRecovery(
+            cause: .fecAssemblerDamage, frame: FrameNumber(rawValue: 11),
+            now: Rig.coreNow)
         rig.queue.resume()
         rig.barrier()
 
@@ -118,6 +122,46 @@ final class VideoRendererHandoffTests: XCTestCase {
                       "the handoff awaits an IRAP the core stopped asking for")
         XCTAssertEqual(stats.episodesStarted, 2)
         XCTAssertEqual(stats.requestsSent, 2)
+    }
+
+    /// An IRAP that finds the renderer failed answers the flush it trips:
+    /// it is enqueued once the flush completes, and no IDR is requested.
+    func testAnIrapThatTripsAFlushHealsItWithoutARequest() throws {
+        let rig = Rig()
+        let core = rig.bindCore()
+        try rig.submit(frame: 1, idr: true, bytes: corpus[0])
+        rig.barrier()
+        rig.renderer.failed = true
+        try rig.submit(frame: 2, idr: true, bytes: corpus[0])
+        rig.barrier()
+
+        XCTAssertEqual(rig.renderer.recoveryFlushes, 1)
+        XCTAssertEqual(rig.renderer.enqueuedFrames(), [1, 2])
+        XCTAssertEqual(rig.peer.gateClosingIraps, [2])
+        let stats = core.idrRequester.snapshotStats()
+        XCTAssertEqual(stats.requestsSent, 0)
+        XCTAssertFalse(stats.recoveryOutstanding)
+    }
+
+    /// A P-frame that trips the flush asks once, the handoff's own demand
+    /// is not echoed back into it, and the next IRAP closes both gates.
+    func testAPFrameThatTripsAFlushAsksOnceAndTheNextIrapHeals() throws {
+        let rig = Rig()
+        let core = rig.bindCore()
+        try rig.submit(frame: 1, idr: true, bytes: corpus[0])
+        rig.barrier()
+        rig.renderer.failed = true
+        try rig.submit(frame: 2, idr: false, bytes: corpus[1])
+        rig.barrier()
+        try rig.submit(frame: 3, idr: true, bytes: corpus[0])
+        rig.barrier()
+
+        XCTAssertEqual(rig.renderer.recoveryFlushes, 1)
+        XCTAssertEqual(rig.renderer.enqueuedFrames(), [1, 3])
+        XCTAssertEqual(rig.peer.recoveryRequests.map(\.frame), [2])
+        let stats = core.idrRequester.snapshotStats()
+        XCTAssertEqual(stats.requestsSent, 1)
+        XCTAssertFalse(stats.recoveryOutstanding)
     }
 
     func testBackpressureQueuesInOrderUntilTheRendererAsks() throws {
@@ -421,7 +465,14 @@ private final class ScriptedRenderer: VideoRendererPort, @unchecked Sendable {
     private var _ready = true
     private var _recoveryFlushes = 0
     private var _plainFlushes = 0
+    private var _failed = false
     var holdRecoveryFlush = false
+
+    /// Reports `.failed` until the next recovery flush, as AVFoundation does.
+    var failed: Bool {
+        get { lock.withLock { _failed } }
+        set { lock.withLock { _failed = newValue } }
+    }
 
     var ready: Bool {
         get { lock.withLock { _ready } }
@@ -473,7 +524,7 @@ private final class ScriptedRenderer: VideoRendererPort, @unchecked Sendable {
     // MARK: VideoRendererPort
 
     var isReadyForMoreMediaData: Bool { ready }
-    var status: AVQueuedSampleBufferRenderingStatus { .rendering }
+    var status: AVQueuedSampleBufferRenderingStatus { failed ? .failed : .rendering }
     var error: (any Error)? { nil }
 
     func enqueue(_ sampleBuffer: CMSampleBuffer) {
@@ -487,6 +538,7 @@ private final class ScriptedRenderer: VideoRendererPort, @unchecked Sendable {
     func flush(removingDisplayedImage: Bool, completionHandler: (@Sendable () -> Void)?) {
         let hold = lock.withLock { () -> Bool in
             _recoveryFlushes += 1
+            _failed = false
             if holdRecoveryFlush { heldFlush = completionHandler }
             return holdRecoveryFlush
         }

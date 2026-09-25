@@ -146,8 +146,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             onSampleFailure: { [weak self] frame in
                 // The frame never reaches the renderer, so the chain after
                 // it cannot decode: the same coalesced IDR recovery.
-                self?.requestVideoRecovery(
-                    after: frame, cause: .rendererFailure)
+                guard let self else { return }
+                self.beginVideoRecovery(
+                    cause: .rendererFailure, frame: frame, now: self.now())
             })
         self.reliable = ReliableCtrlEndpoint(
             sender: sender,
@@ -359,12 +360,14 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         try input.send(body, captured: captured, now: now())
     }
 
-    /// Renderer failure/backpressure joins the coalesced IDR recovery.
+    /// Renderer failure/backpressure joins the coalesced IDR recovery. The
+    /// handoff raised it and already awaits an IRAP, so it is not told.
     public func requestVideoRecovery(
         after frame: FrameNumber,
         cause: VideoRecoveryCause = .rendererFailure
     ) {
-        beginVideoRecovery(cause: cause, frame: frame, now: now())
+        beginVideoRecovery(
+            cause: cause, frame: frame, now: now(), notifyHandoff: false)
     }
 
     /// The sole close seam: AVFoundation accepted the IRAP into its queue.
@@ -403,10 +406,14 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             cause: cause))
     }
 
-    private func beginVideoRecovery(
+    /// Damage found upstream of the handoff opens its gate too
+    /// (`notifyHandoff`); a demand the handoff raised is never echoed back
+    /// into it, where it would discard the IRAP it already holds.
+    func beginVideoRecovery(
         cause: VideoRecoveryCause,
         frame: FrameNumber,
-        now: ClientTimestamp
+        now: ClientTimestamp,
+        notifyHandoff: Bool = true
     ) {
         // The episode gates this core's render seam at once; the
         // handoff's own gate follows before any later sink submit.
@@ -415,7 +422,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             kind: overlap ? "coreDamageOverlap" : "coreDamageKnown",
             frame: frame,
             cause: cause))
-        onVideoRecoveryDemand(cause, frame)
+        if notifyHandoff { onVideoRecoveryDemand(cause, frame) }
     }
 
     // MARK: Host audio routing

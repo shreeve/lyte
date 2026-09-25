@@ -176,8 +176,8 @@ final class AudioDetectorGateTests: XCTestCase {
         XCTAssertEqual(stats.episodesStarted, 1)
         XCTAssertEqual(stats.requestsSent, 1)
         XCTAssertTrue(stats.recoveryOutstanding)
-        XCTAssertEqual(
-            demands.all.map(\.0), [.rendererFailure, .rendererBackpressure])
+        XCTAssertTrue(demands.all.isEmpty,
+                      "the handoff raised these demands; none echo back to it")
 
         // Assembly cannot close recovery. Only the handoff's post-enqueue
         // callback does.

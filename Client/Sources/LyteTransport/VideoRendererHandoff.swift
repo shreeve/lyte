@@ -271,10 +271,12 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
                 awaitingRandomAccess: policy.awaitingRandomAccess,
                 randomAccessPending: policy.randomAccessPending,
                 pendingCount: policy.count)
+            // An IRAP in hand answers the flush it trips.
             process(
                 policy.failEpisode(),
                 recoveryFrame: pending.unit.frameNumber,
-                cause: cause)
+                cause: cause,
+                requestRecovery: !pending.unit.isIDR)
         }
 
         let now = SystemMonotonicClock.nowMicroseconds
