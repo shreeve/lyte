@@ -68,6 +68,14 @@ test("Meta and Meta chords stay with the browser", () => {
   assert.deepEqual(sent, []);
 });
 
+test("volume keys stay with the listener's own machine, as in the native client", () => {
+  const events = ["AudioVolumeMute", "AudioVolumeDown", "AudioVolumeUp"].flatMap((code) => [
+    ["keydown", { code }],
+    ["keyup", { code }],
+  ]);
+  assert.deepEqual(replay(events).sent, []);
+});
+
 test("chorded buttons that arrive as pointermove balance on the host", () => {
   // Pointer Events: pointerdown for the first press, pointerup for the
   // last release, pointermove for every edge between.
