@@ -13,7 +13,8 @@ public struct SealedCtrlPeer<ClockDomain>: Sendable {
         /// Initiator only: bare message 2 completed the handshake.
         case handshakeCompleted
         /// The transport's replay window refused it (a network
-        /// duplicate or a stale sequence) — routine, never an error.
+        /// duplicate or a stale sequence), or it repeats the bare message 2
+        /// that completed the handshake — routine, never an error.
         case duplicate
         /// ARQ bytes (the opened plaintext), ingested by the envelope
         /// channel's endpoint. Ordered CTRL messages are already appended
@@ -243,9 +244,13 @@ public struct SealedCtrlPeer<ClockDomain>: Sendable {
                 return .unopened(envelope)
             }
         }
-        guard let (envelope, plaintext) = try open(bytes) else {
+        let opened: (envelope: Envelope, plaintext: [UInt8])?
+        do {
+            opened = try open(bytes)
+        } catch _ where role == .initiator && Self.isBareMessage2(bytes) {
             return .duplicate
         }
+        guard let (envelope, plaintext) = opened else { return .duplicate }
         guard plaintext.first == CtrlMessageType.arqSegment
                 || plaintext.first == CtrlMessageType.arqAck
         else { return .plain(envelope, plaintext) }
@@ -263,6 +268,16 @@ public struct SealedCtrlPeer<ClockDomain>: Sendable {
         default:
             return .plain(envelope, plaintext)
         }
+    }
+
+    /// A bare CTRL message 2: after establishment, a network duplicate of
+    /// the datagram that completed the handshake.
+    private static func isBareMessage2(_ bytes: [UInt8]) -> Bool {
+        guard let (envelope, payload) = try? Envelope.decode(bytes) else {
+            return false
+        }
+        return envelope.channel == .ctrl
+            && payload.first == CtrlMessageType.noiseHandshake2
     }
 
     /// Removes and returns every received message whose type byte is
