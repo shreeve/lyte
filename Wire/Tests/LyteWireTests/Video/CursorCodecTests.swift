@@ -75,85 +75,68 @@ final class CursorCodecTests: XCTestCase {
 
     func testHostileCursorBytesRejectAndNeverTrap() {
         // Truncation: empty, and a half header.
-        XCTAssertThrowsError(try CursorShape.decode([])) {
-            XCTAssertEqual($0 as? CursorMessageError, .truncatedMessage)
+        assertThrows(CursorMessageError.truncatedMessage) {
+            try CursorShape.decode([])
         }
-        XCTAssertThrowsError(try CursorShape.decode(
-            [0x24, 0x01, 0x00, 0x01, 0x00]
-        )) {
-            XCTAssertEqual($0 as? CursorMessageError, .truncatedMessage)
+        assertThrows(CursorMessageError.truncatedMessage) {
+            try CursorShape.decode( [0x24, 0x01, 0x00, 0x01, 0x00] )
         }
         // Foreign type.
-        XCTAssertThrowsError(try CursorShape.decode(
-            [0x23, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
-        )) {
-            XCTAssertEqual(
-                $0 as? CursorMessageError, .unexpectedType(0x23)
+        assertThrows(CursorMessageError.unexpectedType(0x23)) {
+            try CursorShape.decode(
+                [0x23, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
             )
         }
         // A lone zero side, and a side past the cap (257 = 01 01).
-        XCTAssertThrowsError(try CursorShape.decode(
-            [0x24, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00]
-        )) {
-            XCTAssertEqual(
-                $0 as? CursorMessageError,
-                .invalidDimensions(width: 0, height: 2)
+        assertThrows(
+            CursorMessageError.invalidDimensions(width: 0, height: 2)
+        ) {
+            try CursorShape.decode(
+                [0x24, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00]
             )
         }
-        XCTAssertThrowsError(try CursorShape.decode(
-            [0x24, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00]
-        )) {
-            XCTAssertEqual(
-                $0 as? CursorMessageError,
-                .invalidDimensions(width: 257, height: 1)
+        assertThrows(
+            CursorMessageError.invalidDimensions(width: 257, height: 1)
+        ) {
+            try CursorShape.decode(
+                [0x24, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00]
             )
         }
         // Over-budget area, judged before the pixel count so hostile
         // bytes never oblige a 262 KB allocation to reject.
-        XCTAssertThrowsError(try CursorShape.decode(
-            [0x24, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00]
-        )) {
-            XCTAssertEqual(
-                $0 as? CursorMessageError,
-                .imageOverBudget(256 * 256 * 4)
+        assertThrows(CursorMessageError.imageOverBudget(256 * 256 * 4)) {
+            try CursorShape.decode(
+                [0x24, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00]
             )
         }
         // Count mismatch, short and long.
-        XCTAssertThrowsError(try CursorShape.decode(
-            [0x24, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
-             0xFF, 0x00, 0x00]
-        )) {
-            XCTAssertEqual(
-                $0 as? CursorMessageError,
-                .pixelCountMismatch(expected: 4, found: 3)
+        assertThrows(
+            CursorMessageError.pixelCountMismatch(expected: 4, found: 3)
+        ) {
+            try CursorShape.decode(
+                [0x24, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+                 0xFF, 0x00, 0x00]
             )
         }
-        XCTAssertThrowsError(try CursorShape.decode(
-            [0x24, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
-             0xFF, 0x00, 0x00, 0xFF, 0x00]
-        )) {
-            XCTAssertEqual(
-                $0 as? CursorMessageError,
-                .pixelCountMismatch(expected: 4, found: 5)
+        assertThrows(
+            CursorMessageError.pixelCountMismatch(expected: 4, found: 5)
+        ) {
+            try CursorShape.decode(
+                [0x24, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+                 0xFF, 0x00, 0x00, 0xFF, 0x00]
             )
         }
         // Hotspot at the edge (strictly-inside rule), and a hidden
         // shape claiming one.
-        XCTAssertThrowsError(try CursorShape(
-            width: 2, height: 2, hotspotX: 2, hotspotY: 0,
-            pixels: [UInt8](repeating: 0, count: 16)
-        ).encode()) {
-            XCTAssertEqual(
-                $0 as? CursorMessageError,
-                .hotspotOutsideImage(x: 2, y: 0)
-            )
+        assertThrows(CursorMessageError.hotspotOutsideImage(x: 2, y: 0)) {
+            try CursorShape(
+                width: 2, height: 2, hotspotX: 2, hotspotY: 0,
+                pixels: [UInt8](repeating: 0, count: 16)
+            ).encode()
         }
-        XCTAssertThrowsError(try CursorShape.decode(
-            [0x24, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00]
-        )) {
-            XCTAssertEqual(
-                $0 as? CursorMessageError,
-                .hotspotOutsideImage(x: 1, y: 0)
+        assertThrows(CursorMessageError.hotspotOutsideImage(x: 1, y: 0)) {
+            try CursorShape.decode(
+                [0x24, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00]
             )
         }
     }

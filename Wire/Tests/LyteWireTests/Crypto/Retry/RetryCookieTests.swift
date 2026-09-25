@@ -202,29 +202,23 @@ final class RetryCookieTests: XCTestCase {
     // MARK: Structural misuse of mint
 
     func testMintRejectsStructuralMisuse() {
-        XCTAssertThrowsError(try RetryCookie.mint(
-            clientTuple: Self.tuple, message1: Self.message1,
-            now: Self.now, secret: [1, 2, 3]
-        )) {
-            XCTAssertEqual(
-                $0 as? RetryCookieError, .invalidSecretLength(3)
+        assertThrows(RetryCookieError.invalidSecretLength(3)) {
+            try RetryCookie.mint(
+                clientTuple: Self.tuple, message1: Self.message1,
+                now: Self.now, secret: [1, 2, 3]
             )
         }
-        XCTAssertThrowsError(try RetryCookie.mint(
-            clientTuple: [], message1: Self.message1,
-            now: Self.now, secret: Self.secret
-        )) {
-            XCTAssertEqual(
-                $0 as? RetryCookieError, .invalidTupleLength(0)
+        assertThrows(RetryCookieError.invalidTupleLength(0)) {
+            try RetryCookie.mint(
+                clientTuple: [], message1: Self.message1,
+                now: Self.now, secret: Self.secret
             )
         }
-        XCTAssertThrowsError(try RetryCookie.mint(
-            clientTuple: [UInt8](repeating: 0, count: 256),
-            message1: Self.message1,
-            now: Self.now, secret: Self.secret
-        )) {
-            XCTAssertEqual(
-                $0 as? RetryCookieError, .invalidTupleLength(256)
+        assertThrows(RetryCookieError.invalidTupleLength(256)) {
+            try RetryCookie.mint(
+                clientTuple: [UInt8](repeating: 0, count: 256),
+                message1: Self.message1,
+                now: Self.now, secret: Self.secret
             )
         }
     }

@@ -76,29 +76,25 @@ final class SessionCodecTests: XCTestCase {
 
     func testConnectionIdDecodeIsLoudOnHostileValues() throws {
         // Wrong width: the W0 vector pins 8 bytes.
-        XCTAssertThrowsError(try ConnectionId(bytes: [1, 2, 3])) {
-            XCTAssertEqual(
-                $0 as? ConnectionIdError, .invalidValueLength(3)
-            )
+        assertThrows(ConnectionIdError.invalidValueLength(3)) {
+            try ConnectionId(bytes: [1, 2, 3])
         }
         // Two identity claims in one envelope is ambiguity, not a tie.
         let connId = makeConnectionId()
-        XCTAssertThrowsError(try ConnectionId.decode(extensions: [
-            connId.wireExtension,
-            makeConnectionId(seed: 0xBAD).wireExtension,
-        ])) {
-            XCTAssertEqual($0 as? ConnectionIdError, .duplicateTlv)
+        assertThrows(ConnectionIdError.duplicateTlv) {
+            try ConnectionId.decode(extensions: [
+                connId.wireExtension,
+                makeConnectionId(seed: 0xBAD).wireExtension,
+            ])
         }
         // A malformed value inside the reserved type is loud too.
-        XCTAssertThrowsError(try ConnectionId.decode(extensions: [
-            try WireExtension(
-                type: WireExtension.ReservedType.connectionId,
-                value: [0xAA]
-            )
-        ])) {
-            XCTAssertEqual(
-                $0 as? ConnectionIdError, .invalidValueLength(1)
-            )
+        assertThrows(ConnectionIdError.invalidValueLength(1)) {
+            try ConnectionId.decode(extensions: [
+                try WireExtension(
+                    type: WireExtension.ReservedType.connectionId,
+                    value: [0xAA]
+                )
+            ])
         }
     }
 
@@ -121,11 +117,10 @@ final class SessionCodecTests: XCTestCase {
         XCTAssertThrowsError(
             try PathChallenge.decode(Array(challengeWire.dropLast()))
         )
-        XCTAssertThrowsError(try PathResponse.decode(challengeWire)) {
-            XCTAssertEqual(
-                $0 as? PathMessageError,
-                .unexpectedType(CtrlMessageType.pathChallenge)
-            )
+        assertThrows(
+            PathMessageError.unexpectedType(CtrlMessageType.pathChallenge)
+        ) {
+            try PathResponse.decode(challengeWire)
         }
     }
 
@@ -140,16 +135,16 @@ final class SessionCodecTests: XCTestCase {
         XCTAssertEqual(bytes[0], CtrlMessageType.idrRequest)
         XCTAssertEqual(try IdrRequest.decode(bytes), request)
 
-        XCTAssertThrowsError(try IdrRequest.decode(Array(bytes.dropLast()))) {
-            XCTAssertEqual($0 as? IdrRequestError, .truncatedMessage)
+        assertThrows(IdrRequestError.truncatedMessage) {
+            try IdrRequest.decode(Array(bytes.dropLast()))
         }
-        XCTAssertThrowsError(try IdrRequest.decode(bytes + [0])) {
-            XCTAssertEqual($0 as? IdrRequestError, .trailingBytes)
+        assertThrows(IdrRequestError.trailingBytes) {
+            try IdrRequest.decode(bytes + [0])
         }
         var foreign = bytes
         foreign[0] = CtrlMessageType.beaconEcho
-        XCTAssertThrowsError(try IdrRequest.decode(foreign)) {
-            XCTAssertEqual($0 as? IdrRequestError, .unexpectedType(0x02))
+        assertThrows(IdrRequestError.unexpectedType(0x02)) {
+            try IdrRequest.decode(foreign)
         }
     }
 }

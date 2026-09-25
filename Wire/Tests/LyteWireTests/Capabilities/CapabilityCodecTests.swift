@@ -28,31 +28,19 @@ final class CapabilityCodecTests: XCTestCase {
     }
 
     func testDeclarationRejects() {
-        XCTAssertThrowsError(
+        assertThrows(CapabilityMessageError.truncatedMessage) {
             try CapabilityDeclaration.decode(hex("0f"))
-        ) { error in
-            XCTAssertEqual(
-                error as? CapabilityMessageError, .truncatedMessage
-            )
         }
-        XCTAssertThrowsError(
+        assertThrows(CapabilityMessageError.unexpectedType(0x10)) {
             try CapabilityDeclaration.decode(
                 hex("10" + CapabilitiesTests.wireDefaultHex)
-            )
-        ) { error in
-            XCTAssertEqual(
-                error as? CapabilityMessageError, .unexpectedType(0x10)
             )
         }
         // A declaration past the 1024 B ceiling refuses BEFORE any
         // CBOR work — the anti-streaming stop.
         let fat = hex("0f") + Array(repeating: 0, count: 1024)
-        XCTAssertThrowsError(
+        assertThrows(CapabilityMessageError.messageOverBudget(1025)) {
             try CapabilityDeclaration.decode(fat)
-        ) { error in
-            XCTAssertEqual(
-                error as? CapabilityMessageError, .messageOverBudget(1025)
-            )
         }
         // Encode enforces the same ceiling.
         var bloated = Capabilities.wireDefault
@@ -69,12 +57,8 @@ final class CapabilityCodecTests: XCTestCase {
             }
         }
         // A malformed body wraps the capability error.
-        XCTAssertThrowsError(
+        assertThrows(CapabilityMessageError.malformedBody(.notAMap)) {
             try CapabilityDeclaration.decode(hex("0f810a"))
-        ) { error in
-            XCTAssertEqual(
-                error as? CapabilityMessageError, .malformedBody(.notAMap)
-            )
         }
     }
 
@@ -93,38 +77,22 @@ final class CapabilityCodecTests: XCTestCase {
     }
 
     func testUpdateRejects() {
-        XCTAssertThrowsError(
+        assertThrows(CapabilityMessageError.truncatedMessage) {
             try CapabilityUpdate.decode(hex("11"))
-        ) { error in
-            XCTAssertEqual(
-                error as? CapabilityMessageError, .truncatedMessage
-            )
         }
         // An empty proposal map is a no-op and rejects.
-        XCTAssertThrowsError(
+        assertThrows(CapabilityMessageError.emptyUpdate) {
             try CapabilityUpdate.decode(hex("11a0"))
-        ) { error in
-            XCTAssertEqual(error as? CapabilityMessageError, .emptyUpdate)
         }
-        XCTAssertThrowsError(
+        assertThrows(CapabilityMessageError.emptyUpdate) {
             try CapabilityUpdate(parameters: []).encode()
-        ) { error in
-            XCTAssertEqual(error as? CapabilityMessageError, .emptyUpdate)
         }
         // Parameter keys are registry numbers; a text key rejects.
-        XCTAssertThrowsError(
+        assertThrows(CapabilityMessageError.nonIntegerParameterKey) {
             try CapabilityUpdate.decode(hex("11a1616100"))
-        ) { error in
-            XCTAssertEqual(
-                error as? CapabilityMessageError, .nonIntegerParameterKey
-            )
         }
-        XCTAssertThrowsError(
+        assertThrows(CapabilityMessageError.unexpectedType(0x0F)) {
             try CapabilityUpdate.decode(hex("0f" + raiseMapHex))
-        ) { error in
-            XCTAssertEqual(
-                error as? CapabilityMessageError, .unexpectedType(0x0F)
-            )
         }
     }
 
@@ -153,38 +121,20 @@ final class CapabilityCodecTests: XCTestCase {
     }
 
     func testUpdateAckRejects() {
-        XCTAssertThrowsError(
+        assertThrows(CapabilityMessageError.truncatedMessage) {
             try CapabilityUpdateAck.decode(hex("12"))
-        ) { error in
-            XCTAssertEqual(
-                error as? CapabilityMessageError, .truncatedMessage
-            )
         }
-        XCTAssertThrowsError(
+        assertThrows(CapabilityMessageError.unknownStatus(0x03)) {
             try CapabilityUpdateAck.decode(hex("1203" + raiseMapHex))
-        ) { error in
-            XCTAssertEqual(
-                error as? CapabilityMessageError, .unknownStatus(0x03)
-            )
         }
-        XCTAssertThrowsError(
+        assertThrows(CapabilityMessageError.unknownStatus(0x00)) {
             try CapabilityUpdateAck.decode(hex("1200" + raiseMapHex))
-        ) { error in
-            XCTAssertEqual(
-                error as? CapabilityMessageError, .unknownStatus(0x00)
-            )
         }
-        XCTAssertThrowsError(
+        assertThrows(CapabilityMessageError.emptyUpdate) {
             try CapabilityUpdateAck.decode(hex("1201a0"))
-        ) { error in
-            XCTAssertEqual(error as? CapabilityMessageError, .emptyUpdate)
         }
-        XCTAssertThrowsError(
+        assertThrows(CapabilityMessageError.unexpectedType(0x11)) {
             try CapabilityUpdateAck.decode(hex("1101" + raiseMapHex))
-        ) { error in
-            XCTAssertEqual(
-                error as? CapabilityMessageError, .unexpectedType(0x11)
-            )
         }
     }
 }

@@ -79,45 +79,23 @@ final class BulkCodecTests: XCTestCase {
                 name: name, mimeHint: mime
             )
         }
-        XCTAssertThrowsError(try offer(id: 0)) {
-            XCTAssertEqual(
-                $0 as? BulkMessageError, .zeroTransferId
-            )
+        assertThrows(BulkMessageError.zeroTransferId) { try offer(id: 0) }
+        assertThrows(BulkMessageError.emptyTransfer) { try offer(total: 0) }
+        assertThrows(BulkMessageError.chunkSizeOutOfBounds(4_095)) {
+            try offer(chunk: 4_095)
         }
-        XCTAssertThrowsError(try offer(total: 0)) {
-            XCTAssertEqual($0 as? BulkMessageError, .emptyTransfer)
+        assertThrows(BulkMessageError.chunkSizeOutOfBounds(131_073)) {
+            try offer(chunk: 131_073)
         }
-        XCTAssertThrowsError(try offer(chunk: 4_095)) {
-            XCTAssertEqual(
-                $0 as? BulkMessageError, .chunkSizeOutOfBounds(4_095)
-            )
+        assertThrows(BulkMessageError.invalidSha256ByteCount(1)) {
+            try offer(sha: [0xAB])
         }
-        XCTAssertThrowsError(try offer(chunk: 131_073)) {
-            XCTAssertEqual(
-                $0 as? BulkMessageError, .chunkSizeOutOfBounds(131_073)
-            )
-        }
-        XCTAssertThrowsError(try offer(sha: [0xAB])) {
-            XCTAssertEqual(
-                $0 as? BulkMessageError, .invalidSha256ByteCount(1)
-            )
-        }
-        XCTAssertThrowsError(try offer(name: "")) {
-            XCTAssertEqual($0 as? BulkMessageError, .emptyName)
-        }
-        XCTAssertThrowsError(
+        assertThrows(BulkMessageError.emptyName) { try offer(name: "") }
+        assertThrows(BulkMessageError.nameOverBudget(256)) {
             try offer(name: String(repeating: "a", count: 256))
-        ) {
-            XCTAssertEqual(
-                $0 as? BulkMessageError, .nameOverBudget(256)
-            )
         }
-        XCTAssertThrowsError(
+        assertThrows(BulkMessageError.mimeHintOverBudget(256)) {
             try offer(mime: String(repeating: "a", count: 256))
-        ) {
-            XCTAssertEqual(
-                $0 as? BulkMessageError, .mimeHintOverBudget(256)
-            )
         }
     }
 
@@ -127,44 +105,34 @@ final class BulkCodecTests: XCTestCase {
             chunkByteCount: 65_536, sha256: sha,
             name: "report.pdf", mimeHint: "application/pdf"
         ).encode()
-        XCTAssertThrowsError(try BulkOffer.decode([UInt8]())) {
-            XCTAssertEqual($0 as? BulkMessageError, .truncatedMessage)
+        assertThrows(BulkMessageError.truncatedMessage) {
+            try BulkOffer.decode([UInt8]())
         }
-        XCTAssertThrowsError(
+        assertThrows(BulkMessageError.unexpectedType(0x7F)) {
             try BulkOffer.decode([0x7F] + bytes.dropFirst())
-        ) {
-            XCTAssertEqual(
-                $0 as? BulkMessageError, .unexpectedType(0x7F)
-            )
         }
         for cut in [8, 30, 53, 58, 64, bytes.count - 1] {
-            XCTAssertThrowsError(
-                try BulkOffer.decode(Array(bytes.prefix(cut))),
-                "cut at \(cut)"
-            ) {
-                XCTAssertEqual(
-                    $0 as? BulkMessageError, .truncatedMessage,
-                    "cut at \(cut)"
-                )
+            assertThrows(BulkMessageError.truncatedMessage, "cut at \(cut)") {
+                try BulkOffer.decode(Array(bytes.prefix(cut)))
             }
         }
-        XCTAssertThrowsError(try BulkOffer.decode(bytes + [0x00])) {
-            XCTAssertEqual($0 as? BulkMessageError, .trailingBytes)
+        assertThrows(BulkMessageError.trailingBytes) {
+            try BulkOffer.decode(bytes + [0x00])
         }
         var zeroId = bytes
         for i in 1...8 { zeroId[i] = 0 }
-        XCTAssertThrowsError(try BulkOffer.decode(zeroId)) {
-            XCTAssertEqual($0 as? BulkMessageError, .zeroTransferId)
+        assertThrows(BulkMessageError.zeroTransferId) {
+            try BulkOffer.decode(zeroId)
         }
         // Invalid UTF-8 in the name.
         let badName = Array(bytes.prefix(53)) + [0x02, 0x68, 0xFF, 0x00]
-        XCTAssertThrowsError(try BulkOffer.decode(badName)) {
-            XCTAssertEqual($0 as? BulkMessageError, .invalidUtf8)
+        assertThrows(BulkMessageError.invalidUtf8) {
+            try BulkOffer.decode(badName)
         }
         // nameLen 0.
         let noName = Array(bytes.prefix(53)) + [0x00, 0x00]
-        XCTAssertThrowsError(try BulkOffer.decode(noName)) {
-            XCTAssertEqual($0 as? BulkMessageError, .emptyName)
+        assertThrows(BulkMessageError.emptyName) {
+            try BulkOffer.decode(noName)
         }
     }
 
@@ -212,37 +180,29 @@ final class BulkCodecTests: XCTestCase {
             transferId: id, creditTotal: 24,
             possession: BulkChunkMap(contiguousCount: 8)
         ).encode()
-        XCTAssertThrowsError(
+        assertThrows(BulkMessageError.truncatedMessage) {
             try BulkAck.decode(Array(bytes.prefix(26)))
-        ) {
-            XCTAssertEqual($0 as? BulkMessageError, .truncatedMessage)
         }
-        XCTAssertThrowsError(try BulkAck.decode(bytes + [0x01])) {
-            XCTAssertEqual($0 as? BulkMessageError, .trailingBytes)
+        assertThrows(BulkMessageError.trailingBytes) {
+            try BulkAck.decode(bytes + [0x01])
         }
         // The two codecs never cross-decode.
-        XCTAssertThrowsError(try BulkAccept.decode(bytes)) {
-            XCTAssertEqual(
-                $0 as? BulkMessageError, .unexpectedType(0x1F)
-            )
+        assertThrows(BulkMessageError.unexpectedType(0x1F)) {
+            try BulkAccept.decode(bytes)
         }
         // Non-canonical bitmap (zero final byte).
         var nonCanonical = Array(bytes.prefix(25))
         nonCanonical += [2, 0, 0x01, 0x00]
-        XCTAssertThrowsError(try BulkAck.decode(nonCanonical)) {
-            XCTAssertEqual(
-                $0 as? BulkMessageError, .nonCanonicalBitmap
-            )
+        assertThrows(BulkMessageError.nonCanonicalBitmap) {
+            try BulkAck.decode(nonCanonical)
         }
         // Over-budget bitmap length field.
         var overBudget = Array(bytes.prefix(25))
         // 1,025 = 0x0401 LE.
         overBudget += [0x01, 0x04]
         overBudget += [UInt8](repeating: 0xFF, count: 1_025)
-        XCTAssertThrowsError(try BulkAck.decode(overBudget)) {
-            XCTAssertEqual(
-                $0 as? BulkMessageError, .bitmapOverBudget(1_025)
-            )
+        assertThrows(BulkMessageError.bitmapOverBudget(1_025)) {
+            try BulkAck.decode(overBudget)
         }
     }
 
@@ -266,35 +226,28 @@ final class BulkCodecTests: XCTestCase {
             transferId: 1, chunkIndex: 0,
             data: [UInt8](repeating: 0, count: BulkWire.maxChunkByteCount)
         ))
-        XCTAssertThrowsError(try BulkChunk(
-            transferId: 1, chunkIndex: 0,
-            data: [UInt8](
-                repeating: 0, count: BulkWire.maxChunkByteCount + 1
-            )
-        )) {
-            XCTAssertEqual(
-                $0 as? BulkMessageError,
-                .chunkDataOverBudget(BulkWire.maxChunkByteCount + 1)
+        assertThrows(
+            BulkMessageError.chunkDataOverBudget(BulkWire.maxChunkByteCount + 1)
+        ) {
+            try BulkChunk(
+                transferId: 1, chunkIndex: 0,
+                data: [UInt8](
+                    repeating: 0, count: BulkWire.maxChunkByteCount + 1
+                )
             )
         }
-        XCTAssertThrowsError(try BulkChunk(
-            transferId: 1, chunkIndex: 0, data: []
-        )) {
-            XCTAssertEqual($0 as? BulkMessageError, .emptyChunkData)
+        assertThrows(BulkMessageError.emptyChunkData) {
+            try BulkChunk( transferId: 1, chunkIndex: 0, data: [] )
         }
         // Decode-side: a bare 17-byte header has no data.
         let bytes = try BulkChunk(
             transferId: 1, chunkIndex: 0, data: [0xAA]
         ).encode()
-        XCTAssertThrowsError(
+        assertThrows(BulkMessageError.emptyChunkData) {
             try BulkChunk.decode(Array(bytes.prefix(17)))
-        ) {
-            XCTAssertEqual($0 as? BulkMessageError, .emptyChunkData)
         }
-        XCTAssertThrowsError(
+        assertThrows(BulkMessageError.truncatedMessage) {
             try BulkChunk.decode(Array(bytes.prefix(12)))
-        ) {
-            XCTAssertEqual($0 as? BulkMessageError, .truncatedMessage)
         }
     }
 
@@ -306,10 +259,8 @@ final class BulkCodecTests: XCTestCase {
         XCTAssertEqual(
             try BulkComplete.decode([0x20] + idLE), complete
         )
-        XCTAssertThrowsError(
+        assertThrows(BulkMessageError.trailingBytes) {
             try BulkComplete.decode([0x20] + idLE + [0])
-        ) {
-            XCTAssertEqual($0 as? BulkMessageError, .trailingBytes)
         }
     }
 
@@ -330,19 +281,11 @@ final class BulkCodecTests: XCTestCase {
                 try BulkAbort.decode([0x21] + idLE + [raw]), abort
             )
         }
-        XCTAssertThrowsError(
+        assertThrows(BulkMessageError.unknownAbortReason(0x00)) {
             try BulkAbort.decode([0x21] + idLE + [0x00])
-        ) {
-            XCTAssertEqual(
-                $0 as? BulkMessageError, .unknownAbortReason(0x00)
-            )
         }
-        XCTAssertThrowsError(
+        assertThrows(BulkMessageError.unknownAbortReason(0x7F)) {
             try BulkAbort.decode([0x21] + idLE + [0x7F])
-        ) {
-            XCTAssertEqual(
-                $0 as? BulkMessageError, .unknownAbortReason(0x7F)
-            )
         }
     }
 
@@ -371,13 +314,11 @@ final class BulkCodecTests: XCTestCase {
             )
             XCTAssertEqual(message.transferId, id)
         }
-        XCTAssertThrowsError(try BulkMessage.decode([0x42])) {
-            XCTAssertEqual(
-                $0 as? BulkMessageError, .unexpectedType(0x42)
-            )
+        assertThrows(BulkMessageError.unexpectedType(0x42)) {
+            try BulkMessage.decode([0x42])
         }
-        XCTAssertThrowsError(try BulkMessage.decode([UInt8]())) {
-            XCTAssertEqual($0 as? BulkMessageError, .truncatedMessage)
+        assertThrows(BulkMessageError.truncatedMessage) {
+            try BulkMessage.decode([UInt8]())
         }
     }
 
@@ -432,19 +373,13 @@ final class BulkCodecTests: XCTestCase {
         XCTAssertTrue(map.holds(6))
         XCTAssertFalse(map.holds(7))
         XCTAssertEqual(map.bitmapChunkIndices, [5, 6])
-        XCTAssertThrowsError(
+        assertThrows(BulkMessageError.nonCanonicalBitmap) {
             try BulkChunkMap(contiguousCount: 0, bitmap: [0x01, 0x00])
-        ) {
-            XCTAssertEqual(
-                $0 as? BulkMessageError, .nonCanonicalBitmap
-            )
         }
-        XCTAssertThrowsError(try BulkChunkMap(
-            contiguousCount: 0,
-            bitmap: [UInt8](repeating: 1, count: 1_025)
-        )) {
-            XCTAssertEqual(
-                $0 as? BulkMessageError, .bitmapOverBudget(1_025)
+        assertThrows(BulkMessageError.bitmapOverBudget(1_025)) {
+            try BulkChunkMap(
+                contiguousCount: 0,
+                bitmap: [UInt8](repeating: 1, count: 1_025)
             )
         }
     }

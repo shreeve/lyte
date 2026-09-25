@@ -35,17 +35,15 @@ final class RepairRefusalCodecTests: XCTestCase {
 
     func testTruncationRejects() {
         let bytes: [UInt8] = [0x23, 0x02, 0x01, 0x00, 0x00]
-        XCTAssertThrowsError(try RepairRefusal.decode(bytes)) { error in
-            XCTAssertEqual(
-                error as? RepairRefusalError, .truncatedMessage
-            )
+        assertThrows(RepairRefusalError.truncatedMessage) {
+            try RepairRefusal.decode(bytes)
         }
     }
 
     func testTrailingBytesReject() {
         let bytes: [UInt8] = [0x23, 0x02, 0x01, 0x00, 0x00, 0x01, 0x00]
-        XCTAssertThrowsError(try RepairRefusal.decode(bytes)) { error in
-            XCTAssertEqual(error as? RepairRefusalError, .trailingBytes)
+        assertThrows(RepairRefusalError.trailingBytes) {
+            try RepairRefusal.decode(bytes)
         }
     }
 
@@ -53,30 +51,25 @@ final class RepairRefusalCodecTests: XCTestCase {
         let bytes: [UInt8] = [
             CtrlMessageType.idrRequest, 0x02, 0x01, 0x00, 0x00, 0x01,
         ]
-        XCTAssertThrowsError(try RepairRefusal.decode(bytes)) { error in
-            XCTAssertEqual(
-                error as? RepairRefusalError,
-                .unexpectedType(CtrlMessageType.idrRequest)
-            )
+        assertThrows(
+            RepairRefusalError.unexpectedType(CtrlMessageType.idrRequest)
+        ) {
+            try RepairRefusal.decode(bytes)
         }
     }
 
     func testZeroReasonRejectsLoud() {
         // The zero-fill rule: 0x00 is never a valid reason.
         let bytes: [UInt8] = [0x23, 0x02, 0x01, 0x00, 0x00, 0x00]
-        XCTAssertThrowsError(try RepairRefusal.decode(bytes)) { error in
-            XCTAssertEqual(
-                error as? RepairRefusalError, .unknownReason(0x00)
-            )
+        assertThrows(RepairRefusalError.unknownReason(0x00)) {
+            try RepairRefusal.decode(bytes)
         }
     }
 
     func testUnknownReasonRejects() {
         let bytes: [UInt8] = [0x23, 0x02, 0x01, 0x00, 0x00, 0x7F]
-        XCTAssertThrowsError(try RepairRefusal.decode(bytes)) { error in
-            XCTAssertEqual(
-                error as? RepairRefusalError, .unknownReason(0x7F)
-            )
+        assertThrows(RepairRefusalError.unknownReason(0x7F)) {
+            try RepairRefusal.decode(bytes)
         }
     }
 }

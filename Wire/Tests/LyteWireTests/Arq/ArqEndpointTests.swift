@@ -184,21 +184,16 @@ final class ArqEndpointTests: XCTestCase {
     func testOneShotGroupIdDiscipline() throws {
         var a = Endpoint(channel: .videoIdle)
         try a.sendOneShot(message: [1], group: ArqGroupId(rawValue: 5), now: at(0))
-        XCTAssertThrowsError(
-            try a.sendOneShot(message: [1], group: ArqGroupId(rawValue: 5), now: at(0))
+        assertThrows(
+            ArqSendError.oneShotGroupNotAscending(ArqGroupId(rawValue: 5))
         ) {
-            XCTAssertEqual(
-                $0 as? ArqSendError,
-                .oneShotGroupNotAscending(ArqGroupId(rawValue: 5))
-            )
+            try a.sendOneShot(message: [1], group: ArqGroupId(rawValue: 5), now: at(0))
         }
         XCTAssertThrowsError(
             try a.sendOneShot(message: [1], group: ArqGroupId(rawValue: 4), now: at(0))
         )
-        XCTAssertThrowsError(
+        assertThrows(ArqSendError.orderedStreamGroupId) {
             try a.sendOneShot(message: [1], group: .orderedStream, now: at(0))
-        ) {
-            XCTAssertEqual($0 as? ArqSendError, .orderedStreamGroupId)
         }
         XCTAssertNoThrow(
             try a.sendOneShot(message: [1], group: ArqGroupId(rawValue: 6), now: at(0))
@@ -232,17 +227,14 @@ final class ArqEndpointTests: XCTestCase {
 
     func testSendRefusesEmptyAndOversized() {
         var a = Endpoint(channel: .ctrl)
-        XCTAssertThrowsError(try a.send(message: [], now: at(0))) {
-            XCTAssertEqual($0 as? ArqSendError, .emptyMessage)
+        assertThrows(ArqSendError.emptyMessage) {
+            try a.send(message: [], now: at(0))
         }
         let oversized = [UInt8](
             repeating: 0, count: a.config.maxMessageByteCount + 1
         )
-        XCTAssertThrowsError(try a.send(message: oversized, now: at(0))) {
-            XCTAssertEqual(
-                $0 as? ArqSendError,
-                .messageOverBudget(oversized.count)
-            )
+        assertThrows(ArqSendError.messageOverBudget(oversized.count)) {
+            try a.send(message: oversized, now: at(0))
         }
     }
 

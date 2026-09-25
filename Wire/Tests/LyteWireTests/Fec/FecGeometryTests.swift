@@ -47,38 +47,35 @@ final class FecGeometryTests: XCTestCase {
     }
 
     func testValidationRejects() {
-        XCTAssertThrowsError(
+        assertThrows(FecError.dataShardsOutOfRange(0)) {
             try FecGeometry(dataShards: 0, parityShards: 1, groupByteCount: 10)
-        ) { XCTAssertEqual($0 as? FecError, .dataShardsOutOfRange(0)) }
+        }
 
-        XCTAssertThrowsError(
+        assertThrows(FecError.dataShardsOutOfRange(256)) {
             try FecGeometry(dataShards: 256, parityShards: 0, groupByteCount: 10)
-        ) { XCTAssertEqual($0 as? FecError, .dataShardsOutOfRange(256)) }
+        }
 
-        XCTAssertThrowsError(
+        assertThrows(FecError.parityShardsOutOfRange(60)) {
             try FecGeometry(dataShards: 200, parityShards: 60, groupByteCount: 10)
-        ) { XCTAssertEqual($0 as? FecError, .parityShardsOutOfRange(60)) }
+        }
 
-        XCTAssertThrowsError(
+        assertThrows(FecError.parityShardsOutOfRange(-1)) {
             try FecGeometry(dataShards: 1, parityShards: -1, groupByteCount: 10)
-        ) { XCTAssertEqual($0 as? FecError, .parityShardsOutOfRange(-1)) }
+        }
 
-        XCTAssertThrowsError(
+        assertThrows(FecError.groupByteCountOutOfRange(0)) {
             try FecGeometry(dataShards: 1, parityShards: 1, groupByteCount: 0)
-        ) { XCTAssertEqual($0 as? FecError, .groupByteCountOutOfRange(0)) }
+        }
 
-        XCTAssertThrowsError(
+        assertThrows(FecError.groupByteCountOutOfRange(1113)) {
             try FecGeometry(dataShards: 1, parityShards: 1, groupByteCount: 1113)
-        ) { XCTAssertEqual($0 as? FecError, .groupByteCountOutOfRange(1113)) }
+        }
 
         // 5 B cannot fill 4 shards: bs=2 leaves the trailing shard empty.
-        XCTAssertThrowsError(
-            try FecGeometry(dataShards: 4, parityShards: 1, groupByteCount: 5)
+        assertThrows(
+            FecError.overProvisionedDataShards(dataShards: 4, groupByteCount: 5)
         ) {
-            XCTAssertEqual(
-                $0 as? FecError,
-                .overProvisionedDataShards(dataShards: 4, groupByteCount: 5)
-            )
+            try FecGeometry(dataShards: 4, parityShards: 1, groupByteCount: 5)
         }
         // 7 B over 4 shards is fine: 2,2,2,1.
         XCTAssertNoThrow(
@@ -132,15 +129,11 @@ final class FecGeometryTableTests: XCTestCase {
                         "k=\(row.k) \(regime)"
                     )
                 } else {
-                    XCTAssertThrowsError(
+                    assertThrows(
+                        FecError.unprotectableDataShardCount(row.k), "k=\(row.k) \(regime)"
+                    ) {
                         try FecGeometryTable.parityShards(
                             forDataShards: row.k, regime: regime
-                        ),
-                        "k=\(row.k) \(regime)"
-                    ) {
-                        XCTAssertEqual(
-                            $0 as? FecError,
-                            .unprotectableDataShardCount(row.k)
                         )
                     }
                 }
@@ -180,13 +173,9 @@ final class FecGeometryTableTests: XCTestCase {
     func testOutOfDomainK() {
         for k in [0, -1, 256] {
             for regime in FecRegime.allCases {
-                XCTAssertThrowsError(
+                assertThrows(FecError.unprotectableDataShardCount(k)) {
                     try FecGeometryTable.parityShards(
                         forDataShards: k, regime: regime
-                    )
-                ) {
-                    XCTAssertEqual(
-                        $0 as? FecError, .unprotectableDataShardCount(k)
                     )
                 }
             }
@@ -213,12 +202,10 @@ final class FecGeometryTableTests: XCTestCase {
         XCTAssertEqual(lossyBig.parityShards, 10)
 
         // One byte past the lossy frame ceiling is unprotectable.
-        XCTAssertThrowsError(
+        assertThrows(FecError.unprotectableDataShardCount(205)) {
             try FecGeometryTable.geometry(
                 forGroupByteCount: 204 * 1112 + 1, regime: .lossy
             )
-        ) {
-            XCTAssertEqual($0 as? FecError, .unprotectableDataShardCount(205))
         }
     }
 }

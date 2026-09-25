@@ -64,56 +64,40 @@ final class SessionLifecycleCodecTests: XCTestCase {
     // MARK: Rejects
 
     func testModeTransitionRejects() {
-        XCTAssertThrowsError(try ModeTransition.decode([0x09])) {
-            XCTAssertEqual(
-                $0 as? LifecycleMessageError, .truncatedMessage
-            )
+        assertThrows(LifecycleMessageError.truncatedMessage) {
+            try ModeTransition.decode([0x09])
         }
-        XCTAssertThrowsError(
+        assertThrows(LifecycleMessageError.trailingBytes) {
             try ModeTransition.decode([0x09, 0x01, 0x00])
-        ) {
-            XCTAssertEqual($0 as? LifecycleMessageError, .trailingBytes)
         }
-        XCTAssertThrowsError(try ModeTransition.decode([0x0A, 0x01])) {
-            XCTAssertEqual(
-                $0 as? LifecycleMessageError, .unexpectedType(0x0A)
-            )
+        assertThrows(LifecycleMessageError.unexpectedType(0x0A)) {
+            try ModeTransition.decode([0x0A, 0x01])
         }
         // 0x00 is the zero-fill bug; 0x03+ would be FROZEN/RECOVERY
         // leaking onto the wire — both must stay loud.
-        XCTAssertThrowsError(try ModeTransition.decode([0x09, 0x00])) {
-            XCTAssertEqual($0 as? LifecycleMessageError, .unknownMode(0))
+        assertThrows(LifecycleMessageError.unknownMode(0)) {
+            try ModeTransition.decode([0x09, 0x00])
         }
-        XCTAssertThrowsError(try ModeTransition.decode([0x09, 0x03])) {
-            XCTAssertEqual($0 as? LifecycleMessageError, .unknownMode(3))
+        assertThrows(LifecycleMessageError.unknownMode(3)) {
+            try ModeTransition.decode([0x09, 0x03])
         }
     }
 
     func testTeardownRejects() {
-        XCTAssertThrowsError(try SessionTeardown.decode([0x0A])) {
-            XCTAssertEqual(
-                $0 as? LifecycleMessageError, .truncatedMessage
-            )
+        assertThrows(LifecycleMessageError.truncatedMessage) {
+            try SessionTeardown.decode([0x0A])
         }
-        XCTAssertThrowsError(
+        assertThrows(LifecycleMessageError.trailingBytes) {
             try SessionTeardown.decode([0x0A, 0x02, 0x00])
-        ) {
-            XCTAssertEqual($0 as? LifecycleMessageError, .trailingBytes)
         }
-        XCTAssertThrowsError(try SessionTeardown.decode([0x09, 0x01])) {
-            XCTAssertEqual(
-                $0 as? LifecycleMessageError, .unexpectedType(0x09)
-            )
+        assertThrows(LifecycleMessageError.unexpectedType(0x09)) {
+            try SessionTeardown.decode([0x09, 0x01])
         }
-        XCTAssertThrowsError(try SessionTeardown.decode([0x0A, 0x00])) {
-            XCTAssertEqual(
-                $0 as? LifecycleMessageError, .unknownReason(0)
-            )
+        assertThrows(LifecycleMessageError.unknownReason(0)) {
+            try SessionTeardown.decode([0x0A, 0x00])
         }
-        XCTAssertThrowsError(try SessionTeardown.decode([0x0A, 0x7F])) {
-            XCTAssertEqual(
-                $0 as? LifecycleMessageError, .unknownReason(0x7F)
-            )
+        assertThrows(LifecycleMessageError.unknownReason(0x7F)) {
+            try SessionTeardown.decode([0x0A, 0x7F])
         }
     }
 

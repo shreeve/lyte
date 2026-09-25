@@ -101,13 +101,10 @@ final class NoiseHandshakeTests: XCTestCase {
         let message1 = try rawClient.writeMessage1(payload: [WireVersion.major + 1][...])
 
         var host = try NoiseSession(role: .responder, staticKeys: hostStatic)
-        XCTAssertThrowsError(try host.readMessage1(message1[...])) { error in
-            XCTAssertEqual(
-                error as? NoiseError,
-                .versionMismatch(
-                    received: WireVersion.major + 1, expected: WireVersion.major
-                )
-            )
+        assertThrows(
+            NoiseError.versionMismatch( received: WireVersion.major + 1, expected: WireVersion.major )
+        ) {
+            try host.readMessage1(message1[...])
         }
         // The rejected message left no trace: the responder cannot
         // answer it or derive keys from it, and a genuine message 1
@@ -136,11 +133,10 @@ final class NoiseHandshakeTests: XCTestCase {
         _ = try rawHost.readMessage1(try client.writeMessage1()[...])
         // Version byte only travels — but wrong.
         let message2 = try rawHost.writeMessage2(payload: [0][...])
-        XCTAssertThrowsError(try client.readMessage2(message2[...])) { error in
-            XCTAssertEqual(
-                error as? NoiseError,
-                .versionMismatch(received: 0, expected: WireVersion.major)
-            )
+        assertThrows(
+            NoiseError.versionMismatch(received: 0, expected: WireVersion.major)
+        ) {
+            try client.readMessage2(message2[...])
         }
         // Keys never exist for a mismatched answer.
         XCTAssertFalse(client.isComplete)
@@ -157,8 +153,8 @@ final class NoiseHandshakeTests: XCTestCase {
         )
         let message1 = try rawClient.writeMessage1(payload: [][...])
         var host = try NoiseSession(role: .responder, staticKeys: hostStatic)
-        XCTAssertThrowsError(try host.readMessage1(message1[...])) { error in
-            XCTAssertEqual(error as? NoiseError, .missingVersionPayload)
+        assertThrows(NoiseError.missingVersionPayload) {
+            try host.readMessage1(message1[...])
         }
     }
 
@@ -184,8 +180,8 @@ final class NoiseHandshakeTests: XCTestCase {
         let genuine = try client.writeMessage1()
         for point in Self.lowOrderPoints {
             let forged = point + genuine.dropFirst(32)
-            XCTAssertThrowsError(try host.readMessage1(forged[...])) {
-                XCTAssertEqual($0 as? NoiseError, .invalidPublicKey)
+            assertThrows(NoiseError.invalidPublicKey) {
+                try host.readMessage1(forged[...])
             }
         }
         _ = try host.readMessage1(genuine[...])
@@ -201,8 +197,8 @@ final class NoiseHandshakeTests: XCTestCase {
         let genuine = try host.writeMessage2()
         for point in Self.lowOrderPoints {
             let forged = point + genuine.dropFirst(32)
-            XCTAssertThrowsError(try client.readMessage2(forged[...])) {
-                XCTAssertEqual($0 as? NoiseError, .invalidPublicKey)
+            assertThrows(NoiseError.invalidPublicKey) {
+                try client.readMessage2(forged[...])
             }
             XCTAssertFalse(client.isComplete)
         }
@@ -226,8 +222,8 @@ final class NoiseHandshakeTests: XCTestCase {
         )
         var host = try NoiseSession(role: .responder, staticKeys: realHost)
         let message1 = try client.writeMessage1()
-        XCTAssertThrowsError(try host.readMessage1(message1[...])) { error in
-            XCTAssertEqual(error as? NoiseError, .authenticationFailure)
+        assertThrows(NoiseError.authenticationFailure) {
+            try host.readMessage1(message1[...])
         }
     }
 
@@ -240,13 +236,8 @@ final class NoiseHandshakeTests: XCTestCase {
             var tampered = message1
             tampered[index] ^= 0x01
             var freshHost = host
-            XCTAssertThrowsError(
-                try freshHost.readMessage1(tampered[...]),
-                "byte \(index)"
-            ) { error in
-                XCTAssertEqual(
-                    error as? NoiseError, .authenticationFailure, "byte \(index)"
-                )
+            assertThrows(NoiseError.authenticationFailure, "byte \(index)") {
+                try freshHost.readMessage1(tampered[...])
             }
         }
         // The untampered original still works on the real host.
@@ -261,13 +252,8 @@ final class NoiseHandshakeTests: XCTestCase {
             var tampered = message2
             tampered[index] ^= 0x80
             var freshClient = client
-            XCTAssertThrowsError(
-                try freshClient.readMessage2(tampered[...]),
-                "byte \(index)"
-            ) { error in
-                XCTAssertEqual(
-                    error as? NoiseError, .authenticationFailure, "byte \(index)"
-                )
+            assertThrows(NoiseError.authenticationFailure, "byte \(index)") {
+                try freshClient.readMessage2(tampered[...])
             }
         }
         XCTAssertNoThrow(try client.readMessage2(message2[...]))
@@ -309,26 +295,26 @@ final class NoiseHandshakeTests: XCTestCase {
         // Responder writing first, double-write, reuse after completion —
         // all handshakeOutOfOrder, never a trap.
         var hostCopy = host
-        XCTAssertThrowsError(try hostCopy.writeMessage2()) { error in
-            XCTAssertEqual(error as? NoiseError, .handshakeOutOfOrder)
+        assertThrows(NoiseError.handshakeOutOfOrder) {
+            try hostCopy.writeMessage2()
         }
         let message1 = try client.writeMessage1()
         var clientCopy = client
-        XCTAssertThrowsError(try clientCopy.writeMessage1()) { error in
-            XCTAssertEqual(error as? NoiseError, .handshakeOutOfOrder)
+        assertThrows(NoiseError.handshakeOutOfOrder) {
+            try clientCopy.writeMessage1()
         }
         _ = try host.readMessage1(message1[...])
         let message2 = try host.writeMessage2()
         _ = try client.readMessage2(message2[...])
-        XCTAssertThrowsError(try client.readMessage2(message2[...])) { error in
-            XCTAssertEqual(error as? NoiseError, .handshakeOutOfOrder)
+        assertThrows(NoiseError.handshakeOutOfOrder) {
+            try client.readMessage2(message2[...])
         }
     }
 
     func testMakeTransportBeforeCompletionThrows() throws {
         let (client, _) = try makeSessions()
-        XCTAssertThrowsError(try client.makeTransport()) { error in
-            XCTAssertEqual(error as? NoiseError, .handshakeIncomplete)
+        assertThrows(NoiseError.handshakeIncomplete) {
+            try client.makeTransport()
         }
     }
 

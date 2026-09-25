@@ -54,52 +54,44 @@ final class ClipboardCodecTests: XCTestCase {
         XCTAssertEqual(try ClipboardSet.decode(encoded).text, atCeiling)
 
         let oneOver = atCeiling + "a"
-        XCTAssertThrowsError(try ClipboardSet(text: oneOver).encode()) {
-            XCTAssertEqual(
-                $0 as? ClipboardMessageError,
-                .textOverBudget(ClipboardWire.maxTextByteCount + 1)
-            )
+        assertThrows(
+            ClipboardMessageError.textOverBudget(ClipboardWire.maxTextByteCount + 1)
+        ) {
+            try ClipboardSet(text: oneOver).encode()
         }
-        XCTAssertThrowsError(try ClipboardSet.decode(
-            [0x1A] + [UInt8](repeating: 0x61,
-                             count: ClipboardWire.maxTextByteCount + 1)
-        )) {
-            XCTAssertEqual(
-                $0 as? ClipboardMessageError,
-                .textOverBudget(ClipboardWire.maxTextByteCount + 1)
+        assertThrows(
+            ClipboardMessageError.textOverBudget(ClipboardWire.maxTextByteCount + 1)
+        ) {
+            try ClipboardSet.decode(
+                [0x1A] + [UInt8](repeating: 0x61,
+                                 count: ClipboardWire.maxTextByteCount + 1)
             )
         }
     }
 
     func testHostileClipboardBytesRejectAndNeverTrap() {
         // Empty payload, empty text.
-        XCTAssertThrowsError(try ClipboardSet.decode([])) {
-            XCTAssertEqual($0 as? ClipboardMessageError, .truncatedMessage)
+        assertThrows(ClipboardMessageError.truncatedMessage) {
+            try ClipboardSet.decode([])
         }
-        XCTAssertThrowsError(try ClipboardSet.decode([0x1A])) {
-            XCTAssertEqual($0 as? ClipboardMessageError, .emptyText)
+        assertThrows(ClipboardMessageError.emptyText) {
+            try ClipboardSet.decode([0x1A])
         }
-        XCTAssertThrowsError(try ClipboardAnnounce.decode([0x1B])) {
-            XCTAssertEqual($0 as? ClipboardMessageError, .emptyText)
+        assertThrows(ClipboardMessageError.emptyText) {
+            try ClipboardAnnounce.decode([0x1B])
         }
-        XCTAssertThrowsError(try ClipboardSet(text: "").encode()) {
-            XCTAssertEqual($0 as? ClipboardMessageError, .emptyText)
+        assertThrows(ClipboardMessageError.emptyText) {
+            try ClipboardSet(text: "").encode()
         }
         // Cross-type and foreign-type.
-        XCTAssertThrowsError(try ClipboardSet.decode([0x1B, 0x61])) {
-            XCTAssertEqual(
-                $0 as? ClipboardMessageError, .unexpectedType(0x1B)
-            )
+        assertThrows(ClipboardMessageError.unexpectedType(0x1B)) {
+            try ClipboardSet.decode([0x1B, 0x61])
         }
-        XCTAssertThrowsError(try ClipboardAnnounce.decode([0x1A, 0x61])) {
-            XCTAssertEqual(
-                $0 as? ClipboardMessageError, .unexpectedType(0x1A)
-            )
+        assertThrows(ClipboardMessageError.unexpectedType(0x1A)) {
+            try ClipboardAnnounce.decode([0x1A, 0x61])
         }
-        XCTAssertThrowsError(try ClipboardSet.decode([0x7F, 0x61])) {
-            XCTAssertEqual(
-                $0 as? ClipboardMessageError, .unexpectedType(0x7F)
-            )
+        assertThrows(ClipboardMessageError.unexpectedType(0x7F)) {
+            try ClipboardSet.decode([0x7F, 0x61])
         }
         // Invalid UTF-8: a lone invalid byte, a truncated 2-byte
         // sequence, an overlong encoding (C0 AF), and a lone
@@ -110,8 +102,8 @@ final class ClipboardCodecTests: XCTestCase {
             [0x1A, 0xC0, 0xAF],
             [0x1A, 0x80],
         ] {
-            XCTAssertThrowsError(try ClipboardSet.decode(hostile)) {
-                XCTAssertEqual($0 as? ClipboardMessageError, .invalidUtf8)
+            assertThrows(ClipboardMessageError.invalidUtf8) {
+                try ClipboardSet.decode(hostile)
             }
         }
     }

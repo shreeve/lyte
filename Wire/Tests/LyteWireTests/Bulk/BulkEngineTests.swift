@@ -721,47 +721,27 @@ final class BulkEngineTests: XCTestCase {
         let (offer, payload) = makeFixture()
         var sender = BulkSendEngine(offer: offer)
         _ = try sender.begin()
-        XCTAssertThrowsError(try sender.begin()) {
-            XCTAssertEqual($0 as? BulkSendError, .notIdle)
-        }
-        XCTAssertThrowsError(
+        assertThrows(BulkSendError.notIdle) { try sender.begin() }
+        assertThrows(BulkSendError.chunkNotRequested(0)) {
             try sender.supplyChunk(index: 0, data: [1])
-        ) {
-            XCTAssertEqual(
-                $0 as? BulkSendError, .chunkNotRequested(0)
-            )
         }
         _ = sender.ingest(.accept(try BulkAccept(
             transferId: offer.transferId, creditTotal: 2
         )))
-        XCTAssertThrowsError(
-            try sender.supplyChunk(index: 0, data: [1, 2, 3])
+        assertThrows(
+            BulkSendError.wrongChunkByteCount(index: 0, expected: 4_096, actual: 3)
         ) {
-            XCTAssertEqual(
-                $0 as? BulkSendError,
-                .wrongChunkByteCount(index: 0, expected: 4_096,
-                                     actual: 3)
-            )
+            try sender.supplyChunk(index: 0, data: [1, 2, 3])
         }
 
         var receiver = BulkReceiveEngine()
-        XCTAssertThrowsError(try receiver.accept()) {
-            XCTAssertEqual($0 as? BulkReceiveError, .noOfferPending)
+        assertThrows(BulkReceiveError.noOfferPending) { try receiver.accept() }
+        assertThrows(BulkReceiveError.noOfferPending) { try receiver.decline() }
+        assertThrows(BulkReceiveError.storeNotPending(0)) {
+            try receiver.chunkStored(index: 0)
         }
-        XCTAssertThrowsError(try receiver.decline()) {
-            XCTAssertEqual($0 as? BulkReceiveError, .noOfferPending)
-        }
-        XCTAssertThrowsError(try receiver.chunkStored(index: 0)) {
-            XCTAssertEqual(
-                $0 as? BulkReceiveError, .storeNotPending(0)
-            )
-        }
-        XCTAssertThrowsError(
-            try receiver.verificationResult(
-                digest: Sha256.digest(payload)
-            )
-        ) {
-            XCTAssertEqual($0 as? BulkReceiveError, .notVerifying)
+        assertThrows(BulkReceiveError.notVerifying) {
+            try receiver.verificationResult( digest: Sha256.digest(payload) )
         }
     }
 
@@ -857,22 +837,18 @@ final class BulkEngineTests: XCTestCase {
             sha256: [UInt8](repeating: 0, count: 32), name: "x"
         ).encode()
         for size: UInt32 in [0x8000_0000, 0xFFFF_FFFF] {
-            XCTAssertThrowsError(try BulkOffer(
-                transferId: 1, totalByteCount: 10, chunkByteCount: size,
-                sha256: [UInt8](repeating: 0, count: 32), name: "x"
-            )) {
-                XCTAssertEqual(
-                    $0 as? BulkMessageError, .chunkSizeOutOfBounds(size)
+            assertThrows(BulkMessageError.chunkSizeOutOfBounds(size)) {
+                try BulkOffer(
+                    transferId: 1, totalByteCount: 10, chunkByteCount: size,
+                    sha256: [UInt8](repeating: 0, count: 32), name: "x"
                 )
             }
             var wire = valid
             withUnsafeBytes(of: size.littleEndian) {
                 wire.replaceSubrange(17..<21, with: $0)
             }
-            XCTAssertThrowsError(try BulkOffer.decode(wire)) {
-                XCTAssertEqual(
-                    $0 as? BulkMessageError, .chunkSizeOutOfBounds(size)
-                )
+            assertThrows(BulkMessageError.chunkSizeOutOfBounds(size)) {
+                try BulkOffer.decode(wire)
             }
         }
     }

@@ -68,31 +68,19 @@ final class RetryCodecTests: XCTestCase {
     // MARK: Encode guards
 
     func testEncodeRejectsMisSizedFields() {
-        XCTAssertThrowsError(
+        assertThrows(RetryMessageError.invalidCookieLength(0)) {
             try RetryChallenge(cookie: []).encode()
-        ) {
-            XCTAssertEqual(
-                $0 as? RetryMessageError, .invalidCookieLength(0)
-            )
         }
-        XCTAssertThrowsError(
+        assertThrows(RetryMessageError.invalidCookieLength(256)) {
             try RetryChallenge(
                 cookie: [UInt8](repeating: 0, count: 256)
             ).encode()
-        ) {
-            XCTAssertEqual(
-                $0 as? RetryMessageError, .invalidCookieLength(256)
-            )
         }
-        XCTAssertThrowsError(
+        assertThrows(RetryMessageError.message1TooShort(95)) {
             try RetryHandshake1(
                 cookie: Self.cookie,
                 message1: Array(Self.message1.prefix(95))
             ).encode()
-        ) {
-            XCTAssertEqual(
-                $0 as? RetryMessageError, .message1TooShort(95)
-            )
         }
     }
 
@@ -101,61 +89,39 @@ final class RetryCodecTests: XCTestCase {
     func testDecodeRejectsHostileBytes() {
         // Truncation: bare type byte, then a cookieLen the payload
         // cannot honor.
-        XCTAssertThrowsError(try RetryChallenge.decode([0x13])) {
-            XCTAssertEqual($0 as? RetryMessageError, .truncatedMessage)
+        assertThrows(RetryMessageError.truncatedMessage) {
+            try RetryChallenge.decode([0x13])
         }
-        XCTAssertThrowsError(
+        assertThrows(RetryMessageError.truncatedMessage) {
             try RetryChallenge.decode([0x13, 0x18] + Self.cookie.prefix(23))
-        ) {
-            XCTAssertEqual($0 as? RetryMessageError, .truncatedMessage)
         }
-        XCTAssertThrowsError(
+        assertThrows(RetryMessageError.truncatedMessage) {
             try RetryHandshake1.decode([0x14, 0x18] + Self.cookie.prefix(10))
-        ) {
-            XCTAssertEqual($0 as? RetryMessageError, .truncatedMessage)
         }
         // Zero cookieLen — the loud zero-fill bug.
-        XCTAssertThrowsError(
+        assertThrows(RetryMessageError.zeroCookieLength) {
             try RetryChallenge.decode([0x13, 0x00])
-        ) {
-            XCTAssertEqual($0 as? RetryMessageError, .zeroCookieLength)
         }
-        XCTAssertThrowsError(
+        assertThrows(RetryMessageError.zeroCookieLength) {
             try RetryHandshake1.decode([0x14, 0x00] + Self.message1)
-        ) {
-            XCTAssertEqual($0 as? RetryMessageError, .zeroCookieLength)
         }
         // Trailing bytes after a challenge — exactly its layout.
-        XCTAssertThrowsError(
+        assertThrows(RetryMessageError.trailingBytes) {
             try RetryChallenge.decode([0x13, 0x18] + Self.cookie + [0x00])
-        ) {
-            XCTAssertEqual($0 as? RetryMessageError, .trailingBytes)
         }
         // Foreign type bytes.
-        XCTAssertThrowsError(
+        assertThrows(RetryMessageError.unexpectedType(0x14)) {
             try RetryChallenge.decode([0x14, 0x18] + Self.cookie)
-        ) {
-            XCTAssertEqual(
-                $0 as? RetryMessageError, .unexpectedType(0x14)
-            )
         }
-        XCTAssertThrowsError(
+        assertThrows(RetryMessageError.unexpectedType(0x13)) {
             try RetryHandshake1.decode(
                 [0x13, 0x18] + Self.cookie + Self.message1
             )
-        ) {
-            XCTAssertEqual(
-                $0 as? RetryMessageError, .unexpectedType(0x13)
-            )
         }
         // A resubmission whose msg1 could never handshake.
-        XCTAssertThrowsError(
+        assertThrows(RetryMessageError.message1TooShort(95)) {
             try RetryHandshake1.decode(
                 [0x14, 0x18] + Self.cookie + Self.message1.prefix(95)
-            )
-        ) {
-            XCTAssertEqual(
-                $0 as? RetryMessageError, .message1TooShort(95)
             )
         }
     }

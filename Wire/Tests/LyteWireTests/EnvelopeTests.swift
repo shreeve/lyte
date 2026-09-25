@@ -93,10 +93,8 @@ final class EnvelopeTests: XCTestCase {
 
     func testTruncatedEnvelopeRejected() {
         for length in 0..<WireBudget.envelopeByteCount {
-            XCTAssertThrowsError(
+            assertThrows(WireError.truncatedEnvelope) {
                 try Envelope.decode(Array(nominalBytes.prefix(length)))
-            ) { error in
-                XCTAssertEqual(error as? WireError, .truncatedEnvelope)
             }
         }
     }
@@ -110,19 +108,15 @@ final class EnvelopeTests: XCTestCase {
         // Every strict prefix that still passes the fixed-envelope check
         // must fail as a truncated extension block, never trap.
         for length in WireBudget.envelopeByteCount..<encoded.count {
-            XCTAssertThrowsError(
+            assertThrows(WireError.truncatedExtensions) {
                 try Envelope.decode(Array(encoded.prefix(length)))
-            ) { error in
-                XCTAssertEqual(error as? WireError, .truncatedExtensions)
             }
         }
     }
 
     func testExtensionValueTooLongRejectedAtConstruction() {
-        XCTAssertThrowsError(
+        assertThrows(WireError.extensionValueTooLong) {
             try WireExtension(type: 1, value: [UInt8](repeating: 0, count: 256))
-        ) { error in
-            XCTAssertEqual(error as? WireError, .extensionValueTooLong)
         }
     }
 
@@ -135,9 +129,7 @@ final class EnvelopeTests: XCTestCase {
             frame: FrameNumber(rawValue: 0), timestamp: 0, fec: 0
         )
         envelope.extensions = Array(repeating: tlv, count: 256)
-        XCTAssertThrowsError(try envelope.encode()) {
-            XCTAssertEqual($0 as? WireError, .tooManyExtensions)
-        }
+        assertThrows(WireError.tooManyExtensions) { try envelope.encode() }
     }
 }
 
@@ -179,8 +171,8 @@ final class BudgetTests: XCTestCase {
         XCTAssertNoThrow(try envelope().encode(plaintextShard: atLimit))
 
         let over = [UInt8](repeating: 0xAB, count: 1113)
-        XCTAssertThrowsError(try envelope().encode(plaintextShard: over)) {
-            XCTAssertEqual($0 as? WireError, .shardOverBudget(1113))
+        assertThrows(WireError.shardOverBudget(1113)) {
+            try envelope().encode(plaintextShard: over)
         }
     }
 
@@ -190,8 +182,8 @@ final class BudgetTests: XCTestCase {
         XCTAssertEqual(datagram.count, WireBudget.maxDatagramByteCount)
 
         let over = [UInt8](repeating: 0xCD, count: 1129)
-        XCTAssertThrowsError(try envelope().encode(payload: over)) {
-            XCTAssertEqual($0 as? WireError, .payloadOverBudget(1129))
+        assertThrows(WireError.payloadOverBudget(1129)) {
+            try envelope().encode(payload: over)
         }
     }
 
@@ -202,8 +194,8 @@ final class BudgetTests: XCTestCase {
         ]
         // Header grows to 48; a max wire payload no longer fits.
         let payload = [UInt8](repeating: 0xEF, count: 1128)
-        XCTAssertThrowsError(try withTlv.encode(payload: payload)) {
-            XCTAssertEqual($0 as? WireError, .datagramOverBudget(1176))
+        assertThrows(WireError.datagramOverBudget(1176)) {
+            try withTlv.encode(payload: payload)
         }
         // Shrinking the payload by the TLV block size fits exactly.
         let fitted = [UInt8](repeating: 0xEF, count: 1128 - 24)
@@ -213,8 +205,8 @@ final class BudgetTests: XCTestCase {
 
     func testOversizeDatagramRejectedOnDecode() throws {
         let junk = [UInt8](repeating: 0, count: 1153)
-        XCTAssertThrowsError(try Envelope.decode(junk)) {
-            XCTAssertEqual($0 as? WireError, .datagramOverBudget(1153))
+        assertThrows(WireError.datagramOverBudget(1153)) {
+            try Envelope.decode(junk)
         }
         // At exactly the budget, decode proceeds.
         let atLimit = try envelope().encode(

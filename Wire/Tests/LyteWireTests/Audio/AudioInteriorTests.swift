@@ -402,14 +402,16 @@ final class AudioInteriorTests: XCTestCase {
     /// more than a plaintext shard holds.
     func testFramerRefusesEmptyAndOverBudgetPackets() {
         var framer = AudioFramer(config: AudioFramerConfig())
-        XCTAssertThrowsError(
+        assertThrows(AudioFramerError.emptyPacket) {
             try framer.ingest(packet: [], captureTimestampMicroseconds: 0)
-        ) { XCTAssertEqual($0 as? AudioFramerError, .emptyPacket) }
+        }
         let over = AudioFramerConfig().packetBudgetByteCount + 1
-        XCTAssertThrowsError(try framer.ingest(
-            packet: [UInt8](repeating: 1, count: over),
-            captureTimestampMicroseconds: 0
-        )) { XCTAssertEqual($0 as? AudioFramerError, .packetOverBudget(over)) }
+        assertThrows(AudioFramerError.packetOverBudget(over)) {
+            try framer.ingest(
+                packet: [UInt8](repeating: 1, count: over),
+                captureTimestampMicroseconds: 0
+            )
+        }
         XCTAssertEqual(framer.counters.groupsCompleted, 0)
     }
 }

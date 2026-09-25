@@ -100,12 +100,8 @@ final class CapabilityNegotiatorTests: XCTestCase {
         _ = host.start()
         var alien = Self.clientSet
         alien.videoCodecs = [77]
-        XCTAssertThrowsError(
+        assertThrows(CapabilityNegotiationError.noCommonVideoCodec) {
             try host.receive(CapabilityDeclaration(capabilities: alien))
-        ) { error in
-            XCTAssertEqual(
-                error as? CapabilityNegotiationError, .noCommonVideoCodec
-            )
         }
     }
 
@@ -114,24 +110,16 @@ final class CapabilityNegotiatorTests: XCTestCase {
         _ = host.start()
         var alien = Self.clientSet
         alien.chromaModes = [9]
-        XCTAssertThrowsError(
+        assertThrows(CapabilityNegotiationError.noCommonChromaMode) {
             try host.receive(CapabilityDeclaration(capabilities: alien))
-        ) { error in
-            XCTAssertEqual(
-                error as? CapabilityNegotiationError, .noCommonChromaMode
-            )
         }
     }
 
     func testSecondDeclarationIsAProtocolViolation() throws {
         var (host, _) = try establish()
-        XCTAssertThrowsError(
+        assertThrows(CapabilityNegotiationError.duplicateDeclaration) {
             try host.receive(
                 CapabilityDeclaration(capabilities: Self.clientSet)
-            )
-        ) { error in
-            XCTAssertEqual(
-                error as? CapabilityNegotiationError, .duplicateDeclaration
             )
         }
     }
@@ -190,10 +178,8 @@ final class CapabilityNegotiatorTests: XCTestCase {
 
     func testUpdateAtTheHostIsARoleViolation() throws {
         var (host, _) = try establish()
-        XCTAssertThrowsError(try host.receive(Self.raise(to: 1300))) { error in
-            XCTAssertEqual(
-                error as? CapabilityNegotiationError, .wrongRoleForUpdate
-            )
+        assertThrows(CapabilityNegotiationError.wrongRoleForUpdate) {
+            try host.receive(Self.raise(to: 1300))
         }
     }
 
@@ -201,10 +187,8 @@ final class CapabilityNegotiatorTests: XCTestCase {
         var client = CapabilityNegotiator(
             role: .client, local: Self.clientSet
         )
-        XCTAssertThrowsError(try client.receive(Self.raise(to: 1300))) { error in
-            XCTAssertEqual(
-                error as? CapabilityNegotiationError, .notEstablished
-            )
+        assertThrows(CapabilityNegotiationError.notEstablished) {
+            try client.receive(Self.raise(to: 1300))
         }
     }
 

@@ -45,8 +45,8 @@ final class ControlCodecTests: XCTestCase {
             )
         }
         // Foreign type byte rejects with what it found.
-        XCTAssertThrowsError(try IdleFrame.decode([0x16] + good.dropFirst())) {
-            XCTAssertEqual($0 as? IdleFrameError, .unexpectedType(0x16))
+        assertThrows(IdleFrameError.unexpectedType(0x16)) {
+            try IdleFrame.decode([0x16] + good.dropFirst())
         }
     }
 
@@ -195,11 +195,10 @@ final class ControlCodecTests: XCTestCase {
                 let bytes = InputEvent(
                     seq: 1, clientMicroseconds: 2, body: event
                 ).rawCoordinateBytes()
-                XCTAssertThrowsError(try InputEvent.decode(bytes)) {
-                    XCTAssertEqual(
-                        $0 as? InputMessageError,
-                        .nonFiniteCoordinate(bits), "\(event)"
-                    )
+                assertThrows(
+                    InputMessageError.nonFiniteCoordinate(bits), "\(event)"
+                ) {
+                    try InputEvent.decode(bytes)
                 }
             }
         }
@@ -218,13 +217,12 @@ final class ControlCodecTests: XCTestCase {
     func testEncodeRefusesNonFiniteCoordinatesInEverySlot() {
         for bits in Self.nonFiniteBits {
             for event in Self.coordinateBodies(Double(bitPattern: bits)) {
-                XCTAssertThrowsError(try InputEvent(
-                    seq: 1, clientMicroseconds: 2, body: event
-                ).encode()) {
-                    XCTAssertEqual(
-                        $0 as? InputMessageError,
-                        .nonFiniteCoordinate(bits), "\(event)"
-                    )
+                assertThrows(
+                    InputMessageError.nonFiniteCoordinate(bits), "\(event)"
+                ) {
+                    try InputEvent(
+                        seq: 1, clientMicroseconds: 2, body: event
+                    ).encode()
                 }
             }
         }

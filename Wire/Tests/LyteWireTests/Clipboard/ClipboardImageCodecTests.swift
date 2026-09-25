@@ -38,88 +38,61 @@ final class ClipboardImageCodecTests: XCTestCase {
         ).encode()
 
         // Empty, bare type, truncated header, truncated mime.
-        XCTAssertThrowsError(try ClipboardImageCargo.decode([])) {
-            XCTAssertEqual($0 as? ClipboardImageCargoError,
-                           .truncatedMessage)
+        assertThrows(ClipboardImageCargoError.truncatedMessage) {
+            try ClipboardImageCargo.decode([])
         }
-        XCTAssertThrowsError(try ClipboardImageCargo.decode([0x22])) {
-            XCTAssertEqual($0 as? ClipboardImageCargoError,
-                           .truncatedMessage)
+        assertThrows(ClipboardImageCargoError.truncatedMessage) {
+            try ClipboardImageCargo.decode([0x22])
         }
-        XCTAssertThrowsError(
+        assertThrows(ClipboardImageCargoError.truncatedMessage) {
             try ClipboardImageCargo.decode(Array(good.prefix(9)))
-        ) {
-            XCTAssertEqual($0 as? ClipboardImageCargoError,
-                           .truncatedMessage)
         }
-        XCTAssertThrowsError(
+        assertThrows(ClipboardImageCargoError.truncatedMessage) {
             try ClipboardImageCargo.decode(Array(good.dropLast()))
-        ) {
-            XCTAssertEqual($0 as? ClipboardImageCargoError,
-                           .truncatedMessage)
         }
 
         // A foreign type byte rejects with what it found.
         var foreign = good
         foreign[0] = 0x1A
-        XCTAssertThrowsError(try ClipboardImageCargo.decode(foreign)) {
-            XCTAssertEqual($0 as? ClipboardImageCargoError,
-                           .unexpectedType(0x1A))
+        assertThrows(ClipboardImageCargoError.unexpectedType(0x1A)) {
+            try ClipboardImageCargo.decode(foreign)
         }
 
         // Trailing bytes reject — exactly its layout.
-        XCTAssertThrowsError(
+        assertThrows(ClipboardImageCargoError.trailingBytes) {
             try ClipboardImageCargo.decode(good + [0x00])
-        ) {
-            XCTAssertEqual($0 as? ClipboardImageCargoError,
-                           .trailingBytes)
         }
 
         // A zero id is always some layer's zero-fill bug.
         var zeroId = good
         for i in 1...8 { zeroId[i] = 0 }
-        XCTAssertThrowsError(try ClipboardImageCargo.decode(zeroId)) {
-            XCTAssertEqual($0 as? ClipboardImageCargoError,
-                           .zeroTransferId)
+        assertThrows(ClipboardImageCargoError.zeroTransferId) {
+            try ClipboardImageCargo.decode(zeroId)
         }
 
         // A mime-less marker is unroutable.
-        XCTAssertThrowsError(
-            try ClipboardImageCargo.decode(
-                [0x22, 7, 0, 0, 0, 0, 0, 0, 0, 0]
-            )
-        ) {
-            XCTAssertEqual($0 as? ClipboardImageCargoError, .emptyMime)
+        assertThrows(ClipboardImageCargoError.emptyMime) {
+            try ClipboardImageCargo.decode( [0x22, 7, 0, 0, 0, 0, 0, 0, 0, 0] )
         }
 
         // Invalid UTF-8 in the mime rejects, never replaces.
-        XCTAssertThrowsError(
+        assertThrows(ClipboardImageCargoError.invalidUtf8) {
             try ClipboardImageCargo.decode(
                 [0x22, 7, 0, 0, 0, 0, 0, 0, 0, 1, 0xFF]
             )
-        ) {
-            XCTAssertEqual($0 as? ClipboardImageCargoError, .invalidUtf8)
         }
     }
 
     func testCargoConstructionRefusesWhatEncodeCannotCarry() {
-        XCTAssertThrowsError(
+        assertThrows(ClipboardImageCargoError.zeroTransferId) {
             try ClipboardImageCargo(transferId: 0, mime: "image/png")
-        ) {
-            XCTAssertEqual($0 as? ClipboardImageCargoError,
-                           .zeroTransferId)
         }
-        XCTAssertThrowsError(
+        assertThrows(ClipboardImageCargoError.emptyMime) {
             try ClipboardImageCargo(transferId: 7, mime: "")
-        ) {
-            XCTAssertEqual($0 as? ClipboardImageCargoError, .emptyMime)
         }
         let long = String(repeating: "a", count: 256)
-        XCTAssertThrowsError(
+        assertThrows(ClipboardImageCargoError.mimeOverBudget(256)) {
             try ClipboardImageCargo(transferId: 7, mime: long)
-        ) {
-            XCTAssertEqual($0 as? ClipboardImageCargoError,
-                           .mimeOverBudget(256))
         }
         // 255 is the u8-length ceiling — legal to the byte.
         XCTAssertNoThrow(try ClipboardImageCargo(

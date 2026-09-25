@@ -86,13 +86,10 @@ final class NoiseTransportTests: XCTestCase {
             var tampered = sealed
             tampered[index] ^= 0x01
             var freshHost = host
-            XCTAssertThrowsError(
+            assertThrows(NoiseError.authenticationFailure, "byte \(index)") {
                 try freshHost.unseal(
                     wirePayload: tampered[...], aad: headerBytes[...], envelope: env
-                ),
-                "byte \(index)"
-            ) { error in
-                XCTAssertEqual(error as? NoiseError, .authenticationFailure)
+                )
             }
         }
 
@@ -100,12 +97,10 @@ final class NoiseTransportTests: XCTestCase {
         // rides in the clear.
         var tamperedAad = headerBytes
         tamperedAad[8] ^= 0x01  // a timestamp byte
-        XCTAssertThrowsError(
+        assertThrows(NoiseError.authenticationFailure) {
             try host.unseal(
                 wirePayload: sealed[...], aad: tamperedAad[...], envelope: env
             )
-        ) { error in
-            XCTAssertEqual(error as? NoiseError, .authenticationFailure)
         }
 
         // A forged seq in both envelope and AAD: the nonce moves with it,
@@ -114,12 +109,10 @@ final class NoiseTransportTests: XCTestCase {
         var shifted = env
         shifted.seq = ChannelSeq(rawValue: 6)
         let shiftedAad = try aad(shifted)
-        XCTAssertThrowsError(
+        assertThrows(NoiseError.authenticationFailure) {
             try host.unseal(
                 wirePayload: sealed[...], aad: shiftedAad[...], envelope: shifted
             )
-        ) { error in
-            XCTAssertEqual(error as? NoiseError, .authenticationFailure)
         }
 
         // And the genuine datagram still opens (failures committed no state).
@@ -150,36 +143,28 @@ final class NoiseTransportTests: XCTestCase {
         )
 
         let overShard = counting(from: 0, count: WireBudget.maxPlaintextShardByteCount + 1)
-        XCTAssertThrowsError(
+        assertThrows(
+            NoiseError.plaintextOverBudget(WireBudget.maxPlaintextShardByteCount + 1)
+        ) {
             try client.seal(
                 plaintext: overShard[...], aad: headerBytes[...],
                 channel: env.channel, seq: ChannelSeq(rawValue: 1)
             )
-        ) { error in
-            XCTAssertEqual(
-                error as? NoiseError,
-                .plaintextOverBudget(WireBudget.maxPlaintextShardByteCount + 1)
-            )
         }
 
         // Unseal bounds: under one tag, and over the wire ceiling.
-        XCTAssertThrowsError(
+        assertThrows(NoiseError.wirePayloadOutOfBounds(15)) {
             try host.unseal(
                 wirePayload: [UInt8](repeating: 0, count: 15)[...],
                 aad: headerBytes[...], envelope: env
             )
-        ) { error in
-            XCTAssertEqual(error as? NoiseError, .wirePayloadOutOfBounds(15))
         }
         let oversize = [UInt8](repeating: 0, count: WireBudget.maxWirePayloadByteCount + 1)
-        XCTAssertThrowsError(
+        assertThrows(
+            NoiseError.wirePayloadOutOfBounds(WireBudget.maxWirePayloadByteCount + 1)
+        ) {
             try host.unseal(
                 wirePayload: oversize[...], aad: headerBytes[...], envelope: env
-            )
-        ) { error in
-            XCTAssertEqual(
-                error as? NoiseError,
-                .wirePayloadOutOfBounds(WireBudget.maxWirePayloadByteCount + 1)
             )
         }
     }
@@ -226,21 +211,17 @@ final class NoiseTransportTests: XCTestCase {
         )
         // Same seq again — deterministic re-seal is refused; a retransmit
         // resends the already-sealed bytes (core plan §2 decision 2).
-        XCTAssertThrowsError(
+        assertThrows(NoiseError.sendSequenceNotMonotonic) {
             try client.seal(
                 plaintext: [9, 9, 9][...], aad: headerBytes[...], envelope: env
             )
-        ) { error in
-            XCTAssertEqual(error as? NoiseError, .sendSequenceNotMonotonic)
         }
         // And a seq behind the high-water mark likewise.
-        XCTAssertThrowsError(
+        assertThrows(NoiseError.sendSequenceNotMonotonic) {
             try client.seal(
                 plaintext: [7][...], aad: headerBytes[...],
                 channel: env.channel, seq: ChannelSeq(rawValue: 9)
             )
-        ) { error in
-            XCTAssertEqual(error as? NoiseError, .sendSequenceNotMonotonic)
         }
     }
 
@@ -269,10 +250,8 @@ final class NoiseTransportTests: XCTestCase {
         // Every replay — the byte-identical retransmit that lost the
         // race — rejects as replayedSequence, exactly once admitted.
         for d in datagrams {
-            XCTAssertThrowsError(
+            assertThrows(NoiseError.replayedSequence) {
                 try host.unseal(wirePayload: d.wire[...], aad: d.aad[...], envelope: d.env)
-            ) { error in
-                XCTAssertEqual(error as? NoiseError, .replayedSequence)
             }
         }
     }
@@ -299,10 +278,8 @@ final class NoiseTransportTests: XCTestCase {
             )
         }
 
-        XCTAssertThrowsError(
+        assertThrows(NoiseError.staleSequence) {
             try host.unseal(wirePayload: held[...], aad: heldAad[...], envelope: heldEnv)
-        ) { error in
-            XCTAssertEqual(error as? NoiseError, .staleSequence)
         }
     }
 
@@ -549,13 +526,11 @@ final class NoiseTransportTests: XCTestCase {
 
         // The lost original straggles in now: stale, dead — a
         // byte-identical datagram resend would share this fate.
-        XCTAssertThrowsError(
+        assertThrows(NoiseError.staleSequence) {
             try host.unseal(
                 wirePayload: dropped.wire[...], aad: dropped.aad[...],
                 envelope: dropped.env
             )
-        ) { error in
-            XCTAssertEqual(error as? NoiseError, .staleSequence)
         }
 
         // PTO fires; the retransmit is the same SEGMENT in a fresh
@@ -636,8 +611,8 @@ final class SealedDatagramTests: XCTestCase {
         tampered[8] ^= 1
         XCTAssertThrowsError(try peer.openDatagram(tampered))
         // Replays are the transport's verdict, passed through.
-        XCTAssertThrowsError(try peer.openDatagram(datagram)) {
-            XCTAssertEqual($0 as? NoiseError, .replayedSequence)
+        assertThrows(NoiseError.replayedSequence) {
+            try peer.openDatagram(datagram)
         }
     }
 
@@ -645,11 +620,11 @@ final class SealedDatagramTests: XCTestCase {
     /// the closure form sees the envelope first.
     func testOpenDatagramDecodesBeforeOpening() throws {
         var opens = 0
-        XCTAssertThrowsError(try Envelope.openDatagram([1, 2, 3][...]) { _, _, _ in
-            opens += 1
-            return []
-        }) {
-            XCTAssertEqual($0 as? WireError, .truncatedEnvelope)
+        assertThrows(WireError.truncatedEnvelope) {
+            try Envelope.openDatagram([1, 2, 3][...]) { _, _, _ in
+                opens += 1
+                return []
+            }
         }
         let env = envelope(seq: 1)
         let passthrough = try env.sealedDatagram([9, 8][...]) { plaintext, _ in
@@ -668,13 +643,12 @@ final class SealedDatagramTests: XCTestCase {
     /// Budgets hold on the assembled datagram.
     func testSealedDatagramEnforcesBudgets() {
         let env = envelope(seq: 1)
-        XCTAssertThrowsError(try env.sealedDatagram([0][...]) { _, _ in
-            [UInt8](repeating: 0, count: WireBudget.maxWirePayloadByteCount + 1)
-        }) {
-            XCTAssertEqual(
-                $0 as? WireError,
-                .payloadOverBudget(WireBudget.maxWirePayloadByteCount + 1)
-            )
+        assertThrows(
+            WireError.payloadOverBudget(WireBudget.maxWirePayloadByteCount + 1)
+        ) {
+            try env.sealedDatagram([0][...]) { _, _ in
+                [UInt8](repeating: 0, count: WireBudget.maxWirePayloadByteCount + 1)
+            }
         }
     }
 }

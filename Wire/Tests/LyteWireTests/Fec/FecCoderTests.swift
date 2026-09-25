@@ -138,13 +138,10 @@ final class FecCoderTests: XCTestCase {
         XCTAssertEqual(
             try decodeErasing([], from: shards, geometry: geometry), group
         )
-        XCTAssertThrowsError(
-            try decodeErasing([1], from: shards, geometry: geometry)
+        assertThrows(
+            FecError.unrecoverableGroup(missingDataShards: 1, availableParityShards: 0)
         ) {
-            XCTAssertEqual(
-                $0 as? FecError,
-                .unrecoverableGroup(missingDataShards: 1, availableParityShards: 0)
-            )
+            try decodeErasing([1], from: shards, geometry: geometry)
         }
     }
 
@@ -169,33 +166,24 @@ final class FecCoderTests: XCTestCase {
         let shards = try FecEncoder.encode(group: group, geometry: geometry)
 
         // Encoder: group length must match the geometry.
-        XCTAssertThrowsError(
-            try FecEncoder.encode(group: counting(from: 0, count: 47), geometry: geometry)
+        assertThrows(
+            FecError.groupByteCountMismatch(expected: 48, actual: 47)
         ) {
-            XCTAssertEqual(
-                $0 as? FecError, .groupByteCountMismatch(expected: 48, actual: 47)
-            )
+            try FecEncoder.encode(group: counting(from: 0, count: 47), geometry: geometry)
         }
 
         // Decoder: one slot per shard.
-        XCTAssertThrowsError(
+        assertThrows(FecError.shardSlotCountMismatch(expected: 6, actual: 5)) {
             try FecDecoder.decode(shards: Array(shards.prefix(5)), geometry: geometry)
-        ) {
-            XCTAssertEqual(
-                $0 as? FecError, .shardSlotCountMismatch(expected: 6, actual: 5)
-            )
         }
 
         // Decoder: wire lengths are contract.
         var wrongLength: [[UInt8]?] = shards
         wrongLength[1] = counting(from: 0, count: 11)
-        XCTAssertThrowsError(
-            try FecDecoder.decode(shards: wrongLength, geometry: geometry)
+        assertThrows(
+            FecError.shardByteCountMismatch(shardIndex: 1, expected: 12, actual: 11)
         ) {
-            XCTAssertEqual(
-                $0 as? FecError,
-                .shardByteCountMismatch(shardIndex: 1, expected: 12, actual: 11)
-            )
+            try FecDecoder.decode(shards: wrongLength, geometry: geometry)
         }
     }
 

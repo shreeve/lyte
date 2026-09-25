@@ -79,24 +79,21 @@ final class ArqCodecTests: XCTestCase {
     // MARK: Construction bounds
 
     func testSegmentBounds() {
-        XCTAssertThrowsError(try ArqSegment(
-            group: .orderedStream, seq: ArqSegmentSeq(rawValue: 0),
-            endOfMessage: true, body: []
-        )) {
-            XCTAssertEqual(
-                $0 as? ArqFrameError, .zeroLengthSegmentBody
+        assertThrows(ArqFrameError.zeroLengthSegmentBody) {
+            try ArqSegment(
+                group: .orderedStream, seq: ArqSegmentSeq(rawValue: 0),
+                endOfMessage: true, body: []
             )
         }
-        XCTAssertThrowsError(try ArqSegment(
-            group: .orderedStream, seq: ArqSegmentSeq(rawValue: 0),
-            endOfMessage: true,
-            body: [UInt8](
-                repeating: 0, count: ArqBounds.maxSegmentBodyByteCount + 1
-            )
-        )) {
-            XCTAssertEqual(
-                $0 as? ArqFrameError,
-                .segmentBodyOverBudget(ArqBounds.maxSegmentBodyByteCount + 1)
+        assertThrows(
+            ArqFrameError.segmentBodyOverBudget(ArqBounds.maxSegmentBodyByteCount + 1)
+        ) {
+            try ArqSegment(
+                group: .orderedStream, seq: ArqSegmentSeq(rawValue: 0),
+                endOfMessage: true,
+                body: [UInt8](
+                    repeating: 0, count: ArqBounds.maxSegmentBodyByteCount + 1
+                )
             )
         }
         // The max body fills the shard budget exactly.
@@ -113,41 +110,37 @@ final class ArqCodecTests: XCTestCase {
     }
 
     func testAckBounds() throws {
-        XCTAssertThrowsError(try ArqAck(blocks: [])) {
-            XCTAssertEqual($0 as? ArqFrameError, .zeroAckBlocks)
-        }
+        assertThrows(ArqFrameError.zeroAckBlocks) { try ArqAck(blocks: []) }
         let block = try ArqAck.Block(
             channel: .ctrl, group: .orderedStream,
             cumulative: ArqSegmentSeq(rawValue: 0)
         )
-        XCTAssertThrowsError(try ArqAck(
-            blocks: Array(
-                repeating: block, count: ArqBounds.maxAckBlocks + 1
-            )
-        )) {
-            XCTAssertEqual(
-                $0 as? ArqFrameError,
-                .tooManyAckBlocks(ArqBounds.maxAckBlocks + 1)
-            )
-        }
-        XCTAssertThrowsError(try ArqAck.Block(
-            channel: .ctrl, group: .orderedStream,
-            cumulative: ArqSegmentSeq(rawValue: 0),
-            receivedBitmap: [UInt8](
-                repeating: 1, count: ArqBounds.maxAckBitmapByteCount + 1
-            )
-        )) {
-            XCTAssertEqual(
-                $0 as? ArqFrameError,
-                .ackBitmapTooLong(ArqBounds.maxAckBitmapByteCount + 1)
+        assertThrows(
+            ArqFrameError.tooManyAckBlocks(ArqBounds.maxAckBlocks + 1)
+        ) {
+            try ArqAck(
+                blocks: Array(
+                    repeating: block, count: ArqBounds.maxAckBlocks + 1
+                )
             )
         }
-        XCTAssertThrowsError(try ArqAck.Block(
-            channel: .ctrl, group: .orderedStream,
-            cumulative: ArqSegmentSeq(rawValue: 0),
-            receivedBitmap: [0x05, 0x00]
-        )) {
-            XCTAssertEqual($0 as? ArqFrameError, .nonCanonicalAckBitmap)
+        assertThrows(
+            ArqFrameError.ackBitmapTooLong(ArqBounds.maxAckBitmapByteCount + 1)
+        ) {
+            try ArqAck.Block(
+                channel: .ctrl, group: .orderedStream,
+                cumulative: ArqSegmentSeq(rawValue: 0),
+                receivedBitmap: [UInt8](
+                    repeating: 1, count: ArqBounds.maxAckBitmapByteCount + 1
+                )
+            )
+        }
+        assertThrows(ArqFrameError.nonCanonicalAckBitmap) {
+            try ArqAck.Block(
+                channel: .ctrl, group: .orderedStream,
+                cumulative: ArqSegmentSeq(rawValue: 0),
+                receivedBitmap: [0x05, 0x00]
+            )
         }
     }
 

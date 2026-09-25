@@ -181,25 +181,21 @@ final class PairingPakeTests: XCTestCase {
         let shareB = try responder.receiveShareA(
             initiator.makeShareA()
         )
-        XCTAssertThrowsError(
+        assertThrows(PairingPakeError.confirmationFailed) {
             try initiator.receiveShareB(shareB)
-        ) { error in
-            XCTAssertEqual(
-                error as? PairingPakeError, .confirmationFailed
-            )
         }
         XCTAssertNil(initiator.result, "a failed run must expose no key")
         // The machine is dead after failure — no retry with the same
         // scalars, which would let an attacker test PINs one by one
         // against a single transcript.
-        XCTAssertThrowsError(try initiator.receiveShareB(shareB)) {
-            XCTAssertEqual($0 as? PairingPakeError, .invalidState)
+        assertThrows(PairingPakeError.invalidState) {
+            try initiator.receiveShareB(shareB)
         }
         // EVERY entry point is dead, not just the one that failed: a
         // failed initiator cannot even re-emit its share A (which would
         // let a shell accidentally restart the run with burned scalars).
-        XCTAssertThrowsError(try initiator.makeShareA()) {
-            XCTAssertEqual($0 as? PairingPakeError, .invalidState)
+        assertThrows(PairingPakeError.invalidState) {
+            try initiator.makeShareA()
         }
     }
 
@@ -219,25 +215,19 @@ final class PairingPakeTests: XCTestCase {
                 repeating: 0xAB, count: CPace.tagByteCount
             )
         )
-        XCTAssertThrowsError(
+        assertThrows(PairingPakeError.confirmationFailed) {
             try responder.receiveConfirm(forged)
-        ) { error in
-            XCTAssertEqual(
-                error as? PairingPakeError, .confirmationFailed
-            )
         }
         XCTAssertNil(responder.result)
-        XCTAssertThrowsError(try responder.receiveConfirm(forged)) {
-            XCTAssertEqual($0 as? PairingPakeError, .invalidState)
+        assertThrows(PairingPakeError.invalidState) {
+            try responder.receiveConfirm(forged)
         }
         // And a failed responder is dead to a fresh share A too — no
         // revival path from any state.
-        XCTAssertThrowsError(
+        assertThrows(PairingPakeError.invalidState) {
             try responder.receiveShareA(
                 PairingShareA(share: [UInt8](repeating: 1, count: 32))
             )
-        ) {
-            XCTAssertEqual($0 as? PairingPakeError, .invalidState)
         }
     }
 
@@ -254,12 +244,8 @@ final class PairingPakeTests: XCTestCase {
         let shareB = try responder.receiveShareA(
             initiator.makeShareA()
         )
-        XCTAssertThrowsError(
+        assertThrows(PairingPakeError.confirmationFailed) {
             try initiator.receiveShareB(shareB)
-        ) { error in
-            XCTAssertEqual(
-                error as? PairingPakeError, .confirmationFailed
-            )
         }
         XCTAssertNil(initiator.result)
     }
@@ -275,12 +261,8 @@ final class PairingPakeTests: XCTestCase {
         let shareB = try responder.receiveShareA(
             initiator.makeShareA()
         )
-        XCTAssertThrowsError(
+        assertThrows(PairingPakeError.confirmationFailed) {
             try initiator.receiveShareB(shareB)
-        ) { error in
-            XCTAssertEqual(
-                error as? PairingPakeError, .confirmationFailed
-            )
         }
     }
 
@@ -300,27 +282,19 @@ final class PairingPakeTests: XCTestCase {
         for share in lowOrderShares {
             var (initiator, responder) = try makePair()
             // Into the responder as share A…
-            XCTAssertThrowsError(
+            assertThrows(PairingPakeError.invalidPeerShare) {
                 try responder.receiveShareA(PairingShareA(share: share))
-            ) { error in
-                XCTAssertEqual(
-                    error as? PairingPakeError, .invalidPeerShare
-                )
             }
             // …and into the initiator as share B (any tag: the abort
             // must fire before the tag is even looked at).
             _ = try initiator.makeShareA()
-            XCTAssertThrowsError(
+            assertThrows(PairingPakeError.invalidPeerShare) {
                 try initiator.receiveShareB(PairingShareB(
                     share: share,
                     confirmationTag: [UInt8](
                         repeating: 0, count: CPace.tagByteCount
                     )
                 ))
-            ) { error in
-                XCTAssertEqual(
-                    error as? PairingPakeError, .invalidPeerShare
-                )
             }
             XCTAssertNil(initiator.result)
             XCTAssertNil(responder.result)
@@ -332,20 +306,18 @@ final class PairingPakeTests: XCTestCase {
     func testStateMachineRefusesMisuse() throws {
         var (initiator, responder) = try makePair()
         // Confirm before share A.
-        XCTAssertThrowsError(
+        assertThrows(PairingPakeError.invalidState) {
             try responder.receiveConfirm(PairingConfirm(
                 confirmationTag: [UInt8](
                     repeating: 0, count: CPace.tagByteCount
                 )
             ))
-        ) {
-            XCTAssertEqual($0 as? PairingPakeError, .invalidState)
         }
         // A second share A after the first.
         let shareA = try initiator.makeShareA()
         _ = try responder.receiveShareA(shareA)
-        XCTAssertThrowsError(try responder.receiveShareA(shareA)) {
-            XCTAssertEqual($0 as? PairingPakeError, .invalidState)
+        assertThrows(PairingPakeError.invalidState) {
+            try responder.receiveShareA(shareA)
         }
         // A completed initiator refuses another share B.
         var (initiator2, responder2) = try makePair()
@@ -353,47 +325,41 @@ final class PairingPakeTests: XCTestCase {
             initiator2.makeShareA()
         )
         _ = try initiator2.receiveShareB(shareB2)
-        XCTAssertThrowsError(try initiator2.receiveShareB(shareB2)) {
-            XCTAssertEqual($0 as? PairingPakeError, .invalidState)
+        assertThrows(PairingPakeError.invalidState) {
+            try initiator2.receiveShareB(shareB2)
         }
     }
 
     func testInvalidInputsReject() {
         // Empty PIN.
-        XCTAssertThrowsError(
+        assertThrows(PairingPakeError.invalidInput) {
             try PairingPakeInitiator(
                 pin: [],
                 clientStaticPublicKey: Self.clientStatic,
                 hostStaticPublicKey: Self.hostStatic,
                 noiseHandshakeHash: Self.handshakeHash
             )
-        ) {
-            XCTAssertEqual($0 as? PairingPakeError, .invalidInput)
         }
         // Mis-sized static.
-        XCTAssertThrowsError(
+        assertThrows(PairingPakeError.invalidInput) {
             try PairingPakeResponder(
                 pin: Self.pin,
                 clientStaticPublicKey: [1, 2, 3],
                 hostStaticPublicKey: Self.hostStatic,
                 noiseHandshakeHash: Self.handshakeHash
             )
-        ) {
-            XCTAssertEqual($0 as? PairingPakeError, .invalidInput)
         }
         // Mis-sized handshake hash.
-        XCTAssertThrowsError(
+        assertThrows(PairingPakeError.invalidInput) {
             try PairingPakeInitiator(
                 pin: Self.pin,
                 clientStaticPublicKey: Self.clientStatic,
                 hostStaticPublicKey: Self.hostStatic,
                 noiseHandshakeHash: [0xAA]
             )
-        ) {
-            XCTAssertEqual($0 as? PairingPakeError, .invalidInput)
         }
         // Mis-sized injected scalar.
-        XCTAssertThrowsError(
+        assertThrows(PairingPakeError.invalidInput) {
             try PairingPakeInitiator(
                 pin: Self.pin,
                 clientStaticPublicKey: Self.clientStatic,
@@ -401,8 +367,6 @@ final class PairingPakeTests: XCTestCase {
                 noiseHandshakeHash: Self.handshakeHash,
                 fixedScalar: [1, 2, 3]
             )
-        ) {
-            XCTAssertEqual($0 as? PairingPakeError, .invalidInput)
         }
     }
 

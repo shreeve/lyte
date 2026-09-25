@@ -96,8 +96,8 @@ final class ClockBeaconTests: XCTestCase {
         for index in [14, 20, 30] {
             var corrupt = bytes
             corrupt[index] = 0xAA
-            XCTAssertThrowsError(try ClockBeacon.decode(corrupt)) {
-                XCTAssertEqual($0 as? BeaconError, .nonZeroAbsentEchoFields)
+            assertThrows(BeaconError.nonZeroAbsentEchoFields) {
+                try ClockBeacon.decode(corrupt)
             }
         }
         // And the same bytes decode fine once the flag admits them.
@@ -114,13 +114,13 @@ final class ClockBeaconTests: XCTestCase {
     }
 
     func testWrongTypeRejected() {
-        XCTAssertThrowsError(try ClockBeacon.decode(echoAnchorBytes + [0, 0, 0, 0, 0])) {
-            XCTAssertEqual($0 as? BeaconError, .unexpectedType(0x02))
+        assertThrows(BeaconError.unexpectedType(0x02)) {
+            try ClockBeacon.decode(echoAnchorBytes + [0, 0, 0, 0, 0])
         }
         var badEcho = echoAnchorBytes
         badEcho[0] = 0x7F
-        XCTAssertThrowsError(try BeaconEcho.decode(badEcho)) {
-            XCTAssertEqual($0 as? BeaconError, .unexpectedType(0x7F))
+        assertThrows(BeaconError.unexpectedType(0x7F)) {
+            try BeaconEcho.decode(badEcho)
         }
         XCTAssertEqual(CtrlMessageType.peek(beaconAnchorBytes), 0x01)
         XCTAssertEqual(CtrlMessageType.peek(echoAnchorBytes), 0x02)
@@ -131,27 +131,23 @@ final class ClockBeaconTests: XCTestCase {
 
     func testTruncationRejected() {
         for cut in 0..<beaconAnchorBytes.count {
-            XCTAssertThrowsError(
+            assertThrows(BeaconError.truncatedMessage, "cut \(cut)") {
                 try ClockBeacon.decode(Array(beaconAnchorBytes.prefix(cut)))
-            ) {
-                XCTAssertEqual($0 as? BeaconError, .truncatedMessage, "cut \(cut)")
             }
         }
         for cut in 0..<echoAnchorBytes.count {
-            XCTAssertThrowsError(
+            assertThrows(BeaconError.truncatedMessage, "cut \(cut)") {
                 try BeaconEcho.decode(Array(echoAnchorBytes.prefix(cut)))
-            ) {
-                XCTAssertEqual($0 as? BeaconError, .truncatedMessage, "cut \(cut)")
             }
         }
     }
 
     func testTrailingBytesRejected() {
-        XCTAssertThrowsError(try ClockBeacon.decode(beaconAnchorBytes + [0x00])) {
-            XCTAssertEqual($0 as? BeaconError, .trailingBytes)
+        assertThrows(BeaconError.trailingBytes) {
+            try ClockBeacon.decode(beaconAnchorBytes + [0x00])
         }
-        XCTAssertThrowsError(try BeaconEcho.decode(echoAnchorBytes + [0x00])) {
-            XCTAssertEqual($0 as? BeaconError, .trailingBytes)
+        assertThrows(BeaconError.trailingBytes) {
+            try BeaconEcho.decode(echoAnchorBytes + [0x00])
         }
     }
 

@@ -125,43 +125,47 @@ final class VideoPacketizerTests: XCTestCase {
     func testRejectsNonFrameShapedInput() {
         var packetizer = VideoPacketizer()
         // No start code.
-        XCTAssertThrowsError(try packetizer.packetize(
-            frame: [0xFF, 0x00, 0x01, 0x02],
-            frameNumber: FrameNumber(rawValue: 0),
-            captureTimestamp: HostTimestamp(microseconds: 0),
-            isIDR: false, regime: .clean
-        )) { XCTAssertEqual($0 as? VideoError, .frameNotFrameShaped) }
+        assertThrows(VideoError.frameNotFrameShaped) {
+            try packetizer.packetize(
+                frame: [0xFF, 0x00, 0x01, 0x02],
+                frameNumber: FrameNumber(rawValue: 0),
+                captureTimestamp: HostTimestamp(microseconds: 0),
+                isIDR: false, regime: .clean
+            )
+        }
         // Parameter sets only, no VCL.
-        XCTAssertThrowsError(try packetizer.packetize(
-            frame: [0, 0, 0, 1, 0x40, 0x01, 0x0C],
-            frameNumber: FrameNumber(rawValue: 0),
-            captureTimestamp: HostTimestamp(microseconds: 0),
-            isIDR: false, regime: .clean
-        )) { XCTAssertEqual($0 as? VideoError, .frameNotFrameShaped) }
+        assertThrows(VideoError.frameNotFrameShaped) {
+            try packetizer.packetize(
+                frame: [0, 0, 0, 1, 0x40, 0x01, 0x0C],
+                frameNumber: FrameNumber(rawValue: 0),
+                captureTimestamp: HostTimestamp(microseconds: 0),
+                isIDR: false, regime: .clean
+            )
+        }
         // The counter must not have moved on failure.
         XCTAssertEqual(packetizer.nextSeq.rawValue, 0)
     }
 
     func testRejectsIdrFlagDisagreeingWithBitstream() {
         var packetizer = VideoPacketizer()
-        XCTAssertThrowsError(try packetizer.packetize(
-            frame: idrFrame(totalByteCount: 20),
-            frameNumber: FrameNumber(rawValue: 0),
-            captureTimestamp: HostTimestamp(microseconds: 0),
-            isIDR: false, regime: .clean
-        )) {
-            XCTAssertEqual(
-                $0 as? VideoError, .idrFlagMismatch(claimed: false, derived: true)
+        assertThrows(
+            VideoError.idrFlagMismatch(claimed: false, derived: true)
+        ) {
+            try packetizer.packetize(
+                frame: idrFrame(totalByteCount: 20),
+                frameNumber: FrameNumber(rawValue: 0),
+                captureTimestamp: HostTimestamp(microseconds: 0),
+                isIDR: false, regime: .clean
             )
         }
-        XCTAssertThrowsError(try packetizer.packetize(
-            frame: pFrame(totalByteCount: 20),
-            frameNumber: FrameNumber(rawValue: 0),
-            captureTimestamp: HostTimestamp(microseconds: 0),
-            isIDR: true, regime: .clean
-        )) {
-            XCTAssertEqual(
-                $0 as? VideoError, .idrFlagMismatch(claimed: true, derived: false)
+        assertThrows(
+            VideoError.idrFlagMismatch(claimed: true, derived: false)
+        ) {
+            try packetizer.packetize(
+                frame: pFrame(totalByteCount: 20),
+                frameNumber: FrameNumber(rawValue: 0),
+                captureTimestamp: HostTimestamp(microseconds: 0),
+                isIDR: true, regime: .clean
             )
         }
     }
@@ -258,11 +262,11 @@ final class VideoPacketizerTests: XCTestCase {
             }
         }
         // Wrong IDR claims are refused identically.
-        XCTAssertThrowsError(try VideoPacketizer.shardPayloads(
-            frame: pFrame(totalByteCount: 50), isIDR: true, regime: .clean
-        )) {
-            XCTAssertEqual(
-                $0 as? VideoError, .idrFlagMismatch(claimed: true, derived: false)
+        assertThrows(
+            VideoError.idrFlagMismatch(claimed: true, derived: false)
+        ) {
+            try VideoPacketizer.shardPayloads(
+                frame: pFrame(totalByteCount: 50), isIDR: true, regime: .clean
             )
         }
     }
@@ -281,10 +285,10 @@ final class VideoPacketizerTests: XCTestCase {
             return XCTFail("expected an RS field")
         }
         XCTAssertEqual(geometry.dataShards, 2)
-        XCTAssertThrowsError(try FecGeometryTable.geometry(
-            forGroupByteCount: 10, regime: .clean, shardBudgetByteCount: 0
-        )) {
-            XCTAssertEqual($0 as? FecError, .shardBudgetOutOfRange(0))
+        assertThrows(FecError.shardBudgetOutOfRange(0)) {
+            try FecGeometryTable.geometry(
+                forGroupByteCount: 10, regime: .clean, shardBudgetByteCount: 0
+            )
         }
     }
 }

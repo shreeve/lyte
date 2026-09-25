@@ -124,12 +124,8 @@ final class CapabilitiesTests: XCTestCase {
                 if case .unsigned(let k) = $0.key { return k != missing }
                 return true
             }
-            XCTAssertThrowsError(
+            assertThrows(CapabilityError.missingKey(missing)) {
                 try Capabilities.decodeCbor(try Cbor.encode(.map(entries)))
-            ) { error in
-                XCTAssertEqual(
-                    error as? CapabilityError, .missingKey(missing)
-                )
             }
         }
         // Wrong registered types.
@@ -151,14 +147,10 @@ final class CapabilitiesTests: XCTestCase {
                 return true
             }
             entries.append(.init(key: .unsigned(key), value: value))
-            XCTAssertThrowsError(
-                try Capabilities.decodeCbor(try Cbor.encode(.map(entries))),
-                "key \(key)"
-            ) { error in
-                XCTAssertEqual(
-                    error as? CapabilityError,
-                    .wrongValueType(key: key), "key \(key)"
-                )
+            assertThrows(
+                CapabilityError.wrongValueType(key: key), "key \(key)"
+            ) {
+                try Capabilities.decodeCbor(try Cbor.encode(.map(entries)))
             }
         }
         // Non-canonical id list (descending).
@@ -170,10 +162,8 @@ final class CapabilitiesTests: XCTestCase {
             ),
             .init(key: .unsigned(3), value: .array([.unsigned(1)])),
         ]))
-        XCTAssertThrowsError(
+        assertThrows(CapabilityError.nonCanonicalIdList) {
             try Capabilities.decodeCbor(descending)
-        ) { error in
-            XCTAssertEqual(error as? CapabilityError, .nonCanonicalIdList)
         }
         // Ceiling below the 1152 B protocol floor.
         let lowCeiling = try Cbor.encode(.map([
@@ -182,41 +172,29 @@ final class CapabilitiesTests: XCTestCase {
             .init(key: .unsigned(3), value: .array([.unsigned(1)])),
             .init(key: .unsigned(8), value: .unsigned(1151)),
         ]))
-        XCTAssertThrowsError(
+        assertThrows(CapabilityError.datagramCeilingBelowFloor(1151)) {
             try Capabilities.decodeCbor(lowCeiling)
-        ) { error in
-            XCTAssertEqual(
-                error as? CapabilityError, .datagramCeilingBelowFloor(1151)
-            )
         }
         // Not a map at the top level.
-        XCTAssertThrowsError(
+        assertThrows(CapabilityError.notAMap) {
             try Capabilities.decodeCbor(hex("810a"))
-        ) { error in
-            XCTAssertEqual(error as? CapabilityError, .notAMap)
         }
         // Malformed CBOR wraps the inner error.
-        XCTAssertThrowsError(
+        assertThrows(CapabilityError.malformedCbor(.truncatedItem)) {
             try Capabilities.decodeCbor(hex("a2"))
-        ) { error in
-            XCTAssertEqual(
-                error as? CapabilityError, .malformedCbor(.truncatedItem)
-            )
         }
     }
 
     func testEncodeRejectsNonCanonicalConstruction() {
         var bad = Capabilities.wireDefault
         bad.chromaModes = [2, 1]
-        XCTAssertThrowsError(try bad.encodeCbor()) { error in
-            XCTAssertEqual(error as? CapabilityError, .nonCanonicalIdList)
+        assertThrows(CapabilityError.nonCanonicalIdList) {
+            try bad.encodeCbor()
         }
         var low = Capabilities.wireDefault
         low.maxDatagramBytes = 100
-        XCTAssertThrowsError(try low.encodeCbor()) { error in
-            XCTAssertEqual(
-                error as? CapabilityError, .datagramCeilingBelowFloor(100)
-            )
+        assertThrows(CapabilityError.datagramCeilingBelowFloor(100)) {
+            try low.encodeCbor()
         }
     }
 
