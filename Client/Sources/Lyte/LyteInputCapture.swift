@@ -49,20 +49,35 @@ final class LyteInputCapture {
     private let onActivity: @MainActor (PointerActivity) -> Void
     private var monitors: [Any] = []
     private var forwarding = InputForwardingPolicy()
-    private var resignObserver: NSObjectProtocol?
+    private var observers: [NSObjectProtocol] = []
+
+    /// The Actions menu's "Secure Keyboard Entry", app-wide, off unless set.
+    nonisolated static let secureKeyboardEntryKey = "secureKeyboardEntry"
+    private let defaults: UserDefaults
+    /// Enables (true) or disables (false) secure event input. The Carbon
+    /// calls are refcounted per process; this capture holds at most one.
+    private let setSecureInput: @MainActor (Bool) -> Void
+    private var windowIsKey = false
+    private var secureInputHeld = false
 
     init(
         view: NSView,
         window: NSWindow,
         videoSize: @escaping @MainActor () -> CGSize,
         send: @escaping @MainActor (InputEvent.Body) -> Void,
-        onActivity: @escaping @MainActor (PointerActivity) -> Void = { _ in }
+        onActivity: @escaping @MainActor (PointerActivity) -> Void = { _ in },
+        defaults: UserDefaults = .standard,
+        setSecureInput: @escaping @MainActor (Bool) -> Void = {
+            _ = $0 ? EnableSecureEventInput() : DisableSecureEventInput()
+        }
     ) {
         self.view = view
         self.window = window
         self.videoSize = videoSize
         self.send = send
         self.onActivity = onActivity
+        self.defaults = defaults
+        self.setSecureInput = setSecureInput
         window.acceptsMouseMovedEvents = true
     }
 
@@ -82,12 +97,45 @@ final class LyteInputCapture {
         // way teardown does: whatever the host holds would stay down and
         // auto-repeat. Focus loss releases everything; keys still
         // physically held re-press on return.
-        resignObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didResignKeyNotification, object: window,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.releaseAllHeld() }
-        }
+        let center = NotificationCenter.default
+        observers = [
+            center.addObserver(
+                forName: NSWindow.didResignKeyNotification, object: window,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.releaseAllHeld()
+                    self?.windowKeyChanged(false)
+                }
+            },
+            center.addObserver(
+                forName: NSWindow.didBecomeKeyNotification, object: window,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.windowKeyChanged(true) }
+            },
+            center.addObserver(
+                forName: UserDefaults.didChangeNotification, object: defaults,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.syncSecureInput() }
+            },
+        ]
+        windowKeyChanged(window?.isKeyWindow == true)
+    }
+
+    private func windowKeyChanged(_ isKey: Bool) {
+        windowIsKey = isKey
+        syncSecureInput()
+    }
+
+    /// Secure event input is held exactly while the preference is on and
+    /// this stream window is key, so other apps cannot read its keys.
+    private func syncSecureInput() {
+        let wanted = windowIsKey && defaults.bool(forKey: Self.secureKeyboardEntryKey)
+        guard wanted != secureInputHeld else { return }
+        secureInputHeld = wanted
+        setSecureInput(wanted)
     }
 
     /// Sends up-events for every key/button the host believes is down.
@@ -105,10 +153,9 @@ final class LyteInputCapture {
         // A window/session teardown can swallow AppKit's matching keyUp.
         // Release every state we told the host was down before detaching.
         releaseAllHeld()
-        if let resignObserver {
-            NotificationCenter.default.removeObserver(resignObserver)
-        }
-        resignObserver = nil
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        observers.removeAll()
+        windowKeyChanged(false)
         monitors.forEach { NSEvent.removeMonitor($0) }
         monitors.removeAll()
     }

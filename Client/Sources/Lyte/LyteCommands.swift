@@ -15,6 +15,8 @@ struct LyteCommands: Commands {
     private var stripEdgeRaw = StripEdge.bottom.rawValue
     @AppStorage(StripPreferences.hiddenKey)
     private var stripHidden = false
+    @AppStorage(LyteInputCapture.secureKeyboardEntryKey)
+    private var secureKeyboardEntry = false
 
     var body: some Commands {
         CommandMenu("Actions") {
@@ -106,6 +108,13 @@ struct LyteCommands: Commands {
                 }
             }
             .disabled(connection?.canReconnect != true)
+
+            Divider()
+
+            // Terminal's posture: while a stream window is key, other
+            // apps' keystroke taps see nothing (and neither do password
+            // managers' autotype or text expanders).
+            Toggle("Secure Keyboard Entry", isOn: $secureKeyboardEntry)
 
             Divider()
 
