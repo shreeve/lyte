@@ -95,6 +95,30 @@ final class SimNetTests: XCTestCase {
         )
     }
 
+    func testOutOfRangeSourceSendsFromTheClampedEndpoint() {
+        var net = SimNet(config: SimNetConfig(), seed: 6)
+        net.send(from: 7, bytes: [1], now: 0)
+        net.send(from: -3, bytes: [2], now: 0)
+        XCTAssertEqual(net.deliveries(upTo: 10).map(\.destination), [0, 1])
+    }
+
+    func testDuplicatedCountOmitsCopiesTheQueueDrops() {
+        var net = SimNet(
+            config: SimNetConfig(
+                duplicateRate: 1,
+                bandwidthBitsPerSecond: 8_000_000,
+                maxQueueByteCount: 150
+            ),
+            seed: 7
+        )
+        net.send(from: 0, bytes: [UInt8](repeating: 1, count: 100), now: 0)
+        XCTAssertEqual(net.queueDroppedCount, 1)
+        XCTAssertEqual(net.duplicatedCount, 0)
+        net.send(from: 0, bytes: [UInt8](repeating: 2, count: 50), now: 100)
+        XCTAssertEqual(net.duplicatedCount, 1)
+        XCTAssertEqual(net.deliveries(upTo: 1_000).map(\.bytes.count), [100, 50, 50])
+    }
+
     func testG3JitterShapeIsBoundedAndActuallyReorders() {
         let config = SimNetConfig(
             baseDelayMicroseconds: 2_000,
