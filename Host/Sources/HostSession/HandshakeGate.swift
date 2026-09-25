@@ -169,8 +169,6 @@ public struct HandshakeGate: Sendable {
     private var addressBuckets = BoundedFifoMap<[UInt8], TokenBucket>(
         capacity: 256)
 
-    public private(set) var admitted = 0
-    public private(set) var refused = 0
     /// RetryChallenges minted in require-cookie mode.
     public private(set) var challengesMinted = 0
     /// Cookies presented that verified — the extra-round-trip admits.
@@ -233,7 +231,6 @@ public struct HandshakeGate: Sendable {
                   )
             else {
                 cookiesRejected += 1
-                refused += 1
                 return decided(.drop(.cookieInvalid))
             }
             cookiesVerified += 1
@@ -254,11 +251,9 @@ public struct HandshakeGate: Sendable {
             addressBuckets.set(share, for: clientAddress)
             guard spent else {
                 cookiesThrottled += 1
-                refused += 1
                 return decided(.drop(.throttled))
             }
             admittedCookies.set((), for: cookie)
-            admitted += 1
             return decided(.admit)
         }
 
@@ -267,7 +262,6 @@ public struct HandshakeGate: Sendable {
         // stateless challenge (one HMAC, no Noise, no state); the honest
         // client resubmits with the cookie echoed.
         if !cookieMode, bucket.spend() {
-            admitted += 1
             return decided(.admit)
         }
         if let secret = config.cookieSecret,
@@ -276,15 +270,12 @@ public struct HandshakeGate: Sendable {
                 now: now, secret: secret
            ) {
             challengesMinted += 1
-            refused += 1
             return decided(.challenge(cookie: cookie))
         }
         // The mint refused a malformed tuple: the bucket still applies.
         if cookieMode, bucket.spend() {
-            admitted += 1
             return decided(.admit)
         }
-        refused += 1
         return decided(.drop(.throttled))
     }
 
