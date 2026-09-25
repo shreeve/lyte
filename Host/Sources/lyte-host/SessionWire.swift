@@ -99,13 +99,6 @@ final class SessionWire {
     /// video at SO_PRIORITY 4, control and audio at 6.
     private var videoNetio: OpaquePointer?
     private var latencyNetio: OpaquePointer?
-    private let handshakeWitness: FileHandle? = {
-        guard let path = ProcessInfo.processInfo.environment[
-            "LYTE_HANDSHAKE_WITNESS_JSONL"] else { return nil }
-        _ = FileManager.default.createFile(atPath: path, contents: nil)
-        return FileHandle(forWritingAtPath: path)
-    }()
-    private var awaitPrimaryDatagrams = 0
     /// Unconfirmed handshakes a newer authenticated message 1 replaced.
     private(set) var handshakesSuperseded = 0
     /// Answered handshakes discarded unconfirmed.
@@ -509,7 +502,6 @@ final class SessionWire {
         lock.lock()
         closeSessionDescriptors()
         lock.unlock()
-        try? handshakeWitness?.close()
     }
 
     private func closeSessionDescriptors() {
@@ -525,20 +517,6 @@ final class SessionWire {
         }
         close(wakeFd)
         wakeFd = -1
-    }
-
-    private func traceHandshake(
-        _ event: String, fields: [String: String] = [:]
-    ) {
-        guard let handshakeWitness else { return }
-        var object = fields
-        object["event"] = event
-        object["monotonicNanoseconds"] = String(SystemMonotonicClock.nowNanoseconds)
-        guard let data = try? JSONSerialization.data(
-            withJSONObject: object, options: [.sortedKeys])
-        else { return }
-        handshakeWitness.write(data)
-        handshakeWitness.write(Data([0x0A]))
     }
 
     /// Opens the media sockets on first use, else re-connects them.
@@ -692,10 +670,6 @@ final class SessionWire {
             noise: awaiting client handshake on port \
             \(lyte_netio_local_port(listenNetio)) …
             """)
-        traceHandshake("awaitClientBegin", fields: [
-            "pid": String(getpid()),
-            "primaryLocalPort": String(lyte_netio_local_port(listenNetio)),
-        ])
 
         let deadline = timeoutSeconds.map {
             SystemMonotonicClock.nowNanoseconds + UInt64($0 * 1e9)
@@ -782,15 +756,12 @@ final class SessionWire {
         guard message1 != nil || session?.phase == .established else {
             // Before an answer only an initiation matters: a relaunched
             // host also hears the old session's feedback.
-            traceAwaitDatagram(datagram, from: tuple, accepted: false)
             return
         }
-        if let message1 {
-            // Shape check, not trust: the gate still authenticates.
-            let plausible = message1 == session?.answeredMessage1
-                || !listener.answeredHandshakes.contains(message1: message1)
-            traceAwaitDatagram(datagram, from: tuple, accepted: plausible)
-            guard plausible else { return }
+        // A replay check, not trust: the gate still authenticates.
+        if let message1, message1 != session?.answeredMessage1,
+           listener.answeredHandshakes.contains(message1: message1) {
+            return
         }
         if session == nil {
             makeSession(crypto: .noise(hostStatic: hostStatic), clientTuple: tuple)
@@ -829,22 +800,6 @@ final class SessionWire {
         if !wasConfirmed, session.isPeerConfirmed {
             emit("noise: client confirmed — it holds the session keys")
         }
-    }
-
-    private func traceAwaitDatagram(
-        _ datagram: [UInt8], from tuple: FourTuple, accepted: Bool
-    ) {
-        awaitPrimaryDatagrams += 1
-        guard handshakeWitness != nil else { return }
-        let payloadType: UInt8? = (try? Envelope.decode(datagram[...]))?.1.first
-        traceHandshake("primaryDatagram", fields: [
-            "ordinal": String(awaitPrimaryDatagrams),
-            "bytes": String(datagram.count),
-            "remoteAddress": tuple.remoteAddress,
-            "remotePort": String(tuple.remotePort),
-            "shapeAccepted": String(accepted),
-            "payloadType": payloadType.map(String.init) ?? "",
-        ])
     }
 
     /// Requires `lock`. Drops an unconfirmed session and its queue; the
@@ -1767,10 +1722,6 @@ final class SessionWire {
             let client = session.validator.primary.tuple
             do {
                 try connectMedia(host: client.remoteAddress, port: client.remotePort)
-                traceHandshake("mediaSocketsConnected", fields: [
-                    "remoteAddress": client.remoteAddress,
-                    "remotePort": String(client.remotePort),
-                ])
             } catch {
                 emit("""
                     session: \(error) — sending addressed from the \
