@@ -493,34 +493,17 @@ final class LyteUdpSessionGateTests: XCTestCase {
 
     // MARK: - The 0x15 codec mirror (bytes pinned before promotion)
 
-    func testIdleFrameCodecMatchesHostPinnedLayout() throws {
-        let annexB: [UInt8] = [0, 0, 0, 1, 0x26, 0x01, 0xAB]
-        let message = IdleFrame(
-            frame: FrameNumber(rawValue: 0x0403_0201),
-            captureTimestampMicroseconds: 0x0807_0605_0403_0201,
-            annexB: annexB
-        ).encode()
-        // Hand-built layout: type ‖ frame u32 LE ‖ capture u64 LE ‖ Annex-B.
-        XCTAssertEqual(
-            message,
-            [0x15,
-             0x01, 0x02, 0x03, 0x04,
-             0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
-                + annexB
-        )
-        let decoded = try IdleFrame.decode(message)
-        XCTAssertEqual(decoded.frame.rawValue, 0x0403_0201)
-        XCTAssertEqual(
-            decoded.captureTimestampMicroseconds, 0x0807_0605_0403_0201)
-        XCTAssertEqual(decoded.annexB, annexB)
-
-        // Refusals: truncation, an empty body, a foreign type.
-        XCTAssertThrowsError(
-            try IdleFrame.decode(Array(message.prefix(13))))
-        XCTAssertThrowsError(try IdleFrame.decode([UInt8]()))
-        var foreign = message
-        foreign[0] = 0x09
-        XCTAssertThrowsError(try IdleFrame.decode(foreign))
+    /// Declaration is dialect, not consent: the core declares every
+    /// optional key it speaks, and both clipboard rungs start off.
+    func testCoreDefaultDeclaresEveryKeyItSpeaksWithConsentOff() {
+        let defaults = LyteUdpSessionCoreConfig()
+        XCTAssertTrue(defaults.capabilities.hostAudioRouting)
+        XCTAssertTrue(defaults.capabilities.clipboardText)
+        XCTAssertTrue(defaults.capabilities.bulkTransfer)
+        XCTAssertTrue(defaults.capabilities.clipboardImages)
+        XCTAssertTrue(defaults.capabilities.cursorShape)
+        XCTAssertFalse(defaults.shareClipboard)
+        XCTAssertFalse(defaults.shareClipboardImages)
     }
 
     // MARK: - The full lifecycle gate

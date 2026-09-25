@@ -47,7 +47,7 @@ import LyteWireTestKit
 
 final class RoamingClientGateTests: XCTestCase {
 
-    // MARK: Leg 7 — the pairing store keys by identity, not address
+    // MARK: The pairing store keys by identity, not address
 
     func testPinnedHostStoreKeysByIdentityNotAddress() throws {
         let keys = NoiseKeyPair.generate()
@@ -87,11 +87,9 @@ final class RoamingClientGateTests: XCTestCase {
                        "the name still finds the host, wherever it lives")
         XCTAssertNil(store.host(address: "10.0.0.60"),
                      "the old address is nobody now")
-        print("F-5 gate (pairing): identity-keyed store — a moved "
-            + "host is the same host, preferences intact")
     }
 
-    // MARK: Leg 8 — the platform path trigger rule
+    // MARK: The platform path trigger rule
 
     func testPathTriggerRule() {
         // The path watcher's trigger rule: the baseline observation
@@ -114,7 +112,6 @@ final class RoamingClientGateTests: XCTestCase {
             previous: wifi, current: dead))
         XCTAssertEqual(hotel, hotelSorted,
                        "interface names are order-canonical")
-        print("F-5 gate (path): baseline silent, change loud")
     }
 
     // MARK: - The roam-capable host stand-in: the Noise static is
@@ -322,7 +319,7 @@ final class RoamingClientGateTests: XCTestCase {
         }
     }
 
-    // MARK: Leg 9 — end to end: blackout at A, liveness close,
+    // MARK: End to end: blackout at A, liveness close,
     // rediscovery at B, same-id re-offer, sha-exact resume
 
     func testGateEndToEndRoamResumesBulkTransferAtNewAddress() throws {
@@ -503,9 +500,6 @@ final class RoamingClientGateTests: XCTestCase {
                        [2, 3, 4, 5, 6, 7],
                        "only the GAP was read after the roam")
         XCTAssertTrue(coordinator.snapshot().isIdle)
-        print("F-5 gate (end to end): blackout at A → FROZEN → "
-            + "liveness close → sighting at B → dial → same-id "
-            + "re-offer → sha-exact resume, chunks 2…7 only")
     }
 }
 

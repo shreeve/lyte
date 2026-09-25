@@ -5,93 +5,15 @@ import LyteTransport
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (CL-15, the client half of clipboard sync). Pinned
-// behaviors:
-//
-//   • the 0x1A/0x1B codecs answer the SAME hand-built arrays as
-//     Wire's ClipboardCodecTests and Host/Tests' ClipboardGateTests
-//     (the cross-pin) and never trap on hostile bytes;
-//   • capability key 10 rides the W7 spine byte-equal to the host's
-//     encoding, and the session core's DEFAULT config declares it
-//     (declaration is dialect, not consent);
-//   • in vivo, against a scripted key-10 host in virtual time: a
-//     local copy rides as one byte-exact 0x1A (the exact 65,536-byte
-//     ceiling included, through real ARQ segmentation both ways), a
-//     host announce surfaces and pre-arms the book, and the announce's
-//     pasteboard echo is SUPPRESSED — a set must not boomerang;
-//     duplicates dedupe;
-//   • consent gates BOTH directions: while sharing is off nothing
-//     leaves (.sharingDisabled) and nothing lands (counted, no event);
-//     the live toggle flips both mid-session;
-//   • the rule-3 gate holds: against a no-key-10 host the share is
-//     refused before a byte leaves, a hostile unnegotiated 0x1B drops
-//     loud, and a role-confused 0x1A at the client drops loud;
-//   • over-ceiling local copies suppress as weather (.overBudget);
-//   • the per-host consent default: pre-CL-15 pinned_hosts.json
-//     decodes unchanged, the preference survives a re-pair, and the
-//     setter refuses unknown hashes.
+// Clipboard text (key 10) through the real core against a scripted host in
+// virtual time: a local copy rides as one byte-exact 0x1A (the 65,536-byte
+// ceiling included), a host announce surfaces and its pasteboard echo is
+// suppressed; consent gates both directions and the live toggle flips
+// them; against a host without key 10 the share is refused before a byte
+// leaves and hostile or role-confused words drop loud; over-ceiling copies
+// suppress as weather.
 
 final class ClipboardClientGateTests: XCTestCase {
-
-    // MARK: Leg 1 — the 0x1A/0x1B bytes, pinned (the cross-pin)
-
-    func testClipboardCodecsPinBytes() throws {
-        XCTAssertEqual(
-            try ClipboardSet(text: "hello").encode(),
-            [0x1A, 0x68, 0x65, 0x6C, 0x6C, 0x6F]
-        )
-        XCTAssertEqual(
-            try ClipboardAnnounce(text: "hello").encode(),
-            [0x1B, 0x68, 0x65, 0x6C, 0x6C, 0x6F]
-        )
-        XCTAssertEqual(
-            try ClipboardSet.decode(
-                [0x1A, 0x68, 0x65, 0x6C, 0x6C, 0x6F]
-            ).text, "hello"
-        )
-        XCTAssertEqual(
-            try ClipboardAnnounce.decode(
-                [0x1B, 0x68, 0x65, 0x6C, 0x6C, 0x6F]
-            ).text, "hello"
-        )
-        XCTAssertThrowsError(try ClipboardSet.decode([]))
-        XCTAssertThrowsError(try ClipboardSet.decode([0x1A]))
-        XCTAssertThrowsError(try ClipboardSet.decode([0x1B, 0x61]))
-        XCTAssertThrowsError(try ClipboardAnnounce.decode([0x1A, 0x61]))
-        XCTAssertThrowsError(try ClipboardAnnounce.decode([0x1B, 0xFF]))
-        print("CL-15 gate (codec): 0x1A/0x1B pinned byte-exact against "
-            + "the Wire/host arrays")
-    }
-
-    // MARK: Leg 2 — key 10 on the spine; the core default declares
-
-    func testCapabilityKeyTenOnTheSpineAndCoreDefaultDeclares() throws {
-        let base = try Capabilities.wireDefault.encodeCbor()
-        XCTAssertEqual(base.first, 0xA8)
-        var expected = base
-        expected[0] = 0xA9
-        expected += [0x0A, 0xF5]
-        let declared = Capabilities.wireDefault.declaringClipboardText()
-        XCTAssertEqual(try declared.encodeCbor(), expected)
-
-        XCTAssertTrue(declared.intersecting(declared).clipboardText)
-        XCTAssertFalse(declared.intersecting(.wireDefault).clipboardText)
-        XCTAssertFalse(
-            Capabilities.wireDefault.intersecting(declared).clipboardText
-        )
-
-        // The session core's DEFAULT declaration carries key 10 (and
-        // still key 9): dialect, not consent — sharing stays OFF by
-        // default and the intersection decides whether the toggle
-        // exists.
-        let defaults = LyteUdpSessionCoreConfig()
-        XCTAssertTrue(defaults.capabilities.clipboardText)
-        XCTAssertTrue(defaults.capabilities.hostAudioRouting)
-        XCTAssertFalse(defaults.shareClipboard,
-                       "consent defaults OFF — clipboards carry passwords")
-        print("CL-15 gate (spine): declaration = frozen bytes + `0A F5`; "
-            + "core default declares, consent defaults off")
-    }
 
     // MARK: - The scripted host
 
@@ -158,7 +80,7 @@ final class ClipboardClientGateTests: XCTestCase {
 
     private typealias Harness = ClientCoreHarness<ClipboardHostStandIn>
 
-    // MARK: Leg 3 — the negotiated round trip + the boomerang proof
+    // MARK: The negotiated round trip + the boomerang proof
 
     func testGateShareAnnounceAndEchoSuppressionEndToEnd() throws {
         let host = ClipboardHostStandIn(
@@ -237,11 +159,9 @@ final class ClipboardClientGateTests: XCTestCase {
         XCTAssertEqual(counters.clipboardDropsLoud, 0)
         XCTAssertEqual(counters.malformedReliableMessages, 0)
 
-        print("CL-15 gate (in vivo): copy → byte-exact 0x1A (ceiling "
-            + "included); announce → event; echo suppressed — no boomerang")
     }
 
-    // MARK: Leg 4 — consent gates both directions, live toggle
+    // MARK: Consent gates both directions, live toggle
 
     func testGateSharingOffMeansNothingLeavesAndNothingLands() throws {
         let host = ClipboardHostStandIn(
@@ -290,11 +210,9 @@ final class ClipboardClientGateTests: XCTestCase {
         try harness.settle(t: &t)
         XCTAssertEqual(harness.clipboardEvents, ["host reply"])
 
-        print("CL-15 gate (consent): off = quiet AND deaf; the live "
-            + "toggle opens both directions")
     }
 
-    // MARK: Leg 5 — the rule-3 gate + the ceiling
+    // MARK: The rule-3 gate + the ceiling
 
     func testGateUnnegotiatedRefusalsHostileDropsAndOverBudget() throws {
         // A v1 host: declares, but never key 10.
@@ -358,11 +276,9 @@ final class ClipboardClientGateTests: XCTestCase {
         try negotiated.settle(t: &t2)
         XCTAssertEqual(negotiatedHost.setsReceived, [])
 
-        print("CL-15 gate (rule 3): share refused pre-wire, hostile 0x1B "
-            + "and role-confused 0x1A dropped loud, ceiling is weather")
     }
 
-    // MARK: Leg 6 — the per-host consent default's plumbing
+    // MARK: The per-host consent default's plumbing
 
     func testPinnedHostClipboardPreferencePlumbing() throws {
         // A pre-CL-15 file (no shareClipboard key) decodes unchanged:

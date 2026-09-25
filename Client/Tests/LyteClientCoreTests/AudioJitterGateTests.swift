@@ -93,7 +93,7 @@ final class AudioJitterGateTests: XCTestCase {
             recovered: recovered)
     }
 
-    // MARK: Leg 1 — steady cadence: silence-free, minimal delay
+    // MARK: Steady cadence: silence-free, minimal delay
 
     func testSteadyTraceZeroPlcZeroUnderrunTightTarget() {
         let buffer = AudioJitterBuffer()
@@ -219,7 +219,7 @@ final class AudioJitterGateTests: XCTestCase {
         XCTAssertEqual(buffer.targetPackets, beforeLate + 1)
     }
 
-    // MARK: Leg 2 — bursty ±15 ms delay variance (the dominant
+    // MARK: Bursty ±15 ms delay variance (the dominant
     // impairment per the audio-continuity verdict)
 
     func testBurstyJitterAdaptsTargetAndStaysContinuous() {
@@ -282,7 +282,7 @@ final class AudioJitterGateTests: XCTestCase {
             "decay is gradual, never an eager collapse")
     }
 
-    // MARK: Leg 4 — a true gap (loss beyond FEC) → PLC, exactly sized
+    // MARK: A true gap (loss beyond FEC) → PLC, exactly sized
 
     func testTrueGapConcealsExactlyTheMissingSlots() {
         let buffer = AudioJitterBuffer()
@@ -395,7 +395,7 @@ final class AudioJitterGateTests: XCTestCase {
                        "the outliers left no stale packets behind")
     }
 
-    // MARK: Leg 5 — late-packet discipline
+    // MARK: Late-packet discipline
 
     func testLatePacketIsDroppedNotReplayed() {
         let buffer = AudioJitterBuffer()
@@ -420,7 +420,7 @@ final class AudioJitterGateTests: XCTestCase {
         XCTAssertEqual(result.played, result.played.sorted())
     }
 
-    // MARK: Leg 6 — stall + burst: bounded depth, re-centered latency
+    // MARK: Stall + burst: bounded depth, re-centered latency
 
     func testStallBurstRecentersInsteadOfGrowingLatencyForever() {
         let buffer = AudioJitterBuffer()

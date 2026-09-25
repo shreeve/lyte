@@ -19,7 +19,7 @@ final class RoamingPolicyTests: XCTestCase {
         RoamingSighting(publicKeyHash: pkh, address: address, port: port)
     }
 
-    // MARK: Leg 1 — the silence threshold, and evidence cancelling
+    // MARK: The silence threshold, and evidence cancelling
 
     func testSilenceThresholdBeginsQuietScanAndEvidenceCancels() {
         var policy = makePolicy()
@@ -52,11 +52,9 @@ final class RoamingPolicyTests: XCTestCase {
             [])
         XCTAssertEqual(policy.status, .attached)
         XCTAssertNil(policy.nextDeadline)
-        print("F-5 gate (threshold): FROZEN+3 s → one scan; evidence "
-            + "cancels; a cancelled scan's sighting is inert")
     }
 
-    // MARK: Leg 2 — host moved: same pkh, NEW address, immediate dial
+    // MARK: Host moved: same pkh, NEW address, immediate dial
 
     func testSameIdentityAtNewAddressDialsImmediately() {
         var policy = makePolicy()
@@ -91,11 +89,9 @@ final class RoamingPolicyTests: XCTestCase {
             address: "10.9.9.9", port: 41_161, now: 8_000_000)
         XCTAssertEqual(policy.status, .attached)
         XCTAssertEqual(policy.lastKnownAddress, "10.9.9.9")
-        print("F-5 gate (host moved): same pkh at a new address → "
-            + "immediate dial; foreign pkh inert; new baseline adopted")
     }
 
-    // MARK: Leg 3 — same address: the redial threshold, and the
+    // MARK: Same address: the redial threshold, and the
     // dead-session shortcut
 
     func testSameAddressSightingWaitsOutRedialThreshold() {
@@ -133,11 +129,9 @@ final class RoamingPolicyTests: XCTestCase {
             closed.scanCompleted(
                 sightings: [sighting("10.0.0.60")], now: 62_000_000),
             [.dial(address: "10.0.0.60", port: 41_161, discovered: true)])
-        print("F-5 gate (same address): standing session holds 8 s "
-            + "before the redial; a closed one dials at sight")
     }
 
-    // MARK: Leg 4 — backoff arithmetic: capped ladders, never hot
+    // MARK: Backoff arithmetic: capped ladders, never hot
 
     func testBackoffLaddersCapAndNeverSpinHot() {
         var policy = makePolicy()
@@ -196,11 +190,9 @@ final class RoamingPolicyTests: XCTestCase {
                       discovered: false)))
             expectedRetry = min(expectedRetry * 2, 30_000_000)
         }
-        print("F-5 gate (backoff): scan gap 1→15 s, dial retry "
-            + "2→30 s, every deadline strictly future")
     }
 
-    // MARK: Leg 4b — a sighting that lands while a dial is in flight
+    // MARK: A sighting that lands while a dial is in flight
 
     /// The browse (2 s) usually finishes before the probe dial (3 × 700 ms)
     /// fails, so the host's new address arrives mid-dial. It must survive
@@ -256,7 +248,7 @@ final class RoamingPolicyTests: XCTestCase {
         XCTAssertTrue(reconnect.contains(.beginScan))
     }
 
-    // MARK: Leg 5 — client-side path change: grace, heal, escalate
+    // MARK: Client-side path change: grace, heal, escalate
 
     func testPathChangeGraceHealsOrEscalatesWithWaiver() {
         // Healed: the path change never froze the session — the grace
@@ -295,8 +287,6 @@ final class RoamingPolicyTests: XCTestCase {
             address: "10.0.0.60", port: 41_161, now: 0)
         _ = dark.wentSilent(now: 1_000_000)
         XCTAssertEqual(dark.pathChanged(now: 2_000_000), [.beginScan])
-        print("F-5 gate (path change): grace heals silently, "
-            + "escalates over a frozen path, waives the same-address hold")
     }
 
     // MARK: Dial answers only settle dials the policy issued
@@ -311,7 +301,7 @@ final class RoamingPolicyTests: XCTestCase {
         XCTAssertNil(policy.nextDeadline)
     }
 
-    // MARK: Leg 6 — the manual Reconnect verb
+    // MARK: The manual Reconnect verb
 
     func testManualReconnectResetsLaddersAndActsNow() {
         var policy = makePolicy()
@@ -339,8 +329,6 @@ final class RoamingPolicyTests: XCTestCase {
         _ = policy.dialFailed(now: 21_000_000)
         XCTAssertTrue(policy.tick(now: 23_000_000).contains(
             .dial(address: "10.0.0.60", port: 41_161, discovered: false)))
-        print("F-5 gate (manual): Reconnect acts immediately and "
-            + "resets both ladders to their floors")
     }
 
     func testStatusLinesDescribePolicyState() {

@@ -74,7 +74,7 @@ final class AudioDeclickGateTests: XCTestCase {
         return worst
     }
 
-    // MARK: Leg 1 — the cut is faded, the drought is exact silence
+    // MARK: The cut is faded, the drought is exact silence
 
     func testUnderrunBoundaryFadesInsteadOfHardCutting() {
         let ring = AudioPcmRing()
@@ -108,7 +108,7 @@ final class AudioDeclickGateTests: XCTestCase {
                        UInt64(1_050))
     }
 
-    // MARK: Leg 2 — recovery crossfades in, then passes through exact
+    // MARK: Recovery crossfades in, then passes through exact
 
     func testRecoveryFadesInThenPassesThroughByteExact() {
         let ring = AudioPcmRing()
@@ -137,7 +137,7 @@ final class AudioDeclickGateTests: XCTestCase {
         }
     }
 
-    // MARK: Leg 3 — recovery landing mid-decay (inside the 2 ms tail)
+    // MARK: Recovery landing mid-decay (inside the 2 ms tail)
 
     func testRecoveryInsideTheDecayTailStaysContinuous() {
         let ring = AudioPcmRing()
@@ -155,7 +155,7 @@ final class AudioDeclickGateTests: XCTestCase {
             + "tail's current value, not restart at zero")
     }
 
-    // MARK: Leg 4 — steady state is byte-identical (no standing color)
+    // MARK: Steady state is byte-identical (no standing color)
 
     func testSteadyStateIsByteIdenticalToRingContent() {
         let ring = AudioPcmRing()

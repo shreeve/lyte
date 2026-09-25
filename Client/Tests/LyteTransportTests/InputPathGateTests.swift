@@ -7,24 +7,11 @@ import LyteTransport
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (build plan CL-9 row, the in-tree half — the live leg runs
-// against the reference host): the client input sender. Pinned:
-//
-//   • the 0x16/0x17/TLV-0x03 mirrors are byte-pinned against the SAME
-//     hand-built layouts the host's InputGateTests pin (mirror-then-
-//     promote: both copies move to Wire/ together, bytes unchanged) and
-//     never trap on hostile bytes;
-//   • the latency math is EXACT in a deterministic unit: a known clock
-//     offset, a scripted echo, and a stamped delivery produce the
-//     precise input→inject / input→photon / host receive→inject edges;
-//   • the full loop runs through the REAL production core (Noise dial,
-//     sealed ARQ CTRL, demux, pipeline) against a scripted LyteWire
-//     host peer over the W-G4 SimNet storm: 40 events of all five
-//     kinds arrive exactly once IN ORDER byte-faithful, 40 echo tuples
-//     return, the stamped video frame closes every photon loop, and
-//     the sender's books balance;
-//   • MacEvdevKeyMap speaks evdev position codes (spot-pinned) — the
-//     host's XKB map owns layout.
+// The client input path: the latency books are exact against a known clock
+// fit and a scripted echo, and the full loop through the real core against
+// a scripted host over the SimNet storm delivers every event exactly once
+// in order, returns every echo tuple, and closes every photon loop on the
+// stamped video frame. MacEvdevKeyMap speaks evdev position codes.
 
 final class InputPathGateTests: XCTestCase {
 
@@ -44,122 +31,6 @@ final class InputPathGateTests: XCTestCase {
             [UInt8](try Data(contentsOf: URL(
                 fileURLWithPath: Self.corpusDirectory + "/" + $0)))
         }
-    }
-
-    // MARK: - Codec pins (the host InputGateTests layouts, verbatim)
-
-    func testInputEventCodecPinsBytesAgainstHostLayout() throws {
-        // keyKeycode: KEY_A (30) pressed, seq 7, client µs 0x1122334455.
-        let key = InputEvent(
-            seq: 7, clientMicroseconds: 0x11_2233_4455,
-            body: .keyKeycode(keycode: 30, pressed: true)
-        )
-        XCTAssertEqual(try key.encode(), [
-            0x16,                                   // type
-            7, 0, 0, 0,                             // seq u32 LE
-            0x55, 0x44, 0x33, 0x22, 0x11, 0, 0, 0,  // clientMicros u64 LE
-            0x01,                                   // kind keyKeycode
-            30, 0, 0, 0,                            // keycode u32 LE
-            1,                                      // pressed
-        ])
-        XCTAssertEqual(try InputEvent.decode(key.encode()), key)
-
-        // pointerMotionAbsolute: f64 bit patterns, LE.
-        let move = InputEvent(
-            seq: 8, clientMicroseconds: 2,
-            body: .pointerMotionAbsolute(x: 512.0, y: 320.25)
-        )
-        var expected: [UInt8] = [0x16, 8, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0x02]
-        for value in [512.0, 320.25] {
-            let bits = value.bitPattern
-            for shift in stride(from: 0, to: 64, by: 8) {
-                expected.append(UInt8(truncatingIfNeeded: bits >> shift))
-            }
-        }
-        XCTAssertEqual(try move.encode(), expected)
-        XCTAssertEqual(try InputEvent.decode(move.encode()), move)
-
-        // The remaining kinds round-trip.
-        for body: InputEvent.Body in [
-            .pointerMotionRelative(dx: -3.5, dy: 12.0),
-            .pointerButton(button: 0x110, pressed: false),
-            .pointerAxis(dx: 0, dy: -45.0, finish: true),
-        ] {
-            let event = InputEvent(seq: 99, clientMicroseconds: 1_000, body: body)
-            XCTAssertEqual(try InputEvent.decode(event.encode()), event)
-        }
-
-        // Echo: two tuples, hand-built layout.
-        let echo = InputEcho(tuples: [
-            InputEchoTuple(seq: 1, receivedMicroseconds: 0x0A,
-                           injectedMicroseconds: 0x0B),
-            InputEchoTuple(seq: 2, receivedMicroseconds: 0x0C,
-                           injectedMicroseconds: 0x0D),
-        ])
-        XCTAssertEqual(echo.encode(), [
-            0x17, 2,
-            1, 0, 0, 0,
-            0x0A, 0, 0, 0, 0, 0, 0, 0,
-            0x0B, 0, 0, 0, 0, 0, 0, 0,
-            2, 0, 0, 0,
-            0x0C, 0, 0, 0, 0, 0, 0, 0,
-            0x0D, 0, 0, 0, 0, 0, 0, 0,
-        ])
-        XCTAssertEqual(try InputEcho.decode(echo.encode()), echo)
-    }
-
-    func testHostileInputBytesRejectAndNeverTrap() throws {
-        let good = try InputEvent(
-            seq: 1, clientMicroseconds: 2,
-            body: .keyKeycode(keycode: 30, pressed: true)
-        ).encode()
-
-        // Truncations at every length below the minimum.
-        for length in 0..<good.count {
-            XCTAssertThrowsError(
-                try InputEvent.decode(Array(good.prefix(length))),
-                "truncation to \(length) bytes must reject"
-            )
-        }
-        // Foreign type byte.
-        XCTAssertThrowsError(try InputEvent.decode([0x15] + good.dropFirst()))
-        // Unknown kind.
-        var badKind = good
-        badKind[13] = 0x77
-        XCTAssertThrowsError(try InputEvent.decode(badKind))
-        // Trailing junk (body length disagrees with the kind).
-        XCTAssertThrowsError(try InputEvent.decode(good + [0x00]))
-        // A flag byte that is neither 0 nor 1.
-        var badFlag = good
-        badFlag[18] = 2
-        XCTAssertThrowsError(try InputEvent.decode(badFlag))
-        // Reserved axis-flag bits.
-        var axis = try InputEvent(
-            seq: 1, clientMicroseconds: 2,
-            body: .pointerAxis(dx: 1, dy: 2, finish: false)
-        ).encode()
-        axis[axis.count - 1] = 0x82
-        XCTAssertThrowsError(try InputEvent.decode(axis))
-
-        // Echo: count 0, count/length mismatch, over-limit count.
-        XCTAssertThrowsError(try InputEcho.decode([0x17, 0]))
-        XCTAssertThrowsError(try InputEcho.decode([0x17, 1, 1, 2, 3]))
-        XCTAssertThrowsError(try InputEcho.decode(
-            [0x17, 33] + [UInt8](repeating: 0, count: 33 * 20)
-        ))
-
-        // The TLV: duplicate and malformed value.
-        let tlv = LastInputSeqTlv.wireExtension(seq: 5)
-        XCTAssertEqual(try LastInputSeqTlv.decode(extensions: [tlv]), 5)
-        XCTAssertThrowsError(
-            try LastInputSeqTlv.decode(extensions: [tlv, tlv])
-        )
-        XCTAssertThrowsError(try LastInputSeqTlv.decode(
-            extensions: [try WireExtension(
-                type: WireExtension.ReservedType.lastInputSeq, value: [1, 2]
-            )]
-        ))
-        XCTAssertNil(try LastInputSeqTlv.decode(extensions: []))
     }
 
     // MARK: - The keymap speaks evdev position codes
@@ -932,12 +803,5 @@ final class InputPathGateTests: XCTestCase {
         XCTAssertTrue(harness.core.isReliableQuiescent,
                       "all input + echo traffic acknowledged both ways")
 
-        print("CL-9 gate: \(eventCount)/\(eventCount) events exactly-once "
-            + "in-order through the W-G4 storm; \(stats.echoTuplesReceived) "
-            + "echoes; host rx→inject pinned at "
-            + "\(HostInputStandIn.injectDelayMicroseconds) µs; "
-            + "input→inject p50 \(stats.inputToInject.p50 ?? 0) µs over the "
-            + "live clock fit; \(stats.inputToPhoton.count) photon loops "
-            + "closed by the stamped frame")
     }
 }
