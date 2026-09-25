@@ -111,8 +111,10 @@ with `npm ci` on first run. The module is about 77 MB without binaryen's
 
 The smoke's PASS lines and what each asserts are listed in
 [TESTING.md](TESTING.md#browser-smoke--browserscriptssmoke-chromesh). The
-Browser package's native tests run in the macOS gate; the WASM build runs
-there when the toolchain is installed. Neither needs Chrome.
+Browser package's native tests run in the macOS and pup gates (off macOS
+the manifest keeps only `LyteClientBrowserCore` and its suite, so Linux
+never resolves JavaScriptKit); the WASM build runs in the macOS gate when
+the toolchain is installed. Neither needs Chrome.
 
 The `serve.sh` harness always starts its own local peer. Pointing the page
 at a peer on pup (a fresh 41xxx port, never 41151) needs a serve mode that

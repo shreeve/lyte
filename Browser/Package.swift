@@ -8,7 +8,7 @@ import PackageDescription
 // WebTransport carriage, feedback and repair, video assemble +
 // Conductor/handoff policy, audio depacketize, input and clipboard on
 // sealed CTRL. It has no JavaScriptKit dependency, so it builds
-// and tests natively on macOS as well as for WebAssembly.
+// and tests natively on macOS and Linux as well as for WebAssembly.
 //
 // LyteClientBrowser is the thin executable that owns the JS↔WASM boundary
 // (built with the Swift Wasm SDK + PackageToJS). Page JavaScript owns
@@ -29,10 +29,6 @@ let package = Package(
         .package(path: "../Common"),
         .package(path: "../Client"),
         .package(path: "../Host"),
-        .package(
-            url: "https://github.com/swiftwasm/JavaScriptKit.git",
-            from: "0.36.0"
-        ),
     ],
     targets: [
         .target(
@@ -67,3 +63,16 @@ let package = Package(
         ),
     ]
 )
+
+// Off macOS only the core and its tests exist. The page is built from a Mac
+// (the manifest is evaluated on the build host even with --swift-sdk), so a
+// Linux machine never resolves JavaScriptKit or cross-builds the page.
+#if !os(macOS)
+package.targets.removeAll { $0.name == "LyteClientBrowser" }
+package.products.removeAll()
+#else
+package.dependencies.append(
+    .package(
+        url: "https://github.com/swiftwasm/JavaScriptKit.git",
+        .upToNextMinor(from: "0.57.0")))
+#endif
