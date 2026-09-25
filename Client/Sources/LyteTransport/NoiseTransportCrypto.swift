@@ -27,84 +27,6 @@ public protocol HandshakingTransportCrypto: TransportCrypto {
     func performHandshake(io: any NoiseHandshakeIO) throws
 }
 
-/// Test-only instrumentation inside the directional critical sections.
-final class NoiseTransportOperationProbe: @unchecked Sendable {
-    private let condition = NSCondition()
-    private let rendezvousDirections: Bool
-    private let holdUntil: TimeInterval
-    private var activeSeals = 0
-    private var activeUnseals = 0
-    private(set) var maximumConcurrentSeals = 0
-    private(set) var maximumConcurrentUnseals = 0
-    private(set) var observedDirectionalOverlap = false
-
-    init(rendezvousDirections: Bool = false, holdMilliseconds: Int = 0) {
-        self.rendezvousDirections = rendezvousDirections
-        self.holdUntil = TimeInterval(holdMilliseconds) / 1_000
-    }
-
-    func enteredSeal() {
-        entered(isSeal: true)
-    }
-
-    func exitedSeal() {
-        exited(isSeal: true)
-    }
-
-    func enteredUnseal() {
-        entered(isSeal: false)
-    }
-
-    func exitedUnseal() {
-        exited(isSeal: false)
-    }
-
-    private func entered(isSeal: Bool) {
-        condition.lock()
-        if isSeal {
-            activeSeals += 1
-            maximumConcurrentSeals = max(maximumConcurrentSeals, activeSeals)
-        } else {
-            activeUnseals += 1
-            maximumConcurrentUnseals = max(maximumConcurrentUnseals, activeUnseals)
-        }
-        if activeSeals > 0, activeUnseals > 0 {
-            observedDirectionalOverlap = true
-            condition.broadcast()
-        }
-        if rendezvousDirections {
-            let deadline = Date(timeIntervalSinceNow: 1)
-            while !observedDirectionalOverlap, condition.wait(until: deadline) {}
-        } else if holdUntil > 0 {
-            _ = condition.wait(until: Date(timeIntervalSinceNow: holdUntil))
-        }
-        condition.unlock()
-    }
-
-    private func exited(isSeal: Bool) {
-        condition.lock()
-        if isSeal {
-            activeSeals -= 1
-        } else {
-            activeUnseals -= 1
-        }
-        condition.unlock()
-    }
-
-    var snapshot: (
-        directionalOverlap: Bool,
-        maximumConcurrentSeals: Int,
-        maximumConcurrentUnseals: Int
-    ) {
-        condition.lock()
-        defer { condition.unlock() }
-        return (
-            observedDirectionalOverlap,
-            maximumConcurrentSeals,
-            maximumConcurrentUnseals)
-    }
-}
-
 public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked Sendable {
     public let hostAddress: String
     public let hostPort: UInt16
@@ -124,7 +46,9 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
     private var handshakeHash: [UInt8]?
     private var handshakeMilliseconds: Double?
     private var retryChallengesAnswered = 0
-    private var operationProbe: NoiseTransportOperationProbe?
+    /// Runs inside the seal (true) or unseal (false) critical section;
+    /// set before use, so tests can observe the directional locks.
+    var testingInsideDirection: ((_ seal: Bool) -> Void)?
 
     /// - Parameters:
     ///   - hostStaticPublicKey: the host's pinned 32-byte X25519 static.
@@ -169,25 +93,6 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
                 attempts: attempts,
                 intervalMicroseconds:
                     UInt64(max(1, attemptTimeoutMilliseconds)) * 1_000))
-    }
-
-    convenience init(
-        hostAddress: String,
-        hostPort: UInt16,
-        hostStaticPublicKey: [UInt8],
-        staticKeys: NoiseKeyPair? = nil,
-        attempts: Int = 5,
-        attemptTimeoutMilliseconds: Int = 1_000,
-        operationProbe: NoiseTransportOperationProbe
-    ) throws {
-        try self.init(
-            hostAddress: hostAddress,
-            hostPort: hostPort,
-            hostStaticPublicKey: hostStaticPublicKey,
-            staticKeys: staticKeys,
-            attempts: attempts,
-            attemptTimeoutMilliseconds: attemptTimeoutMilliseconds)
-        self.operationProbe = operationProbe
     }
 
     /// The static public key message 1 will present to the host.
@@ -340,8 +245,7 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
         guard receiveTransport != nil else {
             throw TransportCryptoError.handshakeFailed("unseal before handshake")
         }
-        operationProbe?.enteredUnseal()
-        defer { operationProbe?.exitedUnseal() }
+        testingInsideDirection?(false)
         // Typed Wire errors: junk floods cost no per-failure string.
         return try receiveTransport!.unseal(
             wirePayload: wirePayload, aad: aad, envelope: envelope)
@@ -357,8 +261,7 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
         guard sendTransport != nil else {
             throw TransportCryptoError.handshakeFailed("seal before handshake")
         }
-        operationProbe?.enteredSeal()
-        defer { operationProbe?.exitedSeal() }
+        testingInsideDirection?(true)
         return try sendTransport!.seal(
             plaintext: plaintext, aad: aad, envelope: envelope)
     }

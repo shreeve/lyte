@@ -52,8 +52,7 @@ final class SeqDemuxPropertyTests: XCTestCase {
             XCTAssertEqual(stats.payloadBytes, 128 * 64, "chan \(channel)")
             XCTAssertEqual(stats.seqMissing, 0, "chan \(channel)")
             XCTAssertEqual(stats.seqDuplicates, 0, "chan \(channel)")
-            XCTAssertEqual(stats.seqWrapEvents, 1, "chan \(channel)")
-            XCTAssertEqual(stats.maxFrame, 31, "chan \(channel)")
+            XCTAssertEqual(stats.seq.wrapEvents, 1, "chan \(channel)")
         }
         XCTAssertEqual(demux.snapshotTotals().accepted, 256)
     }

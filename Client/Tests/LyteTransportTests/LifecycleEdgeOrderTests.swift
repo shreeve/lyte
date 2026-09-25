@@ -16,17 +16,10 @@ final class LifecycleEdgeOrderTests: XCTestCase {
         }
     }
 
-    private final class Events: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [SessionState] = []
-        func append(_ state: SessionState) { lock.withLock { stored.append(state) } }
-        var all: [SessionState] { lock.withLock { stored } }
-    }
-
     func testSupersededFrozenEdgeIsNotDeliveredAfterTheActiveOne() throws {
         let crypto = PassthroughTransportCrypto()
         let clock = Clock()
-        let states = Events()
+        let states = Locked<[SessionState]>()
         let core = LyteUdpSessionCore(
             demux: ReceiveDemux(crypto: crypto),
             sender: TransportSender(crypto: crypto, transmit: { _ in true }),

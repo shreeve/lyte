@@ -1,11 +1,11 @@
-// The stop()-joins-before-close pin (analysis finding 12's residue).
 // stop() must not return — and must not free the fd number — while the
 // receive thread is still inside its datagram handling: a roaming
 // re-dial that binds a fresh socket in that window can be handed the
-// recycled fd, and the old loop steals its datagrams. The contract this
-// pins: when stop() returns, the receive thread's work is finished.
+// recycled fd, and the old loop steals its datagrams. When stop()
+// returns, the receive thread's work is finished.
 
 import Foundation
+import LyteClientTestKit
 import LyteCore
 import LyteWire
 import XCTest
@@ -87,19 +87,19 @@ final class UdpReceiveEndpointStopTests: XCTestCase {
 
     /// A datagram handler blocks mid-flight while another thread calls
     /// stop(): stop() must wait for the handler (the receive thread) to
-    /// finish before returning. Pre-fix, stop() closed the fd and could
+    /// finish before returning, rather than closing the fd and possibly
     /// return with the thread still running inside the loop.
     func testStopJoinsTheReceiveThreadBeforeReturning() throws {
         let handlerEntered = DispatchSemaphore(value: 0)
         let releaseHandler = DispatchSemaphore(value: 0)
-        nonisolated(unsafe) var handlerFinished = false
+        let handlerFinished = Locked(false)
         let endpoint = UdpReceiveEndpoint(
             port: 0, crypto: PassthroughCrypto(),
             receiveTimeout: Self.receiveTimeout
         ) { _, _ in
             handlerEntered.signal()
             releaseHandler.wait()
-            handlerFinished = true
+            handlerFinished.value = true
         }
         try endpoint.start()
 
@@ -137,9 +137,9 @@ final class UdpReceiveEndpointStopTests: XCTestCase {
             stopReturned.wait(timeout: .now() + 0.03), .timedOut,
             "stop() returned while the receive thread was still working "
             + "— the fd number was freed under a live loop")
-        XCTAssertFalse(handlerFinished)
+        XCTAssertFalse(handlerFinished.value)
         // The discriminating observable: the fd number must still be
-        // OURS while the thread lives. Pre-fix, stop() closed it at
+        // OURS while the thread lives; closing it at
         // entry — a concurrent re-dial could be handed the recycled
         // number while this loop still runs.
         XCTAssertGreaterThanOrEqual(
@@ -150,7 +150,7 @@ final class UdpReceiveEndpointStopTests: XCTestCase {
         XCTAssertEqual(
             stopReturned.wait(timeout: .now() + 5), .success,
             "stop() never returned after the handler finished")
-        XCTAssertTrue(handlerFinished,
+        XCTAssertTrue(handlerFinished.value,
                       "stop() returned before the handler completed")
     }
 }

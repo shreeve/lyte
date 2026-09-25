@@ -303,50 +303,28 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
                 kernelStampedArrivals.add(1, ordering: .relaxed)
             }
             let arrivalUs = kernelUs ?? SystemMonotonicClock.nowMicroseconds
-            let receivedAtNS = SystemMonotonicClock.nowNanoseconds
-            let witnessEnvelope = PipelineWitness.isEnabled
-                ? (try? Envelope.decode(buffer[0..<n]).0) : nil
-            if let envelope = witnessEnvelope, envelope.channel.rawValue == 2 {
-                let fec = try? FecField.decode(envelope.fec)
-                let shard: String
-                let dataShards: String
-                let parityShards: String
-                if case .reedSolomon(let index, let geometry) = fec {
-                    shard = String(index)
-                    dataShards = String(geometry.dataShards)
-                    parityShards = String(geometry.parityShards)
-                } else {
-                    shard = ""
-                    dataShards = ""
-                    parityShards = ""
-                }
-                PipelineWitness.record("udpReceive", fields: [
+            if PipelineWitness.isEnabled,
+               let envelope = try? Envelope.decode(buffer[0..<n]).0,
+               envelope.channel.rawValue == 2 {
+                var fields = [
                     "frame": String(envelope.frame.rawValue),
                     "seq": String(envelope.seq.rawValue),
-                    "shard": shard,
-                    "dataShards": dataShards,
-                    "parityShards": parityShards,
+                    "shard": "", "dataShards": "", "parityShards": "",
                     "kernelArrivalMicroseconds": String(arrivalUs),
                     "hasKernelTimestamp": String(kernelUs != nil),
-                    "receiveMonotonicNanoseconds": String(receivedAtNS),
-                ])
+                    "receiveMonotonicNanoseconds":
+                        String(SystemMonotonicClock.nowNanoseconds),
+                ]
+                if case .reedSolomon(let index, let geometry) =
+                    try? FecField.decode(envelope.fec) {
+                    fields["shard"] = String(index)
+                    fields["dataShards"] = String(geometry.dataShards)
+                    fields["parityShards"] = String(geometry.parityShards)
+                }
+                PipelineWitness.record("udpReceive", fields: fields)
             }
             let outcome = demux.ingest(datagram: buffer[0..<n],
                                        arrivalMicroseconds: arrivalUs)
-            if let envelope = witnessEnvelope, envelope.channel.rawValue == 2 {
-                let outcomeName: String
-                switch outcome {
-                case .accepted: outcomeName = "accepted"
-                case .reservedChannel: outcomeName = "reservedChannel"
-                case .malformed: outcomeName = "malformed"
-                case .unsealFailed: outcomeName = "unsealFailed"
-                }
-                PipelineWitness.record("udpIngestCompleted", fields: [
-                    "frame": String(envelope.frame.rawValue),
-                    "seq": String(envelope.seq.rawValue),
-                    "outcome": outcomeName,
-                ])
-            }
             // Roaming retarget is authenticated-only: an arbitrary UDP
             // packet must never redirect our sealed return traffic.
             if sourceCaptured, case .accepted = outcome {

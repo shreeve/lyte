@@ -6,79 +6,18 @@ import LyteTransport
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (F-4, the client half of drag-and-drop file transfer).
-// Pinned behaviors:
-//
-//   • capability key 11 rides the W7 spine byte-equal to the host's
-//     encoding (wireDefault + `0B F5`), survives intersection only on
-//     mutual declaration, and the session core's DEFAULT config
-//     declares it (dialect, not consent — the key-9/key-10 rule);
-//   • the preparer turns a real temp file into its offer: streaming
-//     SHA-256 equal to TestKit's reference digest, size counted as
-//     read, name on the 255-byte wire bound (UTF-8 boundary), MIME
-//     hint from the extension, empty files refused loudly;
-//   • the shell drives BulkSendEngine in virtual time against a REAL
-//     BulkReceiveEngine: happy path lands sha-exact with ascending
-//     credit-gated reads, cancel mid-flight emits abort(cancelled)
-//     and closes the reader, progress arithmetic is byte-exact
-//     (remainder last chunk included);
-//   • the coordinator's gates: offers ONLY when key 11 agreed
-//     (.hostNotAccepting spoken, never silent), nothing without a
-//     session (.notConnected);
-//   • QUEUE POLICY (the documented F-4 ruling): multi-file drops
-//     queue and send SERIALLY — one transfer at a time, v1's wire
-//     shape; the × cancels the active transfer AND the queue;
-//   • resume-on-reconnect: a session teardown mid-transfer keeps the
-//     entry (id + prepared offer); the next attach re-offers the SAME
-//     id, the accept's possession map resumes from the gap, only the
-//     missing chunks are read/sent, and the finish is sha-exact;
-//   • abort(resumeMismatch) draws the mandated recovery: ONE fresh-id
-//     re-preparation, then the transfer completes under the new id;
-//   • in vivo through the REAL session core against a scripted
-//     key-11 host: chan 8 runs its OWN ArqEndpoint pair (never CTRL),
-//     the offer leaves only after agreement, chunks reassemble
-//     byte-exact host-side through real ARQ segmentation + Noise
-//     sealing, and the rule-3 gate refuses bulk sends against a
-//     no-key-11 host before a byte leaves.
-//
-// NOT here, deliberately: the live joint leg (real drag-and-drop
-// Mac→host) waits on F-3's host end — the J-G3a-style joint gate.
-// Drag/capture coexistence is structural (drag sessions ride
-// NSDraggingDestination, never the NSEvent monitor mask CL-16's
-// capture hit-tests) and is hand-verified at the joint gate.
+// File transfer on chan 8 (key 11): the preparer builds an offer from a
+// real file; the shell drives BulkSendEngine against a real
+// BulkReceiveEngine (sha-exact, credit-gated reads, cancel emits
+// abort(cancelled)); the coordinator offers only with key 11 and a
+// session, queues drops serially, resumes the same id after a teardown
+// and retries once with a fresh id on abort(resumeMismatch); and through
+// the real core, chan 8 runs its own ARQ pair and a host without key 11
+// is refused before a byte leaves.
 
 final class BulkSendClientGateTests: XCTestCase {
 
-    // MARK: Leg 1 — key 11 on the spine; the core default declares
-
-    func testCapabilityKeyElevenOnTheSpineAndCoreDefaultDeclares() throws {
-        let base = try Capabilities.wireDefault.encodeCbor()
-        XCTAssertEqual(base.first, 0xA8)
-        var expected = base
-        expected[0] = 0xA9
-        expected += [0x0B, 0xF5]
-        let declared = Capabilities.wireDefault.declaringBulkTransfer()
-        XCTAssertEqual(try declared.encodeCbor(), expected,
-                       "key 11 = frozen wireDefault bytes + `0B F5`")
-
-        XCTAssertTrue(declared.intersecting(declared).bulkTransfer)
-        XCTAssertFalse(declared.intersecting(.wireDefault).bulkTransfer)
-        XCTAssertFalse(
-            Capabilities.wireDefault.intersecting(declared).bulkTransfer)
-
-        // The session core's DEFAULT declaration carries key 11 beside
-        // keys 9 and 10 — dialect, not consent: the HOST's standing
-        // toggle decides whether IT declares, and the intersection
-        // gates the client's offers.
-        let defaults = LyteUdpSessionCoreConfig()
-        XCTAssertTrue(defaults.capabilities.bulkTransfer)
-        XCTAssertTrue(defaults.capabilities.clipboardText)
-        XCTAssertTrue(defaults.capabilities.hostAudioRouting)
-        print("F-4 gate (spine): declaration = frozen bytes + `0B F5`; "
-            + "core default declares key 11")
-    }
-
-    // MARK: Leg 2 — the preparer against a real temp file
+    // MARK: The preparer against a real temp file
 
     func testPreparerBuildsOfferFromTempFile() throws {
         var rng = SplitMix64(seed: 0xF4_01)
@@ -124,11 +63,9 @@ final class BulkSendClientGateTests: XCTestCase {
         XCTAssertEqual(
             BulkFilePreparer.mimeHint(for: URL(fileURLWithPath: "/tmp/x")),
             "", "no extension — no hint")
-        print("F-4 gate (preparer): sha/size/name/mime pinned from a "
-            + "real temp file; empty refused")
     }
 
-    // MARK: Leg 3 — progress arithmetic, byte-exact
+    // MARK: Progress arithmetic, byte-exact
 
     func testProgressArithmetic() throws {
         let offer = try BulkOffer(
@@ -153,8 +90,6 @@ final class BulkSendClientGateTests: XCTestCase {
         let done = BulkTransferProgress.measuring(
             possession: BulkPossession(contiguousCount: 3), offer: offer)
         XCTAssertEqual(done.fraction, 1.0)
-        print("F-4 gate (progress): confirmed-bytes math pinned, "
-            + "remainder chunk included")
     }
 
     // MARK: - The scripted far end (a REAL BulkReceiveEngine)
@@ -162,7 +97,7 @@ final class BulkSendClientGateTests: XCTestCase {
     /// The receiving role driven exactly like TestKit's harness:
     /// auto-consent, synchronous stores, honest digests of what was
     /// ACTUALLY stored.
-    private final class ScriptedReceiver {
+    final class ScriptedReceiver {
         var engine: BulkReceiveEngine
         var store: [UInt64: [UInt8]] = [:]
         /// receiver→sender messages awaiting delivery.
@@ -216,7 +151,7 @@ final class BulkSendClientGateTests: XCTestCase {
 
     /// A synchronous payload-backed reader — the whole transfer runs
     /// in virtual time; reads and closes are recorded for the pins.
-    private final class RecordingReader: BulkChunkReading, @unchecked Sendable {
+    final class RecordingReader: BulkChunkReading, @unchecked Sendable {
         private let payload: [UInt8]
         private let lock = NSLock()
         private var recordedOffsets: [UInt64] = []
@@ -310,7 +245,7 @@ final class BulkSendClientGateTests: XCTestCase {
         }
     }
 
-    // MARK: Leg 4 — the shell's happy path, virtual time, sha-exact
+    // MARK: The shell's happy path, virtual time, sha-exact
 
     func testShellHappyPathLandsShaExact() throws {
         var rng = SplitMix64(seed: 0xF4_02)
@@ -321,7 +256,7 @@ final class BulkSendClientGateTests: XCTestCase {
             name: "happy.bin")
         let reader = RecordingReader(payload: payload)
         let wire = WireBox()
-        let events = EventBox()
+        let events = Locked<[BulkSendShellEvent]>()
         let shell = BulkSendShell(
             offer: offer, reader: reader, send: wire.sendClosure,
             onEvent: { events.append($0) })
@@ -333,7 +268,7 @@ final class BulkSendClientGateTests: XCTestCase {
                    delivered: &delivered) { shell.ingest($0) }
 
         XCTAssertEqual(shell.state, .completed)
-        XCTAssertTrue(events.contains { if case .completed = $0 { return true }; return false })
+        XCTAssertTrue(events.all.contains { if case .completed = $0 { return true }; return false })
         XCTAssertEqual(receiver.assembledDigest(), offer.sha256,
                        "the file landed sha-exact")
         XCTAssertEqual(shell.progress.fraction, 1.0)
@@ -343,11 +278,9 @@ final class BulkSendClientGateTests: XCTestCase {
         XCTAssertEqual(reader.readOffsets,
                        (0..<5).map { UInt64($0) * 4_096 })
         XCTAssertTrue(reader.closed, "terminal releases the file handle")
-        print("F-4 gate (shell): 5 chunks over a window-4 receiver — "
-            + "completed, sha-exact, reads ascending, handle closed")
     }
 
-    // MARK: Leg 5 — cancel mid-flight
+    // MARK: Cancel mid-flight
 
     func testShellCancelMidFlightEmitsAbortAndCloses() throws {
         var rng = SplitMix64(seed: 0xF4_03)
@@ -383,11 +316,9 @@ final class BulkSendClientGateTests: XCTestCase {
         XCTAssertEqual(abort.reason, .cancelled)
         XCTAssertEqual(abort.transferId, offer.transferId)
         XCTAssertTrue(reader.closed)
-        print("F-4 gate (cancel): mid-flight × → abort(cancelled) on "
-            + "the wire, terminal state, handle closed")
     }
 
-    // MARK: Leg 5b — a chunk the engine refuses
+    // MARK: A chunk the engine refuses
 
     /// A file that shrank after its offer reads short: the engine refuses
     /// the mis-sized chunk. That is a read failure — the transfer aborts
@@ -410,7 +341,7 @@ final class BulkSendClientGateTests: XCTestCase {
             name: "shrunk.bin")
         let reader = ShrunkReader()
         let wire = WireBox()
-        let events = EventBox()
+        let events = Locked<[BulkSendShellEvent]>()
         let shell = BulkSendShell(
             offer: offer, reader: reader, send: wire.sendClosure,
             onEvent: { events.append($0) })
@@ -421,7 +352,7 @@ final class BulkSendClientGateTests: XCTestCase {
                    delivered: &delivered) { shell.ingest($0) }
 
         XCTAssertEqual(shell.state, .aborted(.cancelled, byRemote: false))
-        XCTAssertTrue(events.contains {
+        XCTAssertTrue(events.all.contains {
             if case .readFailed = $0 { return true }; return false
         })
         XCTAssertTrue(reader.closed)
@@ -429,47 +360,11 @@ final class BulkSendClientGateTests: XCTestCase {
 
     // MARK: - Coordinator harness (sync executor = virtual time)
 
-    private final class EventBox: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [BulkSendShellEvent] = []
-        func append(_ event: BulkSendShellEvent) {
-            lock.lock(); stored.append(event); lock.unlock()
-        }
-        func contains(_ predicate: (BulkSendShellEvent) -> Bool) -> Bool {
-            lock.lock(); defer { lock.unlock() }
-            return stored.contains(where: predicate)
-        }
-    }
-
-    private final class NoticeBox: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [String] = []
-        func append(_ notice: String) {
-            lock.lock(); stored.append(notice); lock.unlock()
-        }
-        var all: [String] {
-            lock.lock(); defer { lock.unlock() }
-            return stored
-        }
-    }
-
     private struct CoordinatorRig {
         let coordinator: BulkSendCoordinator
-        let notices: NoticeBox
-        let readers: ReaderBook
+        let notices: Locked<[String]>
+        let readers: Locked<[RecordingReader]>
         let prepareCount: Counter
-    }
-
-    private final class ReaderBook: @unchecked Sendable {
-        private let lock = NSLock()
-        private var made: [RecordingReader] = []
-        func note(_ reader: RecordingReader) {
-            lock.lock(); made.append(reader); lock.unlock()
-        }
-        var all: [RecordingReader] {
-            lock.lock(); defer { lock.unlock() }
-            return made
-        }
     }
 
     private final class Counter: @unchecked Sendable {
@@ -494,8 +389,8 @@ final class BulkSendClientGateTests: XCTestCase {
         payloads: [String: [UInt8]],
         chunkByteCount: UInt32 = 4_096
     ) -> CoordinatorRig {
-        let notices = NoticeBox()
-        let readers = ReaderBook()
+        let notices = Locked<[String]>()
+        let readers = Locked<[RecordingReader]>()
         let prepareCount = Counter()
         let idMint = Counter()
         let coordinator = BulkSendCoordinator(
@@ -517,7 +412,7 @@ final class BulkSendClientGateTests: XCTestCase {
                     throw BulkPrepareError.unreadable("no such fixture")
                 }
                 let reader = RecordingReader(payload: payload)
-                readers.note(reader)
+                readers.append(reader)
                 return reader
             },
             runInBackground: { work in work() },
@@ -546,7 +441,7 @@ final class BulkSendClientGateTests: XCTestCase {
         ) { coordinator.ingest($0) }
     }
 
-    // MARK: Leg 6 — the offer gate (key 11) and the no-session gate
+    // MARK: The offer gate (key 11) and the no-session gate
 
     func testCoordinatorGatesOffersOnCapabilityAndSession() throws {
         let rig = makeRig(payloads: ["a.bin": [1, 2, 3, 4]])
@@ -567,11 +462,9 @@ final class BulkSendClientGateTests: XCTestCase {
         XCTAssertEqual(rig.prepareCount.value, 0)
         XCTAssertEqual(wire.totalSent, 0)
         XCTAssertTrue(rig.coordinator.snapshot().isIdle)
-        print("F-4 gate (offer gate): no key 11 → .hostNotAccepting, "
-            + "zero bytes; no session → .notConnected")
     }
 
-    // MARK: Leg 7 — queue policy: serial sends, × cancels everything
+    // MARK: Queue policy: serial sends, × cancels everything
 
     func testCoordinatorQueuesSeriallyAndCancelClearsAll() throws {
         var rng = SplitMix64(seed: 0xF4_04)
@@ -632,11 +525,9 @@ final class BulkSendClientGateTests: XCTestCase {
         XCTAssertTrue(rig.notices.all.contains("File transfer cancelled"))
         // c.bin never even prepared: 2 preparations total (a, b).
         XCTAssertEqual(rig.prepareCount.value, 2)
-        print("F-4 gate (queue): 3-file drop → serial sends; × → "
-            + "abort(cancelled) + queue cleared")
     }
 
-    // MARK: Leg 8 — reconnect-resume: same id, only the gap re-sent
+    // MARK: Reconnect-resume: same id, only the gap re-sent
 
     func testCoordinatorResumesSameIdAfterSessionTeardown() throws {
         var rng = SplitMix64(seed: 0xF4_05)
@@ -688,7 +579,7 @@ final class BulkSendClientGateTests: XCTestCase {
         let receiver2 = ScriptedReceiver(
             window: 4, resumeBook: [persisted])
         // Seed the persisted chunks into the second session's store —
-        // exactly what F-3's host does with its tmp file.
+        // exactly what the host does with its tmp file.
         for index in 0..<persisted.possession.contiguousCount {
             receiver2.store[index] = Array(
                 payload[Int(index) * 4_096..<(Int(index) + 1) * 4_096])
@@ -707,11 +598,9 @@ final class BulkSendClientGateTests: XCTestCase {
                        "nothing the receiver already held was re-read")
         XCTAssertTrue(rig.notices.all.contains("resume.bin sent"))
         XCTAssertTrue(rig.coordinator.snapshot().isIdle)
-        print("F-4 gate (resume): teardown after 2 chunks → same-id "
-            + "re-offer, only chunks 2…7 re-sent, sha-exact finish")
     }
 
-    // MARK: Leg 9 — abort(resumeMismatch) draws ONE fresh-id retry
+    // MARK: Abort(resumeMismatch) draws ONE fresh-id retry
 
     func testCoordinatorRetriesFreshIdOnResumeMismatch() throws {
         var rng = SplitMix64(seed: 0xF4_06)
@@ -765,68 +654,35 @@ final class BulkSendClientGateTests: XCTestCase {
                    coordinator: rig.coordinator, delivered: &delivered)
         XCTAssertEqual(receiver2.assembledDigest(), offer2.sha256)
         XCTAssertTrue(rig.coordinator.snapshot().isIdle)
-        print("F-4 gate (mismatch): abort(resumeMismatch) → one fresh-id "
-            + "re-preparation → sha-exact completion")
     }
 
     // MARK: - The scripted key-11 host
 
-    /// A bulk-capable host stand-in: Noise responder, capability
-    /// negotiator, and TWO host-clock ArqEndpoints — CTRL for the
-    /// declaration, chan 8 for bulk carriage. Decoded chan-8 messages
-    /// are recorded verbatim; bulk answers are scripted by the test.
-    /// No video/beacons.
-    fileprivate final class BulkHostStandIn: ScriptedHost {
-        var peer: SealedCtrlPeer<HostClock>
-        var handshakeOutbox: [[UInt8]] = []
-        let localCapabilities: Capabilities
-
-        // Evidence.
-        var agreed: Capabilities?
+    /// A key-11 host with its own chan-8 ARQ that records every bulk
+    /// message and counts chan-8 datagrams.
+    fileprivate final class BulkHostStandIn: DeclaringHost {
         var bulkReceived: [BulkMessage] = []
         var bulkDatagramCount = 0
-        var ctrlReliableTypes: [UInt8] = []
-
-        var progressMark: Int { bulkReceived.count }
 
         init(localCapabilities: Capabilities) {
-            var rng = SplitMix64(seed: 0xF4_11)
-            peer = SealedCtrlPeer(
-                connectionId: ConnectionId.random(using: &rng),
+            super.init(
+                localCapabilities: localCapabilities, seed: 0xF4_11,
                 carriesBulk: true)
-            self.localCapabilities = localCapabilities
         }
 
-        func didEstablish() throws {
-            try declare(localCapabilities)
-        }
-
-        /// One client datagram: unseal → the CHANNEL's ARQ → record.
-        func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
-            switch try peer.absorb(bytes, nowMicros: nowMicros) {
-            case .reliable(let envelope, _, let events)
-                where envelope.channel == .bulkTransfer:
+        override func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
+            if try Envelope.decode(bytes).0.channel == .bulkTransfer {
                 bulkDatagramCount += 1
-                for case .message(_, let message) in events {
-                    bulkReceived.append(try BulkMessage.decode(message))
-                }
-            case .reliable(_, _, let events):
-                for case .message(_, let message) in events {
-                    ctrlReliableTypes.append(message.first ?? 0)
-                    dispatchCtrlPlain(message)
-                }
-            case .plain(_, let plaintext):
-                dispatchCtrlPlain(plaintext)
-            case .handshakeCompleted, .duplicate, .unopened:
-                break
             }
+            try super.absorb(bytes, nowMicros: nowMicros)
         }
 
-        private func dispatchCtrlPlain(_ message: [UInt8]) {
-            guard message.first == CtrlMessageType.capabilityDeclaration,
-                  let intersection = try? peer.receiveDeclaration(message)
-            else { return }
-            agreed = intersection
+        override func receive(
+            _ message: [UInt8], on channel: ChannelId, nowMicros: UInt64
+        ) throws {
+            if channel == .bulkTransfer {
+                bulkReceived.append(try BulkMessage.decode(message))
+            }
         }
     }
 
@@ -836,20 +692,16 @@ final class BulkSendClientGateTests: XCTestCase {
     /// piped directly to the stand-in.
     private typealias Harness = ClientCoreHarness<BulkHostStandIn>
 
-    // MARK: Leg 10 — in vivo: chan 8 through the real core
+    // MARK: In vivo: chan 8 through the real core
 
     func testGateInVivoBulkRidesChanEightThroughRealArqAndNoise() throws {
         let host = BulkHostStandIn(
             localCapabilities: .wireDefault.declaringBulkTransfer())
         let harness = try Harness(host: host)
-        var t: UInt64 = 1_000
-        harness.clock.value = t
-
-        try harness.core.open(now: ClientTimestamp(microseconds: t))
-        try harness.settle(t: &t)
+        var t = try harness.openAndSettle()
         XCTAssertEqual(host.agreed?.bulkTransfer, true,
                        "the host must see key 11 in the client's 0x0F")
-        XCTAssertTrue(harness.core.bulkTransferNegotiated)
+        XCTAssertTrue(harness.core.control.agreedCapabilities?.bulkTransfer == true)
 
         // The offer rides chan 8 — never the CTRL stream.
         let offer = try BulkOffer(
@@ -865,7 +717,7 @@ final class BulkSendClientGateTests: XCTestCase {
                        "the offer reassembles byte-exact off chan 8")
         XCTAssertGreaterThan(host.bulkDatagramCount, 0)
         XCTAssertFalse(
-            host.ctrlReliableTypes.contains(CtrlMessageType.bulkOffer),
+            host.reliableTypes.contains(CtrlMessageType.bulkOffer),
             "chan 8 has its OWN ArqEndpoint pair — bulk never rides CTRL")
 
         // A full 65,536-byte chunk crosses real ARQ segmentation +
@@ -896,22 +748,16 @@ final class BulkSendClientGateTests: XCTestCase {
         XCTAssertEqual(counters.bulkMessagesSent, 2)
         XCTAssertEqual(counters.bulkMessagesReceived, 1)
         XCTAssertEqual(counters.bulkDropsLoud, 1)
-        print("F-4 gate (in vivo): offer + 64 KiB chunk byte-exact on "
-            + "chan 8's own ARQ; accept surfaces; malformed drops loud")
     }
 
-    // MARK: Leg 11 — in vivo: the rule-3 gate against a no-key-11 host
+    // MARK: In vivo: the rule-3 gate against a no-key-11 host
 
     func testGateInVivoRefusesBulkAgainstNoKeyElevenHost() throws {
         let host = BulkHostStandIn(localCapabilities: .wireDefault)
         let harness = try Harness(host: host)
-        var t: UInt64 = 1_000
-        harness.clock.value = t
-
-        try harness.core.open(now: ClientTimestamp(microseconds: t))
-        try harness.settle(t: &t)
+        var t = try harness.openAndSettle()
         XCTAssertEqual(host.agreed?.bulkTransfer, false)
-        XCTAssertFalse(harness.core.bulkTransferNegotiated)
+        XCTAssertFalse(harness.core.control.agreedCapabilities?.bulkTransfer == true)
 
         // Refused BEFORE a byte leaves.
         let offer = try BulkOffer(
@@ -938,8 +784,6 @@ final class BulkSendClientGateTests: XCTestCase {
         let counters = harness.core.snapshotCounters()
         XCTAssertEqual(counters.bulkMessagesSent, 0)
         XCTAssertEqual(counters.bulkDropsLoud, 1)
-        print("F-4 gate (rule 3, in vivo): offer refused pre-wire against "
-            + "a no-key-11 host; a hostile chan-8 answer drops loud")
     }
 }
 

@@ -147,7 +147,7 @@ final class ClientControlSessionTests: XCTestCase {
             try CapabilityDeclaration(capabilities: cursor).encode(),
             now: at(10))
 
-        XCTAssertTrue(session.cursorNegotiated)
+        XCTAssertEqual(session.agreedCapabilities?.cursorShape, true)
         XCTAssertEqual(
             try session.receiveReliable(
                 try shape.encode(), now: at(11)),
@@ -189,19 +189,17 @@ final class ClientControlSessionTests: XCTestCase {
             [CtrlMessageType.idleFrame], now: at(10)))
     }
 
-    /// The detector tightens on the first audio evidence, relaxes on an
-    /// announced quiet, and tightens again when audio resumes; a session
-    /// configured without a tightened bound never moves.
+    /// With the shells' default bounds, the detector tightens to 350 ms on
+    /// the first audio evidence, relaxes to 2.5 s on an announced quiet,
+    /// and tightens again when audio resumes; a session configured without
+    /// a tightened bound never moves.
     func testAudioEvidenceTightensAndAnnouncedQuietRelaxesTheDetector()
         throws
     {
         let quietCapable = local.declaringAudioQuietPosture()
         var session = ClientControlSession(
             localCapabilities: quietCapable,
-            machineConfig: SessionMachineConfig(
-                blackoutSilenceMicroseconds: 2_500_000),
             desiredHostAudioRouting: nil,
-            tightenedBlackoutSilenceMicroseconds: 350_000,
             now: at(0))
         _ = try session.start()
         _ = try session.receiveReliable(
@@ -224,7 +222,11 @@ final class ClientControlSessionTests: XCTestCase {
         XCTAssertEqual(session.noteAudioEvidence(now: at(700_000)),
                        .tightened(blackoutSilenceMicroseconds: 350_000))
 
-        var untightened = makeSession()
+        var untightened = ClientControlSession(
+            localCapabilities: local,
+            desiredHostAudioRouting: nil,
+            tightenedBlackoutSilenceMicroseconds: nil,
+            now: at(0))
         XCTAssertNil(untightened.noteAudioEvidence(now: at(10)))
         XCTAssertFalse(untightened.detectorTightened)
     }

@@ -7,15 +7,11 @@ import LyteTransport
 import LyteWire
 import LyteWireTestKit
 
-// THE CL-3 GATE (client-side legs): the return path exists and tells the
-// truth. FeedbackReports built from a known demux state carry the exact
-// ledgers and dispersion samples that went in; the cadence is pinned to
-// 25–50 ms; the send path seals through the TransportCrypto seam with the
-// envelope header as AAD (byte-identical to what the receiver slices
-// off); IDR requests coalesce instead of spamming; and a ClockBeacon in
-// produces a BeaconEcho out with the four timestamps in the right slots —
-// offset/RTT computable, cross-checked against the frozen W4a worked
-// example.
+// The return path tells the truth: reports built from a known demux state
+// carry its exact ledgers and dispersion samples; the cadence is clamped
+// to 25–50 ms; sends seal with the envelope header as AAD; IDR requests
+// coalesce; and a ClockBeacon in produces a BeaconEcho out with the four
+// timestamps in the right slots, checked against the worked example.
 
 final class FeedbackPathTests: XCTestCase {
 
@@ -347,7 +343,7 @@ final class FeedbackPathTests: XCTestCase {
     // with the codec promotion; the policy tests stay here.)
 
     func testIdrRecoveryEpisodeCoversBurstUntilAcceptedIrap() {
-        let emitted = LockedRequests()
+        let emitted = Locked<[IdrRequest]>()
         let requester = IdrRequester(retryIntervalMilliseconds: 500,
                                      emit: { emitted.append($0) })
         let base: UInt64 = 10_000_000
@@ -397,7 +393,7 @@ final class FeedbackPathTests: XCTestCase {
     }
 
     func testIdrRecoveryEpisodeRetriesLostFirstIdrAt500ms() {
-        let emitted = LockedRequests()
+        let emitted = Locked<[IdrRequest]>()
         let requester = IdrRequester(retryIntervalMilliseconds: 500,
                                      emit: { emitted.append($0) })
         let base = ClientTimestamp(microseconds: 20_000_000)
@@ -437,24 +433,10 @@ final class FeedbackPathTests: XCTestCase {
         XCTAssertFalse(stats.recoveryOutstanding)
     }
 
-    private final class LockedRequests: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [IdrRequest] = []
-        func append(_ r: IdrRequest) { lock.lock(); stored.append(r); lock.unlock() }
-        var all: [IdrRequest] { lock.lock(); defer { lock.unlock() }; return stored }
-    }
-
     // MARK: - Beacon echo
 
-    private final class LockedEchoes: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [BeaconEcho] = []
-        func append(_ e: BeaconEcho) { lock.lock(); stored.append(e); lock.unlock() }
-        var all: [BeaconEcho] { lock.lock(); defer { lock.unlock() }; return stored }
-    }
-
     func testBeaconDecodesEchoRoundTripsFourTimestamps() throws {
-        let echoes = LockedEchoes()
+        let echoes = Locked<[BeaconEcho]>()
         // Injected client clock: t3 is pinned.
         let responder = BeaconEchoResponder(
             now: { ClientTimestamp(microseconds: 1_253_500) },
@@ -475,7 +457,7 @@ final class FeedbackPathTests: XCTestCase {
         XCTAssertEqual(echo.clientReceive.microseconds, 1_253_000, "t2 = arrival stamp")
         XCTAssertEqual(echo.clientSend.microseconds, 1_253_500, "t3 = emit instant")
 
-        // The echo's bytes match the frozen W4a worked example, and the
+        // The echo's bytes match the frozen worked example, and the
         // host-side computation with its t4 gives the pinned offset/RTT.
         let file = try BeaconVectorFile.loadCommitted()
         let example = file.clockWorkedExample
@@ -490,7 +472,7 @@ final class FeedbackPathTests: XCTestCase {
     func testBeaconMirrorClosesSamplesIntoTheClockModel() {
         // Deterministic client clock, advancing per call.
         let clock = TickingClock(start: 1_253_500)
-        let echoes = LockedEchoes()
+        let echoes = Locked<[BeaconEcho]>()
         let model = HostClockModel()
         let responder = BeaconEchoResponder(
             now: { clock.next() },
@@ -530,7 +512,7 @@ final class FeedbackPathTests: XCTestCase {
     }
 
     func testNonBeaconAndMalformedCtrlPayloadsAreHandledQuietly() {
-        let echoes = LockedEchoes()
+        let echoes = Locked<[BeaconEcho]>()
         let responder = BeaconEchoResponder(
             now: { ClientTimestamp(microseconds: 0) },
             emit: { echoes.append($0) })

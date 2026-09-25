@@ -2,13 +2,8 @@ import XCTest
 import LyteTransport
 import LyteWire
 
-// THE GATE (CL-11, layout half): the client's audio depacketizer is a
-// BYTE MIRROR of HS-15's HOST-PINNED AudioFramer layout — pinned here
-// against hand-built wire bytes (the identical hand-built arrays
-// Host/Tests/HostWireTests/AudioGateTests.swift leg 1 pins the framer
-// against — the cross-pin), and against the frozen FEC machinery for
-// recovery. Both copies promote into Wire/ together; neither may move
-// a byte.
+// The client's audio depacketizer against hand-built wire bytes (the host
+// framer's layout) and against the frozen FEC machinery for recovery.
 
 final class AudioDepacketizerGateTests: XCTestCase {
 
@@ -72,7 +67,7 @@ final class AudioDepacketizerGateTests: XCTestCase {
         return out
     }
 
-    // MARK: Leg 1 — the layout, cross-pinned as hand-built bytes
+    // MARK: The layout, cross-pinned as hand-built bytes
 
     func testMirrorLayoutMatchesHostPinnedBytesAndDepacketizes() throws {
         // The host gate's exact leg-1 shape: 12 B packets, stamps
@@ -149,7 +144,7 @@ final class AudioDepacketizerGateTests: XCTestCase {
                        "packet number = frame + shardIndex, both groups")
     }
 
-    // MARK: Leg 2 — FEC recovery from ANY 2-of-6, client side
+    // MARK: FEC recovery from ANY 2-of-6, client side
 
     func testAnyTwoLossesRecoverByteExactWithDerivedStamps() throws {
         let packets = (0..<4).map { opusPacket($0) }
@@ -214,7 +209,7 @@ final class AudioDepacketizerGateTests: XCTestCase {
         XCTAssertEqual(depacketizer.snapshotStats().duplicateShards, 1)
     }
 
-    // MARK: Leg 3 — honest refusals
+    // MARK: Honest refusals
 
     func testThreeLossesAreHonestlyUnrecoverableAndCountedAtEviction() throws {
         var depacketizer = AudioDepacketizer(horizonGroups: 2)

@@ -45,10 +45,7 @@ final class OrderedStreamPoisonTests: XCTestCase {
     func testOverBudgetHostMessageEndsTheSessionWithATypedTeardown() throws {
         let host = OversizeHost()
         let harness = try ClientCoreHarness(host: host, hostPort: 41_151)
-        var t: UInt64 = 1_000
-        harness.clock.value = t
-        try harness.core.open(now: ClientTimestamp(microseconds: t))
-        try harness.settle(t: &t)
+        var t = try harness.openAndSettle()
         XCTAssertFalse(harness.core.orderedStreamPoisoned)
 
         try host.injectReliable(

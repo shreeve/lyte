@@ -53,7 +53,6 @@ public struct VideoPipelineStats: Sendable {
 }
 
 public struct VideoFrameBuildTelemetry: Sendable, Equatable {
-    public var frame: UInt32
     public var assemblyLockHoldMicroseconds: UInt64
     public var sampleBuildMicroseconds: UInt64
 }
@@ -166,12 +165,11 @@ public final class LyteVideoPipeline: @unchecked Sendable {
     }
 
     /// Feeds one accepted datagram; other channels pass through untouched.
-    public func ingest(envelope: Envelope, payload: [UInt8]) {
-        ingest(envelope: envelope, payload: payload, now: currentTimestamp())
-    }
-
-    public func ingest(envelope: Envelope, payload: [UInt8], now: ClientTimestamp) {
+    public func ingest(
+        envelope: Envelope, payload: [UInt8], now: ClientTimestamp? = nil
+    ) {
         guard envelope.channel == channel else { return }
+        let now = now ?? currentTimestamp()
         let lockStarted = nowNanoseconds()
         lock.lock()
         if firstIngest == nil { firstIngest = now }
@@ -254,11 +252,8 @@ public final class LyteVideoPipeline: @unchecked Sendable {
         dispatch(actions)
     }
 
-    public func snapshotStats() -> VideoPipelineStats {
-        snapshotStats(now: currentTimestamp())
-    }
-
-    public func snapshotStats(now: ClientTimestamp) -> VideoPipelineStats {
+    public func snapshotStats(now: ClientTimestamp? = nil) -> VideoPipelineStats {
+        let now = now ?? currentTimestamp()
         lock.lock()
         defer { lock.unlock() }
         var out = stats

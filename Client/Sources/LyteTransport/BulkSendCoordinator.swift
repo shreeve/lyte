@@ -164,7 +164,7 @@ public final class BulkSendCoordinator: @unchecked Sendable {
             if !entries.isEmpty {
                 awaitingReconnect = true
             }
-            active.closeReaderForTeardown()
+            active.closeReader()
         }
         lock.unlock()
         onChange()
@@ -173,15 +173,7 @@ public final class BulkSendCoordinator: @unchecked Sendable {
     /// Drops everything, including a pending resume: a file dropped for
     /// one host must never follow the user to another.
     public func abandonAll() {
-        lock.lock()
-        let active = shell
-        shell = nil
-        entries.removeAll()
-        preparing = false
-        awaitingReconnect = false
-        lock.unlock()
-        active?.cancel()
-        onChange()
+        cancelAll(announce: false)
     }
 
     // MARK: Drops
@@ -210,7 +202,7 @@ public final class BulkSendCoordinator: @unchecked Sendable {
     }
 
     /// Cancels the active transfer and clears the queue.
-    public func cancelAll() {
+    public func cancelAll(announce: Bool = true) {
         lock.lock()
         let active = shell
         shell = nil
@@ -220,7 +212,7 @@ public final class BulkSendCoordinator: @unchecked Sendable {
         awaitingReconnect = false
         lock.unlock()
         active?.cancel()
-        if hadWork {
+        if announce, hadWork {
             onNotice("File transfer cancelled")
         }
         onChange()
@@ -245,33 +237,27 @@ public final class BulkSendCoordinator: @unchecked Sendable {
         defer { lock.unlock() }
         var snap = BulkSendSnapshot()
         guard let head = entries.first else { return snap }
+        snap.activeName = head.displayName
+        snap.queuedCount = entries.count - 1
         if awaitingReconnect {
-            snap.activeName = head.displayName
             snap.phase = .awaitingReconnect
             if let offer = head.offer {
                 snap.progress = BulkTransferProgress(
                     totalByteCount: offer.totalByteCount,
                     confirmedByteCount: 0)
             }
-            snap.queuedCount = max(0, entries.count - 1)
             return snap
         }
         if preparing {
-            snap.activeName = head.displayName
             snap.phase = .preparing
-            snap.queuedCount = max(0, entries.count - 1)
             return snap
         }
         guard let shell else {
             // Pending with no session.
-            snap.activeName = head.displayName
             snap.phase = .awaitingReconnect
-            snap.queuedCount = max(0, entries.count - 1)
             return snap
         }
-        snap.activeName = head.displayName
         snap.progress = shell.progress
-        snap.queuedCount = max(0, entries.count - 1)
         switch shell.state {
         case .idle, .offering:
             snap.phase = .offering

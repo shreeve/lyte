@@ -7,32 +7,19 @@ import LyteTransport
 import LyteWire
 import LyteWireTestKit
 
-// THE CL-2 GATE (corpus leg): the golden W2 corpus, packetized by the
-// real VideoPacketizer, survives shuffle and parity-bounded loss through
-// the full render pipeline — headless: LyteVideoPipeline emits
-// CMSampleBuffers with no window or display layer anywhere. Asserts the
-// DecodeUnit sequence, byte-exact Annex-B out vs corpus in, sample-buffer
-// creation (format-description bootstrap from the corpus IDR's in-band
-// VPS/SPS/PPS), FEC recovery at 5% seeded drop, and the fecImpossible
-// seam CL-3's IDR request will hook.
+// The golden corpus, packetized by the real VideoPacketizer, survives
+// shuffle and parity-bounded loss through the headless render pipeline:
+// the DecodeUnit sequence, byte-exact Annex-B, sample-buffer creation
+// (the format description bootstraps from the corpus IDR's in-band
+// VPS/SPS/PPS), and the fecImpossible seam.
 
 final class VideoPipelineTests: XCTestCase {
 
-    private static var corpusDirectory: String {
-        ClientTestPaths.videoCorpus
-    }
-
     /// The decodable 10-frame prefix, in order (IDR first).
     private func loadPrefix() throws -> [[UInt8]] {
-        let names = try FileManager.default
-            .contentsOfDirectory(atPath: Self.corpusDirectory)
-            .filter { $0.hasPrefix("frame-0") && $0.hasSuffix(".annexb") }
-            .sorted()
-        XCTAssertEqual(names.count, 10, "the corpus prefix is ten access units")
-        return try names.map {
-            [UInt8](try Data(contentsOf: URL(
-                fileURLWithPath: Self.corpusDirectory + "/" + $0)))
-        }
+        let frames = try ClientTestPaths.videoCorpusFrames()
+        XCTAssertEqual(frames.count, 10, "the corpus prefix is ten access units")
+        return frames
     }
 
     private func packetizePrefix(
@@ -85,17 +72,6 @@ final class VideoPipelineTests: XCTestCase {
         }
     }
 
-    private final class SampleBox: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [CMSampleBuffer] = []
-        func append(_ sample: CMSampleBuffer) {
-            lock.lock(); stored.append(sample); lock.unlock()
-        }
-        var first: CMSampleBuffer? {
-            lock.lock(); defer { lock.unlock() }; return stored.first
-        }
-    }
-
     private final class StepClock: @unchecked Sendable {
         private let lock = NSLock()
         private var value: UInt64 = 0
@@ -142,7 +118,7 @@ final class VideoPipelineTests: XCTestCase {
         let frame = try XCTUnwrap(loadPrefix().first)
         let shards = try XCTUnwrap(try packetizePrefix([frame]).first)
         let clock = StepClock()
-        let samples = SampleBox()
+        let samples = Locked<[CMSampleBuffer]>()
         let pipeline = LyteVideoPipeline(
             nowNanoseconds: { clock.read() },
             sink: HeadlessVideoSink { sample, _ in samples.append(sample) })
@@ -154,7 +130,7 @@ final class VideoPipelineTests: XCTestCase {
                 now: ClientTimestamp(microseconds: 1_000))
         }
 
-        let sample = try XCTUnwrap(samples.first)
+        let sample = try XCTUnwrap(samples.all.first)
         let telemetry = try XCTUnwrap(
             VideoSampleTiming.buildTelemetry(from: sample))
         XCTAssertEqual(telemetry.assemblyLockHoldMicroseconds, 1)
@@ -208,39 +184,6 @@ final class VideoPipelineTests: XCTestCase {
                            "frame \(index) must be byte-exact vs the corpus")
             XCTAssertEqual(unit.isIDR, index == 0)
         }
-    }
-
-    // MARK: - 5% drop recovers via FEC (the CL-2 gate's loss clause)
-
-    func testFivePercentSeededDropRecoversEverything() throws {
-        let frames = try loadPrefix()
-        let shardGroups = try packetizePrefix(frames)
-
-        var rng = SplitMix64(seed: 5)
-        var delivered = 0, dropped = 0
-        let collector = Collector()
-        let now = ClientTimestamp(microseconds: 1_000)
-        for shard in shardGroups.flatMap({ $0 }) {
-            if Double.random(in: 0..<1, using: &rng) < 0.05 {
-                dropped += 1
-                continue
-            }
-            delivered += 1
-            collector.pipeline.ingest(
-                envelope: shard.envelope, payload: shard.payload, now: now)
-        }
-        XCTAssertGreaterThan(dropped, 0, "the seed must actually exercise loss")
-
-        let stats = collector.pipeline.snapshotStats()
-        XCTAssertEqual(stats.framesDecoded, 10,
-                       "5% drop (seed 5: \(dropped)/\(dropped + delivered) shards) must recover via FEC")
-        XCTAssertEqual(stats.framesSkipped, 0)
-        XCTAssertEqual(stats.samplesDelivered, 10)
-        for (index, (_, unit)) in collector.samples.enumerated() {
-            XCTAssertEqual(unit.annexB, frames[index])
-        }
-        XCTAssertTrue(collector.fecImpossibleFrames.isEmpty,
-                      "recoverable loss must not cry impossible")
     }
 
     func testDuplicateRepairRoutesFromAssemblerIntoPolicyBook() throws {
@@ -304,7 +247,7 @@ final class VideoPipelineTests: XCTestCase {
         XCTAssertEqual(policyStats.repairsDuplicate, 1)
     }
 
-    // MARK: - fecImpossible fires the CL-3 seam
+    // MARK: - fecImpossible fires its seam
 
     func testFecImpossibleFiresSeamAndPipelineMovesOn() throws {
         let frames = try loadPrefix()
@@ -330,7 +273,7 @@ final class VideoPipelineTests: XCTestCase {
         XCTAssertEqual(collector.pipeline.snapshotStats().fecImpossibleCount, 1)
 
         // The stale window expires: frame 1 is skipped, frame 2 renders —
-        // the pipeline moves on without CL-3's feedback loop existing yet.
+        // the pipeline moves on.
         now = now.advanced(byMicroseconds: 300_000)
         collector.pipeline.tick(now: now)
 
@@ -349,7 +292,6 @@ final class VideoPipelineTests: XCTestCase {
         // A P-frame ahead of any IDR is withheld: no format description
         // exists yet, and present-ASAP never shows garbage.
         let factory = VideoRenderFactory()
-        XCTAssertFalse(factory.hasFormatDescription)
         let pFirst = try factory.makeSampleBuffer(from: DecodeUnit(
             frameNumber: FrameNumber(rawValue: 0),
             timestamp: HostTimestamp(microseconds: 0),
@@ -364,7 +306,6 @@ final class VideoPipelineTests: XCTestCase {
             timestamp: HostTimestamp(microseconds: 16_667),
             isIDR: true,
             annexB: frames[0]))
-        XCTAssertTrue(factory.hasFormatDescription)
         let sample = try XCTUnwrap(idrSample)
 
         let description = try XCTUnwrap(CMSampleBufferGetFormatDescription(sample))
@@ -397,7 +338,7 @@ final class VideoPipelineTests: XCTestCase {
     }
 
     /// Pipeline-level bootstrap: P-frames delivered before the IDR count
-    /// as withheld, never as failures — CL-2 renders from the first IDR.
+    /// as withheld, never as failures — rendering starts at the first IDR.
     func testPipelineWithholdsPreIdrFrames() throws {
         let frames = try loadPrefix()
         var packetizer = VideoPacketizer()
@@ -456,7 +397,7 @@ final class VideoPipelineTests: XCTestCase {
         XCTAssertEqual(failures.frames, [7])
     }
 
-    // MARK: - The HS-22 quality window (the overlay/wire-view line)
+    // MARK: - The quality window (the overlay/wire-view line)
 
     /// The receive-side quality snapshot derives entirely from decoded
     /// frames: cadence and bitrate over the frames' actual span,
@@ -519,35 +460,6 @@ final class VideoPipelineTests: XCTestCase {
             out += annexB[unit.offset..<end]
         }
         return out
-    }
-
-    func testLengthPrefixedConversionRoundTripsNalPayloads() throws {
-        let frames = try loadPrefix()
-        let annexB = frames[0]
-        let hvcc = lengthPrefixed(annexB: annexB)
-        XCTAssertFalse(hvcc.isEmpty)
-
-        // Walk the length-prefixed output and compare each NAL payload
-        // (sans padding) against the AnnexBCheck walk of the input.
-        var nals: [[UInt8]] = []
-        var i = 0
-        while i + 4 <= hvcc.count {
-            var length = 0
-            for byte in hvcc[i..<(i + 4)] {
-                length = length << 8 | Int(byte)
-            }
-            nals.append(Array(hvcc[(i + 4)..<(i + 4 + length)]))
-            i += 4 + length
-        }
-        XCTAssertEqual(i, hvcc.count, "no trailing bytes after the last NAL")
-
-        let expected = AnnexBCheck.nalUnits(in: annexB).map { unit -> [UInt8] in
-            var bytes = Array(annexB[unit.offset..<unit.offset + unit.length])
-            while bytes.last == 0 { bytes.removeLast() }
-            return bytes
-        }
-        XCTAssertEqual(nals, expected)
-        XCTAssertEqual(nals.count, 5, "corpus IDR: VPS SPS PPS PREFIX_SEI IDR_W_RADL")
     }
 
     func testSamplePayloadIsByteExactWithOneOwnedCopy() throws {

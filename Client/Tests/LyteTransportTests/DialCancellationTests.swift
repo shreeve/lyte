@@ -8,13 +8,44 @@ import XCTest
 /// session ends the blocking handshake within one poll slice instead of
 /// after every message-1 attempt has timed out.
 final class DialCancellationTests: XCTestCase {
-    /// Five one-second attempts at a port nobody answers: 5 s if the
-    /// handshake runs to exhaustion.
-    private func silentHostCrypto() throws -> NoiseTransportCrypto {
-        try NoiseTransportCrypto(
-            hostAddress: "127.0.0.1", hostPort: 9,
-            hostStaticPublicKey: NoiseKeyPair.generate().publicKey,
-            attempts: 5, attemptTimeoutMilliseconds: 1_000)
+    /// Five one-second attempts at a port nobody answers (5 s if the
+    /// handshake runs to exhaustion), signalling once the dial is under way.
+    private final class SilentHostCrypto: HandshakingTransportCrypto,
+        @unchecked Sendable
+    {
+        let inner: NoiseTransportCrypto
+        let dialing = DispatchSemaphore(value: 0)
+
+        init() throws {
+            inner = try NoiseTransportCrypto(
+                hostAddress: "127.0.0.1", hostPort: 9,
+                hostStaticPublicKey: NoiseKeyPair.generate().publicKey,
+                attempts: 5, attemptTimeoutMilliseconds: 1_000)
+        }
+
+        var hostAddress: String { inner.hostAddress }
+        var hostPort: UInt16 { inner.hostPort }
+        var modeDescription: String { inner.modeDescription }
+        func open() throws { try inner.open() }
+
+        func performHandshake(io: any NoiseHandshakeIO) throws {
+            dialing.signal()
+            try inner.performHandshake(io: io)
+        }
+
+        func unseal(
+            wirePayload: ArraySlice<UInt8>, aad: ArraySlice<UInt8>,
+            envelope: Envelope
+        ) throws -> [UInt8] {
+            try inner.unseal(wirePayload: wirePayload, aad: aad, envelope: envelope)
+        }
+
+        func seal(
+            plaintext: ArraySlice<UInt8>, aad: ArraySlice<UInt8>,
+            envelope: Envelope
+        ) throws -> [UInt8] {
+            try inner.seal(plaintext: plaintext, aad: aad, envelope: envelope)
+        }
     }
 
     private final class Outcome: @unchecked Sendable {
@@ -23,6 +54,7 @@ final class DialCancellationTests: XCTestCase {
     }
 
     private func assertCancelledPromptly(
+        dialing: DispatchSemaphore,
         start: @escaping @Sendable () throws -> Void,
         stop: () -> Void
     ) {
@@ -31,7 +63,8 @@ final class DialCancellationTests: XCTestCase {
             do { try start() } catch { outcome.error = error }
             outcome.done.signal()
         }
-        usleep(100_000)
+        XCTAssertEqual(dialing.wait(timeout: .now() + 5), .success,
+                       "the dial never started")
         let stopped = DispatchTime.now()
         stop()
         XCTAssertEqual(outcome.done.wait(timeout: stopped + .seconds(1)),
@@ -44,9 +77,11 @@ final class DialCancellationTests: XCTestCase {
     }
 
     func testEndpointStopEndsAnInFlightHandshake() throws {
+        let crypto = try SilentHostCrypto()
         let endpoint = UdpReceiveEndpoint(
-            port: 0, bindAddress: "127.0.0.1", crypto: try silentHostCrypto())
+            port: 0, bindAddress: "127.0.0.1", crypto: crypto)
         assertCancelledPromptly(
+            dialing: crypto.dialing,
             start: { try endpoint.bindAndHandshake() },
             stop: { endpoint.stop() })
     }
@@ -55,10 +90,12 @@ final class DialCancellationTests: XCTestCase {
         var config = LyteUdpSession.Config()
         config.bindAddress = "127.0.0.1"
         config.audioPlayback = false
+        let crypto = try SilentHostCrypto()
         let session = LyteUdpSession(
-            crypto: try silentHostCrypto(), config: config,
+            crypto: crypto, config: config,
             videoSink: HeadlessVideoSink(), onEvent: { _ in })
         assertCancelledPromptly(
+            dialing: crypto.dialing,
             start: { try session.start() },
             stop: { session.stop() })
         XCTAssertNil(session.core, "a cancelled dial publishes no core")

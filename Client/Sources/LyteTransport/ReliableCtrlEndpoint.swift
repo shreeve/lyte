@@ -16,11 +16,11 @@ import LyteWire
 public final class ReliableCtrlEndpoint: @unchecked Sendable {
     /// Reliable-sublayer counters, snapshotted for the CLI.
     public struct Stats: Sendable {
-        /// Messages queued outbound (stream + one-shots).
+        /// Messages queued outbound.
         public var messagesSent: UInt64 = 0
         /// Messages the ARQ delivered inbound.
         public var messagesDelivered: UInt64 = 0
-        /// One-shot groups this endpoint sent that are fully acknowledged.
+        /// One-shot groups acknowledged (the client sends none).
         public var oneShotsAcknowledged: UInt64 = 0
         /// Sealed datagrams carrying ARQ frames, fresh and retransmit.
         public var datagramsSent: UInt64 = 0
@@ -53,12 +53,6 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
     /// re-derive the same deadline hundreds of times a second). Guarded by
     /// `lock`.
     private var armedDeadlineMicros: UInt64?
-    /// When true, `serviceLocked` runs re-arm bookkeeping without a live
-    /// DispatchSource so virtual-time tests can pin the wake path.
-    var testingAssumeTimerPresent = false
-    /// After the latest service pass that evaluated re-arm: true when the
-    /// unchanged-deadline band skipped `timer.schedule`.
-    private(set) var testingRescheduleSkipped = false
 
     public init(
         sender: TransportSender,
@@ -91,11 +85,8 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
     /// `ArqSendError`; callers treat `.queueFull` as a refused send (on
     /// CTRL it means the host stopped acknowledging, and liveness ends the
     /// session).
-    public func send(_ message: [UInt8]) throws {
-        try send(message, now: now())
-    }
-
-    public func send(_ message: [UInt8], now: ClientTimestamp) throws {
+    public func send(_ message: [UInt8], now: ClientTimestamp? = nil) throws {
+        let now = now ?? self.now()
         lock.lock()
         do {
             try arq.send(message: message, now: now)
@@ -107,30 +98,6 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
         serviceAndUnlock(now: now)
     }
 
-    /// Queues a one-shot message on a fresh group and returns it; full
-    /// acknowledgment surfaces as `.oneShotAcknowledged`.
-    @discardableResult
-    public func sendOneShot(_ message: [UInt8]) throws -> ArqGroupId {
-        try sendOneShot(message, now: now())
-    }
-
-    @discardableResult
-    public func sendOneShot(
-        _ message: [UInt8], now: ClientTimestamp
-    ) throws -> ArqGroupId {
-        lock.lock()
-        let group: ArqGroupId
-        do {
-            group = try arq.sendOneShot(message: message, now: now)
-        } catch {
-            lock.unlock()
-            throw error
-        }
-        stats.messagesSent += 1
-        serviceAndUnlock(now: now)
-        return group
-    }
-
     // MARK: Ingest
 
     /// Learns the connection ID from the envelope, then consumes a
@@ -138,15 +105,9 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
     /// anything else returns false untouched.
     @discardableResult
     public func handleCtrlDatagram(
-        envelope: Envelope, payload: [UInt8]
+        envelope: Envelope, payload: [UInt8], now: ClientTimestamp? = nil
     ) -> Bool {
-        handleCtrlDatagram(envelope: envelope, payload: payload, now: now())
-    }
-
-    @discardableResult
-    public func handleCtrlDatagram(
-        envelope: Envelope, payload: [UInt8], now: ClientTimestamp
-    ) -> Bool {
+        let now = now ?? self.now()
         lock.lock()
         connectionId.learn(from: envelope)
         guard let type = payload.first,
@@ -181,9 +142,13 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
         }
         let source = DispatchSource.makeTimerSource(
             queue: .global(qos: .userInitiated))
+        // The one-shot fired, so nothing is armed: clear the skip book
+        // before re-arming, or an unchanged deadline would sleep forever.
         source.setEventHandler { [weak self] in
             guard let self else { return }
-            self.timerFired()
+            self.lock.lock()
+            self.armedDeadlineMicros = nil
+            self.serviceAndUnlock(now: self.now())
         }
         source.resume()
         timer = source
@@ -198,30 +163,6 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
         armedDeadlineMicros = nil
         lock.unlock()
         source?.cancel()
-    }
-
-    /// The one-shot fired, so nothing is armed: clear the skip book before
-    /// re-arming, or an unchanged deadline would sleep forever.
-    private func timerFired() {
-        lock.lock()
-        wakeFromTimerAndUnlock(now: now())
-    }
-
-    /// Virtual-time `timerFired`.
-    func testingWakeFromTimer(now: ClientTimestamp) {
-        lock.lock()
-        wakeFromTimerAndUnlock(now: now)
-    }
-
-    var testingArmedDeadlineMicros: UInt64? {
-        lock.lock()
-        defer { lock.unlock() }
-        return armedDeadlineMicros
-    }
-
-    private func wakeFromTimerAndUnlock(now: ClientTimestamp) {
-        armedDeadlineMicros = nil
-        serviceAndUnlock(now: now)
     }
 
     /// Fires due PTO retransmits and re-arms.
@@ -314,30 +255,23 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
     /// `lock`; returns the payloads to transmit.
     private func serviceLocked(now: ClientTimestamp) -> [[UInt8]] {
         let (payloads, deadline) = arq.poll(now: now)
+        guard let timer else { return payloads }
         // Re-arm to the reported deadline unless the armed one is within
         // 1 ms (PTOs are 100 ms-scale).
-        if timer != nil || testingAssumeTimerPresent {
-            if let deadline {
-                let target = deadline.microseconds
-                let unchanged = armedDeadlineMicros.map {
-                    target >= $0 &- 1_000 && target <= $0 &+ 1_000
-                } ?? false
-                testingRescheduleSkipped = unchanged
-                if !unchanged {
-                    if let timer {
-                        let delta = max(deadline.microseconds(since: now), 1_000)
-                        timer.schedule(
-                            deadline: .now() + .microseconds(Int(delta)))
-                    }
-                    armedDeadlineMicros = target
-                }
-            } else if armedDeadlineMicros != nil {
-                testingRescheduleSkipped = false
-                timer?.schedule(deadline: .distantFuture)
-                armedDeadlineMicros = nil
+        if let deadline {
+            let target = deadline.microseconds
+            let unchanged = armedDeadlineMicros.map {
+                target >= $0 &- 1_000 && target <= $0 &+ 1_000
+            } ?? false
+            if !unchanged {
+                let delta = max(deadline.microseconds(since: now), 1_000)
+                timer.schedule(deadline: .now() + .microseconds(Int(delta)))
+                armedDeadlineMicros = target
             }
+        } else if armedDeadlineMicros != nil {
+            timer.schedule(deadline: .distantFuture)
+            armedDeadlineMicros = nil
         }
         return payloads
     }
-
 }

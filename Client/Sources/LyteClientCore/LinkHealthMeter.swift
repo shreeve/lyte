@@ -45,6 +45,8 @@ public final class LinkHealthMeter {
         case preserved
         case uncorrectableMiss
         case rendererFailure
+
+        var label: String { self == .rendererFailure ? "renderer" : "miss" }
     }
 
     private struct Bucket {
@@ -61,7 +63,7 @@ public final class LinkHealthMeter {
         var bucketSecond: UInt64
         var lastEventMicroseconds: UInt64
         var worstMilliseconds: Double
-        var stage: String
+        var stage: Outcome
     }
 
     public static let coalesceMicroseconds: UInt64 = 500_000
@@ -104,19 +106,11 @@ public final class LinkHealthMeter {
               eventMicroseconds - epochStart >= Self.warmupMicroseconds
         else { return }
 
-        let lateness = max(presentationLatenessMilliseconds ?? 0, 0)
-        let stage: String
-        switch outcome {
-        case .preserved:
-            // The Conductor and renderer preserved presentation. Any measured
-            // lateness remains in the flight recorder and stays silent here.
-            return
-        case .uncorrectableMiss:
-            stage = "miss"
-        case .rendererFailure:
-            stage = "renderer"
-        }
-        let worst = lateness
+        // The Conductor and renderer preserved presentation: any measured
+        // lateness remains in the flight recorder and stays silent here.
+        guard outcome != .preserved else { return }
+        let stage = outcome
+        let worst = max(presentationLatenessMilliseconds ?? 0, 0)
 
         let eventSecond = eventMicroseconds / 1_000_000
         if var last = lastEpisode,
@@ -146,7 +140,7 @@ public final class LinkHealthMeter {
                 stage: stage)
             sessionStallCount += 1
             trace?("""
-                link-health: episode #\(sessionStallCount) \(stage) \
+                link-health: episode #\(sessionStallCount) \(stage.label) \
                 \(Int(worst.rounded())) ms at client-t \
                 \(eventMicroseconds / 1_000_000).\
                 \(Self.millisecondDigits(eventMicroseconds)) (ordinal \(ordinal))
@@ -200,9 +194,9 @@ public final class LinkHealthMeter {
         if missCount == 0, rendererCount == 0 {
             dominant = "none"
         } else if rendererCount > missCount {
-            dominant = "renderer"
+            dominant = Outcome.rendererFailure.label
         } else {
-            dominant = "miss"
+            dominant = Outcome.uncorrectableMiss.label
         }
         let level: LinkHealthAssessment.Level
         if count >= 3 || worst >= 100 {
@@ -231,7 +225,7 @@ public final class LinkHealthMeter {
 
     private func incrementBucket(
         second: UInt64,
-        stage: String,
+        stage: Outcome,
         worstMilliseconds: Double
     ) {
         let index = bucketIndex(for: second)
@@ -241,7 +235,7 @@ public final class LinkHealthMeter {
         buckets[index].count += 1
         buckets[index].worstMilliseconds = max(
             buckets[index].worstMilliseconds, worstMilliseconds)
-        if stage == "renderer" {
+        if stage == .rendererFailure {
             buckets[index].rendererCount += 1
         } else {
             buckets[index].missCount += 1
@@ -250,8 +244,8 @@ public final class LinkHealthMeter {
 
     private func updateEpisodePeak(
         bucketSecond: UInt64,
-        oldStage: String,
-        newStage: String,
+        oldStage: Outcome,
+        newStage: Outcome,
         worstMilliseconds: Double
     ) {
         let index = bucketIndex(for: bucketSecond)
@@ -259,7 +253,7 @@ public final class LinkHealthMeter {
         buckets[index].worstMilliseconds = max(
             buckets[index].worstMilliseconds, worstMilliseconds)
         guard oldStage != newStage else { return }
-        if oldStage == "renderer" {
+        if oldStage == .rendererFailure {
             buckets[index].rendererCount -= 1
             buckets[index].missCount += 1
         } else {

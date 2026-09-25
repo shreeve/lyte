@@ -18,6 +18,17 @@ public enum ClientDetectorPosture: Hashable, Sendable {
     case tightened(blackoutSilenceMicroseconds: Int64)
     /// The host announced audio quiet: back to the baseline bound.
     case relaxed(blackoutSilenceMicroseconds: Int64)
+
+    /// The operator line every shell prints.
+    public var note: String {
+        switch self {
+        case .tightened(let bound):
+            "audio evidence — blackout detector tightened to \(bound / 1_000) ms"
+        case .relaxed(let bound):
+            "audio quiet announced — blackout detector relaxed to "
+                + "\(bound / 1_000) ms"
+        }
+    }
 }
 
 /// One composed client-control decision. The shell sends the returned bytes,
@@ -52,6 +63,13 @@ public struct ClientControlSessionDecision: Hashable, Sendable {
 /// re-arms it at the tightened bound, and an announced audio quiet relaxes
 /// it until audio resumes. A host without audio never tightens.
 public struct ClientControlSession: Sendable {
+    /// The receiver timing every client shell runs: the baseline blackout
+    /// bound sits past an idle host's 1 Hz beacons.
+    public static let baselineMachineConfig = SessionMachineConfig(
+        blackoutSilenceMicroseconds: 2_500_000)
+    /// The blackout bound once authenticated audio arrives.
+    public static let tightenedBlackoutSilenceMicroseconds: Int64 = 350_000
+
     private let machineConfig: SessionMachineConfig
     private let tightenedBlackoutSilenceMicroseconds: Int64?
     public private(set) var detectorTightened = false
@@ -64,11 +82,12 @@ public struct ClientControlSession: Sendable {
 
     public init(
         localCapabilities: Capabilities,
-        machineConfig: SessionMachineConfig,
+        machineConfig: SessionMachineConfig = baselineMachineConfig,
         desiredHostAudioRouting: HostAudioRoutingMode?,
         clipboardSharingAtStart: Bool = false,
         clipboardImageSharingAtStart: Bool = false,
-        tightenedBlackoutSilenceMicroseconds: Int64? = nil,
+        tightenedBlackoutSilenceMicroseconds: Int64? =
+            ClientControlSession.tightenedBlackoutSilenceMicroseconds,
         now: ClientTimestamp
     ) {
         self.machineConfig = machineConfig
@@ -108,9 +127,6 @@ public struct ClientControlSession: Sendable {
     }
     public var clipboardImageCounters: ClipboardImageChannelCounters {
         clipboard.imageCounters
-    }
-    public var cursorNegotiated: Bool {
-        capabilities.agreed?.cursorShape == true
     }
     public var hostAnnouncedAudioQuiet: Bool {
         mediaPosture.hostAnnouncedAudioQuiet
@@ -213,14 +229,6 @@ public struct ClientControlSession: Sendable {
         now: ClientTimestamp
     ) -> ClientSessionLifecycleDecision {
         lifecycle.advance(input, now: now)
-    }
-
-    @discardableResult
-    public mutating func reconfigure(
-        _ config: SessionMachineConfig,
-        now: ClientTimestamp
-    ) -> Bool {
-        lifecycle.reconfigure(config, now: now)
     }
 
     /// Routes every reliable word currently owned by client-control policy.

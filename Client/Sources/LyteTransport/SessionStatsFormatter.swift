@@ -56,7 +56,7 @@ public enum SessionStatsFormatter {
         }
 
         row("session", sessionLine(core: core, context: context))
-        row("user", userLine(core.input.snapshotStats()))
+        row("user", core.input.snapshotStats().overlayLine())
         row("network", networkLine(demux: endpoint.demux, core: core))
         if let audio = audioLine(core.audio.snapshotStats()) {
             row("audio", audio)
@@ -74,15 +74,16 @@ public enum SessionStatsFormatter {
         let clipboardActivity = counters.clipboardSharesSent
             + counters.clipboardAnnouncesReceived
             + counters.clipboardLoopSuppressed
-        if core.clipboardNegotiated, clipboardActivity > 0 {
+        let control = core.control
+        if control.clipboardNegotiated, clipboardActivity > 0 {
             row("clipboard", "\(counters.clipboardSharesSent) sent"
                 + " · \(counters.clipboardAnnouncesReceived) recv"
                 + " · \(counters.clipboardLoopSuppressed) suppressed")
         }
-        let images = core.clipboardImageCounters
+        let images = control.clipboardImageCounters
         let imageActivity = images.sharesStarted + images.imagesApplied
             + images.sharesSuppressed + images.receivesRefused
-        if core.clipboardImagesNegotiated, imageActivity > 0 {
+        if control.clipboardImagesNegotiated, imageActivity > 0 {
             row("clip images", "\(images.sharesCompleted)"
                 + "/\(images.sharesStarted) sent"
                 + " · \(images.imagesApplied) applied"
@@ -116,23 +117,24 @@ public enum SessionStatsFormatter {
     private static func sessionLine(
         core: LyteUdpSessionCore, context: SessionStatsContext
     ) -> String {
-        var mode = core.wireMode == .active ? "active" : "idle"
-        if core.isFrozen { mode += " — FROZEN" }
+        let control = core.control
+        var mode = control.wireMode == .active ? "active" : "idle"
+        if control.state == .frozen { mode += " — FROZEN" }
         // Codec and chroma are fixed at announce (a tier change is a
         // reconnect), so they are session state beside the postures.
         if let chroma = core.streamChromaDescription {
             mode += " · hevc \(chroma)"
         }
-        if core.hostAudioRoutingNegotiated {
-            switch core.hostAudioRoutingPosture {
+        if control.hostAudioRoutingNegotiated {
+            switch control.hostAudioRoutingPosture {
             case .hostMuted: mode += " · host audio muted"
             case .hostAudible: mode += " · host audio audible"
             case .streamOff: mode += " · audio stream off"
             case nil: mode += " · host audio pending"
             }
         }
-        if core.clipboardNegotiated {
-            mode += core.clipboardSharingEnabled
+        if control.clipboardNegotiated {
+            mode += control.clipboardSharingEnabled
                 ? " · clipboard shared" : " · clipboard private"
         }
         // Capture is a session state (who owns the keyboard and mouse),
@@ -143,14 +145,6 @@ public enum SessionStatsFormatter {
         }
         if context.radioLoose { mode += " · AWDL LOOSE" }
         return mode
-    }
-
-    /// The input line without its "user:" lead-in; unconditional, since
-    /// "0 events sent" tells a capture failure from a host-side one.
-    private static func userLine(_ stats: InputSenderStats) -> String {
-        let line = stats.overlayLine()
-        guard line.hasPrefix("user:") else { return line }
-        return String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
     }
 
     private static func networkLine(

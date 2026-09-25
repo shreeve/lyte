@@ -33,7 +33,6 @@ public enum VideoSampleTiming {
             sample, key: lockKey, attachmentModeOut: nil) as? NSNumber
         else { return nil }
         return VideoFrameBuildTelemetry(
-            frame: 0,
             assemblyLockHoldMicroseconds: hold.uint64Value,
             sampleBuildMicroseconds: build.uint64Value)
     }

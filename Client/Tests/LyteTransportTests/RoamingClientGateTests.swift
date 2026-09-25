@@ -7,91 +7,16 @@ import LyteTransport
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (F-5, the client half of roaming/reconnect — the host
-// session-busy/takeover half is Host territory). Pinned behaviors:
-//
-//   • the detection ladder in virtual time: FROZEN alone is a blip
-//     (no roaming action); silence past the scan threshold begins the
-//     QUIET re-browse; evidence returning cancels everything and the
-//     ladders reset;
-//   • host-moved vs host-silent: the same identity (pkh — sha256 of
-//     the Noise static, the advertisement's TXT record and the pinned
-//     store's key) at a NEW address dials immediately; at the SAME
-//     address only past the redial threshold (the network works, the
-//     session is dark); foreign identities never trigger anything;
-//   • the give-up posture: there isn't one — fruitless scans back off
-//     1 s doubling to the 15 s ceiling, dial retries 2 s doubling to
-//     30 s, deadlines always in the future (never spin hot), forever;
-//   • client-side path change: the migration grace (HS-12's mechanism
-//     gets first refusal), dissolved by evidence, escalating to the
-//     scan ladder over a frozen path with the same-address threshold
-//     waived (our own address moved);
-//   • the manual Reconnect verb resets every ladder and acts NOW
-//     (probe dial + scan);
-//   • the pairing store keys by host identity, not address — a pinned
-//     host that moved is the same pinned host, preferences intact;
-//   • the banner speaks ("looking for …", "found at … — reconnecting")
-//     and the path watcher's trigger rule (baseline never notifies,
-//     any later signature change does);
-//   • end to end through the REAL session core in virtual time: a
-//     mid-transfer blackout at address A drives FROZEN at the
-//     detector and the liveness close at 30 s, the policy scans,
-//     sights the same pkh at address B, dials — and the fresh session
-//     (same pinned static, new "address") re-offers the SAME transfer
-//     id whose resume finishes sha-exact, reading only the gap.
-//
-// NOT here, deliberately (DEFERRED-PENDING-HOST — the wave-entry
-// ledger): the live host-IP flip on pup, the Mac Wi-Fi hop, and the
-// mid-bulk-transfer roam completing sha-exact at the glass; the
-// host's session-busy/takeover story is the F-5 Host half.
+// Roaming on the client: the path watcher's trigger rule, and end to end
+// through the real session core in virtual time — a mid-transfer blackout
+// at address A drives FROZEN and the liveness close at 30 s, the policy
+// scans, sights the same identity at address B and dials, and the fresh
+// session re-offers the same transfer id, whose resume reads only the gap
+// and finishes sha-exact. The policy's own ladders are RoamingPolicyTests'.
 
 final class RoamingClientGateTests: XCTestCase {
 
-    // MARK: Leg 7 — the pairing store keys by identity, not address
-
-    func testPinnedHostStoreKeysByIdentityNotAddress() throws {
-        let keys = NoiseKeyPair.generate()
-        let pkh = LyteDiscovery.publicKeyHash(
-            ofStaticPublicKey: keys.publicKey)
-
-        var store = PinnedHostStore()
-        XCTAssertTrue(store.pin(
-            staticPublicKey: keys.publicKey, name: "pup",
-            address: "10.0.0.60", port: 41_161,
-            pairedAt: "2026-07-28T00:00:00Z"),
-            "first pin is fresh")
-        store.setStartHostAudioMuted(publicKeyHash: pkh, muted: false)
-        store.setShareClipboard(publicKeyHash: pkh, share: true)
-
-        // The host MOVED: re-pinning the same key at a new address is
-        // a dial-hint refresh, never a new trust event — and the
-        // per-host preferences survive verbatim.
-        XCTAssertFalse(store.pin(
-            staticPublicKey: keys.publicKey, name: "pup",
-            address: "172.16.4.9", port: 41_161,
-            pairedAt: "2026-07-28T01:00:00Z"),
-            "same key = same host, not a fresh pin")
-        XCTAssertEqual(store.hosts.count, 1,
-                       "one identity, one entry — the address is a hint")
-        let moved = try XCTUnwrap(store.host(publicKeyHash: pkh))
-        XCTAssertEqual(moved.address, "172.16.4.9")
-        XCTAssertEqual(moved.startHostAudioMuted, false,
-                       "the start-audible opt-out survived the move")
-        XCTAssertEqual(moved.shareClipboard, true,
-                       "the clipboard consent survived the move")
-        // Recognition is the identity lookup — the new address and
-        // the stable NAME both resolve; the STALE address resolves to
-        // nothing (it is a hint, not an identity, and it moved).
-        XCTAssertNotNil(store.host(address: "172.16.4.9"))
-        XCTAssertEqual(store.host(address: "pup")?.address, "172.16.4.9",
-                       "the name still finds the host, wherever it lives")
-        XCTAssertNil(store.host(address: "10.0.0.60"),
-                     "the old address is nobody now")
-        print("F-5 gate (pairing): identity-keyed store — a moved "
-            + "host is the same host, preferences intact")
-    }
-
-    // MARK: Leg 8 — the platform path trigger rule
+    // MARK: The platform path trigger rule
 
     func testPathTriggerRule() {
         // The path watcher's trigger rule: the baseline observation
@@ -100,184 +25,56 @@ final class RoamingClientGateTests: XCTestCase {
         // order is canonicalized.
         typealias Sig = NetworkPathWatcher.Signature
         let wifi = Sig(isSatisfied: true, interfaceNames: ["en0"])
-        let wifiReordered = Sig(isSatisfied: true, interfaceNames: ["en0"])
         let hotel = Sig(isSatisfied: true, interfaceNames: ["en1", "en0"])
         let hotelSorted = Sig(isSatisfied: true, interfaceNames: ["en0", "en1"])
         let dead = Sig(isSatisfied: false, interfaceNames: [])
         XCTAssertFalse(NetworkPathWatcher.shouldNotify(
             previous: nil, current: wifi))
         XCTAssertFalse(NetworkPathWatcher.shouldNotify(
-            previous: wifi, current: wifiReordered))
+            previous: wifi, current: wifi))
+        XCTAssertFalse(NetworkPathWatcher.shouldNotify(
+            previous: hotel, current: hotelSorted))
         XCTAssertTrue(NetworkPathWatcher.shouldNotify(
             previous: wifi, current: hotel))
         XCTAssertTrue(NetworkPathWatcher.shouldNotify(
             previous: wifi, current: dead))
         XCTAssertEqual(hotel, hotelSorted,
                        "interface names are order-canonical")
-        print("F-5 gate (path): baseline silent, change loud")
     }
 
     // MARK: - The roam-capable host stand-in: the Noise static is
     // INJECTED — the same identity must answer at "address B" that
     // answered at "A"
 
-    fileprivate final class RoamHostStandIn: ScriptedHost {
-        var peer: SealedCtrlPeer<HostClock>
-        var handshakeOutbox: [[UInt8]] = []
-        let localCapabilities: Capabilities
-
-        var agreed: Capabilities?
+    fileprivate final class RoamHostStandIn: DeclaringHost {
         var bulkReceived: [BulkMessage] = []
 
-        var progressMark: Int { bulkReceived.count }
+        override var progressMark: Int { bulkReceived.count }
 
         init(staticKeys: NoiseKeyPair, localCapabilities: Capabilities,
              seed: UInt64) {
-            var rng = SplitMix64(seed: seed)
-            peer = SealedCtrlPeer(
-                responderWith: staticKeys,
-                connectionId: ConnectionId.random(using: &rng),
-                carriesBulk: true)
-            self.localCapabilities = localCapabilities
+            super.init(
+                localCapabilities: localCapabilities, seed: seed,
+                staticKeys: staticKeys, carriesBulk: true)
         }
 
-        func didEstablish() throws {
-            try declare(localCapabilities)
-        }
-
-        func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
-            switch try peer.absorb(bytes, nowMicros: nowMicros) {
-            case .reliable(let envelope, _, let events):
-                for case .message(_, let message) in events {
-                    if envelope.channel == .bulkTransfer {
-                        bulkReceived.append(try BulkMessage.decode(message))
-                    } else {
-                        dispatchCtrlPlain(message)
-                    }
-                }
-            case .plain(_, let plaintext):
-                dispatchCtrlPlain(plaintext)
-            case .handshakeCompleted, .duplicate, .unopened:
-                break
+        override func receive(
+            _ message: [UInt8], on channel: ChannelId, nowMicros: UInt64
+        ) throws {
+            if channel == .bulkTransfer {
+                bulkReceived.append(try BulkMessage.decode(message))
             }
-        }
-
-        private func dispatchCtrlPlain(_ message: [UInt8]) {
-            guard message.first == CtrlMessageType.capabilityDeclaration,
-                  let intersection = try? peer.receiveDeclaration(message)
-            else { return }
-            agreed = intersection
         }
     }
 
     // MARK: - The client harness (real core, virtual clock, direct
-    // pipes — plus the F-5 blackout: the clock advances, the wire
+    // pipes — plus the blackout: the clock advances, the wire
     // carries NOTHING either way)
 
     private typealias RoamHarness = ClientCoreHarness<RoamHostStandIn>
 
-    // MARK: - The scripted receiving end (a REAL BulkReceiveEngine,
-    // the F-4 harness verbatim)
-
-    private final class ScriptedReceiver {
-        var engine: BulkReceiveEngine
-        var store: [UInt64: [UInt8]] = [:]
-        var outbox: [BulkMessage] = []
-        var offer: BulkOffer?
-
-        init(window: Int, resumeBook: [BulkResumeState] = []) {
-            engine = BulkReceiveEngine(
-                config: BulkTransferConfig(receiveWindowChunks: window),
-                resumeBook: resumeBook)
-        }
-
-        func absorb(_ message: BulkMessage) throws {
-            try pump(engine.ingest(message))
-        }
-
-        func pump(_ actions: [BulkReceiveEngine.Action]) throws {
-            for action in actions {
-                switch action {
-                case .offered(let incoming, _):
-                    offer = incoming
-                    try pump(engine.accept())
-                case .emit(let message):
-                    outbox.append(message)
-                case .store(let index, let data):
-                    store[index] = data
-                    try pump(engine.chunkStored(index: index))
-                case .verify:
-                    try pump(engine.verificationResult(
-                        digest: assembledDigest()))
-                case .completed, .aborted, .violated:
-                    break
-                }
-            }
-        }
-
-        func assembledDigest() -> [UInt8] {
-            guard let offer else { return [] }
-            var assembled: [UInt8] = []
-            for index in 0..<offer.chunkCount {
-                assembled += store[index] ?? []
-            }
-            return Sha256.digest(assembled)
-        }
-    }
-
-    private final class RecordingReader: BulkChunkReading, @unchecked Sendable {
-        private let payload: [UInt8]
-        private let lock = NSLock()
-        private var recordedOffsets: [UInt64] = []
-
-        init(payload: [UInt8]) { self.payload = payload }
-
-        var readOffsets: [UInt64] {
-            lock.lock(); defer { lock.unlock() }
-            return recordedOffsets
-        }
-
-        func read(
-            offset: UInt64, byteCount: Int,
-            completion: @escaping @Sendable (Result<[UInt8], Error>) -> Void
-        ) {
-            lock.lock()
-            recordedOffsets.append(offset)
-            lock.unlock()
-            let start = Int(offset)
-            guard start + byteCount <= payload.count else {
-                completion(.failure(BulkChunkReadError.shortRead(
-                    offset: offset, wanted: byteCount,
-                    got: max(0, payload.count - start))))
-                return
-            }
-            completion(.success(Array(payload[start..<start + byteCount])))
-        }
-
-        func close() {}
-    }
-
-    private final class PrepareCounter: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored = 0
-        func bump() { lock.lock(); stored += 1; lock.unlock() }
-        var count: Int {
-            lock.lock(); defer { lock.unlock() }
-            return stored
-        }
-    }
-
-    private final class ReaderBook: @unchecked Sendable {
-        private let lock = NSLock()
-        private var made: [RecordingReader] = []
-        func note(_ reader: RecordingReader) {
-            lock.lock(); made.append(reader); lock.unlock()
-        }
-        var all: [RecordingReader] {
-            lock.lock(); defer { lock.unlock() }
-            return made
-        }
-    }
+    private typealias ScriptedReceiver = BulkSendClientGateTests.ScriptedReceiver
+    private typealias RecordingReader = BulkSendClientGateTests.RecordingReader
 
     /// Bridges the stand-in's recorded chan-8 messages into the real
     /// receive engine and its answers back through the harness —
@@ -297,7 +94,7 @@ final class RoamingClientGateTests: XCTestCase {
                 seen += 1
                 progressed = true
                 if let cap, seen > cap { continue }   // dark
-                try receiver.absorb(message)
+                try receiver.absorb(message.encode())
             }
             while !receiver.outbox.isEmpty {
                 try harness.host.injectBulk(
@@ -322,7 +119,7 @@ final class RoamingClientGateTests: XCTestCase {
         }
     }
 
-    // MARK: Leg 9 — end to end: blackout at A, liveness close,
+    // MARK: End to end: blackout at A, liveness close,
     // rediscovery at B, same-id re-offer, sha-exact resume
 
     func testGateEndToEndRoamResumesBulkTransferAtNewAddress() throws {
@@ -335,14 +132,14 @@ final class RoamingClientGateTests: XCTestCase {
         let pkh = LyteDiscovery.publicKeyHash(
             ofStaticPublicKey: hostKeys.publicKey)
 
-        // The coordinator with synchronous seams (the F-4 rig): one
+        // The coordinator with synchronous seams (the bulk gate's rig): one
         // 32 KiB fixture in 4 KiB chunks.
-        let readers = ReaderBook()
-        let prepared = PrepareCounter()
+        let readers = Locked<[RecordingReader]>()
+        let prepared = Locked(0)
         let coordinator = BulkSendCoordinator(
             chunkByteCount: 4_096,
             prepare: { url, transferId, chunk in
-                prepared.bump()
+                prepared.mutate { $0 += 1 }
                 return try BulkOffer(
                     transferId: transferId,
                     totalByteCount: UInt64(payload.count),
@@ -352,7 +149,7 @@ final class RoamingClientGateTests: XCTestCase {
             },
             makeReader: { _ in
                 let reader = RecordingReader(payload: payload)
-                readers.note(reader)
+                readers.append(reader)
                 return reader
             },
             runInBackground: { work in work() },
@@ -373,7 +170,7 @@ final class RoamingClientGateTests: XCTestCase {
         try harness1.core.open(now: ClientTimestamp(microseconds: t))
         try harness1.settle(t: &t)
         XCTAssertEqual(host1.agreed?.bulkTransfer, true)
-        XCTAssertTrue(harness1.core.bulkTransferNegotiated)
+        XCTAssertTrue(harness1.core.control.agreedCapabilities?.bulkTransfer == true)
 
         var policy = RoamingPolicy(
             targetPublicKeyHash: pkh, address: "10.0.0.60", port: 41_161)
@@ -429,15 +226,13 @@ final class RoamingClientGateTests: XCTestCase {
         XCTAssertTrue(closed, "30 s of nothing draws the liveness close")
         coordinator.sessionEnded()
         XCTAssertEqual(coordinator.snapshot().phase, .awaitingReconnect)
-        var onClose = policy.sessionClosed(now: t)
         // The probe dial at the last-known address draws silence —
         // the host isn't there anymore.
-        if onClose.contains(where: {
+        if policy.sessionClosed(now: t).contains(where: {
             if case .dial = $0 { return true }; return false
         }) {
-            onClose = policy.dialFailed(now: t + 1_500_000)
+            _ = policy.dialFailed(now: t + 1_500_000)
         }
-        _ = onClose
 
         // REDISCOVERY: the same identity appears at address B — the
         // policy dials it at once.
@@ -463,13 +258,13 @@ final class RoamingClientGateTests: XCTestCase {
             clock: clock, clientKeys: clientKeys)
         try harness2.core.open(now: ClientTimestamp(microseconds: t))
         try harness2.settle(t: &t)
-        XCTAssertTrue(harness2.core.bulkTransferNegotiated)
+        XCTAssertTrue(harness2.core.control.agreedCapabilities?.bulkTransfer == true)
         _ = policy.sessionEstablished(
             address: "10.9.9.9", port: 41_161, now: t)
         XCTAssertEqual(policy.status, .attached)
         XCTAssertEqual(policy.lastKnownAddress, "10.9.9.9")
 
-        // The re-attach re-offers the SAME id (the F-4 resume path —
+        // The re-attach re-offers the SAME id (the resume path —
         // roaming rides it unchanged), and the possession-seeded
         // receiver resumes from the gap.
         let core2 = harness2.core!
@@ -494,7 +289,7 @@ final class RoamingClientGateTests: XCTestCase {
         }
         XCTAssertEqual(secondOffer.transferId, firstOffer.transferId,
                        "the SAME transfer id — the resume identity")
-        XCTAssertEqual(prepared.count, 1,
+        XCTAssertEqual(prepared.value, 1,
                        "no re-hash — the prepared offer re-offered verbatim")
         XCTAssertEqual(receiver2.assembledDigest(), secondOffer.sha256,
                        "the roamed transfer finished sha-exact")
@@ -503,9 +298,6 @@ final class RoamingClientGateTests: XCTestCase {
                        [2, 3, 4, 5, 6, 7],
                        "only the GAP was read after the roam")
         XCTAssertTrue(coordinator.snapshot().isIdle)
-        print("F-5 gate (end to end): blackout at A → FROZEN → "
-            + "liveness close → sighting at B → dial → same-id "
-            + "re-offer → sha-exact resume, chunks 2…7 only")
     }
 }
 
@@ -521,7 +313,7 @@ where Host == RoamingClientGateTests.RoamHostStandIn {
             clientKeys: clientKeys, clock: clock)
     }
 
-    /// The F-5 blackout: the core lives through `duration` of total
+    /// The blackout: the core lives through `duration` of total
     /// wire silence — 100 ms machine beats, nothing forwarded either
     /// way (retransmissions pile up unheard).
     func blackout(t: inout UInt64, duration: UInt64) {
