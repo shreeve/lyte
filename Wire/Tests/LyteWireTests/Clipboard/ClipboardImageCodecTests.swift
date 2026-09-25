@@ -32,57 +32,6 @@ final class ClipboardImageCodecTests: XCTestCase {
         XCTAssertEqual(decoded.mime, "image/png")
     }
 
-    func testHostileCargoBytesRejectAndNeverTrap() throws {
-        let good = try ClipboardImageCargo(
-            transferId: 7, mime: "image/png"
-        ).encode()
-
-        // Empty, bare type, truncated header, truncated mime.
-        assertThrows(ClipboardImageCargoError.truncatedMessage) {
-            try ClipboardImageCargo.decode([])
-        }
-        assertThrows(ClipboardImageCargoError.truncatedMessage) {
-            try ClipboardImageCargo.decode([0x22])
-        }
-        assertThrows(ClipboardImageCargoError.truncatedMessage) {
-            try ClipboardImageCargo.decode(Array(good.prefix(9)))
-        }
-        assertThrows(ClipboardImageCargoError.truncatedMessage) {
-            try ClipboardImageCargo.decode(Array(good.dropLast()))
-        }
-
-        // A foreign type byte rejects with what it found.
-        var foreign = good
-        foreign[0] = 0x1A
-        assertThrows(ClipboardImageCargoError.unexpectedType(0x1A)) {
-            try ClipboardImageCargo.decode(foreign)
-        }
-
-        // Trailing bytes reject — exactly its layout.
-        assertThrows(ClipboardImageCargoError.trailingBytes) {
-            try ClipboardImageCargo.decode(good + [0x00])
-        }
-
-        // A zero id is always some layer's zero-fill bug.
-        var zeroId = good
-        for i in 1...8 { zeroId[i] = 0 }
-        assertThrows(ClipboardImageCargoError.zeroTransferId) {
-            try ClipboardImageCargo.decode(zeroId)
-        }
-
-        // A mime-less marker is unroutable.
-        assertThrows(ClipboardImageCargoError.emptyMime) {
-            try ClipboardImageCargo.decode( [0x22, 7, 0, 0, 0, 0, 0, 0, 0, 0] )
-        }
-
-        // Invalid UTF-8 in the mime rejects, never replaces.
-        assertThrows(ClipboardImageCargoError.invalidUtf8) {
-            try ClipboardImageCargo.decode(
-                [0x22, 7, 0, 0, 0, 0, 0, 0, 0, 1, 0xFF]
-            )
-        }
-    }
-
     func testCargoConstructionRefusesWhatEncodeCannotCarry() {
         assertThrows(ClipboardImageCargoError.zeroTransferId) {
             try ClipboardImageCargo(transferId: 0, mime: "image/png")

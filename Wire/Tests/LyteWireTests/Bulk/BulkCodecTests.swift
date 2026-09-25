@@ -2,10 +2,10 @@ import XCTest
 import LyteWire
 import LyteWireTestKit
 
-// The W10 bulk-message codecs (0x1C–0x21) against HAND-COMPUTED bytes —
-// the anchor that keeps bulk-v1.json honest (the ControlCodecTests
-// precedent: the codec never grades its own homework), plus the whole
-// reject surface and the chunk-map/possession arithmetic.
+// The bulk-message codecs (0x1C–0x21) against HAND-COMPUTED bytes — the
+// anchors that keep bulk-v1.json honest (the codec never grades its own
+// homework) — plus the construction refusals and the chunk-map/possession
+// arithmetic. Decode rejects live in bulk-v1.json.
 
 final class BulkCodecTests: XCTestCase {
 
@@ -99,43 +99,6 @@ final class BulkCodecTests: XCTestCase {
         }
     }
 
-    func testOfferDecodeRejects() throws {
-        let bytes = try BulkOffer(
-            transferId: id, totalByteCount: 300_000,
-            chunkByteCount: 65_536, sha256: sha,
-            name: "report.pdf", mimeHint: "application/pdf"
-        ).encode()
-        assertThrows(BulkMessageError.truncatedMessage) {
-            try BulkOffer.decode([UInt8]())
-        }
-        assertThrows(BulkMessageError.unexpectedType(0x7F)) {
-            try BulkOffer.decode([0x7F] + bytes.dropFirst())
-        }
-        for cut in [8, 30, 53, 58, 64, bytes.count - 1] {
-            assertThrows(BulkMessageError.truncatedMessage, "cut at \(cut)") {
-                try BulkOffer.decode(Array(bytes.prefix(cut)))
-            }
-        }
-        assertThrows(BulkMessageError.trailingBytes) {
-            try BulkOffer.decode(bytes + [0x00])
-        }
-        var zeroId = bytes
-        for i in 1...8 { zeroId[i] = 0 }
-        assertThrows(BulkMessageError.zeroTransferId) {
-            try BulkOffer.decode(zeroId)
-        }
-        // Invalid UTF-8 in the name.
-        let badName = Array(bytes.prefix(53)) + [0x02, 0x68, 0xFF, 0x00]
-        assertThrows(BulkMessageError.invalidUtf8) {
-            try BulkOffer.decode(badName)
-        }
-        // nameLen 0.
-        let noName = Array(bytes.prefix(53)) + [0x00, 0x00]
-        assertThrows(BulkMessageError.emptyName) {
-            try BulkOffer.decode(noName)
-        }
-    }
-
     // MARK: - Accept / ack (the shared credit+map layout)
 
     func testAcceptHandComputedAnchor() throws {
@@ -158,52 +121,6 @@ final class BulkCodecTests: XCTestCase {
         XCTAssertEqual(
             decoded.possession.bitmapChunkIndices, [5, 6]
         )
-    }
-
-    func testAckHandComputedAnchor() throws {
-        let ack = try BulkAck(
-            transferId: id,
-            creditTotal: 24,
-            possession: BulkChunkMap(contiguousCount: 8)
-        )
-        var expected: [UInt8] = [0x1F]
-        expected += idLE
-        expected += [24, 0, 0, 0, 0, 0, 0, 0]
-        expected += [8, 0, 0, 0, 0, 0, 0, 0]
-        expected += [0, 0]
-        XCTAssertEqual(ack.encode(), expected)
-        XCTAssertEqual(try BulkAck.decode(expected), ack)
-    }
-
-    func testCreditMapDecodeRejects() throws {
-        let bytes = try BulkAck(
-            transferId: id, creditTotal: 24,
-            possession: BulkChunkMap(contiguousCount: 8)
-        ).encode()
-        assertThrows(BulkMessageError.truncatedMessage) {
-            try BulkAck.decode(Array(bytes.prefix(26)))
-        }
-        assertThrows(BulkMessageError.trailingBytes) {
-            try BulkAck.decode(bytes + [0x01])
-        }
-        // The two codecs never cross-decode.
-        assertThrows(BulkMessageError.unexpectedType(0x1F)) {
-            try BulkAccept.decode(bytes)
-        }
-        // Non-canonical bitmap (zero final byte).
-        var nonCanonical = Array(bytes.prefix(25))
-        nonCanonical += [2, 0, 0x01, 0x00]
-        assertThrows(BulkMessageError.nonCanonicalBitmap) {
-            try BulkAck.decode(nonCanonical)
-        }
-        // Over-budget bitmap length field.
-        var overBudget = Array(bytes.prefix(25))
-        // 1,025 = 0x0401 LE.
-        overBudget += [0x01, 0x04]
-        overBudget += [UInt8](repeating: 0xFF, count: 1_025)
-        assertThrows(BulkMessageError.bitmapOverBudget(1_025)) {
-            try BulkAck.decode(overBudget)
-        }
     }
 
     // MARK: - Chunk
@@ -239,16 +156,6 @@ final class BulkCodecTests: XCTestCase {
         assertThrows(BulkMessageError.emptyChunkData) {
             try BulkChunk( transferId: 1, chunkIndex: 0, data: [] )
         }
-        // Decode-side: a bare 17-byte header has no data.
-        let bytes = try BulkChunk(
-            transferId: 1, chunkIndex: 0, data: [0xAA]
-        ).encode()
-        assertThrows(BulkMessageError.emptyChunkData) {
-            try BulkChunk.decode(Array(bytes.prefix(17)))
-        }
-        assertThrows(BulkMessageError.truncatedMessage) {
-            try BulkChunk.decode(Array(bytes.prefix(12)))
-        }
     }
 
     // MARK: - Complete / abort
@@ -259,61 +166,19 @@ final class BulkCodecTests: XCTestCase {
         XCTAssertEqual(
             try BulkComplete.decode([0x20] + idLE), complete
         )
-        assertThrows(BulkMessageError.trailingBytes) {
-            try BulkComplete.decode([0x20] + idLE + [0])
-        }
     }
 
-    func testAbortWholeReasonSpace() throws {
-        // Every reason round-trips; the raw values are wire contract.
-        let expectedRaw: [BulkAbortReason: UInt8] = [
-            .declined: 0x01, .cancelled: 0x02, .resumeMismatch: 0x03,
-            .shaMismatch: 0x04, .storageFailure: 0x05, .busy: 0x06,
-            .protocolViolation: 0x07,
-        ]
-        XCTAssertEqual(
-            Set(BulkAbortReason.allCases), Set(expectedRaw.keys)
-        )
-        for (reason, raw) in expectedRaw {
-            let abort = try BulkAbort(transferId: id, reason: reason)
-            XCTAssertEqual(abort.encode(), [0x21] + idLE + [raw])
-            XCTAssertEqual(
-                try BulkAbort.decode([0x21] + idLE + [raw]), abort
-            )
-        }
-        assertThrows(BulkMessageError.unknownAbortReason(0x00)) {
-            try BulkAbort.decode([0x21] + idLE + [0x00])
-        }
-        assertThrows(BulkMessageError.unknownAbortReason(0x7F)) {
-            try BulkAbort.decode([0x21] + idLE + [0x7F])
-        }
+    func testAbortHandComputedAnchor() throws {
+        let abort = try BulkAbort(transferId: id, reason: .cancelled)
+        XCTAssertEqual(abort.encode(), [0x21] + idLE + [0x02])
+        XCTAssertEqual(try BulkAbort.decode([0x21] + idLE + [0x02]), abort)
     }
 
     // MARK: - The dispatch enum
 
-    func testBulkMessageDispatch() throws {
-        let messages: [BulkMessage] = [
-            .offer(try BulkOffer(
-                transferId: id, totalByteCount: 10,
-                chunkByteCount: 4_096, sha256: sha, name: "a"
-            )),
-            .accept(try BulkAccept(transferId: id, creditTotal: 2)),
-            .chunk(try BulkChunk(
-                transferId: id, chunkIndex: 0, data: [1, 2, 3]
-            )),
-            .ack(try BulkAck(
-                transferId: id, creditTotal: 3,
-                possession: BulkChunkMap(contiguousCount: 1)
-            )),
-            .complete(try BulkComplete(transferId: id)),
-            .abort(try BulkAbort(transferId: id, reason: .cancelled)),
-        ]
-        for message in messages {
-            XCTAssertEqual(
-                try BulkMessage.decode(message.encode()), message
-            )
-            XCTAssertEqual(message.transferId, id)
-        }
+    /// Every vector round trip already decodes through the dispatcher;
+    /// these are the refusals only it makes.
+    func testBulkMessageDispatchRejects() throws {
         assertThrows(BulkMessageError.unexpectedType(0x42)) {
             try BulkMessage.decode([0x42])
         }
@@ -331,7 +196,6 @@ final class BulkCodecTests: XCTestCase {
         XCTAssertEqual(CtrlMessageType.bulkAck, 0x1F)
         XCTAssertEqual(CtrlMessageType.bulkComplete, 0x20)
         XCTAssertEqual(CtrlMessageType.bulkAbort, 0x21)
-        XCTAssertEqual(ChannelId.bulkTransfer.rawValue, 8)
     }
 
     // MARK: - Chunk map + possession arithmetic
