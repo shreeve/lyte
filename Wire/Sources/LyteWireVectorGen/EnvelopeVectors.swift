@@ -71,32 +71,17 @@ public struct EnvelopeFields: Codable, Sendable {
         self.frame = envelope.frame.rawValue
         self.timestampHex = Hex.uint64String(envelope.timestamp)
         self.fecHex = Hex.uint64String(envelope.fec)
-        let tlvs = envelope.extensions.map {
-            TlvField(type: $0.type, valueHex: Hex.string($0.value))
-        }
-        self.tlvs = tlvs.isEmpty ? nil : tlvs
+        self.tlvs = tlvFields(envelope.extensions)
     }
 
     public func makeEnvelope() throws -> Envelope {
-        guard
-            let timestamp = Hex.uint64(timestampHex),
-            let fec = Hex.uint64(fecHex)
-        else {
-            throw VectorFileError.malformedField("timestampHex/fecHex")
-        }
-        let extensions = try (tlvs ?? []).map { tlv -> WireExtension in
-            guard let value = Hex.bytes(tlv.valueHex) else {
-                throw VectorFileError.malformedField("tlv valueHex")
-            }
-            return try WireExtension(type: tlv.type, value: value)
-        }
-        return Envelope(
+        Envelope(
             channel: ChannelId(rawValue: chan),
             seq: ChannelSeq(rawValue: seq),
             frame: FrameNumber(rawValue: frame),
-            timestamp: timestamp,
-            fec: fec,
-            extensions: extensions
+            timestamp: try vectorU64(timestampHex, "timestampHex"),
+            fec: try vectorU64(fecHex, "fecHex"),
+            extensions: try wireExtensions(tlvs)
         )
     }
 }

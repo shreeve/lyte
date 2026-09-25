@@ -100,11 +100,7 @@ public struct NoiseTransportVector: Codable, Sendable {
 
         /// The envelope for a seal step; its encoded header is the AAD.
         public func makeEnvelope() throws -> Envelope {
-            guard
-                let channel, let seq, let frame,
-                let timestampHex, let fecHex,
-                let timestamp = Hex.uint64(timestampHex),
-                let fec = Hex.uint64(fecHex)
+            guard let channel, let seq, let frame, let timestampHex, let fecHex
             else {
                 throw VectorFileError.malformedField("seal step envelope")
             }
@@ -112,8 +108,8 @@ public struct NoiseTransportVector: Codable, Sendable {
                 channel: ChannelId(rawValue: channel),
                 seq: ChannelSeq(rawValue: seq),
                 frame: FrameNumber(rawValue: frame),
-                timestamp: timestamp,
-                fec: fec
+                timestamp: try vectorU64(timestampHex, "seal step timestampHex"),
+                fec: try vectorU64(fecHex, "seal step fecHex")
             )
         }
     }

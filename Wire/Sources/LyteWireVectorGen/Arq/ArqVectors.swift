@@ -66,32 +66,25 @@ public struct ArqVector: Codable, Sendable {
     }
 }
 
-/// Builds the LyteWire frame a typed vector frame describes. Traps on a
-/// malformed vector file — vectors are trusted repo artifacts.
+/// Builds the LyteWire frame a typed vector frame describes.
 public func arqFrame(from vector: ArqVector.Frame) throws -> ArqFrame {
     if let segment = vector.segment {
-        guard let body = Hex.bytes(segment.bodyHex) else {
-            fatalError("bad bodyHex in arq vector")
-        }
         return .segment(try ArqSegment(
             group: ArqGroupId(rawValue: segment.group),
             seq: ArqSegmentSeq(rawValue: segment.seq),
             endOfMessage: segment.endOfMessage,
-            body: body
+            body: try vectorBytes(segment.bodyHex, "bodyHex")
         ))
     }
     if let ack = vector.ack {
         return .ack(try ArqAck(blocks: ack.blocks.map { block in
-            guard let bitmap = Hex.bytes(block.bitmapHex) else {
-                fatalError("bad bitmapHex in arq vector")
-            }
-            return try ArqAck.Block(
+            try ArqAck.Block(
                 channel: ChannelId(rawValue: block.chan),
                 group: ArqGroupId(rawValue: block.group),
                 cumulative: ArqSegmentSeq(rawValue: block.cumulative),
-                receivedBitmap: bitmap
+                receivedBitmap: try vectorBytes(block.bitmapHex, "bitmapHex")
             )
         }))
     }
-    fatalError("vector frame with neither segment nor ack")
+    throw VectorFileError.malformedField("frame with neither segment nor ack")
 }

@@ -75,26 +75,22 @@ public struct BeaconFields: Codable, Sendable {
     }
 
     public func makeBeacon() throws -> ClockBeacon {
-        guard let hostSend = Hex.uint64(hostSendHex) else {
-            throw VectorFileError.malformedField("hostSendHex")
-        }
-        let echo = try lastEcho.map { fields -> ClockBeacon.LastEcho in
-            guard
-                let clientSend = Hex.uint64(fields.clientSendHex),
-                let hostReceive = Hex.uint64(fields.hostReceiveHex)
-            else {
-                throw VectorFileError.malformedField("lastEcho timestamps")
-            }
-            return ClockBeacon.LastEcho(
-                beaconSeq: fields.beaconSeq,
-                clientSend: ClientTimestamp(microseconds: clientSend),
-                hostReceive: HostTimestamp(microseconds: hostReceive)
-            )
-        }
-        return ClockBeacon(
+        ClockBeacon(
             beaconSeq: beaconSeq,
-            hostSend: HostTimestamp(microseconds: hostSend),
-            lastEcho: echo
+            hostSend: HostTimestamp(
+                microseconds: try vectorU64(hostSendHex, "hostSendHex")
+            ),
+            lastEcho: try lastEcho.map { fields in
+                ClockBeacon.LastEcho(
+                    beaconSeq: fields.beaconSeq,
+                    clientSend: ClientTimestamp(microseconds: try vectorU64(
+                        fields.clientSendHex, "lastEcho clientSendHex"
+                    )),
+                    hostReceive: HostTimestamp(microseconds: try vectorU64(
+                        fields.hostReceiveHex, "lastEcho hostReceiveHex"
+                    ))
+                )
+            }
         )
     }
 }
@@ -114,18 +110,17 @@ public struct EchoFields: Codable, Sendable {
     }
 
     public func makeEcho() throws -> BeaconEcho {
-        guard
-            let hostSend = Hex.uint64(hostSendHex),
-            let clientReceive = Hex.uint64(clientReceiveHex),
-            let clientSend = Hex.uint64(clientSendHex)
-        else {
-            throw VectorFileError.malformedField("echo timestamps")
-        }
-        return BeaconEcho(
+        BeaconEcho(
             beaconSeq: beaconSeq,
-            hostSend: HostTimestamp(microseconds: hostSend),
-            clientReceive: ClientTimestamp(microseconds: clientReceive),
-            clientSend: ClientTimestamp(microseconds: clientSend)
+            hostSend: HostTimestamp(
+                microseconds: try vectorU64(hostSendHex, "hostSendHex")
+            ),
+            clientReceive: ClientTimestamp(
+                microseconds: try vectorU64(clientReceiveHex, "clientReceiveHex")
+            ),
+            clientSend: ClientTimestamp(
+                microseconds: try vectorU64(clientSendHex, "clientSendHex")
+            )
         )
     }
 }
@@ -213,11 +208,10 @@ public struct FeedbackFields: Codable, Sendable {
         }
 
         public func makeDispersion() throws -> FeedbackReport.Dispersion {
-            guard let base = Hex.uint64(baseHex) else {
-                throw VectorFileError.malformedField("baseHex")
-            }
-            return .init(
-                base: ClientTimestamp(microseconds: base),
+            .init(
+                base: ClientTimestamp(
+                    microseconds: try vectorU64(baseHex, "baseHex")
+                ),
                 samples: samples.map { $0.makeSample() }
             )
         }
@@ -248,29 +242,19 @@ public struct FeedbackFields: Codable, Sendable {
         self.dispersion = report.dispersion.map(DispersionFields.init(from:))
         let nacks = report.nacks.map(NackFields.init(from:))
         self.nacks = nacks.isEmpty ? nil : nacks
-        let tlvs = report.extensions.map {
-            TlvField(type: $0.type, valueHex: Hex.string($0.value))
-        }
-        self.tlvs = tlvs.isEmpty ? nil : tlvs
+        self.tlvs = tlvFields(report.extensions)
     }
 
     public func makeReport() throws -> FeedbackReport {
-        guard let clientTimestamp = Hex.uint64(clientTimestampHex) else {
-            throw VectorFileError.malformedField("clientTimestampHex")
-        }
-        let extensions = try (tlvs ?? []).map { tlv -> WireExtension in
-            guard let value = Hex.bytes(tlv.valueHex) else {
-                throw VectorFileError.malformedField("tlv valueHex")
-            }
-            return try WireExtension(type: tlv.type, value: value)
-        }
-        return FeedbackReport(
+        FeedbackReport(
             pathId: pathId,
-            clientTimestamp: ClientTimestamp(microseconds: clientTimestamp),
+            clientTimestamp: ClientTimestamp(microseconds: try vectorU64(
+                clientTimestampHex, "clientTimestampHex"
+            )),
             channels: (channels ?? []).map { $0.makeStats() },
             dispersion: try dispersion?.makeDispersion(),
             nacks: try (nacks ?? []).map { try $0.makeEntry() },
-            extensions: extensions
+            extensions: try wireExtensions(tlvs)
         )
     }
 }

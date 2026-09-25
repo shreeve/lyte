@@ -125,17 +125,9 @@ public struct BulkTransferSessionVector: Codable, Sendable {
     public var receiverMessagesHex: [String]
 }
 
-/// Stable names for `BulkAbortReason` cases.
+/// A `BulkAbortReason`'s name in vector files: its Swift case name.
 public func bulkAbortReasonName(_ reason: BulkAbortReason) -> String {
-    switch reason {
-    case .declined: return "declined"
-    case .cancelled: return "cancelled"
-    case .resumeMismatch: return "resumeMismatch"
-    case .shaMismatch: return "shaMismatch"
-    case .storageFailure: return "storageFailure"
-    case .busy: return "busy"
-    case .protocolViolation: return "protocolViolation"
-    }
+    "\(reason)"
 }
 
 public func bulkAbortReason(named name: String) -> BulkAbortReason? {
