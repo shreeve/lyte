@@ -1,6 +1,8 @@
 import XCTest
 import LyteWire
 
+// Serial comparison and distance across the wrap, including the
+// unordered half-window, are envelope-v1.json's seqComparisons table.
 final class ChannelSeqTests: XCTestCase {
 
     func testNextWrapsAt65535() {
@@ -8,43 +10,10 @@ final class ChannelSeqTests: XCTestCase {
         XCTAssertEqual(ChannelSeq(rawValue: 0).next.rawValue, 1)
     }
 
-    func testSerialComparisonAcrossWrap() {
-        // The successor is always ahead, including through the wrap.
-        XCTAssertLessThan(ChannelSeq(rawValue: 0xFFFF), ChannelSeq(rawValue: 0))
-        XCTAssertLessThan(ChannelSeq(rawValue: 0xFFFE), ChannelSeq(rawValue: 1))
-        XCTAssertLessThan(ChannelSeq(rawValue: 0), ChannelSeq(rawValue: 1))
-        XCTAssertFalse(ChannelSeq(rawValue: 0) < ChannelSeq(rawValue: 0xFFFF))
-        XCTAssertFalse(ChannelSeq(rawValue: 1) < ChannelSeq(rawValue: 1))
-    }
-
-    func testSerialDistance() {
-        let base = ChannelSeq(rawValue: 60000)
-        XCTAssertEqual(base.distance(to: ChannelSeq(rawValue: 4464)), 10000)
-        XCTAssertEqual(ChannelSeq(rawValue: 4464).distance(to: base), -10000)
-        XCTAssertEqual(base.distance(to: base), 0)
-        XCTAssertEqual(
-            ChannelSeq(rawValue: 0xFFFF).distance(to: ChannelSeq(rawValue: 0)), 1
-        )
-    }
-
     func testAdvancedByNegativeDelta() {
         let seq = ChannelSeq(rawValue: 2)
         XCTAssertEqual(seq.advanced(by: -5).rawValue, 0xFFFD)
         XCTAssertEqual(seq.advanced(by: -5).advanced(by: 5), seq)
-    }
-
-    func testHalfWindowDistanceIsUnorderedByRule() {
-        // Exactly 0x8000 apart: the one distance serial arithmetic cannot
-        // order. Both comparisons are false; distance saturates to
-        // Int16.min from either side. Callers never operate here — gate
-        // windows are orders of magnitude below the half-window.
-        let a = ChannelSeq(rawValue: 100)
-        let b = ChannelSeq(rawValue: 100 &+ 0x8000)
-        XCTAssertFalse(a < b)
-        XCTAssertFalse(b < a)
-        XCTAssertNotEqual(a, b)
-        XCTAssertEqual(a.distance(to: b), Int16.min)
-        XCTAssertEqual(b.distance(to: a), Int16.min)
     }
 
     func testConsecutiveIncrementsStayOrdered() {
@@ -88,8 +57,8 @@ final class WireTimestampTests: XCTestCase {
     // Cross-domain arithmetic does not compile, which is the point:
     //   HostTimestamp(microseconds: 1)
     //       .microseconds(since: ClientTimestamp(microseconds: 0))
-    // fails with a type error. The beacon codec (W4a) is the only
-    // sanctioned conversion between the two domains.
+    // fails with a type error. The beacon codec is the only sanctioned
+    // conversion between the two domains.
 }
 
 final class ChannelIdTests: XCTestCase {
