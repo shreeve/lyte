@@ -3,16 +3,15 @@ import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-// The stateless retry cookie: mint/verify determinism, the transcript
-// binding (tuple, timestamp window, msg1), and secret rotation. The
-// MAC itself is anchored against an INDEPENDENT HMAC-SHA256 built here
-// on LyteCore's FIPS-verified Sha256 — RetryCookie's swift-crypto HMAC
-// never grades its own homework.
+// The stateless retry cookie. The MAC is anchored against an INDEPENDENT
+// HMAC-SHA256 built here on LyteCore's FIPS-verified Sha256, so
+// RetryCookie's swift-crypto HMAC never grades its own homework; the
+// window, binding and rotation verdicts live in retry-v1.json's
+// cookieVectors, and the tests here carry the cases those do not.
 
 final class RetryCookieTests: XCTestCase {
 
     private static let secret = (0..<32).map { UInt8(0x40 &+ $0) }
-    private static let otherSecret = (0..<32).map { UInt8(0x80 &+ $0) }
     private static let tuple: [UInt8] = [10, 0, 0, 249, 0xA0, 0x2B]
     private static let message1 = (0..<122).map {
         UInt8(truncatingIfNeeded: $0 * 3)
@@ -46,102 +45,17 @@ final class RetryCookieTests: XCTestCase {
         XCTAssertEqual(Array(cookie.suffix(16)), Array(mac.prefix(16)))
     }
 
-    func testMintIsDeterministic() throws {
-        // Pure function of (tuple, msg1, now, secret) — the property
-        // that makes the host's flood answer stateless.
-        let a = try RetryCookie.mint(
-            clientTuple: Self.tuple, message1: Self.message1,
-            now: Self.now, secret: Self.secret
-        )
-        let b = try RetryCookie.mint(
-            clientTuple: Self.tuple, message1: Self.message1,
-            now: Self.now, secret: Self.secret
-        )
-        XCTAssertEqual(a, b)
-    }
-
-    // MARK: Verify — the window
-
-    func testVerifyAcceptsWithinLifetimeWindow() throws {
-        let cookie = try RetryCookie.mint(
-            clientTuple: Self.tuple, message1: Self.message1,
-            now: Self.now, secret: Self.secret
-        )
-        for elapsed: UInt64 in
-            [0, 1, RetryCookie.defaultLifetimeNanoseconds]
-        {
-            XCTAssertTrue(RetryCookie.verify(
-                cookie: cookie, clientTuple: Self.tuple,
-                message1: Self.message1, now: Self.now + elapsed,
-                secrets: [Self.secret]
-            ), "elapsed \(elapsed)")
-        }
-    }
-
-    func testVerifyRejectsExpiredAndFutureCookies() throws {
-        let cookie = try RetryCookie.mint(
-            clientTuple: Self.tuple, message1: Self.message1,
-            now: Self.now, secret: Self.secret
-        )
-        // One nanosecond past the lifetime: harvested, dead.
-        XCTAssertFalse(RetryCookie.verify(
-            cookie: cookie, clientTuple: Self.tuple,
-            message1: Self.message1,
-            now: Self.now + RetryCookie.defaultLifetimeNanoseconds + 1,
-            secrets: [Self.secret]
-        ))
-        // A stamp from the future: forged — the same monotonic clock
-        // minted it.
-        XCTAssertFalse(RetryCookie.verify(
-            cookie: cookie, clientTuple: Self.tuple,
-            message1: Self.message1, now: Self.now - 1,
-            secrets: [Self.secret]
-        ))
-        // A caller-chosen shorter lifetime is honored.
-        XCTAssertFalse(RetryCookie.verify(
-            cookie: cookie, clientTuple: Self.tuple,
-            message1: Self.message1, now: Self.now + 1_000_001,
-            secrets: [Self.secret], lifetimeNanoseconds: 1_000_000
-        ))
-    }
-
-    // MARK: Verify — the bindings
-
-    func testVerifyRejectsForeignTupleOrMessage() throws {
-        let cookie = try RetryCookie.mint(
-            clientTuple: Self.tuple, message1: Self.message1,
-            now: Self.now, secret: Self.secret
-        )
-        // Same cookie presented from a different address: the whole
-        // point of the mechanism.
-        var movedTuple = Self.tuple
-        movedTuple[3] &+= 1
-        XCTAssertFalse(RetryCookie.verify(
-            cookie: cookie, clientTuple: movedTuple,
-            message1: Self.message1, now: Self.now,
-            secrets: [Self.secret]
-        ))
-        // Same address, different msg1: one cookie authorizes one
-        // exact handshake attempt.
-        var alteredMessage = Self.message1
-        alteredMessage[40] ^= 0x01
-        XCTAssertFalse(RetryCookie.verify(
-            cookie: cookie, clientTuple: Self.tuple,
-            message1: alteredMessage, now: Self.now,
-            secrets: [Self.secret]
-        ))
-    }
+    // MARK: Verify — cases the vectors do not carry
 
     func testVerifyRejectsTamperedOrMalformedCookies() throws {
         let cookie = try RetryCookie.mint(
             clientTuple: Self.tuple, message1: Self.message1,
             now: Self.now, secret: Self.secret
         )
-        for flipIndex in [0, 7, 8, 23] {
+        // The timestamp's high byte and the MAC's last byte are bound too.
+        for flipIndex in [7, 23] {
             var tampered = cookie
             tampered[flipIndex] ^= 0x01
-            // Flipping a timestamp byte invalidates the MAC (or the
-            // window); flipping a MAC byte invalidates the MAC.
             XCTAssertFalse(RetryCookie.verify(
                 cookie: tampered, clientTuple: Self.tuple,
                 message1: Self.message1,
@@ -150,86 +64,57 @@ final class RetryCookieTests: XCTestCase {
             ), "flipped byte \(flipIndex)")
         }
         // Wrong sizes are quietly false — the flood path never throws.
-        XCTAssertFalse(RetryCookie.verify(
-            cookie: Array(cookie.dropLast()), clientTuple: Self.tuple,
-            message1: Self.message1, now: Self.now,
-            secrets: [Self.secret]
-        ))
-        XCTAssertFalse(RetryCookie.verify(
-            cookie: cookie + [0], clientTuple: Self.tuple,
-            message1: Self.message1, now: Self.now,
-            secrets: [Self.secret]
-        ))
-        XCTAssertFalse(RetryCookie.verify(
-            cookie: [], clientTuple: Self.tuple,
-            message1: Self.message1, now: Self.now,
-            secrets: [Self.secret]
-        ))
+        for malformed in [cookie + [0], []] {
+            XCTAssertFalse(RetryCookie.verify(
+                cookie: malformed, clientTuple: Self.tuple,
+                message1: Self.message1, now: Self.now,
+                secrets: [Self.secret]
+            ))
+        }
     }
 
-    // MARK: Rotation
-
-    func testRotationWindow() throws {
+    func testVerifySkipsWrongLengthSecretsAndFailsWithNone() throws {
         let cookie = try RetryCookie.mint(
             clientTuple: Self.tuple, message1: Self.message1,
             now: Self.now, secret: Self.secret
         )
-        // After rotation the previous secret still verifies…
         XCTAssertTrue(RetryCookie.verify(
             cookie: cookie, clientTuple: Self.tuple,
             message1: Self.message1, now: Self.now + 1,
-            secrets: [Self.otherSecret, Self.secret]
-        ))
-        // …but current-only does not, and neither does a stranger.
-        XCTAssertFalse(RetryCookie.verify(
-            cookie: cookie, clientTuple: Self.tuple,
-            message1: Self.message1, now: Self.now + 1,
-            secrets: [Self.otherSecret]
+            secrets: [[1, 2, 3], Self.secret]
         ))
         XCTAssertFalse(RetryCookie.verify(
             cookie: cookie, clientTuple: Self.tuple,
             message1: Self.message1, now: Self.now + 1,
             secrets: []
         ))
-        // Wrong-length entries are skipped, not consulted.
-        XCTAssertTrue(RetryCookie.verify(
-            cookie: cookie, clientTuple: Self.tuple,
-            message1: Self.message1, now: Self.now + 1,
-            secrets: [[1, 2, 3], Self.secret]
-        ))
     }
 
     // MARK: Structural misuse of mint
 
     func testMintRejectsStructuralMisuse() {
-        XCTAssertThrowsError(try RetryCookie.mint(
-            clientTuple: Self.tuple, message1: Self.message1,
-            now: Self.now, secret: [1, 2, 3]
-        )) {
-            XCTAssertEqual(
-                $0 as? RetryCookieError, .invalidSecretLength(3)
+        assertThrows(RetryCookieError.invalidSecretLength(3)) {
+            try RetryCookie.mint(
+                clientTuple: Self.tuple, message1: Self.message1,
+                now: Self.now, secret: [1, 2, 3]
             )
         }
-        XCTAssertThrowsError(try RetryCookie.mint(
-            clientTuple: [], message1: Self.message1,
-            now: Self.now, secret: Self.secret
-        )) {
-            XCTAssertEqual(
-                $0 as? RetryCookieError, .invalidTupleLength(0)
+        assertThrows(RetryCookieError.invalidTupleLength(0)) {
+            try RetryCookie.mint(
+                clientTuple: [], message1: Self.message1,
+                now: Self.now, secret: Self.secret
             )
         }
-        XCTAssertThrowsError(try RetryCookie.mint(
-            clientTuple: [UInt8](repeating: 0, count: 256),
-            message1: Self.message1,
-            now: Self.now, secret: Self.secret
-        )) {
-            XCTAssertEqual(
-                $0 as? RetryCookieError, .invalidTupleLength(256)
+        assertThrows(RetryCookieError.invalidTupleLength(256)) {
+            try RetryCookie.mint(
+                clientTuple: [UInt8](repeating: 0, count: 256),
+                message1: Self.message1,
+                now: Self.now, secret: Self.secret
             )
         }
     }
 
-    // MARK: Composition — the HS-9 escalation flow end to end
+    // MARK: Composition — the escalation flow end to end
 
     func testFullRetryFlowWithRealNoiseMessage1() throws {
         // A real IK msg1 through the whole loop: flood-mode host mints

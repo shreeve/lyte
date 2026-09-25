@@ -9,6 +9,17 @@ import LyteWireTestKit
 public func makeControlVectorFile() throws -> ControlVectorFile {
     var vectors: [ControlVector] = []
 
+    func reject(
+        _ name: String, _ codec: ControlVector.ControlCodec,
+        _ description: String, _ hex: String, _ error: String
+    ) {
+        vectors.append(ControlVector(
+            name: name, description: description,
+            kind: .decodeReject, codec: codec,
+            messageHex: hex, error: error
+        ))
+    }
+
     // MARK: IdleFrame (0x15)
 
     let idle = IdleFrame(
@@ -16,42 +27,29 @@ public func makeControlVectorFile() throws -> ControlVectorFile {
         captureTimestampMicroseconds: 0x11_2233_4455,
         annexB: [0, 0, 0, 1, 0x26, 0x01]
     )
+    let idleBytes = idle.encode()
     vectors.append(ControlVector(
         name: "idle-frame-nominal",
         description: "13-byte header + a 6-byte Annex-B stub: type 0x15, "
             + "frame u32 LE, capture µs u64 LE, frame bytes verbatim — "
             + "the hand-computed anchor.",
         kind: .roundtrip, codec: .idleFrame,
-        messageHex: Hex.string(idle.encode()),
+        messageHex: Hex.string(idleBytes),
         frame: idle.frame.rawValue,
         timestampHex: Hex.uint64String(idle.captureTimestampMicroseconds),
         annexBHex: Hex.string(idle.annexB)
     ))
-    vectors.append(ControlVector(
-        name: "idle-frame-empty-body",
-        description: "The bare 13-byte header rejects — a frameless idle "
-            + "frame is a construction bug, not a message.",
-        kind: .decodeReject, codec: .idleFrame,
-        messageHex: Hex.string(idle.encode().prefix(13)),
-        error: "truncatedMessage"
-    ))
-    vectors.append(ControlVector(
-        name: "idle-frame-truncated",
-        description: "12 bytes reject.",
-        kind: .decodeReject, codec: .idleFrame,
-        messageHex: Hex.string(idle.encode().prefix(12)),
-        error: "truncatedMessage"
-    ))
-    vectors.append(ControlVector(
-        name: "idle-frame-foreign-type",
-        description: "An input-event type byte at idle-frame shape rejects "
-            + "with what it found.",
-        kind: .decodeReject, codec: .idleFrame,
-        messageHex: Hex.string(
-            [CtrlMessageType.inputEvent] + idle.encode().dropFirst()
-        ),
-        error: "unexpectedType"
-    ))
+    reject("idle-frame-empty-body", .idleFrame,
+           "The bare 13-byte header rejects — a frameless idle frame is a "
+            + "construction bug, not a message.",
+           Hex.string(idleBytes.prefix(13)), "truncatedMessage")
+    reject("idle-frame-truncated", .idleFrame, "12 bytes reject.",
+           Hex.string(idleBytes.prefix(12)), "truncatedMessage")
+    reject("idle-frame-foreign-type", .idleFrame,
+           "An input-event type byte at idle-frame shape rejects with what "
+            + "it found.",
+           Hex.string([CtrlMessageType.inputEvent] + idleBytes.dropFirst()),
+           "unexpectedType")
 
     // MARK: InputEvent (0x16) — one roundtrip per kind (the codec's
     // whole kind space, the lifecycle whole-value-space discipline)
@@ -99,316 +97,178 @@ public func makeControlVectorFile() throws -> ControlVectorFile {
         ))
     }
 
-    let keyAnchor = try InputEvent(
-        seq: 7, clientMicroseconds: 0x11_2233_4455,
-        body: .keyKeycode(keycode: 30, pressed: true)
-    ).encode()
-    vectors.append(ControlVector(
-        name: "input-truncated",
-        description: "14 bytes (header, no kind byte's body) reject.",
-        kind: .decodeReject, codec: .inputEvent,
-        messageHex: Hex.string(keyAnchor.prefix(14)),
-        error: "truncatedMessage"
-    ))
+    let keyAnchor = try inputRoundtrips[0].2.encode()
     var unknownKind = keyAnchor
     unknownKind[13] = 0x77
-    vectors.append(ControlVector(
-        name: "input-unknown-kind",
-        description: "Kind 0x77 rejects — a foreign kind between "
-            + "capability-negotiated peers is a protocol break to "
-            + "surface, not weather to skip.",
-        kind: .decodeReject, codec: .inputEvent,
-        messageHex: Hex.string(unknownKind),
-        error: "unknownKind"
-    ))
-    vectors.append(ControlVector(
-        name: "input-body-length-mismatch",
-        description: "A trailing byte after an exact-length body rejects "
-            + "(the W2 rule).",
-        kind: .decodeReject, codec: .inputEvent,
-        messageHex: Hex.string(keyAnchor + [0x00]),
-        error: "bodyLengthMismatch"
-    ))
     var badFlag = keyAnchor
     badFlag[18] = 2
-    vectors.append(ControlVector(
-        name: "input-malformed-flag",
-        description: "A pressed byte that is neither 0 nor 1 rejects.",
-        kind: .decodeReject, codec: .inputEvent,
-        messageHex: Hex.string(badFlag),
-        error: "malformedFlag"
-    ))
     var reservedAxis = try InputEvent(
         seq: 1, clientMicroseconds: 2,
         body: .pointerAxis(dx: 1, dy: 2, finish: false)
     ).encode()
     reservedAxis[reservedAxis.count - 1] = 0x82
-    vectors.append(ControlVector(
-        name: "input-axis-reserved-bits",
-        description: "Nonzero reserved bits in the axis flags byte reject.",
-        kind: .decodeReject, codec: .inputEvent,
-        messageHex: Hex.string(reservedAxis),
-        error: "reservedBitsSet"
-    ))
-    vectors.append(ControlVector(
-        name: "input-foreign-type",
-        description: "An idle-frame type byte at input-event shape rejects "
-            + "with what it found.",
-        kind: .decodeReject, codec: .inputEvent,
-        messageHex: Hex.string(
-            [CtrlMessageType.idleFrame] + keyAnchor.dropFirst()
-        ),
-        error: "unexpectedType"
-    ))
+    for (name, description, bytes, error) in [
+        ("input-truncated", "14 bytes (header, no kind byte's body) reject.",
+         Array(keyAnchor.prefix(14)), "truncatedMessage"),
+        ("input-unknown-kind",
+         "Kind 0x77 rejects — a foreign kind between capability-negotiated "
+            + "peers is a protocol break to surface, not weather to skip.",
+         unknownKind, "unknownKind"),
+        ("input-body-length-mismatch",
+         "A trailing byte after an exact-length body rejects (the W2 rule).",
+         keyAnchor + [0x00], "bodyLengthMismatch"),
+        ("input-malformed-flag",
+         "A pressed byte that is neither 0 nor 1 rejects.",
+         badFlag, "malformedFlag"),
+        ("input-axis-reserved-bits",
+         "Nonzero reserved bits in the axis flags byte reject.",
+         reservedAxis, "reservedBitsSet"),
+        ("input-foreign-type",
+         "An idle-frame type byte at input-event shape rejects with what it "
+            + "found.",
+         [CtrlMessageType.idleFrame] + keyAnchor.dropFirst(), "unexpectedType"),
+    ] {
+        reject(name, .inputEvent, description, Hex.string(bytes), error)
+    }
 
     // MARK: InputEcho (0x17)
 
-    let echo = InputEcho(tuples: [
-        InputEchoTuple(seq: 1, receivedMicroseconds: 0x0A,
-                       injectedMicroseconds: 0x0B),
-        InputEchoTuple(seq: 2, receivedMicroseconds: 0x0C,
-                       injectedMicroseconds: 0x0D),
-    ])
-    vectors.append(ControlVector(
-        name: "echo-two-tuples",
-        description: "Two 20-byte (seq u32 ‖ rx µs u64 ‖ inject µs u64) "
-            + "tuples behind the count byte — the hand-computed anchor.",
-        kind: .roundtrip, codec: .inputEcho,
-        messageHex: Hex.string(echo.encode()),
-        tuples: echo.tuples.map {
-            ControlEchoTuple(
-                seq: $0.seq,
-                receivedHex: Hex.uint64String($0.receivedMicroseconds),
-                injectedHex: Hex.uint64String($0.injectedMicroseconds)
-            )
-        }
-    ))
-    let single = InputEcho(tuples: [
-        InputEchoTuple(seq: 0xDEAD_BEEF,
-                       receivedMicroseconds: 0x0102_0304_0506_0708,
-                       injectedMicroseconds: 0x1112_1314_1516_1718),
-    ])
-    vectors.append(ControlVector(
-        name: "echo-single-tuple",
-        description: "One tuple at the u32/u64 byte-order extremes.",
-        kind: .roundtrip, codec: .inputEcho,
-        messageHex: Hex.string(single.encode()),
-        tuples: single.tuples.map {
-            ControlEchoTuple(
-                seq: $0.seq,
-                receivedHex: Hex.uint64String($0.receivedMicroseconds),
-                injectedHex: Hex.uint64String($0.injectedMicroseconds)
-            )
-        }
-    ))
-    vectors.append(ControlVector(
-        name: "echo-zero-count",
-        description: "Count 0 rejects — the zero-fill rule.",
-        kind: .decodeReject, codec: .inputEcho,
-        messageHex: "1700",
-        error: "malformedTupleCount"
-    ))
-    vectors.append(ControlVector(
-        name: "echo-over-limit-count",
-        description: "Count 33 rejects even with the bytes present — one "
-            + "message stays inside the clamped ARQ segment body.",
-        kind: .decodeReject, codec: .inputEcho,
-        messageHex: Hex.string(
-            [0x17, 33] + [UInt8](repeating: 0, count: 33 * 20)
-        ),
-        error: "malformedTupleCount"
-    ))
-    vectors.append(ControlVector(
-        name: "echo-length-disagrees",
-        description: "A count of 1 over 3 tuple bytes rejects.",
-        kind: .decodeReject, codec: .inputEcho,
-        messageHex: "1701010203",
-        error: "bodyLengthMismatch"
-    ))
+    for (name, description, tuples) in [
+        ("echo-two-tuples",
+         "Two 20-byte (seq u32 ‖ rx µs u64 ‖ inject µs u64) tuples behind "
+            + "the count byte — the hand-computed anchor.",
+         [InputEchoTuple(seq: 1, receivedMicroseconds: 0x0A,
+                         injectedMicroseconds: 0x0B),
+          InputEchoTuple(seq: 2, receivedMicroseconds: 0x0C,
+                         injectedMicroseconds: 0x0D)]),
+        ("echo-single-tuple",
+         "One tuple at the u32/u64 byte-order extremes.",
+         [InputEchoTuple(seq: 0xDEAD_BEEF,
+                         receivedMicroseconds: 0x0102_0304_0506_0708,
+                         injectedMicroseconds: 0x1112_1314_1516_1718)]),
+    ] {
+        vectors.append(ControlVector(
+            name: name, description: description,
+            kind: .roundtrip, codec: .inputEcho,
+            messageHex: Hex.string(InputEcho(tuples: tuples).encode()),
+            tuples: tuples.map {
+                ControlEchoTuple(
+                    seq: $0.seq,
+                    receivedHex: Hex.uint64String($0.receivedMicroseconds),
+                    injectedHex: Hex.uint64String($0.injectedMicroseconds)
+                )
+            }
+        ))
+    }
+    reject("echo-zero-count", .inputEcho,
+           "Count 0 rejects — the zero-fill rule.", "1700",
+           "malformedTupleCount")
+    reject("echo-over-limit-count", .inputEcho,
+           "Count 33 rejects even with the bytes present — one message stays "
+            + "inside the clamped ARQ segment body.",
+           Hex.string([0x17, 33] + [UInt8](repeating: 0, count: 33 * 20)),
+           "malformedTupleCount")
+    reject("echo-length-disagrees", .inputEcho,
+           "A count of 1 over 3 tuple bytes rejects.", "1701010203",
+           "bodyLengthMismatch")
 
-    // MARK: lastInputSeq TLV (0x03, whole-datagram vectors — the
-    // conn-id precedent)
+    // MARK: lastInputSeq TLV (0x03, whole-datagram vectors)
 
-    let tagged = Envelope(
-        channel: .videoActive,
-        seq: ChannelSeq(rawValue: 7),
-        frame: FrameNumber(rawValue: 3),
-        timestamp: 1_000_000,
-        fec: 0,
-        extensions: [LastInputSeqTlv.wireExtension(seq: 0x0102_0304)]
-    )
     vectors.append(ControlVector(
         name: "lastinputseq-tagged-datagram",
         description: "A video datagram carrying TLV 0x03 with the u32 LE "
             + "seq; LastInputSeqTlv.decode over the decoded extensions "
             + "must yield exactly lastInputSeq.",
         kind: .roundtrip, codec: .lastInputSeqTlv,
-        messageHex: Hex.string(try tagged.encode(plaintextShard: [1, 2, 3])),
+        messageHex: try tlvCarrierDatagram(
+            [LastInputSeqTlv.wireExtension(seq: 0x0102_0304)]
+        ),
         lastInputSeq: 0x0102_0304
     ))
-    let wrongWidth = Envelope(
-        channel: .videoActive,
-        seq: ChannelSeq(rawValue: 7),
-        frame: FrameNumber(rawValue: 3),
-        timestamp: 1_000_000,
-        fec: 0,
-        extensions: [try WireExtension(
-            type: WireExtension.ReservedType.lastInputSeq, value: [1, 2]
-        )]
-    )
-    vectors.append(ControlVector(
-        name: "lastinputseq-wrong-width",
-        description: "TLV 0x03 with a 2-byte value: the envelope decodes, "
-            + "the seq codec rejects loudly.",
-        kind: .decodeReject, codec: .lastInputSeqTlv,
-        messageHex: Hex.string(try wrongWidth.encode(plaintextShard: [1, 2, 3])),
-        error: "malformedLastInputSeqTlv"
-    ))
-    let duplicate = Envelope(
-        channel: .videoActive,
-        seq: ChannelSeq(rawValue: 7),
-        frame: FrameNumber(rawValue: 3),
-        timestamp: 1_000_000,
-        fec: 0,
-        extensions: [
-            LastInputSeqTlv.wireExtension(seq: 5),
-            LastInputSeqTlv.wireExtension(seq: 6),
-        ]
-    )
-    vectors.append(ControlVector(
-        name: "lastinputseq-duplicate",
-        description: "Two lastInputSeq claims in one envelope is "
-            + "ambiguity, not a tie.",
-        kind: .decodeReject, codec: .lastInputSeqTlv,
-        messageHex: Hex.string(try duplicate.encode(plaintextShard: [1, 2, 3])),
-        error: "duplicateLastInputSeqTlv"
-    ))
+    reject("lastinputseq-wrong-width", .lastInputSeqTlv,
+           "TLV 0x03 with a 2-byte value: the envelope decodes, the seq "
+            + "codec rejects loudly.",
+           try tlvCarrierDatagram([try WireExtension(
+               type: WireExtension.ReservedType.lastInputSeq, value: [1, 2]
+           )]),
+           "malformedLastInputSeqTlv")
+    reject("lastinputseq-duplicate", .lastInputSeqTlv,
+           "Two lastInputSeq claims in one envelope is ambiguity, not a tie.",
+           try tlvCarrierDatagram([
+               LastInputSeqTlv.wireExtension(seq: 5),
+               LastInputSeqTlv.wireExtension(seq: 6),
+           ]),
+           "duplicateLastInputSeqTlv")
 
     // MARK: Audio routing (0x18/0x19 — the complete value spaces,
     // the lifecycle discipline)
 
-    vectors.append(ControlVector(
-        name: "routing-request-audible",
-        description: "type ‖ mode: [0x18, 0x01].",
-        kind: .roundtrip, codec: .audioRoutingRequest,
-        messageHex: Hex.string(
-            AudioRoutingRequest(mode: .hostAudible).encode()
-        ),
-        mode: .hostAudible
-    ))
-    vectors.append(ControlVector(
-        name: "routing-request-muted",
-        description: "type ‖ mode: [0x18, 0x02].",
-        kind: .roundtrip, codec: .audioRoutingRequest,
-        messageHex: Hex.string(
-            AudioRoutingRequest(mode: .hostMuted).encode()
-        ),
-        mode: .hostMuted
-    ))
-    vectors.append(ControlVector(
-        name: "routing-status-audible",
-        description: "type ‖ mode: [0x19, 0x01].",
-        kind: .roundtrip, codec: .audioRoutingStatus,
-        messageHex: Hex.string(
-            AudioRoutingStatus(mode: .hostAudible).encode()
-        ),
-        mode: .hostAudible
-    ))
-    vectors.append(ControlVector(
-        name: "routing-status-muted",
-        description: "type ‖ mode: [0x19, 0x02].",
-        kind: .roundtrip, codec: .audioRoutingStatus,
-        messageHex: Hex.string(
-            AudioRoutingStatus(mode: .hostMuted).encode()
-        ),
-        mode: .hostMuted
-    ))
-    vectors.append(ControlVector(
-        name: "routing-request-streamoff",
-        description: "type ‖ mode: [0x18, 0x04] — streamOff (key-14"
-            + " mute-at-source; 0x03 stays the pinned tombstone).",
-        kind: .roundtrip, codec: .audioRoutingRequest,
-        messageHex: Hex.string(
-            AudioRoutingRequest(mode: .streamOff).encode()
-        ),
-        mode: .streamOff
-    ))
-    vectors.append(ControlVector(
-        name: "routing-status-streamoff",
-        description: "type ‖ mode: [0x19, 0x04] — streamOff applied.",
-        kind: .roundtrip, codec: .audioRoutingStatus,
-        messageHex: Hex.string(
-            AudioRoutingStatus(mode: .streamOff).encode()
-        ),
-        mode: .streamOff
-    ))
-    vectors.append(ControlVector(
-        name: "routing-request-truncated",
-        description: "The bare type byte rejects.",
-        kind: .decodeReject, codec: .audioRoutingRequest,
-        messageHex: "18",
-        error: "truncatedMessage"
-    ))
-    vectors.append(ControlVector(
-        name: "routing-request-cross-type",
-        description: "A status fed to the request decoder rejects with "
-            + "what it found — they never cross-decode.",
-        kind: .decodeReject, codec: .audioRoutingRequest,
-        messageHex: "1901",
-        error: "unexpectedType"
-    ))
-    vectors.append(ControlVector(
-        name: "routing-mode-zero",
-        description: "Mode 0x00 rejects — the loud zero-fill bug.",
-        kind: .decodeReject, codec: .audioRoutingStatus,
-        messageHex: "1900",
-        error: "unknownMode"
-    ))
-    vectors.append(ControlVector(
-        name: "routing-mode-unknown",
-        description: "Mode 0x03 rejects — a foreign mode between "
-            + "capability-negotiated peers is a protocol break.",
-        kind: .decodeReject, codec: .audioRoutingRequest,
-        messageHex: "1803",
-        error: "unknownMode"
-    ))
-    vectors.append(ControlVector(
-        name: "routing-trailing-byte",
-        description: "3 bytes reject — the message is exactly its layout.",
-        kind: .decodeReject, codec: .audioRoutingStatus,
-        messageHex: "190200",
-        error: "trailingBytes"
-    ))
+    let routings: [(String, String, ControlVector.ControlCodec, ControlVector.RoutingMode)] = [
+        ("routing-request-audible", "type ‖ mode: [0x18, 0x01].",
+         .audioRoutingRequest, .hostAudible),
+        ("routing-request-muted", "type ‖ mode: [0x18, 0x02].",
+         .audioRoutingRequest, .hostMuted),
+        ("routing-status-audible", "type ‖ mode: [0x19, 0x01].",
+         .audioRoutingStatus, .hostAudible),
+        ("routing-status-muted", "type ‖ mode: [0x19, 0x02].",
+         .audioRoutingStatus, .hostMuted),
+        ("routing-request-streamoff",
+         "type ‖ mode: [0x18, 0x04] — streamOff (key-14 mute-at-source; "
+            + "0x03 stays the pinned tombstone).",
+         .audioRoutingRequest, .streamOff),
+        ("routing-status-streamoff",
+         "type ‖ mode: [0x19, 0x04] — streamOff applied.",
+         .audioRoutingStatus, .streamOff),
+    ]
+    for (name, description, codec, mode) in routings {
+        let wireMode = controlVectorMode(mode)
+        vectors.append(ControlVector(
+            name: name, description: description,
+            kind: .roundtrip, codec: codec,
+            messageHex: Hex.string(codec == .audioRoutingRequest
+                ? AudioRoutingRequest(mode: wireMode).encode()
+                : AudioRoutingStatus(mode: wireMode).encode()),
+            mode: mode
+        ))
+    }
+    reject("routing-request-truncated", .audioRoutingRequest,
+           "The bare type byte rejects.", "18", "truncatedMessage")
+    reject("routing-request-cross-type", .audioRoutingRequest,
+           "A status fed to the request decoder rejects with what it found "
+            + "— they never cross-decode.",
+           "1901", "unexpectedType")
+    reject("routing-mode-zero", .audioRoutingStatus,
+           "Mode 0x00 rejects — the loud zero-fill bug.", "1900",
+           "unknownMode")
+    reject("routing-mode-unknown", .audioRoutingRequest,
+           "Mode 0x03 rejects — a foreign mode between capability-negotiated "
+            + "peers is a protocol break.",
+           "1803", "unknownMode")
+    reject("routing-trailing-byte", .audioRoutingStatus,
+           "3 bytes reject — the message is exactly its layout.", "190200",
+           "trailingBytes")
 
     // MARK: Capability key 9 (the forward-compat spine as data)
 
-    vectors.append(ControlVector(
-        name: "capability-key9-declared",
-        description: "wireDefault's frozen encoding plus exactly the "
-            + "appended `09 F5` entry (map head 0xA8 → 0xA9): the "
-            + "hostAudioRouting accessor must read true and the set must "
-            + "re-encode byte-exactly — the \"no frozen bytes moved\" "
-            + "claim as data.",
-        kind: .roundtrip, codec: .capabilitySet,
-        messageHex: Hex.string(
-            try Capabilities.wireDefault.declaringHostAudioRouting()
-                .encodeCbor()
-        ),
-        hostAudioRouting: true
-    ))
-    vectors.append(ControlVector(
-        name: "capability-key9-absent",
-        description: "wireDefault's frozen encoding unchanged: absence "
-            + "reads false — \"not supported\", never an error.",
-        kind: .roundtrip, codec: .capabilitySet,
-        messageHex: Hex.string(try Capabilities.wireDefault.encodeCbor()),
-        hostAudioRouting: false
-    ))
+    for (name, description, set) in [
+        ("capability-key9-declared",
+         "wireDefault's frozen encoding plus exactly the appended `09 F5` "
+            + "entry (map head 0xA8 → 0xA9): the hostAudioRouting accessor "
+            + "must read true and the set must re-encode byte-exactly — the "
+            + "\"no frozen bytes moved\" claim as data.",
+         Capabilities.wireDefault.declaringHostAudioRouting()),
+        ("capability-key9-absent",
+         "wireDefault's frozen encoding unchanged: absence reads false — "
+            + "\"not supported\", never an error.",
+         Capabilities.wireDefault),
+    ] {
+        vectors.append(ControlVector(
+            name: name, description: description,
+            kind: .roundtrip, codec: .capabilitySet,
+            messageHex: Hex.string(try set.encodeCbor()),
+            hostAudioRouting: set.hostAudioRouting
+        ))
+    }
 
-    return ControlVectorFile(
-        format: ControlVectorFile.expectedFormat,
-        formatVersion: 1,
-        wireVersion: 1,
-        vectors: vectors
-    )
+    return ControlVectorFile(vectors: vectors)
 }

@@ -2,58 +2,16 @@ import LyteCore
 import XCTest
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // Verifies the committed Vectors/clipboard-v1.json byte-exact — the
-// CL-15 clipboard-text codecs (ClipboardSet 0x1A, ClipboardAnnounce
+// clipboard-text codecs (ClipboardSet 0x1A, ClipboardAnnounce
 // 0x1B) and the key-10 capability spine, on both platforms.
 
 final class ClipboardVectorFileTests: XCTestCase {
 
     private func loadFile() throws -> ClipboardVectorFile {
         try ClipboardVectorFile.loadCommitted()
-    }
-
-    /// The file's coverage discipline: both message codecs carry
-    /// roundtrips including a multi-byte UTF-8 case, the exact ceiling
-    /// is pinned as legal, every error case name appears at least
-    /// once, and the key-10 spine is pinned both declared and absent.
-    func testCoverageDiscipline() throws {
-        let file = try loadFile()
-        for codec: ClipboardVector.ClipboardCodec
-            in [.clipboardSet, .clipboardAnnounce] {
-            let roundtrips = file.vectors.filter {
-                $0.codec == codec && $0.kind == .roundtrip
-            }
-            XCTAssertFalse(roundtrips.isEmpty, "\(codec) needs roundtrips")
-            XCTAssertTrue(
-                roundtrips.contains { vector in
-                    guard let bytes = vector.textUtf8Hex.flatMap(Hex.bytes)
-                    else { return false }
-                    return bytes.contains { $0 >= 0x80 }
-                },
-                "\(codec) needs a multi-byte UTF-8 roundtrip"
-            )
-        }
-        XCTAssertTrue(
-            file.vectors.contains { vector in
-                vector.kind == .roundtrip
-                    && vector.textUtf8Hex.flatMap(Hex.bytes)?.count
-                        == ClipboardWire.maxTextByteCount
-            },
-            "the exact ceiling must be pinned as legal"
-        )
-        let errors = Set(file.vectors.compactMap(\.error))
-        XCTAssertEqual(
-            errors,
-            ["truncatedMessage", "unexpectedType", "emptyText",
-             "textOverBudget", "invalidUtf8"],
-            "every ClipboardMessageError case pinned at least once"
-        )
-        let spinePins = Set(file.vectors.lazy
-            .filter { $0.codec == .capabilitySet }
-            .compactMap(\.clipboardText))
-        XCTAssertEqual(spinePins, [true, false],
-                       "the key-10 spine pinned declared AND absent")
     }
 
     func testAllClipboardVectors() throws {
@@ -96,12 +54,10 @@ final class ClipboardVectorFileTests: XCTestCase {
             XCTAssertEqual(try encode(text), message, vector.name)
             XCTAssertEqual(try decode(message), text, vector.name)
         case .decodeReject:
-            XCTAssertThrowsError(try decode(message), vector.name) {
-                guard let error = $0 as? ClipboardMessageError else {
-                    return XCTFail("\(vector.name): foreign error \($0)")
-                }
-                XCTAssertEqual(vectorErrorName(error),
-                               vector.error, vector.name)
+            assertVectorReject(
+                ClipboardMessageError.self, vector.error, vector.name
+            ) {
+                try decode(message)
             }
         }
     }

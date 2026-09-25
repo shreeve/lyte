@@ -19,21 +19,6 @@
 // Unknown postures, a zero interval, trailing bytes, and truncation all
 // reject. Never traps.
 
-// MARK: - The capability spine helpers
-
-extension Capabilities {
-    /// True when this set carries `videoQuietPosture: true` (key 16) — see
-    /// `declaresFlag(_:)`.
-    public var videoQuietPosture: Bool {
-        declaresFlag(CapabilityKey.videoQuietPosture)
-    }
-
-    /// A copy of this set declaring `videoQuietPosture`.
-    public func declaringVideoQuietPosture() -> Capabilities {
-        declaringFlag(CapabilityKey.videoQuietPosture)
-    }
-}
-
 // MARK: - The CTRL codec
 
 /// The host's video posture announcement (type 0x26).

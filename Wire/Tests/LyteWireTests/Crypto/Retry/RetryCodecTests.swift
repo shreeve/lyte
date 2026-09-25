@@ -4,7 +4,8 @@ import LyteWireTestKit
 
 // The retry message codecs (CTRL 0x13/0x14), anchored by hand-built
 // byte layouts — the anchor retry-v1.json's messageVectors are checked
-// against, so vectorgen never grades its own homework.
+// against, so vectorgen never grades its own homework — plus the encode
+// guards. Decode rejects live in the vectors.
 
 final class RetryCodecTests: XCTestCase {
 
@@ -47,15 +48,11 @@ final class RetryCodecTests: XCTestCase {
         XCTAssertEqual(resubmission.message1, Self.message1)
     }
 
-    func testCookieLengthIsGenericOnTheWire() throws {
+    func testResubmissionCarriesAnyCookieLength() throws {
         // The cookie is opaque to the client: the codec carries any
         // 1…255 bytes even though RetryCookie's v1 interior is 24.
         for length in [1, 255] {
             let cookie = [UInt8](repeating: 0x5A, count: length)
-            let challenge = try RetryChallenge(cookie: cookie).encode()
-            XCTAssertEqual(
-                try RetryChallenge.decode(challenge).cookie, cookie
-            )
             let resubmission = try RetryHandshake1(
                 cookie: cookie, message1: Self.message1
             ).encode()
@@ -68,95 +65,19 @@ final class RetryCodecTests: XCTestCase {
     // MARK: Encode guards
 
     func testEncodeRejectsMisSizedFields() {
-        XCTAssertThrowsError(
+        assertThrows(RetryMessageError.invalidCookieLength(0)) {
             try RetryChallenge(cookie: []).encode()
-        ) {
-            XCTAssertEqual(
-                $0 as? RetryMessageError, .invalidCookieLength(0)
-            )
         }
-        XCTAssertThrowsError(
+        assertThrows(RetryMessageError.invalidCookieLength(256)) {
             try RetryChallenge(
                 cookie: [UInt8](repeating: 0, count: 256)
             ).encode()
-        ) {
-            XCTAssertEqual(
-                $0 as? RetryMessageError, .invalidCookieLength(256)
-            )
         }
-        XCTAssertThrowsError(
+        assertThrows(RetryMessageError.message1TooShort(95)) {
             try RetryHandshake1(
                 cookie: Self.cookie,
                 message1: Array(Self.message1.prefix(95))
             ).encode()
-        ) {
-            XCTAssertEqual(
-                $0 as? RetryMessageError, .message1TooShort(95)
-            )
-        }
-    }
-
-    // MARK: Decode rejects — hostile bytes throw, never trap
-
-    func testDecodeRejectsHostileBytes() {
-        // Truncation: bare type byte, then a cookieLen the payload
-        // cannot honor.
-        XCTAssertThrowsError(try RetryChallenge.decode([0x13])) {
-            XCTAssertEqual($0 as? RetryMessageError, .truncatedMessage)
-        }
-        XCTAssertThrowsError(
-            try RetryChallenge.decode([0x13, 0x18] + Self.cookie.prefix(23))
-        ) {
-            XCTAssertEqual($0 as? RetryMessageError, .truncatedMessage)
-        }
-        XCTAssertThrowsError(
-            try RetryHandshake1.decode([0x14, 0x18] + Self.cookie.prefix(10))
-        ) {
-            XCTAssertEqual($0 as? RetryMessageError, .truncatedMessage)
-        }
-        // Zero cookieLen — the loud zero-fill bug.
-        XCTAssertThrowsError(
-            try RetryChallenge.decode([0x13, 0x00])
-        ) {
-            XCTAssertEqual($0 as? RetryMessageError, .zeroCookieLength)
-        }
-        XCTAssertThrowsError(
-            try RetryHandshake1.decode([0x14, 0x00] + Self.message1)
-        ) {
-            XCTAssertEqual($0 as? RetryMessageError, .zeroCookieLength)
-        }
-        // Trailing bytes after a challenge — exactly its layout.
-        XCTAssertThrowsError(
-            try RetryChallenge.decode([0x13, 0x18] + Self.cookie + [0x00])
-        ) {
-            XCTAssertEqual($0 as? RetryMessageError, .trailingBytes)
-        }
-        // Foreign type bytes.
-        XCTAssertThrowsError(
-            try RetryChallenge.decode([0x14, 0x18] + Self.cookie)
-        ) {
-            XCTAssertEqual(
-                $0 as? RetryMessageError, .unexpectedType(0x14)
-            )
-        }
-        XCTAssertThrowsError(
-            try RetryHandshake1.decode(
-                [0x13, 0x18] + Self.cookie + Self.message1
-            )
-        ) {
-            XCTAssertEqual(
-                $0 as? RetryMessageError, .unexpectedType(0x13)
-            )
-        }
-        // A resubmission whose msg1 could never handshake.
-        XCTAssertThrowsError(
-            try RetryHandshake1.decode(
-                [0x14, 0x18] + Self.cookie + Self.message1.prefix(95)
-            )
-        ) {
-            XCTAssertEqual(
-                $0 as? RetryMessageError, .message1TooShort(95)
-            )
         }
     }
 }

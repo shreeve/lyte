@@ -2,27 +2,16 @@ import LyteCore
 import XCTest
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // Verifies the committed Vectors/retry-v1.json byte-exact — the
 // stateless retry-cookie transcript MAC and the CTRL 0x13/0x14 codecs
-// both ends (and HS-9's flood escalation) code against, on both
-// platforms.
+// both ends code against, on both platforms.
 
 final class RetryVectorFileTests: XCTestCase {
 
     private func loadFile() throws -> RetryVectorFile {
         try RetryVectorFile.loadCommitted()
-    }
-
-    func testProvenanceIsHonest() throws {
-        let file = try loadFile()
-        // Provenance honesty: v1 has no external oracle for our
-        // transcript, and the file must say so.
-        for vector in file.cookieVectors {
-            XCTAssertEqual(
-                vector.provenance, "pinned-self-consistent", vector.name
-            )
-        }
     }
 
     func testAllCookieVectors() throws {
@@ -122,28 +111,16 @@ final class RetryVectorFileTests: XCTestCase {
                     try decoded.encode(), message, vector.name
                 )
             case (.decodeReject, .challenge):
-                XCTAssertThrowsError(
-                    try RetryChallenge.decode(message), vector.name
-                ) { error in
-                    guard let error = error as? RetryMessageError else {
-                        return XCTFail("\(vector.name): foreign error")
-                    }
-                    XCTAssertEqual(
-                        vectorErrorName(error), vector.error,
-                        vector.name
-                    )
+                assertVectorReject(
+                    RetryMessageError.self, vector.error, vector.name
+                ) {
+                    try RetryChallenge.decode(message)
                 }
             case (.decodeReject, .handshake1):
-                XCTAssertThrowsError(
-                    try RetryHandshake1.decode(message), vector.name
-                ) { error in
-                    guard let error = error as? RetryMessageError else {
-                        return XCTFail("\(vector.name): foreign error")
-                    }
-                    XCTAssertEqual(
-                        vectorErrorName(error), vector.error,
-                        vector.name
-                    )
+                assertVectorReject(
+                    RetryMessageError.self, vector.error, vector.name
+                ) {
+                    try RetryHandshake1.decode(message)
                 }
             }
         }

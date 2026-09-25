@@ -19,9 +19,6 @@ import LyteWireTestKit
 
 public func makeNoiseVectorFile() throws -> NoiseVectorFile {
     NoiseVectorFile(
-        format: NoiseVectorFile.expectedFormat,
-        formatVersion: 1,
-        wireVersion: 1,
         handshakeVectors: [snowVector, cacophonyVector],
         transportVectors: [try makeTransportVector()]
     )

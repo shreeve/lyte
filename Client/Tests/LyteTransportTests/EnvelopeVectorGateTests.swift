@@ -4,6 +4,7 @@ import XCTest
 import LyteTransport
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // The client's receive path against the frozen Wire/Vectors/envelope-v1.json:
 // every decode vector runs through LyteTransport's own ingest path

@@ -21,7 +21,7 @@
 //   1      1    flags      bit0: lastEcho fields populated; bits 1–7
 //                          reserved, MUST be 0 on send, ignored on receive
 //   2      4    beaconSeq  u32 beacon counter, from 0 at session start
-//   6      8    hostSend   t1: host PipeWire monotonic µs at send
+//   6      8    hostSend   t1: host monotonic µs (CLOCK_MONOTONIC) at send
 //   14     4    lastEchoBeaconSeq    beaconSeq of the echo this reports
 //   18     8    lastEchoClientSend   its t3 (client µs, echoed verbatim)
 //   26     8    lastEchoHostReceive  its t4 (host µs, measured at arrival)
@@ -65,7 +65,7 @@ public struct ClockBeacon: Hashable, Sendable, SliceDecodable {
     }
 
     public var beaconSeq: UInt32
-    /// t1: host PipeWire monotonic µs at send.
+    /// t1: host monotonic µs (CLOCK_MONOTONIC) at send.
     public var hostSend: HostTimestamp
     /// Nil until the host has received its first echo.
     public var lastEcho: LastEcho?
@@ -102,16 +102,10 @@ public struct ClockBeacon: Hashable, Sendable, SliceDecodable {
     /// type, truncation, trailing bytes, and non-zero lastEcho fields under
     /// a clear flag; never traps on hostile bytes.
     public static func decode(_ payload: ArraySlice<UInt8>) throws -> ClockBeacon {
-        guard payload.count >= encodedByteCount else {
-            throw BeaconError.truncatedMessage
-        }
-        guard payload.count == encodedByteCount else {
-            throw BeaconError.trailingBytes
-        }
-        let base = payload.startIndex
-        guard payload[base] == CtrlMessageType.clockBeacon else {
-            throw BeaconError.unexpectedType(payload[base])
-        }
+        let base = try checkFixedFrame(
+            payload, type: CtrlMessageType.clockBeacon,
+            byteCount: encodedByteCount, BeaconError.self
+        )
         let flags = payload[base + 1]
         let beaconSeq: UInt32 = wireReadLE(payload, at: base + 2)
         let hostSend: UInt64 = wireReadLE(payload, at: base + 6)
@@ -180,16 +174,10 @@ public struct BeaconEcho: Hashable, Sendable, SliceDecodable {
     /// Decodes a whole CTRL payload (type byte first). Throws on the wrong
     /// type, truncation, and trailing bytes; never traps.
     public static func decode(_ payload: ArraySlice<UInt8>) throws -> BeaconEcho {
-        guard payload.count >= encodedByteCount else {
-            throw BeaconError.truncatedMessage
-        }
-        guard payload.count == encodedByteCount else {
-            throw BeaconError.trailingBytes
-        }
-        let base = payload.startIndex
-        guard payload[base] == CtrlMessageType.beaconEcho else {
-            throw BeaconError.unexpectedType(payload[base])
-        }
+        let base = try checkFixedFrame(
+            payload, type: CtrlMessageType.beaconEcho,
+            byteCount: encodedByteCount, BeaconError.self
+        )
         return BeaconEcho(
             beaconSeq: wireReadLE(payload, at: base + 1),
             hostSend: HostTimestamp(microseconds: wireReadLE(payload, at: base + 5)),
@@ -222,7 +210,7 @@ public struct BeaconEcho: Hashable, Sendable, SliceDecodable {
 }
 
 /// Everything the beacon codecs can refuse; hostile bytes throw, never trap.
-public enum BeaconError: Error, Equatable, Sendable {
+public enum BeaconError: FixedFrameError, Equatable, Sendable {
     /// Fewer bytes than the fixed message size.
     case truncatedMessage
     /// More bytes than the fixed message size: beacon messages are exactly

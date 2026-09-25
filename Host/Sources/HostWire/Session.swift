@@ -222,10 +222,6 @@ public enum SessionEvent: Equatable, Sendable {
     /// common video codec / chroma mode) — the typed teardown follows
     /// in the same event batch.
     case capabilitiesFailed(String)
-    /// The client answered our outstanding renegotiation proposal
-    /// (0x12). On accept the operative datagram ceiling already moved;
-    /// apply at the next IDR boundary.
-    case capabilityUpdateAcknowledged(accepted: Bool)
     /// A ModeTransition (0x09) left on the reliable stream (ACTIVE⇄IDLE).
     case modeTransitionSent(SessionWireMode)
     /// A typed SessionTeardown (0x0A) left on the reliable stream.
@@ -2063,18 +2059,8 @@ public final class Session {
                 message, now: now, hostMicroseconds: hostMicroseconds
             )
         case CtrlMessageType.capabilityUpdateAck:
-            guard let ack = try? CapabilityUpdateAck.decode(message),
-                  let event = try? negotiator.receive(ack) else {
-                return drop(.malformedCtrl)
-            }
-            switch event {
-            case .updateAccepted:
-                return [.capabilityUpdateAcknowledged(accepted: true)]
-            case .updateRejected:
-                return [.capabilityUpdateAcknowledged(accepted: false)]
-            case .agreed, .answerUpdate:
-                return drop(.malformedCtrl) // unreachable from receive(ack)
-            }
+            // The host never proposes, so every ack is unsolicited.
+            return drop(.malformedCtrl)
         case CtrlMessageType.inputEvent:
             guard let event = try? InputEvent.decode(message) else {
                 return drop(.malformedCtrl)

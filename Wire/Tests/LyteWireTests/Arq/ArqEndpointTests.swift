@@ -81,10 +81,7 @@ final class ArqEndpointTests: XCTestCase {
         let (datagrams, _) = endpoint.poll(now: at(1_000))
         XCTAssertEqual(datagrams.count, 2)
         XCTAssertTrue(datagrams.allSatisfy { $0.count <= ceiling })
-        XCTAssertEqual(
-            try datagrams.flatMap { try ArqFrame.decodeAll($0) }.count,
-            2
-        )
+        XCTAssertEqual(try datagrams.arqFrames().count, 2)
     }
 
     func testCarrierCeilingClampsToSafeWireBounds() {
@@ -127,17 +124,10 @@ final class ArqEndpointTests: XCTestCase {
             try a.send(message: message, now: at(0))
         }
         let (datagrams, _) = a.poll(now: at(1_000))
-        var events: [ArqEvent] = []
-        for datagram in datagrams.reversed() {
-            events += b.ingest(payload: datagram, now: at(2_000))
+        let events = datagrams.reversed().flatMap {
+            b.ingest(payload: $0, now: at(2_000))
         }
-        XCTAssertEqual(
-            events.compactMap { event -> [UInt8]? in
-                if case .message(_, let bytes) = event { return bytes }
-                return nil
-            },
-            messages
-        )
+        XCTAssertEqual(events.messages, messages)
     }
 
     // MARK: One-shot groups
@@ -154,16 +144,9 @@ final class ArqEndpointTests: XCTestCase {
         // Small frames coalesce; deliver only what belongs to group 2 by
         // filtering at the frame level: drop group 1's segments.
         var group2Events: [ArqEvent] = []
-        for datagram in datagrams {
-            let frames = try ArqFrame.decodeAll(datagram)
-            for frame in frames {
-                guard case .segment(let segment) = frame,
-                      segment.group == ArqGroupId(rawValue: 2)
-                else { continue }
-                group2Events += b.ingest(
-                    payload: segment.encode(), now: at(2_000)
-                )
-            }
+        for case .segment(let segment) in try datagrams.arqFrames()
+        where segment.group == ArqGroupId(rawValue: 2) {
+            group2Events += b.ingest(payload: segment.encode(), now: at(2_000))
         }
         // Group 2 delivers even though group 1 is entirely lost —
         // the no-cross-group-HOL property at its smallest.
@@ -184,21 +167,16 @@ final class ArqEndpointTests: XCTestCase {
     func testOneShotGroupIdDiscipline() throws {
         var a = Endpoint(channel: .videoIdle)
         try a.sendOneShot(message: [1], group: ArqGroupId(rawValue: 5), now: at(0))
-        XCTAssertThrowsError(
-            try a.sendOneShot(message: [1], group: ArqGroupId(rawValue: 5), now: at(0))
+        assertThrows(
+            ArqSendError.oneShotGroupNotAscending(ArqGroupId(rawValue: 5))
         ) {
-            XCTAssertEqual(
-                $0 as? ArqSendError,
-                .oneShotGroupNotAscending(ArqGroupId(rawValue: 5))
-            )
+            try a.sendOneShot(message: [1], group: ArqGroupId(rawValue: 5), now: at(0))
         }
         XCTAssertThrowsError(
             try a.sendOneShot(message: [1], group: ArqGroupId(rawValue: 4), now: at(0))
         )
-        XCTAssertThrowsError(
+        assertThrows(ArqSendError.orderedStreamGroupId) {
             try a.sendOneShot(message: [1], group: .orderedStream, now: at(0))
-        ) {
-            XCTAssertEqual($0 as? ArqSendError, .orderedStreamGroupId)
         }
         XCTAssertNoThrow(
             try a.sendOneShot(message: [1], group: ArqGroupId(rawValue: 6), now: at(0))
@@ -232,17 +210,14 @@ final class ArqEndpointTests: XCTestCase {
 
     func testSendRefusesEmptyAndOversized() {
         var a = Endpoint(channel: .ctrl)
-        XCTAssertThrowsError(try a.send(message: [], now: at(0))) {
-            XCTAssertEqual($0 as? ArqSendError, .emptyMessage)
+        assertThrows(ArqSendError.emptyMessage) {
+            try a.send(message: [], now: at(0))
         }
         let oversized = [UInt8](
             repeating: 0, count: a.config.maxMessageByteCount + 1
         )
-        XCTAssertThrowsError(try a.send(message: oversized, now: at(0))) {
-            XCTAssertEqual(
-                $0 as? ArqSendError,
-                .messageOverBudget(oversized.count)
-            )
+        assertThrows(ArqSendError.messageOverBudget(oversized.count)) {
+            try a.send(message: oversized, now: at(0))
         }
     }
 
@@ -329,7 +304,7 @@ final class ArqEndpointTests: XCTestCase {
             try a.send(message: [0x25, UInt8(i)], now: at(0))
         }
         let (datagrams, _) = a.poll(now: at(0))
-        let segments = try datagrams.flatMap { try ArqFrame.decodeAll($0) }
+        let segments = try datagrams.arqFrames()
         XCTAssertEqual(segments.count, 5)
 
         // Deliver 1…4, losing 0. Nothing delivers (in-order hold), and
@@ -352,13 +327,7 @@ final class ArqEndpointTests: XCTestCase {
 
         // Its arrival releases all five messages in order.
         let events = b.ingest(payload: retx[0], now: at(3_000))
-        XCTAssertEqual(
-            events.compactMap { event -> [UInt8]? in
-                if case .message(_, let bytes) = event { return bytes }
-                return nil
-            },
-            (0..<5).map { [0x25, UInt8($0)] }
-        )
+        XCTAssertEqual(events.messages, (0..<5).map { [0x25, UInt8($0)] })
     }
 
     func testReplayedAckNeverRetriggersFastRetransmit() throws {
@@ -368,7 +337,7 @@ final class ArqEndpointTests: XCTestCase {
             try a.send(message: [0x26, UInt8(i)], now: at(0))
         }
         let (datagrams, _) = a.poll(now: at(0))
-        let segments = try datagrams.flatMap { try ArqFrame.decodeAll($0) }
+        let segments = try datagrams.arqFrames()
         for frame in segments.dropFirst() {
             _ = b.ingest(payload: frame.encode(), now: at(1_000))
         }
@@ -397,7 +366,7 @@ final class ArqEndpointTests: XCTestCase {
             try a.send(message: [0x27, UInt8(i)], now: at(0))
         }
         let (burst1, _) = a.poll(now: at(0))
-        let sent1 = try burst1.flatMap { try ArqFrame.decodeAll($0) }
+        let sent1 = try burst1.arqFrames()
         XCTAssertEqual(sent1.count, 4)
 
         for frame in sent1 {
@@ -405,7 +374,7 @@ final class ArqEndpointTests: XCTestCase {
         }
         _ = shuttle(from: &b, to: &a, now: at(2_000))
         let (burst2, _) = a.poll(now: at(2_000))
-        let sent2 = try burst2.flatMap { try ArqFrame.decodeAll($0) }
+        let sent2 = try burst2.arqFrames()
         XCTAssertEqual(sent2.count, 4)
     }
 
@@ -418,18 +387,11 @@ final class ArqEndpointTests: XCTestCase {
             try a.send(message: message, now: at(0)) // seqs FFFE FFFF 0 1
         }
         let (datagrams, _) = a.poll(now: at(0))
-        let segments = try datagrams.flatMap { try ArqFrame.decodeAll($0) }
-        var events: [ArqEvent] = []
-        for frame in segments.reversed() {
-            events += b.ingest(payload: frame.encode(), now: at(1_000))
+        let segments = try datagrams.arqFrames()
+        let events = segments.reversed().flatMap {
+            b.ingest(payload: $0.encode(), now: at(1_000))
         }
-        XCTAssertEqual(
-            events.compactMap { event -> [UInt8]? in
-                if case .message(_, let bytes) = event { return bytes }
-                return nil
-            },
-            messages
-        )
+        XCTAssertEqual(events.messages, messages)
         // And the wrap-spanning ACK retires everything.
         _ = shuttle(from: &b, to: &a, now: at(2_000))
         XCTAssertTrue(a.isQuiescent)
@@ -496,6 +458,57 @@ final class ArqEndpointTests: XCTestCase {
         )
         XCTAssertEqual(a.poll(now: at(2)).datagrams.count, 1)
         XCTAssertFalse(a.isQuiescent)
+    }
+
+    /// An ACK naming a group this endpoint never sent on is forgery-shaped;
+    /// a late duplicate ACK for a one-shot it already completed is routine
+    /// silence.
+    func testAckForUnknownGroupVersusCompletedOneShot() throws {
+        var a = Endpoint(channel: .videoIdle)
+        var b = Endpoint(channel: .videoIdle)
+        let group = try a.sendOneShot(message: [0x31, 1], now: at(0))
+        _ = shuttle(from: &a, to: &b, now: at(1_000))
+        let (acks, _) = b.poll(now: at(1_000))
+        XCTAssertEqual(
+            a.ingest(payload: acks[0], now: at(2_000)),
+            [.oneShotAcknowledged(group)]
+        )
+        XCTAssertEqual(a.ingest(payload: acks[0], now: at(3_000)), [])
+
+        for unknown in [ArqGroupId(rawValue: group.rawValue + 1), .orderedStream] {
+            let forged = try ArqAck(blocks: [
+                ArqAck.Block(
+                    channel: .videoIdle, group: unknown,
+                    cumulative: ArqSegmentSeq(rawValue: 0)
+                )
+            ])
+            XCTAssertEqual(
+                a.ingest(payload: forged.encode(), now: at(4_000)),
+                [.ignored(.ackForUnknownGroup(unknown))]
+            )
+        }
+    }
+
+    /// A segment past the receive window is refused, neither buffered nor
+    /// acknowledged; the window's last seq is still taken.
+    func testSegmentBeyondReceiveWindowIgnored() throws {
+        var b = Endpoint(channel: .ctrl)
+        let window = UInt16(b.config.receiveWindowSegments)
+        func segment(_ seq: UInt16) throws -> [UInt8] {
+            try ArqSegment(
+                group: .orderedStream, seq: ArqSegmentSeq(rawValue: seq),
+                endOfMessage: true, body: [1]
+            ).encode()
+        }
+        XCTAssertEqual(
+            b.ingest(payload: try segment(window), now: at(0)),
+            [.ignored(.beyondReceiveWindow(
+                .orderedStream, ArqSegmentSeq(rawValue: window)
+            ))]
+        )
+        XCTAssertEqual(b.poll(now: at(0)).datagrams, [])
+        XCTAssertEqual(b.ingest(payload: try segment(window - 1), now: at(0)), [])
+        XCTAssertEqual(b.poll(now: at(0)).datagrams.count, 1)
     }
 
     func testForeignChannelAckIgnored() throws {

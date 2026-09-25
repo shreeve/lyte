@@ -119,10 +119,5 @@ public func makePostureVectorFile() throws -> PostureVectorFile {
         ))
     }
 
-    return PostureVectorFile(
-        format: PostureVectorFile.expectedFormat,
-        formatVersion: 1,
-        wireVersion: 1,
-        vectors: vectors
-    )
+    return PostureVectorFile(vectors: vectors)
 }

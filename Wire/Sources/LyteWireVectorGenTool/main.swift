@@ -5,7 +5,6 @@
 // the freeze policy.
 //
 // `video` always reads the committed corpus, Wire/Vectors/video-corpus-v1/.
-// `video-roundtrip` is the decode-evidence harness (VideoRoundTrip.swift).
 
 import Foundation
 import LyteWireTestKit
@@ -18,29 +17,14 @@ func die(_ message: String, status: Int32 = 1) -> Never {
 }
 
 let kinds = vectorFileBuilders.map(\.kind)
-let usage = """
-usage: lyte-wire-vectorgen [--force] <\(kinds.joined(separator: "|"))> <output-path>
-       lyte-wire-vectorgen video-roundtrip <input.hevc> <output.hevc>
-"""
+let usage = "usage: lyte-wire-vectorgen [--force] <\(kinds.joined(separator: "|"))> <output-path>"
 
 var arguments = Array(CommandLine.arguments.dropFirst())
 let force = arguments.first == "--force"
 if force { arguments.removeFirst() }
-guard arguments.count == 3 || arguments.count == 2 else { die(usage, status: 64) }
-
-if arguments[0] == "video-roundtrip" {
-    guard arguments.count == 3, !force else { die(usage, status: 64) }
-    do {
-        try runVideoRoundTrip(inputPath: arguments[1], outputPath: arguments[2])
-    } catch {
-        die("video-roundtrip: \(error)")
-    }
-    exit(0)
-}
-
 guard arguments.count == 2 else { die(usage, status: 64) }
 guard let builder = vectorFileBuilders.first(where: { $0.kind == arguments[0] }) else {
-    die("unknown vector kind '\(arguments[0])' — expected \(kinds.joined(separator: ", ")), or video-roundtrip", status: 64)
+    die("unknown vector kind '\(arguments[0])' — expected \(kinds.joined(separator: ", "))", status: 64)
 }
 let output = arguments[1]
 if !force, FileManager.default.fileExists(atPath: output) {

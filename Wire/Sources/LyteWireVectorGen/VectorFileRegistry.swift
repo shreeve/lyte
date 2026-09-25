@@ -1,7 +1,9 @@
 // The one registry of vector-file builders. The authoring tool and the
 // regeneration test both read it, and the test requires it to name every
 // committed `Vectors/*.json` file exactly once, so a file without a
-// builder (or a builder without a file) fails the suite.
+// builder (or a builder without a file) fails the suite. Builders list
+// enum values literally, never `allCases`: a frozen file must not grow
+// when an enum does.
 
 import LyteWireTestKit
 
@@ -26,14 +28,15 @@ public struct VectorFileBuilder: Sendable {
     }
 }
 
+/// The committed corpus the video builders packetize.
+private let videoCorpusDirectory = WireVectors.path("video-corpus-v1")
+
 /// Every vector file's builder, in authoring order.
 public let vectorFileBuilders: [VectorFileBuilder] = [
     VectorFileBuilder("envelope", makeEnvelopeVectorFile),
     VectorFileBuilder("fec", makeFecVectorFile),
     VectorFileBuilder("video") {
-        try makeVideoVectorFile(
-            corpusDirectory: WireVectors.path("video-corpus-v1")
-        )
+        try makeVideoVectorFile(corpusDirectory: videoCorpusDirectory)
     },
     VectorFileBuilder("beacon", makeBeaconVectorFile),
     VectorFileBuilder("noise", makeNoiseVectorFile),
@@ -52,8 +55,7 @@ public let vectorFileBuilders: [VectorFileBuilder] = [
     VectorFileBuilder("postures", makePostureVectorFile),
     VectorFileBuilder("input-coordinates", makeInputCoordinateVectorFile),
     VectorFileBuilder("video-decisions") {
-        try makeVideoDecisionVectorFile(
-            corpusDirectory: WireVectors.path("video-corpus-v1")
-        )
+        try makeVideoDecisionVectorFile(corpusDirectory: videoCorpusDirectory)
     },
+    VectorFileBuilder("audio-stream-off", makeAudioStreamOffVectorFile),
 ]

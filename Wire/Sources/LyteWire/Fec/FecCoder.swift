@@ -35,12 +35,6 @@ public enum FecEncoder {
         }
         return shards
     }
-
-    public static func encode(
-        group: [UInt8], geometry: FecGeometry
-    ) throws -> [[UInt8]] {
-        try encode(group: group[...], geometry: geometry)
-    }
 }
 
 public enum FecDecoder {

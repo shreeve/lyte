@@ -1,15 +1,15 @@
 // The FEC vector-file model and loader for Wire/Vectors/fec-v1.json. The
 // RS parity bytes are wire contract, byte-identical across platforms.
 
-import Foundation
 import LyteWire
+import LyteWireTestKit
 
 /// One vector file: `Wire/Vectors/fec-v1.json`.
 public struct FecVectorFile: FrozenVectorFile {
     /// Always "lyte-wire-fec-vectors".
-    public var format: String
-    public var formatVersion: Int
-    public var wireVersion: Int
+    public var format = Self.expectedFormat
+    public var formatVersion = 1
+    public var wireVersion = 1
     /// fec-field codec vectors (the envelope's 8-byte field).
     public var fieldVectors: [FecFieldVector]
     /// The parity ladder pinned as data, boundary rows included;
@@ -24,23 +24,6 @@ public struct FecVectorFile: FrozenVectorFile {
     public var vectorNameGroups: [[String]] {
         [fieldVectors.map(\.name), recoveryMatrices.map(\.name)]
     }
-
-    public init(
-        format: String,
-        formatVersion: Int,
-        wireVersion: Int,
-        fieldVectors: [FecFieldVector],
-        geometryRows: [FecGeometryRow],
-        recoveryMatrices: [FecRecoveryMatrix]
-    ) {
-        self.format = format
-        self.formatVersion = formatVersion
-        self.wireVersion = wireVersion
-        self.fieldVectors = fieldVectors
-        self.geometryRows = geometryRows
-        self.recoveryMatrices = recoveryMatrices
-    }
-
 }
 
 /// One fec-field vector. `rawHex` is the field's u64 value in hex (the
@@ -63,22 +46,6 @@ public struct FecFieldVector: Codable, Sendable {
         case roundtrip
         case decodeLenient
         case decodeReject
-    }
-
-    public init(
-        name: String,
-        description: String,
-        kind: Kind,
-        field: FecFieldFields?,
-        rawHex: String,
-        error: String?
-    ) {
-        self.name = name
-        self.description = description
-        self.kind = kind
-        self.field = field
-        self.rawHex = rawHex
-        self.error = error
     }
 }
 

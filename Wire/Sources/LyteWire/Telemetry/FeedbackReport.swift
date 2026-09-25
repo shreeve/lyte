@@ -157,12 +157,7 @@ public struct FeedbackReport: Hashable, Sendable, SliceDecodable {
 
         /// Bitmap bytes, sized by the highest set index (canonical form).
         var bitmap: [UInt8] {
-            let byteCount = Int(missingShards.last!) / 8 + 1
-            var bytes = [UInt8](repeating: 0, count: byteCount)
-            for index in missingShards {
-                bytes[Int(index) / 8] |= 1 << (index % 8)
-            }
-            return bytes
+            wireCanonicalBitmap(missingShards.map(Int.init))
         }
     }
 
@@ -338,13 +333,10 @@ public struct FeedbackReport: Hashable, Sendable, SliceDecodable {
             guard bitmap.last! != 0 else {
                 throw FeedbackError.nonCanonicalNackBitmap
             }
-            var missing = [UInt8]()
-            for (byteOffset, byte) in bitmap.enumerated() {
-                for bit in 0..<8 where byte & (1 << bit) != 0 {
-                    missing.append(UInt8(byteOffset * 8 + bit))
-                }
-            }
-            nacks.append(try NackEntry(frame: frame, missingShards: missing))
+            nacks.append(try NackEntry(
+                frame: frame,
+                missingShards: wireBitmapOffsets(bitmap).map(UInt8.init)
+            ))
         }
 
         var extensions = [WireExtension]()

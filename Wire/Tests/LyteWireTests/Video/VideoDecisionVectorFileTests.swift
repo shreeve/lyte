@@ -1,6 +1,7 @@
 import XCTest
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // Verifies the committed Vectors/video-decisions-v1.json: replaying every
 // video-v1.json scenario must reproduce the assembler's frozen decision
@@ -11,16 +12,6 @@ final class VideoDecisionVectorFileTests: XCTestCase {
 
     private func loadFile() throws -> VideoDecisionVectorFile {
         try VideoDecisionVectorFile.loadCommitted()
-    }
-
-    func testEveryScenarioIsPinnedHonestly() throws {
-        let file = try loadFile()
-        XCTAssertEqual(file.scenarioFile, VideoVectorFile.fileName)
-        XCTAssertEqual(file.provenance, "pinned-self-consistent")
-        XCTAssertEqual(
-            file.scenarios.map(\.name),
-            try VideoVectorFile.loadCommitted().scenarios.map(\.name)
-        )
     }
 
     func testReplayReproducesEveryDecision() throws {

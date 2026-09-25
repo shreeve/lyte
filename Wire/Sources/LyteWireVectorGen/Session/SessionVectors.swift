@@ -2,14 +2,14 @@
 // `Wire/Vectors/session-v1.json` — the conn-id TLV, the path pair, and the
 // IDR request.
 
-import Foundation
 import LyteWire
+import LyteWireTestKit
 
 /// One vector file: `Wire/Vectors/session-v1.json`.
 public struct SessionVectorFile: FrozenVectorFile {
-    public var format: String
-    public var formatVersion: Int
-    public var wireVersion: Int
+    public var format = Self.expectedFormat
+    public var formatVersion = 1
+    public var wireVersion = 1
     public var vectors: [SessionVector]
 
     public static let expectedFormat = "lyte-wire-session-vectors"
@@ -18,19 +18,6 @@ public struct SessionVectorFile: FrozenVectorFile {
     public var vectorNameGroups: [[String]] {
         [vectors.map(\.name)]
     }
-
-    public init(
-        format: String,
-        formatVersion: Int,
-        wireVersion: Int,
-        vectors: [SessionVector]
-    ) {
-        self.format = format
-        self.formatVersion = formatVersion
-        self.wireVersion = wireVersion
-        self.vectors = vectors
-    }
-
 }
 
 /// One session-codec vector. `codec` names the codec under test; kinds
@@ -64,31 +51,5 @@ public struct SessionVector: Codable, Sendable {
         case pathResponse
         case idrRequest
         case connectionIdTlv
-    }
-
-    public init(
-        name: String,
-        description: String,
-        kind: Kind,
-        codec: SessionCodec,
-        messageHex: String,
-        tokenHex: String? = nil,
-        requestSeq: UInt32? = nil,
-        frame: UInt32? = nil,
-        coalescedCount: UInt8? = nil,
-        connectionIdHex: String? = nil,
-        error: String? = nil
-    ) {
-        self.name = name
-        self.description = description
-        self.kind = kind
-        self.codec = codec
-        self.messageHex = messageHex
-        self.tokenHex = tokenHex
-        self.requestSeq = requestSeq
-        self.frame = frame
-        self.coalescedCount = coalescedCount
-        self.connectionIdHex = connectionIdHex
-        self.error = error
     }
 }

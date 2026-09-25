@@ -119,19 +119,6 @@ public enum VideoEvictionReason: Hashable, Sendable {
     case capacity
 }
 
-/// Per-frame status for callers that poll instead of consuming events.
-public enum VideoFrameStatus: Hashable, Sendable {
-    /// Shards still wanted; recovery still possible.
-    case recoverablePending(receivedShards: Int, dataShards: Int, parityShards: Int)
-    /// Decoded, waiting its turn in frame order.
-    case complete
-    /// Presumed losses exceed best-case parity — the IDR-request
-    /// trigger. Still tracked; late arrivals may yet complete it.
-    case fecImpossible
-    /// Recovered bytes failed the frame-shape check; will be skipped.
-    case corrupt
-}
-
 public enum VideoAssemblerEvent: Hashable, Sendable {
     /// A frame, byte-identical to the packetizer's input, in frame order.
     case decoded(DecodeUnit)
@@ -218,19 +205,8 @@ public struct VideoAssembler: Sendable {
         self.config = config
     }
 
-    /// The poll-side view of one frame; nil when untracked (never seen,
-    /// already emitted, or already skipped/evicted).
-    public func status(of frame: FrameNumber) -> VideoFrameStatus? {
-        guard let group = groups[frame.rawValue] else { return nil }
-        if group.corrupt { return .corrupt }
-        if group.isDecoded { return .complete }
-        if group.fecImpossibleReported { return .fecImpossible }
-        return .recoverablePending(
-            receivedShards: group.receivedCount,
-            dataShards: group.geometry.dataShards,
-            parityShards: group.geometry.parityShards
-        )
-    }
+    /// Groups held: seen, not yet emitted, skipped or evicted.
+    public var trackedGroupCount: Int { groups.count }
 
     /// Ingests one received datagram's (envelope, payload) and returns
     /// every event it caused, decoded frames included, in order. `now` is
