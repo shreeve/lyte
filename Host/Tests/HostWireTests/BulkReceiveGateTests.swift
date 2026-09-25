@@ -9,8 +9,7 @@ import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (F-3, the host receiving end of file transfer). Pinned
-// behaviors:
+// The host's receiving end of file transfer:
 //
 //   • the shell drives Wire's BulkReceiveEngine against a REAL
 //     directory: chunks pwrite+fsync into a dotted `.part` staging
@@ -22,15 +21,14 @@ import LyteWireTestKit
 //   • the offer's name is UNTRUSTED: path separators, dotfiles,
 //     control bytes, overlong names all neutralize (the table), and
 //     collisions number around the incumbent;
-//   • one transfer at a time (v1): a second concurrent offer draws
+//   • one transfer at a time: a second concurrent offer draws
 //     abort(busy) from the dispatcher without disturbing the live
 //     transfer;
 //   • storage failure paths: a refusing disk aborts loud with the
 //     honest reason, PERSISTS the fsync'd possession, and the next
 //     session resumes it; an offer past free space refuses up front;
-//   • capability key 11 rides the W7 spine (`0B F5`, mutual-only) and
-//     the rule-3 gate holds in vivo: a toggle-off host declares no
-//     key, drops chan-8 traffic loud, and refuses sendBulk;
+//   • the capability gate holds in vivo: a toggle-off host declares no
+//     key 11, drops chan-8 traffic loud, and refuses sendBulk;
 //   • the full drop works END TO END through a real Session pair:
 //     offer → accept → chunks → ack → verify → complete over chan 8's
 //     own sealed ARQ stream, and the file lands byte-exact.
@@ -93,7 +91,7 @@ final class BulkReceiveGateTests: XCTestCase {
         try FileManager.default.contentsOfDirectory(atPath: dir).sorted()
     }
 
-    // MARK: The scripted sender (the F-4 client end, in miniature)
+    // MARK: The scripted sender (the client end, in miniature)
 
     /// A BulkSendEngine wrapper answering every `.readChunk` from the
     /// payload synchronously — the TestKit harness's sender half,
@@ -173,7 +171,7 @@ final class BulkReceiveGateTests: XCTestCase {
         return events
     }
 
-    // MARK: Leg 1 — the happy path lands byte-exact in a real directory
+    // MARK: - The happy path lands byte-exact in a real directory
 
     func testGateHappyPathLandsByteExactNoStrays() throws {
         let root = try makeTempDir()
@@ -210,7 +208,7 @@ final class BulkReceiveGateTests: XCTestCase {
                        "a completed shell re-arms for the next offer")
     }
 
-    // MARK: Leg 2 — teardown, resume, completes byte-exact
+    // MARK: - Teardown, resume, completes byte-exact
 
     func testGateTeardownResumeCompletesByteExact() throws {
         let dir = try makeTempDir()
@@ -253,7 +251,7 @@ final class BulkReceiveGateTests: XCTestCase {
                        "the resume file and staging file both clean up")
     }
 
-    // MARK: Leg 3 — the filename sanitization table
+    // MARK: - The filename sanitization table
 
     func testGateFilenameSanitizationTable() {
         let table: [(offered: String, expected: String)] = [
@@ -339,7 +337,7 @@ final class BulkReceiveGateTests: XCTestCase {
         )
     }
 
-    // MARK: Leg 4 — the resume codec: pinned bytes, hostile decode
+    // MARK: - The resume codec: pinned bytes, hostile decode
 
     func testGateResumeCodecPinsBytesAndRefusesHostileInput() throws {
         // The minimal state, hand-built byte for byte (LBR1 layout).
@@ -405,9 +403,7 @@ final class BulkReceiveGateTests: XCTestCase {
         }
     }
 
-    // MARK: Leg 5 — the shared streaming digest survives shell chunking
-
-    // MARK: Leg 6 — abort(busy): one transfer at a time, undisturbed
+    // MARK: - abort(busy): one transfer at a time, undisturbed
 
     func testGateSecondConcurrentOfferDrawsBusyFirstCompletes() throws {
         let dir = try makeTempDir()
@@ -455,7 +451,7 @@ final class BulkReceiveGateTests: XCTestCase {
                        "second.bin must never exist in any form")
     }
 
-    // MARK: Leg 7 — storage failures: honest aborts, possession kept
+    // MARK: - Storage failures: honest aborts, possession kept
 
     /// A real BulkFileStore with sabotage dials: a write budget, a
     /// lying free-space gauge, a racer that plants a file on the chosen
@@ -626,10 +622,7 @@ final class BulkReceiveGateTests: XCTestCase {
         XCTAssertEqual(try allEntries(dir), ["resilient.dat"])
     }
 
-    // MARK: Leg 8 — key 11 on the spine, mutual-only intersection
-
-    // MARK: The negotiated loopback client (the ClipboardGateTests
-    // shape, grown a bulk channel)
+    // MARK: The negotiated loopback client, with a bulk channel
 
     private struct BulkClient: PeerBackedClient {
         var peer: SealedCtrlPeer<ClientClock>
@@ -682,7 +675,7 @@ final class BulkReceiveGateTests: XCTestCase {
         return (host, client)
     }
 
-    // MARK: Leg 9 — the rule-3 gate: toggle off, chan 8 refused loud
+    // MARK: - The capability gate: toggle off, chan 8 refused loud
 
     func testGateToggleOffDropsChanEightLoudAndRefusesSendBulk() throws {
         // The toggle-off host: key 11 never declared (exactly what
@@ -731,7 +724,7 @@ final class BulkReceiveGateTests: XCTestCase {
         }
     }
 
-    // MARK: Leg 10 — the full drop, in vivo: Session + shell + disk
+    // MARK: - The full drop, in vivo: Session + shell + disk
 
     func testGateFullFileDropThroughRealSessionPair() throws {
         let dir = try makeTempDir()

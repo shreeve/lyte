@@ -8,23 +8,22 @@ import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (build plan HS-7 row): a full loopback-in-process session.
-// The host Session (Noise IK responder, statics pinned out-of-band) and a
-// test client built from LyteWire's own NoiseSession (initiator) complete
-// the handshake; corpus frames ride VideoChannel → Session.seal → the
-// paced sink; the client unseals via its NoiseTransport and reassembles
-// byte-exact frames through VideoAssembler. Beacons seal/emit at 1 Hz
-// plus session start, a synthesized BeaconEcho updates the host's offset
-// estimate (and the next beacon mirrors it per W4a), every datagram
-// carries the conn-id TLV within the 1152 B budget, a client 0x10 IDR
-// request raises the encoder-loop keyframe poll, and a conn-id-bearing
-// datagram from a new tuple draws a sealed path challenge on that exact
-// tuple. The test-only passthrough delivers the same frames through the
-// same wiring with the passthrough seal — geometry identical by design.
+// A full loopback-in-process session. The host Session (Noise IK
+// responder, statics pinned out-of-band) and a test client built from
+// LyteWire's own NoiseSession (initiator) complete the handshake; corpus
+// frames ride VideoChannel → Session.seal → the paced sink; the client
+// unseals via its NoiseTransport and reassembles byte-exact frames
+// through VideoAssembler. Beacons seal/emit at 1 Hz plus session start,
+// a synthesized BeaconEcho updates the host's offset estimate (and the
+// next beacon mirrors it), every datagram carries the conn-id TLV within
+// the 1152 B budget, a client 0x10 IDR request raises the encoder-loop
+// keyframe poll, and a conn-id-bearing datagram from a new tuple draws a
+// sealed path challenge on that exact tuple. The test-only passthrough
+// seal produces identical geometry.
 
 final class SessionGateTests: XCTestCase {
 
-    // MARK: Corpus plumbing (the HS-5 gate's, verbatim)
+    // MARK: Corpus plumbing
 
     private static var corpusDirectory: String {
         var components = #filePath.split(
@@ -70,7 +69,7 @@ final class SessionGateTests: XCTestCase {
 
     /// The far end of the loopback: LyteWire's NoiseSession as the
     /// initiator (the client role), with the host's static pinned
-    /// out-of-band exactly as J-G1's debug client will hold it.
+    /// out-of-band.
     private struct LoopbackClient {
         var peer: SealedCtrlPeer<ClientClock>
 
@@ -138,7 +137,7 @@ final class SessionGateTests: XCTestCase {
         return now
     }
 
-    // MARK: The gate — Noise path
+    // MARK: The Noise loopback
 
     func testGateNoiseLoopbackSessionEndToEnd() throws {
         let frames = try corpusFrames()
@@ -198,7 +197,7 @@ final class SessionGateTests: XCTestCase {
         XCTAssertEqual(beacon0.hostSend.microseconds, t1Beacon0)
         XCTAssertNil(beacon0.lastEcho, "no echo has happened yet")
 
-        // The W7 declaration is the first ARQ-carried word: an ARQ
+        // The capability declaration is the first ARQ-carried word: an ARQ
         // segment whose message body is `0x0F ‖ deterministic CBOR` —
         // the host's wireDefault capability set.
         let (_, declarationPlain) = try client.absorb(sent[2].bytes)
@@ -325,7 +324,7 @@ final class SessionGateTests: XCTestCase {
         // The long feedback-free drain froze the lifecycle machine (the
         // 350 ms detector — no chan-3 traffic exists in this harness);
         // this first returning CTRL evidence is also the RECOVERY exit,
-        // and the HS-16 estimator paces its IDR at the half-stale rate.
+        // and the estimator paces its IDR at the half-stale rate.
         XCTAssertEqual(idrEvents, [
             .lifecycleChanged(.recovery),
             .rateChanged(
@@ -385,7 +384,7 @@ final class SessionGateTests: XCTestCase {
         XCTAssertTrue(session.takeFreshKeyframeRequest(),
             "damage after the delivered anchor still earns a new IDR")
 
-        // ── 1 Hz beacon with the W4a mirror of the last echo ───────────
+        // ── 1 Hz beacon mirroring the last echo ──────────────────────────
         let t1Beacon1: UInt64 = 2_000_000
         let preBeaconCount = sent.count
         let beaconEvents = session.advance(
@@ -425,7 +424,7 @@ final class SessionGateTests: XCTestCase {
         )
 
         // ── Migration hook: a conn-id datagram from a new tuple draws a
-        // sealed challenge on that exact tuple (HS-12 wiring, in vivo) ──
+        // sealed challenge on that exact tuple ──
         let roamEcho = BeaconEcho(
             beaconSeq: 1,
             hostSend: HostTimestamp(microseconds: t1Beacon1),
@@ -474,9 +473,7 @@ final class SessionGateTests: XCTestCase {
         )
     }
 
-    // MARK: Budget boundary and mode-independent geometry
-
-    // MARK: The capture gate's backlog surface (the fps-ceiling fix)
+    // MARK: The capture gate's backlog surface
 
     /// `queuedVideoBytes` is what the capture loop's backpressure gate
     /// reads now that the pacer drain runs off the capture thread: a
@@ -729,8 +726,8 @@ final class SessionGateTests: XCTestCase {
             )
         }
 
-        // Without the TLV the budget stays the frozen 1112 (HS-5's
-        // geometry, unchanged): 24 + 1112 + 16 = 1152 exactly.
+        // Without the TLV the budget stays the frozen 1112:
+        // 24 + 1112 + 16 = 1152 exactly.
         XCTAssertEqual(
             VideoChannelConfig(rateBitsPerSecond: Self.rateBPS)
                 .shardBudgetByteCount,
@@ -739,8 +736,8 @@ final class SessionGateTests: XCTestCase {
     }
 
     func testGeometryIsIdenticalWithAndWithoutSeal() throws {
-        // §4.2's rule, held by construction: the test passthrough
-        // and the no-seal HS-5 shape emit byte-identical datagrams, so
+        // Held by construction: the test passthrough and the no-seal
+        // channel emit byte-identical datagrams, so
         // FEC geometry and gate results never depend on the crypto mode.
         var rng = SplitMix64(seed: 0x3)
         let connId = ConnectionId.random(using: &rng)

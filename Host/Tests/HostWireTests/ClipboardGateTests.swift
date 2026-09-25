@@ -6,23 +6,18 @@ import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (CL-15, the host half — the Wayland/portal clipboard leaf
-// itself is Linux-only follow-up work; the ScriptedClipboardLeaf here
-// drives the exact seam it will). Pinned behaviors:
+// The host half of text clipboard sync; the ScriptedClipboardLeaf drives
+// the same seam the Linux clipboard leaf does (the 0x1A/0x1B codecs and
+// key 10 are Wire's ClipboardCodecTests):
 //
-//   • the 0x1A/0x1B codecs answer the SAME hand-built arrays
-//     ClipboardCodecTests anchors in Wire/ (the cross-pin) and never
-//     trap on hostile bytes;
-//   • capability key 10 rides the W7 forward-compat spine exactly as
-//     key 9 did — the declaration is the local set's bytes plus one
-//     canonical `0A F5` entry, surviving intersection only on mutual
-//     byte-equal declaration;
+//   • the leaf reads text flavors in preference order and refuses
+//     non-text;
 //   • in vivo: a negotiated client's 0x1A surfaces exactly once as
 //     .clipboardSetReceived, the scripted leaf's echo of that very
 //     apply is SUPPRESSED (the boomerang proof — nothing returns on
 //     the wire), a genuine host copy reaches the client as a
 //     byte-exact 0x1B, and an identical re-copy dedupes;
-//   • the rule-3 gate holds: an unnegotiated 0x1A drops loud
+//   • the capability gate holds: an unnegotiated 0x1A drops loud
 //     (.clipboardNotNegotiated), announces are never volunteered to a
 //     client that never declared the key, and a 0x1B arriving AT the
 //     host drops as role confusion;
@@ -38,13 +33,9 @@ final class ClipboardGateTests: XCTestCase {
         remoteAddress: "10.0.0.23", remotePort: 61_000
     )
 
-    // MARK: Leg 1 — the 0x1A/0x1B bytes, pinned (the Wire cross-pin)
-
-    // MARK: Leg 2 — key 10 on the spine, mutual-only intersection
-
-    // MARK: Leg 2b — the leaf's text-flavor policy (HS-19), pinned
-    // everywhere: the Linux leaf itself compiles only on Linux, but
-    // the flavor it reads and the flavors it offers are pure policy.
+    // MARK: - The leaf's text-flavor policy
+    // The Linux leaf itself compiles only on Linux, but the flavor it
+    // reads and the flavors it offers are pure policy.
 
     func testTextMimeReadPreferenceOrder() {
         // Explicit UTF-8 wins over everything else offered.
@@ -88,7 +79,7 @@ final class ClipboardGateTests: XCTestCase {
                         "UTF8_STRING"])
     }
 
-    // MARK: The scripted leaf (the seam the portal leaf will drive)
+    // MARK: The scripted leaf
 
     /// An in-memory OS clipboard: `apply` stores the text and fires
     /// the change signal — exactly the echo shape the portal's
@@ -108,7 +99,7 @@ final class ClipboardGateTests: XCTestCase {
             onLocalChange?(text)
         }
 
-        /// P-1's image half of the seam — this text-only gate never
+        /// The image half of the seam — this text-only gate never
         /// exercises it beyond conformance; the image gate has its
         /// own file.
         func apply(imageData: [UInt8]) {
@@ -149,7 +140,7 @@ final class ClipboardGateTests: XCTestCase {
         return (host, client)
     }
 
-    // MARK: Leg 3 — the negotiated round trip + the boomerang proof
+    // MARK: - The negotiated round trip and the boomerang proof
 
     func testGateSetAppliesEchoSuppressesAndGenuineCopyAnnounces() throws {
         let (host, clientValue) = try establish(
@@ -243,7 +234,7 @@ final class ClipboardGateTests: XCTestCase {
         XCTAssertEqual(session.counters.clipboardAnnouncesSent, 1)
     }
 
-    // MARK: Leg 4 — the rule-3 gate against the unnegotiated
+    // MARK: - The capability gate against the unnegotiated
 
     func testGateUnnegotiatedSetRefusedLoudAndAnnounceStaysSilent() throws {
         // A v1 client: declares, but never key 10.
@@ -302,7 +293,7 @@ final class ClipboardGateTests: XCTestCase {
         XCTAssertEqual(confused, 1)
     }
 
-    // MARK: Leg 5 — the ceiling is weather, not an error
+    // MARK: - The ceiling is weather, not an error
 
     func testGateOverCeilingHostCopySuppressedNeverSent() throws {
         let (host, clientValue) = try establish(

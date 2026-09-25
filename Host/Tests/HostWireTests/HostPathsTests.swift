@@ -218,9 +218,9 @@ final class HostPathsTests: XCTestCase {
             ["noise_static.key"], "no temporary file is left behind")
     }
 
-    /// A crash between create and rename used to leave `.<name>.<pid>.tmp`
-    /// behind, and a later process reusing the PID then failed every write
-    /// of that file with EEXIST. Temporary names are unique now.
+    /// A crash between create and rename leaves a temporary behind; a
+    /// later process (even one reusing the PID) still writes the file,
+    /// because temporary names are unique.
     func testALeftoverTemporaryNeverBlocksAWrite() throws {
         let target = home + "/dir/paired_clients"
         try write([9], to: home + "/dir/.paired_clients.\(getpid()).tmp", mode: 0o600)

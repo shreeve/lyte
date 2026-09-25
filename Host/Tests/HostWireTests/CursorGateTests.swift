@@ -6,23 +6,16 @@ import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (E3, the host half — the EyeCursorWatcher itself is
-// Linux-only and drives the exact seam scripted here). Pinned
-// behaviors:
+// The host half of cursor-shape sync; the Linux EyeCursorWatcher drives
+// the seam scripted here (the 0x24 codec and key 13 are Wire's
+// CursorCodecTests):
 //
-//   • the 0x24 codec answers the SAME hand-built arrays Wire's
-//     CursorCodecTests anchors (the cross-pin) and never traps on
-//     hostile bytes;
-//   • capability key 13 rides the W7 forward-compat spine exactly as
-//     keys 9–12 did — the declaration is the local set's bytes plus
-//     one canonical `0D F5` entry, surviving intersection only on
-//     mutual byte-equal declaration;
 //   • in vivo: a negotiated client receives each eye-reported shape
 //     exactly once as a byte-exact 0x24 (the hidden state included),
 //     an identical re-report dedupes, and a contract-breaking shape
 //     (over-ceiling crop) is suppressed and counted, never sent and
 //     never an error;
-//   • the rule-3 gate holds: shapes are never volunteered to a client
+//   • the capability gate holds: shapes are never volunteered to a client
 //     that never declared key 13, and a 0x24 arriving AT the host
 //     drops as role confusion.
 
@@ -41,11 +34,7 @@ final class CursorGateTests: XCTestCase {
         pixels: [0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]
     )
 
-    // MARK: Leg 1 — the 0x24 bytes, pinned (the Wire cross-pin)
-
-    // MARK: Leg 2 — key 13 on the spine, mutual-only intersection
-
-    // MARK: The scripted client (the ClipboardGateTests harness)
+    // MARK: The scripted client
 
     /// Handshake + capability exchange, direct pipe. The host always
     /// declares key 13 (the direct eye in this gate); the client's
@@ -68,7 +57,7 @@ final class CursorGateTests: XCTestCase {
         return (host, client)
     }
 
-    // MARK: Leg 3 — the negotiated shape stream, dedupe, the ceiling
+    // MARK: - The negotiated shape stream, dedupe, the ceiling
 
     func testGateNegotiatedShapeTravelsOnceDedupesAndHides() throws {
         let (host, clientValue) = try establish(
@@ -139,7 +128,7 @@ final class CursorGateTests: XCTestCase {
         XCTAssertEqual(session.counters.cursorShapesSuppressed, 2)
     }
 
-    // MARK: Leg 4 — the rule-3 gate against the unnegotiated
+    // MARK: - The capability gate against the unnegotiated
 
     func testGateUnnegotiatedStaysSilentAndArrivingShapeDropsLoud() throws {
         // A v1 client: declares, but never key 13.

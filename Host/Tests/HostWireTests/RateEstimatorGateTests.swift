@@ -6,31 +6,25 @@ import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (build plan HS-16 row: "congestion estimator — delivery rate,
-// queuing delay, RECOVERY verdicts, IdrPacing numbers"). Pinned
-// behaviors, each a leg below:
+// The congestion estimator's contract:
 //
 //   • delivery rate is MEASURED from dispersion trains matched against
-//     the send ledger (resiliency §2.2's packet-train reading), and
-//     short trains are weighted down, not trusted;
-//   • the rate falls fast on loss (multiplicative, rate-limited to one
-//     downshift per 500 ms, never below the 2 Mbps operational floor) and on
+//     the send ledger, and short trains are weighted down, not trusted;
+//   • the rate falls fast on loss (multiplicative, at most one downshift
+//     per 500 ms, never below the 2 Mbps operational floor) and on
 //     queuing-delay inflation (anchored to the measured delivery rate),
 //     and rises only on evidence (fresh delivery samples), ≤10%/s,
 //     never above the negotiated ceiling;
-//   • the estimator owns W4b's RECOVERY window verdicts now (the HS-11
-//     25 ms stub is retired): loss inside a window honestly holds
-//     RECOVERY where the stub would have graduated on mere presence;
+//   • the estimator owns the RECOVERY window verdicts: loss inside a
+//     window holds RECOVERY;
 //   • the machine's IdrPacing policies get numbers: WAKE at
 //     min(btlRate, lastGoodRate), RECOVERY at max(floor, ½ × stale
 //     estimate), applied to the shared pacer the moment the machine
 //     demands them;
-//   • frameByteCeiling tracks the LIVE estimate and current FEC regime
-//     (the HS-6 wire budget converted back to encoded source bytes);
-//   • THE CADENCE GATE, HS-15's R-G8 shape under a rate crash: a loss
-//     burst crashes the send rate mid-stream and audio inter-send
-//     stays 5 ms ± 2 ms at p99 throughout — rate changes re-cap
-//     video, never audio's cadence (structural, proven here).
+//   • frameByteCeiling tracks the live estimate and current FEC regime;
+//   • a loss burst that crashes the send rate mid-stream leaves audio
+//     inter-send at 5 ms ± 2 ms at p99: rate changes re-cap video,
+//     never audio's cadence.
 
 final class RateEstimatorGateTests: XCTestCase {
 
@@ -141,7 +135,7 @@ final class RateEstimatorGateTests: XCTestCase {
         )]
     }
 
-    // MARK: Leg 1 — delivery rate is measured, not hoped
+    // MARK: - Delivery rate is measured, not hoped
 
     func testDeliveryRateMeasuredFromDispersionTrains() {
         let estimator = makeEstimator()
@@ -169,10 +163,10 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(estimator.stats.dispersionSamplesMatched, 40)
     }
 
-    // MARK: - The stretched-train guard (microstall forensics)
+    // MARK: - The stretched-train guard
 
     func testHoleDominatedTrainIsRecusedFromTheHonestVote() {
-        // The evening-air poisoning shape, in virtual time: 12 shards
+        // A radio hole inside a train, in virtual time: 12 shards
         // sent back-to-back at the 20 Mbps pace; the first five arrive
         // tight (200 µs apart), a 150 ms radio hole opens, the rest
         // arrive tight behind it. The span reads ~0.7 Mbps — "honest"
@@ -486,7 +480,7 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(estimator.stats.deliverySamples, 0)
     }
 
-    // MARK: Leg 2 — falls fast on loss, floors, re-rises on evidence
+    // MARK: - Falls fast on loss, floors, re-rises on evidence
 
     func testLossBurstFallsMultiplicativelyAndReconverges() {
         let estimator = makeEstimator()
@@ -572,7 +566,7 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(estimator.stats.lossDownshifts, 2)
     }
 
-    /// The floor-deadlock the live gate caught: at 500 kbps the pacer
+    /// The floor deadlock: at 500 kbps the pacer
     /// spaces full-size datagrams ~18 ms apart, so a FIXED train-split
     /// gap never sees a train, no delivery sample ever forms, and the
     /// rate can never earn its way back up. The gap must scale with
@@ -644,7 +638,7 @@ final class RateEstimatorGateTests: XCTestCase {
                        "the floor holds — a paced IDR stays possible")
     }
 
-    // MARK: Leg 3 — queuing-delay inflation is overuse
+    // MARK: - Queuing-delay inflation is overuse
 
     func testDelayInflationDownshiftsAnchoredToMeasuredDelivery() {
         let estimator = makeEstimator()
@@ -693,9 +687,9 @@ final class RateEstimatorGateTests: XCTestCase {
         )
     }
 
-    // MARK: The baseline witness rule (v1-final analysis finding 5):
-    // the rolling delay floor is the lowest CORROBORATED report
-    // minimum — one anomalously-fast report is a witness awaiting its
+    // MARK: - The baseline witness rule
+    // The rolling delay floor is the lowest CORROBORATED report
+    // minimum: one anomalously-fast report is a witness awaiting its
     // partner, never the baseline itself.
 
     /// A steady path whose delay floor sits 25 ms above nominal; ONE
@@ -752,18 +746,16 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertFalse(beat(extraDelayMicros: 0).overuse)
         // Back at the old delay: against the re-based floor this is
         // genuine 25 ms inflation — the second consecutive report
-        // fires the overuse verdict exactly as the HS-16 law says.
+        // fires the overuse verdict.
         XCTAssertFalse(beat(extraDelayMicros: 25_000).overuse,
                        "one inflated report must not fire (2 consecutive)")
         XCTAssertTrue(beat(extraDelayMicros: 25_000).overuse,
                       "the corroborated floor must make real inflation visible")
     }
 
-    // MARK: Leg 3b — HS-21: the overuse anchor is robust to one garbage
-    // delivery sample (the HS-20 live finding: a lone garbage short-train
-    // sample anchored an overuse fall and cratered a clean 20 Mbps path to
-    // 810 kbps in a single step). The anchor is now the MEDIAN of the last
-    // few raw samples, so the freshest sample cannot decide the fall alone.
+    // MARK: - The overuse anchor is a median
+    // The anchor is the MEDIAN of the last few full-train samples, so
+    // the freshest sample cannot decide the fall alone.
 
     /// The regression pin: a GENUINE sustained overuse — delivery truly
     /// drops to ~5 Mbps for the whole run — still falls fast and anchors
@@ -817,17 +809,15 @@ final class RateEstimatorGateTests: XCTestCase {
             "the rate tracks the measured delivery down under the squeeze")
     }
 
-    // MARK: Leg 3c — HS-22: only FULL trains vote on the anchor (the
-    // live clean-path crater: audio's 4+2 groups arrive as 2–3-packet
-    // micro-trains that measure their own ~1 Mbps pacing, not the path,
-    // and TWO of them in the 3-sample window outvoted the genuine
-    // 20 Mbps sample — the HS-21 median fell exactly where it promised
-    // not to. Short trains keep feeding the ×0.5 windowed-max and
-    // evidence freshness; they just get no anchor vote.)
+    // MARK: - Only full trains vote on the anchor
+    // Audio's 4+2 groups arrive as 2–3-packet micro-trains that measure
+    // their own ~1 Mbps pacing, not the path. Short trains keep feeding
+    // the ×0.5 windowed-max and evidence freshness; they get no anchor
+    // vote.
 
     /// A clean 20 Mbps path, but the reports leading into the overuse
     /// fire carry only short audio-paced micro-trains: a MAJORITY of
-    /// the anchor window would be garbage under HS-21 alone. The fall
+    /// the anchor window would be garbage under a median alone. The fall
     /// must still anchor to the 20 Mbps the last full train measured.
     func testOveruseAnchorIgnoresMicroTrainMajority() {
         let estimator = makeEstimator()
@@ -855,7 +845,7 @@ final class RateEstimatorGateTests: XCTestCase {
 
         // Arm and fire on inflated reports whose ONLY delivery samples
         // are 4-packet micro-trains reading ~1 Mbps (the audio class
-        // measuring its own pacing). Under the HS-21 median alone the
+        // measuring its own pacing). Under a median alone the
         // window at fire time would hold [20M, 1M, 1M] — median 1 Mbps,
         // a crater to ~850 kbps. With the full-train gate the window
         // still holds the genuine 20 Mbps samples.
@@ -900,13 +890,12 @@ final class RateEstimatorGateTests: XCTestCase {
                 """)
     }
 
-    // MARK: Leg 3d — HS-22c: the self-reference gate (finding (ii)).
+    // MARK: - The self-reference gate
     // Under a squeezed pacer every multi-quantum frame drains as one
     // ≥8-packet train paced at exactly the standing rate — a FULL train
-    // that measures our own pacing, not the path. The live probe: an
-    // overuse verdict anchored 0.85 × self, the fall re-squeezed the
-    // pacer, the next train measured the new self, and a 90 Mbps wire
-    // spiraled to the 500 kbps floor. With standing backlog and an
+    // that measures our own pacing, not the path; a fall anchored on it
+    // re-squeezes the pacer and spirals to the floor. With standing
+    // backlog and an
     // anchor at ≈ (or above) the standing rate, an overuse verdict may
     // HOLD the rate (rises stay blocked), never anchor a fall — unless
     // corroborated by something a self-limited pacer cannot produce:
@@ -992,7 +981,7 @@ final class RateEstimatorGateTests: XCTestCase {
         }
     }
 
-    /// THE HS-22c HEADLINE: standing backlog, full trains measuring
+    /// Standing backlog, full trains measuring
     /// exactly the standing 20 Mbps, constant (non-growing) inflation,
     /// zero loss — the probe's floor-crash shape. A whole second of
     /// overuse verdicts must not move the rate ONCE: every fall is a
@@ -1125,7 +1114,7 @@ final class RateEstimatorGateTests: XCTestCase {
     /// The fast-fall regression pin WITH backlog: a genuine deep dip
     /// stretches every train, the anchor reads honestly low (far below
     /// the self band), and the fall anchors to measured delivery
-    /// exactly as HS-21 pinned — standing backlog alone must never
+    /// — standing backlog alone must never
     /// blind the estimator to a path that measurably slowed.
     func testGenuineDipWithBacklogStillFallsToMeasuredDelivery() {
         let estimator = makeEstimator()
@@ -1156,12 +1145,12 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(estimator.stats.selfReferenceHolds, 0)
     }
 
-    // MARK: Leg 3e — HS-23: the stall gate (the Wi-Fi study's receiver
-    // dwells). The client's radio goes dark 70–100 ms, the AP queues
-    // everything, then drains it in one compressed burst — nothing
-    // lost, nothing slow, the path merely time-shifted. Host-side that
-    // cycle is textbook overuse (two inflated reports, an anchor, a
-    // fall twice a second forever — the 13–17 Mbps pin). The gate
+    // MARK: - The stall gate
+    // A Wi-Fi receiver dwell: the client's radio goes dark 70–100 ms,
+    // the AP queues everything, then drains it in one compressed burst —
+    // nothing lost, nothing slow, the path merely time-shifted. Host-side
+    // that cycle is textbook overuse (two inflated reports, an anchor, a
+    // fall twice a second forever). The gate
     // refuses the fall when the evidence spells a CLOSED HOLE: streak
     // peak ≤ 150 ms, a fresh full train at ≥ 1.25 × the standing rate
     // (only accumulated-then-released packets can read above our own
@@ -1169,7 +1158,7 @@ final class RateEstimatorGateTests: XCTestCase {
     // NOT defeat it — rising dwells mimic growth — but a hole past the
     // ceiling, a drain below the pace, or any loss falls as ever.
 
-    /// THE HS-23 HEADLINE: repeated sub-150 ms gap-burst cycles — the
+    /// Repeated sub-150 ms gap-burst cycles — the
     /// scan-stall cadence — must not move the rate ONCE. Each cycle:
     /// two dwell reports (80 ms of held delay, drain measured at
     /// 200 Mbps — far above the 20 Mbps pace), then clean beats.
@@ -1222,7 +1211,7 @@ final class RateEstimatorGateTests: XCTestCase {
             extraDelayMicros: 70_000
         ).newRateBitsPerSecond)
         // +20 ms past the streak's opening — queueGrew reads true, and
-        // pre-HS-23 this beat fell.
+        // without the gate this beat falls.
         let verdict = driver.beat(bottleneckMbps: 200, extraDelayMicros: 90_000)
         XCTAssertTrue(verdict.overuse)
         XCTAssertNil(verdict.newRateBitsPerSecond,
@@ -1347,8 +1336,7 @@ final class RateEstimatorGateTests: XCTestCase {
 
     /// A closed hole ECHOES as a few NACKs: the client's completion
     /// presumption expires mid-dwell, moments before the drain makes
-    /// the frame whole (the first live gate judged 30 of 35 NACK
-    /// entries stale). Post-FEC evidence inside the regime ladder's
+    /// the frame whole. Post-FEC evidence inside the regime ladder's
     /// own clean column (< 0.5%) must not defeat the hold.
     func testNackEchoInsideTheHoleStillHolds() throws {
         let estimator = makeEstimator()
@@ -1387,8 +1375,7 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(estimator.stats.stallHolds, 1)
     }
 
-    /// The 1.7% feedback-direction loss the study measured: reports
-    /// are unreliable by design (cumulative ledgers differenced across
+    /// Feedback-direction loss: reports are unreliable by design (cumulative ledgers differenced across
     /// whatever arrives), so LOST reports must neither fabricate a
     /// verdict nor mask one. Half the reports of a clean run vanish —
     /// nothing fires; half the reports of a genuine squeeze vanish —
@@ -1443,17 +1430,14 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(squeezed.estimator.stats.stallHolds, 0)
     }
 
-    // MARK: Leg 3g — HS-28: the estimator-honesty reformulation. A
-    // paced sender can never measure more than it sends — every
+    // MARK: - The capacity belief
+    // A paced sender can never measure more than it sends — every
     // delivery sample is censored from above by our own rate — so the
-    // ledger now records the pace at each datagram's release, samples
-    // are classified at production (censored / honest / compressed),
-    // and the fall anchor answers to the CAPACITY BELIEF: raised by
-    // any delivery above it, demoted only by fresh honest evidence.
-    // The truth-probe's conviction (a session pinned at 0.1–1.6 Mbps
-    // while 30 Mbps flowed through the same air) dies by construction:
-    // a censored trickle can neither vote in a fall anchor nor age
-    // the belief down.
+    // ledger records the pace at each datagram's release, samples are
+    // classified at production (censored / honest / compressed), and the
+    // fall anchor answers to the CAPACITY BELIEF: raised by any delivery
+    // above it, demoted only by fresh honest evidence. A censored
+    // trickle can neither vote in a fall anchor nor age the belief down.
 
     /// Invariant 1's mechanics: censored samples (measuring ≈ our own
     /// recorded pace) RAISE the belief and never lower it — even a
@@ -1526,15 +1510,12 @@ final class RateEstimatorGateTests: XCTestCase {
         )
     }
 
-    /// THE LEG-B REPLAY GATE (the truth-probe's shape, virtual time):
-    /// a genuine loss episode falls honestly, then the fallen pacer
-    /// can only produce censored trickle — while fresh compressed
-    /// super-rate drains keep proving the path. The standing rate must
-    /// ride the limbo WITHOUT ratcheting toward the floor and recover
-    /// toward the belief when the weather clears. The live probe
-    /// measured the old law here: 9 falls in 90 s, a 0.1–1.6 Mbps
-    /// limit cycle against a wire carrying 30 Mbps at 0% loss.
-    func testLegBReplayCensoredTrickleRecoversTowardTheBelief() {
+    /// A genuine loss episode falls honestly, then the fallen pacer can
+    /// only produce censored trickle — while fresh compressed super-rate
+    /// drains keep proving the path. The standing rate must ride the
+    /// limbo WITHOUT ratcheting toward the floor and recover toward the
+    /// belief when the weather clears.
+    func testCensoredTrickleAfterAFallRecoversTowardTheBelief() {
         let estimator = makeEstimator()
         let driver = EstimatorDriver(self, estimator)
         var received: UInt32 = 0
@@ -1579,8 +1560,7 @@ final class RateEstimatorGateTests: XCTestCase {
             let verdict: RateEstimatorVerdict
             if beat % 8 == 7 {
                 // The drain: a compressed super-rate full train, clean
-                // delay (the hole closed — the streak resets, exactly
-                // the cadence the live forensics recorded).
+                // delay (the hole closed — the streak resets).
                 verdict = driver.beat(
                     bottleneckMbps: 300,
                     backlogBytes: 40_000,
@@ -1643,15 +1623,9 @@ final class RateEstimatorGateTests: XCTestCase {
         )
     }
 
-    /// Self-inflicted evidence recuses itself: NACKs against frames
-    /// whose shards are still queued in our own pacer (the client's
-    /// completion presumption expiring mid-drain — the deep-floor
-    /// starvation seam) feed neither the post-FEC fractions nor the
-    /// regime ladder. The same storm unrecused still bites.
     /// The session's first report carries no attempt evidence (its ledger
     /// only seeds the differencing), so a NACK in it — a lost opening-IDR
-    /// shard — is no denominator: it once read as 100 % post-FEC loss, an
-    /// instant ×0.85 fall and a latched lossy regime.
+    /// shard — is no denominator, not 100 % post-FEC loss.
     func testAFirstReportNackIsNotTotalPostFecLoss() throws {
         let estimator = makeEstimator()
         let samples = train(
@@ -1703,6 +1677,11 @@ final class RateEstimatorGateTests: XCTestCase {
             estimator.rateBitsPerSecond, estimator.config.floorBitsPerSecond)
     }
 
+    /// Self-inflicted evidence recuses itself: NACKs against frames
+    /// whose shards are still queued in our own pacer (the client's
+    /// completion presumption expiring mid-drain) feed neither the
+    /// post-FEC fractions nor the regime ladder. The same storm
+    /// unrecused still bites.
     func testRecusedNackShardsAreNotPathEvidence() throws {
         let estimator = makeEstimator()
         let driver = EstimatorDriver(self, estimator)
@@ -1815,11 +1794,9 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling,
             "the belief never demoted to the mid-hole trickle")
         XCTAssertEqual(estimator.stats.downshifts, 0)
-        // HS-30 amended this pin: the drains PROTECT (votes purged, no
-        // fall, rate held — the assertions above, unchanged) but no
-        // longer raise the belief to their burst rate — that was
-        // row ⁴'s pollution. The belief stays ≈ the pace the drains
-        // proved, and must never have dropped below it.
+        // The drains protect (votes purged, no fall, rate held) but do
+        // not raise the belief to their burst rate: the belief stays ≈
+        // the pace the drains proved, and never drops below it.
         XCTAssertGreaterThanOrEqual(
             estimator.capacityBeliefBitsPerSecond ?? 0, Self.ceiling - 1_000_000,
             "the hole cost the belief — the drains stopped protecting it"
@@ -1827,8 +1804,7 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertLessThanOrEqual(
             estimator.capacityBeliefBitsPerSecond ?? 0, 30_000_000,
             """
-                the drains raised the belief toward their burst rate again \
-                — HS-30's sustainable cap is dead
+                the drains raised the belief toward their burst rate
                 """
         )
     }
@@ -2159,7 +2135,7 @@ final class RateEstimatorGateTests: XCTestCase {
             estimator.stats.sparseEvidenceHolds, holdsBefore)
     }
 
-    // MARK: Leg 4 — the machine's numbers
+    // MARK: - The machine's numbers
 
     func testIdrPacingNumbers() {
         let estimator = makeEstimator()
@@ -2376,11 +2352,11 @@ final class RateEstimatorGateTests: XCTestCase {
             "lossy k=1 + m=2 consumes the same three-shard allowance")
     }
 
-    // MARK: Leg 5 — RECOVERY verdicts through the whole session
+    // MARK: - RECOVERY verdicts through the whole session
 
     /// An insecure-mode session (machine armed from init, passthrough
-    /// seal) driven with real chan-3 FeedbackReports: the estimator —
-    /// not the retired 25 ms stub — now decides graduation, and loss
+    /// seal) driven with real chan-3 FeedbackReports: the estimator's
+    /// verdicts decide graduation, and loss
     /// inside a window honestly holds RECOVERY.
     func testRecoveryGraduatesOnEstimatorVerdictsNotMerePresence() throws {
         var sent: [VideoChannelDatagram] = []
@@ -2448,7 +2424,7 @@ final class RateEstimatorGateTests: XCTestCase {
                            "loss inside the window must hold RECOVERY")
         }
 
-        // Clean windows: two graduate it (W4b's count).
+        // Clean windows: two graduate it.
         t += 30_000
         _ = feedback(tMicros: t, newReceived: 100, newMissing: 0)
         t += 30_000
@@ -2456,7 +2432,7 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(session.lifecycleState, .active)
     }
 
-    // MARK: Leg 6 — malformed feedback is counted, never fed
+    // MARK: - Malformed feedback is counted, never fed
 
     func testMalformedFeedbackIsDroppedLoudAndFeedsNothing() {
         var sent: [VideoChannelDatagram] = []
@@ -2487,9 +2463,9 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(session.estimatorStats.reportsIngested, 0)
     }
 
-    // MARK: Leg 7 — THE CADENCE GATE under a rate crash (R-G8 + HS-16)
+    // MARK: - Audio cadence under a rate crash
 
-    /// HS-15's virtual-time R-G8 shape with the estimator live: 6 s at
+    /// With the estimator live: 6 s at
     /// 20 Mbps — 5 ms audio, 60 fps damage, a worst-case IDR every
     /// 2 s, REAL feedback reports every 25 ms whose dispersion samples
     /// name actually-sent datagrams — then a 900 ms 20%-loss burst
@@ -2679,13 +2655,12 @@ final class RateEstimatorGateTests: XCTestCase {
                 """)
     }
 
-    // MARK: HS-29 — cap-aware probe damping (row ³'s shared cause)
+    // MARK: - Cap-aware probe damping
 
-    /// THE HS-29 HEADLINE: with the belief parked at ~20 Mbps and a
-    /// 50 Mbps configured cap, the climb stops at belief × headroom
-    /// instead of probing on toward a cap the belief says the air
-    /// cannot honor (row ³: that probing bought 102 lost datagrams and
-    /// the residual IDR spend). Five virtual seconds of clean evidence
+    /// With the belief parked at ~20 Mbps and a 50 Mbps configured cap,
+    /// the climb stops at belief × headroom instead of probing on
+    /// toward a cap the belief says the air cannot honor (probing there
+    /// buys loss and IDRs). Five virtual seconds of clean evidence
     /// beats: the rate must park at ~22 Mbps, damped, with zero falls.
     func testProbeCeilingDampsClimbAtBeliefHeadroom() {
         let estimator = makeEstimator {
@@ -2752,12 +2727,11 @@ final class RateEstimatorGateTests: XCTestCase {
             "the belief did not follow the walk up")
     }
 
-    // MARK: HS-30 — burst-vs-sustainable belief + probe cadence
+    // MARK: - Burst-vs-sustainable belief and probe cadence
 
     /// A compressed drain may not set the probe ceiling: a queue
     /// emptying at 300 Mbps proves the path carried our PACE through
-    /// the hole, not that the air offers 300 Mbps (row ⁴: drain-raised
-    /// beliefs of 207 Mbps–1.18 Gbps neutered HS-29's damping).
+    /// the hole, not that the air offers 300 Mbps.
     func testDrainRaisesTheBeliefOnlyToThePaceItDrainedBehind() {
         let estimator = makeEstimator {
             $0.ceilingBitsPerSecond = 50_000_000
@@ -2783,7 +2757,7 @@ final class RateEstimatorGateTests: XCTestCase {
     /// A fall inside the belief's headroom band arms the probe
     /// cadence: the recover-climb parks BELOW the band until the
     /// cadence expires, then probes again — instead of re-slamming
-    /// the wall every recovery cycle (row ⁴: 12 slams / 150 s).
+    /// the wall every recovery cycle.
     func testFailedProbeWaitsItsCadenceBeforeReenteringTheBand() {
         let estimator = makeEstimator {
             $0.ceilingBitsPerSecond = 50_000_000

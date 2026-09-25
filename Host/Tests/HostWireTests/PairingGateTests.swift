@@ -85,7 +85,7 @@ final class PairingGateTests: XCTestCase {
             try drivePairing(nowMicros: nowMicros)
         }
 
-        /// The CL-6 reaction: 0x0C → verify Tb, send 0x0D (or 0x0E on a
+        /// The client's reaction: 0x0C → verify Tb, send 0x0D (or 0x0E on a
         /// mismatch — the wrong-PIN-learned-early path); 0x0E → record.
         mutating func drivePairing(nowMicros: UInt64) throws {
             var rest: [[UInt8]] = []
@@ -213,8 +213,8 @@ final class PairingGateTests: XCTestCase {
         try client.absorb(handshake[1].bytes, nowMicros: 700)
         try client.absorb(handshake[2].bytes, nowMicros: 800)
         XCTAssertNotNil(client.transport)
-        // The W7 declaration rides ahead of everything (HS-8's deferred
-        // capabilities item); ack it so the pairing legs start from a
+        // The capability declaration rides ahead of everything; ack it
+        // so the pairing tests start from a
         // quiescent reliable stream.
         XCTAssertEqual(client.delivered.count, 1)
         XCTAssertEqual(client.delivered.first?.first,

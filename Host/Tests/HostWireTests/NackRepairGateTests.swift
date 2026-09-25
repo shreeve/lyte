@@ -6,13 +6,11 @@ import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (build plan HS-17 row: "Congestion II: NACK responder
-// (≥4 s rings), per-frame adaptive FEC — client NACKs honored, closes
-// §4.7"). The full real-client → real-Session → repaired-client round
-// trip now belongs to SystemTests; this owner suite pins the Host-only
-// judgement, retention, estimator, and scheduling laws below:
+// The host's NACK responder and adaptive FEC. The real-client →
+// real-Session → repaired-client round trip is SystemTests'; this suite
+// pins the Host-only judgement, retention, estimator and scheduling laws:
 //
-//   • STALENESS VERDICTS (resiliency §1.1 rules 3–4): a frame older
+//   • STALENESS VERDICTS: a frame older
 //     than the last IDR is refused dead (no repair, no host IDR arm —
 //     the client owns coalesced 0x10 recovery) while the IDR itself
 //     stays repairable; a NACK whose SRTT + retransmit serialization no
@@ -24,19 +22,19 @@ import LyteWireTestKit
 //     retransmissions; a closed session suppresses repairs entirely;
 //   • THE ≥4 s RING: the repair store evicts by age and by byte cap,
 //     oldest first;
-//   • POST-FEC LOSS → THE ESTIMATOR (HS-16's named seam): NACK
+//   • POST-FEC LOSS → THE ESTIMATOR: NACK
 //     evidence over the rolling window past 2% (rung 3) downshifts
 //     the rate — NOT held like the pre-FEC 2–10% band, because this
 //     is precisely the loss FEC failed to absorb — and steps the
-//     §5.2 FEC regime clean → lossy at the packetizing seam
+//     FEC regime clean → lossy at the packetizing seam
 //     (per-frame: the next frame carries the lossy column's parity);
 //     a sustained quiet stretch steps it back; NACK evidence inside a
 //     RECOVERY feedback window honestly holds RECOVERY;
-//   • THE CADENCE GATE (R-G8's shape under a repair storm): 5 s of
-//     virtual time — 5 ms audio, 60 fps damage, a worst-case IDR
-//     every 2 s, and a NACK against every fresh frame with repairs
-//     flowing throughout — audio inter-send holds 5 ms ± 2 ms at p99,
-//     structurally (audio outranks videoTail) and now proven.
+//   • AUDIO CADENCE under a repair storm: 5 s of virtual time — 5 ms
+//     audio, 60 fps damage, a worst-case IDR every 2 s, and a NACK
+//     against every fresh frame with repairs flowing throughout —
+//     audio inter-send holds 5 ms ± 2 ms at p99 (audio outranks
+//     videoTail).
 
 final class NackRepairGateTests: XCTestCase {
 
@@ -204,7 +202,7 @@ final class NackRepairGateTests: XCTestCase {
         return (byIndex, geometry)
     }
 
-    // MARK: Leg 1 — staleness verdicts
+    // MARK: - Staleness verdicts
 
     func testNackOlderThanLastIdrRefusedDeadButIdrItselfRepairable() throws {
         let box = Box()
@@ -260,7 +258,7 @@ final class NackRepairGateTests: XCTestCase {
 
     func testNackPastFreezeBudgetDelegatesRecoveryToClientEpisode() throws {
         let box = Box()
-        // Pin the budget via the HS-32 override: this leg
+        // Pin the budget via the override: this test
         // tests the refusal behavior, not the derivation (which has
         // its own legs below).
         let session = makeSession(box: box) {
@@ -424,8 +422,8 @@ final class NackRepairGateTests: XCTestCase {
         XCTAssertFalse(session.takeFreshKeyframeRequest())
     }
 
-    // MARK: Leg 2 — HS-32: the derived budget, explicit refusals,
-    // and the opening-IDR exemption
+    // MARK: - The derived budget, explicit refusals, and the opening-IDR
+    // exemption
 
     /// One empty (parseable) report — cadence evidence only.
     private func feedCadenceReport(
@@ -480,10 +478,9 @@ final class NackRepairGateTests: XCTestCase {
     }
 
     func testAskOnTheCadenceIsNowHonoredAndReAskStaysSilent() throws {
-        // The HS-32 headline: an ask arriving 50 ms after the flight —
-        // dead on arrival under the retired HS-17 33 ms constant
-        // (the ask itself rides the 40 ms feedback cadence) — is
-        // inside the derived budget, and the repair actually flies.
+        // An ask arriving 50 ms after the flight (it rides the 40 ms
+        // feedback cadence) is inside the derived budget, and the
+        // repair actually flies.
         let box = Box()
         let session = makeSession(box: box)
         var now: UInt64 = 0
@@ -682,7 +679,7 @@ final class NackRepairGateTests: XCTestCase {
         )])
     }
 
-    // MARK: Leg 3 — the ≥4 s ring's eviction laws (channel level)
+    // MARK: - The repair store's eviction laws (channel level)
 
     func testRepairStoreEvictsByAgeAndByteCapOldestFirst() throws {
         var sent: [VideoChannelDatagram] = []
@@ -736,7 +733,7 @@ final class NackRepairGateTests: XCTestCase {
         XCTAssertEqual(channel.counters.repairShardsAlreadySent, 1)
     }
 
-    // MARK: Leg 4 — post-FEC loss feeds the estimator (rung 3)
+    // MARK: - Post-FEC loss feeds the estimator (rung 3)
 
     private func videoLedger(
         received: UInt32, missing: UInt32 = 0
@@ -867,7 +864,7 @@ final class NackRepairGateTests: XCTestCase {
         XCTAssertEqual(clean.recoveryWindows, [true])
     }
 
-    // MARK: Leg 5 — the regime step lands on the packetizing seam
+    // MARK: - The regime step lands on the packetizing seam
 
     func testGateFecRegimeStepChangesNextFrameGeometry() throws {
         let box = Box()
@@ -935,14 +932,13 @@ final class NackRepairGateTests: XCTestCase {
         XCTAssertEqual(session.counters.fecRegimeSteps, 1)
     }
 
-    // MARK: Leg 6 — THE CADENCE GATE under a repair storm (R-G8 shape)
+    // MARK: - Audio cadence under a repair storm
 
     /// 5 s of virtual time at 20 Mbps: 5 ms audio, 60 fps damage, a
     /// worst-case IDR every 2 s — and a NACK against EVERY fresh video
     /// frame on the 25 ms feedback cadence, so repairs flow the whole
     /// run. Audio inter-send must hold 5 ms ± 2 ms at p99: repairs
-    /// ride videoTail, structurally below audio, and this leg proves
-    /// the structure.
+    /// ride videoTail, structurally below audio.
     func testGateAudioCadenceHoldsThroughRepairStorm() throws {
         let box = Box()
         let session = makeSession(box: box, seed: 0x1706)

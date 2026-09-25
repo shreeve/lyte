@@ -6,7 +6,7 @@ import XCTest
 // next scheduled arrival, whichever is sooner — the sans-IO event loop the
 // real host will run, minus the syscalls.
 //
-// THE GATE (build plan HS-6 row): at the test rate no emitted batch may
+// At the test rate no emitted batch may
 // exceed 1 ms of wire time; a forced IDR that conforms to frameByteCeiling
 // drains within min(2 × frameInterval, 25 ms); audio never waits more than
 // one quantum; strict class ordering holds.
@@ -18,12 +18,11 @@ import XCTest
 //     audio    6 × 320 B (5 ms cadence)       =  1,920 B
 //     control  3 × 64 B (10 ms cadence)       =    192 B
 //   frameByteCeiling ≈ 62,500 − 1,920 − 192   = 60,388 → 60,000 B (margin)
-// The gate IDR is 52 shards × 1,152 B = 59,904 B ≤ ceiling. The 90 KB
-// (92,160 B) burst the plan also throws at the pacer is deliberately
-// NON-conforming at 20 Mbps (it needs ≥ 29.5 Mbps to meet 25 ms) — it
-// proves the batch bound and audio protection hold under abuse, and its
-// measured drain matches rate math exactly; keeping frames under the
-// ceiling is HS-16's upstream job, which is the point of the ruling.
+// The conforming IDR is 52 shards × 1,152 B = 59,904 B ≤ ceiling. The
+// 90 KB (92,160 B) burst is deliberately NON-conforming at 20 Mbps (it
+// needs ≥ 29.5 Mbps to meet 25 ms): it proves the batch bound and audio
+// protection hold under abuse, and its measured drain matches rate math
+// exactly; keeping frames under the ceiling is the estimator's job.
 
 private let ms: UInt64 = 1_000_000
 
@@ -134,7 +133,7 @@ private func drainNS(_ checks: [SimBatchCheck], frameID: UInt32,
 
 final class PacerTests: XCTestCase {
 
-    // MARK: - THE GATE
+    // MARK: - Mixed traffic at 20 Mbps
 
     func testGateMixedTrafficAtTwentyMbps() {
         let rate = 20_000_000
@@ -400,7 +399,7 @@ final class PacerTests: XCTestCase {
         }
     }
 
-    // MARK: - Rate change mid-stream (the HS-16 seam)
+    // MARK: - Rate change mid-stream
 
     func testHalvingRateMidIdrStretchesDrain() {
         // 16 Mbps → 2,000 B/ms. A 40,000 B IDR alone: bucket head start
@@ -453,17 +452,14 @@ final class PacerTests: XCTestCase {
         XCTAssertGreaterThan(drainedAt, baseDrain + 8 * ms)
     }
 
-    // MARK: - HS-31: the latency exemption at the rate floor
+    // MARK: - The latency exemption at the rate floor
 
-    /// THE PIN (squeeze review §1, consult-corrected shape): at the
-    /// 500 kbps estimator floor the 1 ms quantum is 62 B, so one
+    /// At the 500 kbps estimator floor the 1 ms quantum is 62 B, so one
     /// max-size (~1230 B) video datagram emits alone and drives the
-    /// bucket ~19 ms negative — and audio used to wait the whole
-    /// deficit out (22.9–53.6 ms measured live vs §4.1's 5 ± 2 ms
-    /// bound). With the exemption, every audio datagram enqueued
-    /// through the deficit emits within ≤2 ms, audio's bytes CHARGE
-    /// the shared bucket (video repays them — the wire total still
-    /// honors the rate), and video never borrows the exemption.
+    /// bucket ~19 ms negative. With the exemption, every audio datagram
+    /// enqueued through the deficit emits within ≤2 ms, audio's bytes
+    /// CHARGE the shared bucket (video repays them — the wire total
+    /// still honors the rate), and video never borrows the exemption.
     func testAudioExemptFromVideoIncurredDeficitAtRateFloor() {
         let rate = 500_000
         let pacer = Pacer(rateBitsPerSecond: rate, now: 0)
@@ -538,9 +534,8 @@ final class PacerTests: XCTestCase {
         XCTAssertTrue(pacer.isEmpty)
     }
 
-    /// `setRate` carries an in-flight deficit across a fall (the
-    /// squeeze review's second finding: a datagram admitted at 5 Mbps
-    /// reprices to ~9.7 ms of debt at 500 kbps). The debt stays real
+    /// `setRate` carries an in-flight deficit across a fall (a datagram
+    /// admitted at 5 Mbps reprices to ~9.7 ms of debt at 500 kbps). The debt stays real
     /// for video — audio still does not wait behind it.
     func testRateFallCarriesDeficitButAudioStaysExempt() {
         let pacer = Pacer(rateBitsPerSecond: 5_000_000, now: 0)

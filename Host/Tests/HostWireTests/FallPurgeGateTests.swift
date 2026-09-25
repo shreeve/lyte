@@ -6,11 +6,10 @@ import HostSession
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (the fall-repricing purge, REMAINING #6): bytes admitted to
-// the pacer at 50 Mbps and repriced by a crash to 5 Mbps used to
-// serialize at the crashed rate — 80–895 ms of stale wire the glass
-// rendered late or never. The purge drops queued video at the fall
-// moment and re-anchors with a fresh IDR through the coalesced latch.
+// The fall purge: bytes admitted to the pacer at 50 Mbps and repriced by
+// a crash to 5 Mbps would serialize at the crashed rate — hundreds of ms
+// of stale wire. The purge drops queued video at the fall moment and
+// re-anchors with a fresh IDR through the coalesced latch.
 // Three rungs: the pacer's dropClass mechanics, the channel's census
 // settlement, and the whole session driven to a genuine loss fall
 // with real chan-3 FeedbackReports.

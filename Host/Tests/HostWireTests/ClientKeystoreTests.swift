@@ -1,7 +1,7 @@
 import XCTest
 import HostWire
 
-// The paired-clients store format, pinned (HS-9): 64 lowercase hex
+// The paired-clients store format: 64 lowercase hex
 // chars per line + optional note; comments and blanks ignored; anything
 // else is LOUD — a trust store is never guessed at.
 

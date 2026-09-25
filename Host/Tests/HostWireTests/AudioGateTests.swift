@@ -6,31 +6,22 @@ import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (build plan HS-15 row: "AudioFramer, DSCP 48, priority above
-// video" — R-G8's in-tree half). Pinned behaviors, each a leg below:
+// The host's audio path (the framer's layout, FEC and size contract
+// are Wire's AudioInteriorTests):
 //
-//   • the audio wire layout is FROZEN DATA: hand-built envelope bytes,
-//     not codec-vs-codec — chan 1, frame = group id = first packet
-//     number, per-packet capture µs on data shards / group-first µs on
-//     parity, the video-identical 8-byte fec interior (4+2, scheme RS);
-//   • one packet = one data shard = one datagram, emitted immediately;
-//     parity emits only when the group completes (cadence before
-//     protection);
-//   • the 4+2 group survives ANY two losses byte-exact and refuses
-//     three, through the same FecDecoder the client will run;
-//   • the hard-CBR contract is enforced loud (a mid-group size change
-//     would shear shard boundaries off packet boundaries);
+//   • every audio datagram carries the conn-id TLV;
 //   • audio rides PacerClass.audio in the ONE shared schedule: above
-//     every video class, below control;
-//   • sealed exactly like video (header bytes as AAD) and unsealable
-//     by the LyteWire client build-up; a tampered header fails;
-//   • lifecycle: audio flows in ACTIVE, IDLE, and FROZEN (W4b: audio
-//     is the path probe; the 5 ms cadence is what lets the client
-//     detector tighten to 350 ms) and stops only at closed;
-//   • THE CADENCE GATE (audio-continuity §4.1, R-G8's shape in virtual
-//     time): audio inter-send stays 5 ms ± 2 ms at p99 while
-//     worst-case IDRs drain, and no audio datagram ever waits behind
-//     more than one ≤1 ms video batch.
+//     every video class, below control, and exempt from a
+//     video-incurred bucket deficit;
+//   • sealed exactly like video (header bytes as AAD), unsealable and
+//     FEC-recoverable by the LyteWire client build-up; a tampered
+//     header fails;
+//   • lifecycle: audio flows in ACTIVE, IDLE, and FROZEN (audio is the
+//     path probe; its 5 ms cadence is what lets the client detector
+//     tighten to 350 ms) and stops only at closed;
+//   • audio inter-send stays 5 ms ± 2 ms at p99 while worst-case IDRs
+//     drain, and no audio datagram ever waits behind more than one
+//     ≤1 ms video batch.
 
 final class AudioGateTests: XCTestCase {
 
@@ -43,12 +34,12 @@ final class AudioGateTests: XCTestCase {
 
     /// A hard-CBR-shaped Opus packet stand-in: `byteCount` deterministic
     /// bytes seeded by the packet number (real 128 kbps CBR packets are
-    /// a constant 80 B — HS-14's evidence).
+    /// a constant 80 B).
     private func opusPacket(_ n: Int, byteCount: Int = 80) -> [UInt8] {
         (0..<byteCount).map { UInt8(truncatingIfNeeded: n &* 31 &+ $0) }
     }
 
-    // MARK: Leg 1 — the layout, pinned as hand-built bytes
+    // MARK: - The layout
 
     func testConnectionIdTlvRidesEveryAudioDatagram() throws {
         var rng = SplitMix64(seed: 0xA15)
@@ -77,11 +68,7 @@ final class AudioGateTests: XCTestCase {
         }
     }
 
-    // MARK: Leg 2 — FEC geometry and recovery
-
-    // MARK: Leg 3 — contract enforcement
-
-    // MARK: Leg 4 — class assignment in the shared schedule
+    // MARK: - Class assignment in the shared schedule
 
     func testAudioOutranksQueuedVideoInTheOneSchedule() throws {
         var sent: [VideoChannelDatagram] = []
@@ -118,14 +105,11 @@ final class AudioGateTests: XCTestCase {
         }
     }
 
-    /// HS-31 (squeeze review §1, consult-corrected shape): at the
-    /// 500 kbps estimator floor one max-size video datagram drives the
-    /// shared bucket ~19 ms negative — and audio used to wait the
-    /// whole deficit out (22.9–53.6 ms measured live vs §4.1's
-    /// 5 ± 2 ms bound). Through the REAL ingest → pacer → sink path:
-    /// audio enqueued mid-deficit emits at once, `nextWake` is NOW
-    /// while audio is queued (what the sender thread's signalDrain
-    /// wake relies on — the fix-2 seam), and the video tail stays
+    /// At the 500 kbps estimator floor one max-size video datagram
+    /// drives the shared bucket ~19 ms negative. Through the real
+    /// ingest → pacer → sink path: audio enqueued mid-deficit emits at
+    /// once, `nextWake` is NOW while audio is queued (what the sender
+    /// thread's signalDrain wake relies on), and the video tail stays
     /// parked until the deficit is truly repaid.
     func testAudioEmitsThroughVideoIncurredDeficitAtRateFloor() throws {
         var sent: [VideoChannelDatagram] = []
@@ -187,7 +171,7 @@ final class AudioGateTests: XCTestCase {
             "audio queue delay must hold §4.1's bound through the deficit")
     }
 
-    // MARK: Leg 5 — sealed round trip through the LyteWire client build-up
+    // MARK: - Sealed round trip through the LyteWire client build-up
 
     /// The minimal client far end (the SessionGateTests discipline):
     /// NoiseSession initiator + unseal; audio datagrams collected with
@@ -341,7 +325,7 @@ final class AudioGateTests: XCTestCase {
         XCTAssertThrowsError(try client.transport!.openDatagram(tampered))
     }
 
-    // MARK: Leg 6 — lifecycle: the probe never stops (except closed)
+    // MARK: - Lifecycle: the probe never stops (except closed)
 
     func testAudioFlowsUntilTheSessionCloses() throws {
         let (host, clientValue) = try establish()
@@ -449,13 +433,12 @@ final class AudioGateTests: XCTestCase {
         }
     }
 
-    // MARK: Leg 7 — THE CADENCE GATE (audio-continuity §4.1 in virtual time)
+    // MARK: - Audio cadence through worst-case IDRs
 
     /// 5 s of virtual time at 20 Mbps: 5 ms audio, steady 60 fps damage
-    /// frames, and a worst-case conforming IDR every 2 s (R-G8's forced
-    /// IDR profile). The pass criteria are the audio-continuity doc's,
-    /// verbatim: data-shard inter-send 5 ms ± 2 ms at p99, and no audio
-    /// datagram waits behind more than one ≤1 ms video batch.
+    /// frames, and a worst-case conforming IDR every 2 s. Data-shard
+    /// inter-send must hold 5 ms ± 2 ms at p99, and no audio datagram
+    /// may wait behind more than one ≤1 ms video batch.
     func testGateAudioCadenceHoldsThroughWorstCaseIdrs() throws {
         let box = DatagramBox()
         var sendInstant: UInt64 = 0
@@ -527,7 +510,7 @@ final class AudioGateTests: XCTestCase {
                     isKeyframe: false, now: now
                 )
             case .idr:
-                // The HS-6 gate's conforming worst case: 59,904 B at
+                // The conforming worst case: 59,904 B at
                 // 20 Mbps fills the whole 25 ms drain budget — the
                 // burst that traps audio on an unpaced sender.
                 _ = try session.ingestVideoFrame(

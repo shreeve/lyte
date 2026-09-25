@@ -6,14 +6,11 @@ import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (build plan HS-13 row, the in-tree half — the live leg runs
-// on the reference host): the wire→injection path. Pinned behaviors:
+// The wire→injection path (the 0x16/0x17 codecs are Wire's
+// ControlCodecTests):
 //
-//   • the 0x16/0x17 codecs are byte-pinned against hand-built layouts
-//     (mirror-then-promote: these bytes move to Wire/ with CL-9,
-//     unchanged) and never trap on hostile bytes;
-//   • input events ride the sealed reliable CTRL stream through the
-//     W-G4 fault model (5% loss, 2% dup, jitter reorder) and arrive
+//   • input events ride the sealed reliable CTRL stream through loss,
+//     duplication and jitter reorder, and arrive
 //     exactly once, IN ORDER — a reordered keystroke is corruption;
 //   • every injection report produces exactly one echo tuple back on
 //     the client, carrying the true (seq, rx, inject) host-µs stamps,
@@ -23,9 +20,8 @@ import LyteWireTestKit
 //     conn-id — and the frame still reassembles byte-exact within the
 //     1152 B budget (geometry derives from the real TLV headroom).
 //
-// The far end is the SessionLifecycleGateTests discipline: a LyteWire
-// client build-up (NoiseSession initiator + ArqEndpoint<ClientClock>) —
-// exactly what CL-9 will assemble on top of CL-7.
+// The far end is a LyteWire client build-up (NoiseSession initiator +
+// ArqEndpoint<ClientClock>).
 
 final class InputGateTests: XCTestCase {
 
@@ -35,8 +31,6 @@ final class InputGateTests: XCTestCase {
         localAddress: "10.0.0.249", localPort: 41_010,
         remoteAddress: "10.0.0.23", remotePort: 61_000
     )
-
-    // MARK: Codec pins — the bytes CL-9 will speak
 
     // MARK: The input-capable loopback client
 
@@ -120,7 +114,7 @@ final class InputGateTests: XCTestCase {
         }
     }
 
-    // MARK: The storm — exactly once, in order, echoed, through W-G4 weather
+    // MARK: Exactly once, in order, echoed, through loss and reorder
 
     func testGateInputStormExactlyOnceInOrderWithEchoes() throws {
         let (host, clientValue) = try establish()
@@ -131,9 +125,8 @@ final class InputGateTests: XCTestCase {
         try settle(host, &client, t: &t)
         _ = client.take(type: CtrlMessageType.capabilityDeclaration)
 
-        // The W-G4 fault model (input traffic is sparser than the HS-8
-        // storm's, so duplication runs hotter to keep the dup evidence
-        // non-vacuous at this datagram count).
+        // Input traffic is sparse, so duplication runs hot to keep the
+        // dup evidence non-vacuous at this datagram count.
         var net = SimNet(
             config: SimNetConfig(
                 lossRate: 0.05,

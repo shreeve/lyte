@@ -6,18 +6,17 @@ import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (build plan HS-5 row): corpus frames → VideoChannel (simulated
-// clock, pacer draining at exact nextWake instants) → emitted datagram
-// blobs → envelope decode → seeded loss of ≤ m shards per group →
-// LyteWire.VideoAssembler → DecodeUnits byte-exact against the input
-// corpus. Along the way: every datagram within the 1152 B budget, the
-// envelope timestamp carries the supplied capture µs verbatim, and the
-// pacer telemetry shows exactly the class traffic this slice rules
-// (everything freshVideo, keyframes urgent-fresh, nothing else).
+// Corpus frames → VideoChannel (simulated clock, pacer draining at exact
+// nextWake instants) → emitted datagram blobs → envelope decode → seeded
+// loss of ≤ m shards per group → LyteWire.VideoAssembler → DecodeUnits
+// byte-exact against the input corpus. Along the way: every datagram
+// within the 1152 B budget, the envelope timestamp carries the supplied
+// capture µs verbatim, and everything is freshVideo (keyframes
+// urgent-fresh).
 
 final class VideoChannelGateTests: XCTestCase {
 
-    // Host/Tests/HostWireTests/… → repo root → the frozen W2 corpus.
+    // Host/Tests/HostWireTests/… → repo root → the frozen video corpus.
     private static var corpusDirectory: String {
         var components = #filePath.split(
             separator: "/", omittingEmptySubsequences: false)
@@ -381,7 +380,7 @@ final class VideoChannelGateTests: XCTestCase {
     func testKeyframeShardsJumpTheVideoQueue() throws {
         // A queued P-frame, then an IDR before anything drains: the IDR's
         // shards are urgent-fresh and must leave first — the Pacer's
-        // within-class jump, never crossing classes (HS-6 semantics).
+        // within-class jump, never crossing classes.
         let pFrame = try load("frame-100-p-small.annexb")
         let idr = try load("frame-000-idr.annexb")
 
@@ -412,7 +411,7 @@ final class VideoChannelGateTests: XCTestCase {
         XCTAssertTrue(order.dropFirst(idrShards).allSatisfy { !$0.isKeyframe })
     }
 
-    /// HS-28: the queued-shard books behind the NACK recusal — a frame
+    /// The queued-shard books behind the NACK recusal: a frame
     /// reads as "still draining" exactly while any of its video-class
     /// shards wait in the pacer (repairs re-open it), and drops off
     /// the moment its last shard leaves. This is what lets the

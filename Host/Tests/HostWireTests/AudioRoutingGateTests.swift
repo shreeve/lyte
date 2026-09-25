@@ -6,26 +6,17 @@ import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (HS-18, the in-tree half — the sink lifecycle itself is
-// C-leaf/live-gate territory on the reference host). Pinned behaviors:
+// Host audio routing (0x18/0x19) at the session layer; the codecs and
+// key 9 are Wire's ControlCodecTests, and the sink itself is the Linux
+// audio leaf's:
 //
-//   • the 0x18/0x19 codecs are byte-pinned against hand-built layouts
-//     (mirror-then-promote: these bytes move to Wire/ with the client
-//     slice, unchanged) and never trap on hostile bytes;
-//   • capability key 9 rides the W7 forward-compat spine EXACTLY as
-//     rule 3 designed it: the declaration is wireDefault's frozen
-//     bytes plus one appended map entry (09 F5) — no existing byte
-//     moves, no vector regenerates — and the capability survives
-//     intersection only on mutual byte-equal declaration;
 //   • in vivo: a negotiated client's 0x18 surfaces exactly once as
 //     .audioRoutingRequested, the shell's noteAudioRoutingApplied
 //     answers with a byte-exact 0x19, and a client that never
-//     declared key 9 is refused loud (.audioRoutingNotNegotiated) —
-//     the rule-3 gate holding at the session layer;
+//     declared key 9 is refused loud (.audioRoutingNotNegotiated);
 //   • the routing plumbing never touches the audio data path: the
 //     framer/pacer cadence machinery is mode-blind by construction
-//     (the C leaf owns the graph topology; R-G8 on the virtual sink
-//     is the live gate's leg).
+//     (the C leaf owns the graph topology).
 
 final class AudioRoutingGateTests: XCTestCase {
 
@@ -35,10 +26,6 @@ final class AudioRoutingGateTests: XCTestCase {
         localAddress: "10.0.0.249", localPort: 41_121,
         remoteAddress: "10.0.0.23", remotePort: 61_000
     )
-
-    // MARK: Leg 1 — the 0x18/0x19 bytes, pinned
-
-    // MARK: Leg 2 — key 9 on the forward-compat spine, zero frozen bytes
 
     // MARK: The negotiated loopback client
 
@@ -63,7 +50,7 @@ final class AudioRoutingGateTests: XCTestCase {
         return (host, client)
     }
 
-    // MARK: Leg 3 — the negotiated flip, end to end
+    // MARK: - The negotiated flip, end to end
 
     func testGateNegotiatedRequestSurfacesAndStatusAnswersByteExact() throws {
         let (host, clientValue) = try establish(
@@ -128,7 +115,7 @@ final class AudioRoutingGateTests: XCTestCase {
                        [[0x19, 0x01]])
     }
 
-    // MARK: Leg 4 — the rule-3 gate holds against the unnegotiated
+    // MARK: - The capability gate holds against the unnegotiated
 
     func testGateUnnegotiatedRequestRefusedLoudAndStatusStaysSilent() throws {
         // A v1 client: declares, but never key 9.

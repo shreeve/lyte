@@ -6,21 +6,16 @@ import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (build plan HS-8 row, the host-side half): the session's CTRL
-// channel rides the W3 ArqEndpoint and SURVIVES the W-G4 fault model —
-// 5% seeded loss plus duplication and jitter-driven reorder through
-// SimNet, RTT-adaptive retransmit, exactly-once in-order delivery both
-// directions — while the deliberately ARQ-exempt traffic stays exempt:
-// beacons are never retransmitted (a late beacon is a lie; a lost one is
-// superseded at 1 Hz) and a sealed IDR request still lands mid-storm.
-// The other half of the slice's gate — beacon residual <1 ms after 30 s
-// — is client-measured, joint with CL-10/CL-7, and runs when the client
-// grows its LyteUdpSession leg.
+// The session's CTRL channel rides an ArqEndpoint and survives 5% seeded
+// loss plus duplication and jitter-driven reorder through SimNet:
+// RTT-adaptive retransmit, exactly-once in-order delivery both directions,
+// while the deliberately ARQ-exempt traffic stays exempt: beacons are
+// never retransmitted (a late beacon is a lie; a lost one is superseded
+// at 1 Hz) and a sealed IDR request still lands mid-storm.
 //
-// The far end here is a LyteWire client build-up: NoiseSession initiator
-// (the HS-7 harness's discipline) plus its own ArqEndpoint<ClientClock>,
-// which is exactly what CL-7 will assemble — the two endpoints meet
-// through the same frame codecs the frozen arq-v1 vectors pin.
+// The far end is a LyteWire client build-up: a NoiseSession initiator
+// plus its own ArqEndpoint<ClientClock>, meeting the host through the
+// frame codecs the frozen arq-v1 vectors pin.
 
 final class ArqCtrlGateTests: XCTestCase {
 
@@ -90,9 +85,9 @@ final class ArqCtrlGateTests: XCTestCase {
     // MARK: Shared harness
 
     /// Handshake, run directly (fault injection starts after — retry
-    /// under handshake loss is the client's timer, not this slice).
+    /// under handshake loss is the client's timer, not this suite's).
     /// Returns the session, the client with its transport live, the
-    /// sink, and the virtual instant the setup finished at. The W4b
+    /// sink, and the virtual instant the setup finished at. The
     /// lifecycle machine's timers are pushed past the horizon by
     /// default: this suite gates the ARQ sublayer, and the machine has
     /// its own gate (SessionLifecycleGateTests).
@@ -146,8 +141,8 @@ final class ArqCtrlGateTests: XCTestCase {
         try client.absorb(handshake[1].bytes, nowMicros: 700)
         try client.absorb(handshake[2].bytes, nowMicros: 800)
         XCTAssertNotNil(client.transport)
-        // The W7 declaration is the host's first reliable word (HS-8's
-        // deferred capabilities item). Acknowledge it and clear the
+        // The capability declaration is the host's first reliable word.
+        // Acknowledge it and clear the
         // baseline so the gates below start from a quiescent stream.
         XCTAssertEqual(client.received.count, 1)
         XCTAssertEqual(client.received.first?.bytes.first,
@@ -164,7 +159,7 @@ final class ArqCtrlGateTests: XCTestCase {
         return (session, client)
     }
 
-    // MARK: The gate — 5% loss, duplication, reorder, both directions
+    // MARK: 5% loss, duplication, reorder, both directions
 
     func testGateReliableCtrlSurvivesLossDuplicationAndReorder() throws {
         var sent: [VideoChannelDatagram] = []
@@ -175,7 +170,7 @@ final class ArqCtrlGateTests: XCTestCase {
         var client = established.client
         var forwarded = sent.count // handshake rode outside the pipe
 
-        // The W-G4 fault model: 5% loss, 2% duplication, 3 ms base
+        // 5% loss, 2% duplication, 3 ms base
         // delay with 4 ms jitter — displacement reorder emerges.
         var net = SimNet(
             config: SimNetConfig(

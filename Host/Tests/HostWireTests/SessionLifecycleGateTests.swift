@@ -6,11 +6,9 @@ import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (build plan HS-11 row + HS-8's deferred capabilities item):
-// the W4b SessionStateMachine (mediaSender) drives the session's real
-// lifecycle over the HS-8 reliable stream, and the W7 capability
-// exchange settles the session's agreed set. Pinned behaviors, each a
-// leg below:
+// The shared SessionStateMachine (mediaSender) drives the session's real
+// lifecycle over the reliable stream, and the capability exchange
+// settles the session's agreed set:
 //
 //   • the host's capability declaration (0x0F) is its FIRST reliable
 //     message post-establishment; the intersection with the client's
@@ -23,10 +21,8 @@ import LyteWireTestKit
 //   • an orderly shutdown delivers SessionTeardown 0x0A on the reliable
 //     stream; a liveness timeout closes locally and sends NOTHING.
 //
-// The far end is the ArqCtrlGateTests discipline: a LyteWire client
-// build-up (NoiseSession initiator + ArqEndpoint<ClientClock> +
-// CapabilityNegotiator in the client role) — exactly what CL-7/CL-8
-// assemble.
+// The far end is a LyteWire client build-up (NoiseSession initiator +
+// ArqEndpoint<ClientClock> + CapabilityNegotiator in the client role).
 
 final class SessionLifecycleGateTests: XCTestCase {
 
@@ -244,7 +240,7 @@ final class SessionLifecycleGateTests: XCTestCase {
                        "a workable agreement never disturbs the session")
     }
 
-    // MARK: Chroma negotiation → encoder posture (H4 V-4)
+    // MARK: Chroma negotiation → encoder posture
 
     /// A 4:4:4-capable host (the startup Rext self-probe passed, so it
     /// declared [420, 444]) meets a Best-tier client declaring the
@@ -311,7 +307,7 @@ final class SessionLifecycleGateTests: XCTestCase {
     /// A [420]-only host (the self-probe failed — the truthful
     /// declaration) against a Best-declaring client: empty chroma
     /// intersection is the TYPED failure the client's auto-re-dial
-    /// banner keys on (the pillar's named degradation), never silence.
+    /// banner keys on, never silence.
     func testGateBestAgainst420OnlyHostIsATypedChromaFailure() throws {
         var clientSet = Capabilities.wireDefault
         clientSet.chromaModes = [CapabilityChroma.yuv444]
@@ -445,7 +441,7 @@ final class SessionLifecycleGateTests: XCTestCase {
         XCTAssertGreaterThan(flowing, 0, "RECOVERY: sends may flow again")
 
         // Two clean 25 ms feedback windows graduate back to ACTIVE —
-        // the verdicts are the HS-16 estimator's now (clean reports,
+        // the verdicts are the estimator's (clean reports,
         // no loss deltas, no delay inflation). The dirty-window leg
         // (loss holds RECOVERY) lives in RateEstimatorGateTests.
         t += 30_000
