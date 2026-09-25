@@ -20,6 +20,14 @@ final class SwiftSourceScannerTests: XCTestCase {
         )
     }
 
+    func testInterpolationsAreCodeAndTheirStringsStayStrings() {
+        let source = ##"let s = "a\(f("Task"))b" + #"\#(g(#"Raw"#))"# + "\(x)"; Kept"##
+        XCTAssertEqual(
+            SwiftSourceScanner.tokens(in: source),
+            ["let", "s", "=", "f", "(", ")", "g", "(", ")", "x", "Kept"]
+        )
+    }
+
     func testImportsRecognizeAttributesAccessAndQualifiedDeclarations() {
         let source = [
             "@testable import HostWire",
