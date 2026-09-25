@@ -240,6 +240,11 @@ file; never rewrite a committed replay.
   exists to make any drift in the recovery policy the client depends on
   loud. `VideoDecisionVectorFileTests` replays every scenario and
   requires every video-v1 scenario to be pinned.
+- `audio-stream-off-v1.json` — the key-14 (`audioStreamOff`) capability
+  spine declared, absent, and composed with key 9 (`09 F5 0E F5`); each
+  vector's `flags` name the accessors and what they must read. Routing
+  mode 0x04 itself is pinned in `control-v1.json`. Anchored by
+  `AudioStreamOffVectorFileTests`.
 
 Every file above must be byte-for-byte its builder's output
 (see Authoring above).
