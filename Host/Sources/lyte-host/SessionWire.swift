@@ -1757,8 +1757,6 @@ final class SessionWire {
                 ctrl-arq: message group \(group.rawValue) (\(message.count) B, \
                 type \(Hex.string(message.first ?? 0, prefix: true)))
                 """)
-        case .reliableOneShotAcknowledged(let group):
-            emit("ctrl-arq: one-shot group \(group.rawValue) acknowledged")
         case .arqIgnored(let reason):
             // A poisoned ordered stream repeats its reason for every
             // segment until the session ends; each reason is limited on
@@ -1951,7 +1949,7 @@ final class SessionWire {
             // Buffered for the off-lock shell pass; silent, since chunks
             // arrive by the hundred.
             pendingBulkMessages.append(message)
-        case .clipboardImageReceived(let data, let mime):
+        case .clipboardImage(.applyImage(let data, let mime)):
             // Sha-verified; buffered for the off-lock apply. Never logs
             // the payload.
             let leaf = clipboardImageApplyHandler != nil
@@ -1960,26 +1958,28 @@ final class SessionWire {
                 \(leaf ? "" : " — no image leaf, ignored")
                 """)
             if leaf { pendingClipboardImageApplies.append(data) }
-        case .clipboardImageShareStarted(let byteCount):
+        case .clipboardImage(.shareStarted(_, let byteCount)):
             emit("clipboard: image share started (\(byteCount) B)")
-        case .clipboardImageShareCompleted(let byteCount):
+        case .clipboardImage(.shareCompleted(_, let byteCount)):
             emit("clipboard: image share completed (\(byteCount) B)")
-        case .clipboardImageShareAborted(let reason, let byRemote):
+        case .clipboardImage(.shareAborted(let reason, let byRemote)):
             emit("""
                 clipboard: image share aborted (\(reason), \
                 \(byRemote ? "remote" : "local"))
                 """)
-        case .clipboardImageReceiveAborted(let reason, let byRemote):
+        case .clipboardImage(.receiveAborted(let reason, let byRemote)):
             emit("""
                 clipboard: image receive aborted (\(reason), \
                 \(byRemote ? "remote" : "local"))
                 """)
-        case .clipboardImageSuppressed(let reason):
+        case .clipboardImage(.suppressed(let reason)):
             emit("clipboard: image suppressed (\(reason))")
-        case .clipboardImageRefused(let reason):
+        case .clipboardImage(.refused(let reason)):
             emit("clipboard: image refused (\(reason))")
-        case .clipboardImageViolation(let violation):
+        case .clipboardImage(.violated(let violation)):
             emit("clipboard: image lane violation (\(violation)) — aborted")
+        case .clipboardImage(.send):
+            break // the session sends these itself
         }
     }
 

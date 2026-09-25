@@ -15,7 +15,7 @@ import LyteWireTestKit
 //     messages on an images-only chan 8 stay ungated traffic
 //     (dropped loud) — the consent tiers do not couple;
 //   • in vivo, both directions: a client image lands byte-exact as
-//     .clipboardImageReceived (marker → offer → chunks → digest
+//     .clipboardImage(.applyImage) (marker → offer → chunks → digest
 //     verdict over chan 8's own sealed ARQ stream), a host copy
 //     lands byte-exact in the client's channel — and each side's
 //     apply echo SUPPRESSES through the shared book (the boomerang
@@ -258,7 +258,7 @@ final class ClipboardImageGateTests: XCTestCase {
         try client.shareImage(clientImage, nowMicros: t)
         var applied: [(data: [UInt8], mime: String)] = []
         try host.settle(&client, t: &t) {
-            if case .clipboardImageReceived(let data, let mime) = $0 {
+            if case .clipboardImage(.applyImage(let data, let mime)) = $0 {
                 applied.append((data, mime))
             }
         }
@@ -279,7 +279,7 @@ final class ClipboardImageGateTests: XCTestCase {
         let echo = session.noteHostClipboardImageChanged(
             clientImage, now: t * 1_000, hostMicroseconds: t
         )
-        XCTAssertEqual(echo, [.clipboardImageSuppressed(.loopEcho)])
+        XCTAssertEqual(echo, [.clipboardImage(.suppressed(.loopEcho))])
         try host.settle(&client, t: &t)
         XCTAssertTrue(client.takeImageEvents().isEmpty,
                       "an apply echo must not boomerang as a share")
@@ -291,9 +291,12 @@ final class ClipboardImageGateTests: XCTestCase {
         hostEvents += session.noteHostClipboardImageChanged(
             hostImage, now: t * 1_000, hostMicroseconds: t
         )
-        XCTAssertTrue(hostEvents.contains(
-            .clipboardImageShareStarted(byteCount: hostImage.count)
-        ))
+        XCTAssertTrue(hostEvents.contains {
+            if case .clipboardImage(.shareStarted(_, hostImage.count)) = $0 {
+                return true
+            }
+            return false
+        })
         try host.settle(&client, t: &t) {
             hostEvents.append($0)
         }
@@ -305,9 +308,12 @@ final class ClipboardImageGateTests: XCTestCase {
         } as [(data: [UInt8], mime: String)]
         XCTAssertEqual(clientApplies.count, 1)
         XCTAssertEqual(clientApplies.first?.data, hostImage)
-        XCTAssertTrue(hostEvents.contains(
-            .clipboardImageShareCompleted(byteCount: hostImage.count)
-        ))
+        XCTAssertTrue(hostEvents.contains {
+            if case .clipboardImage(.shareCompleted(_, hostImage.count)) = $0 {
+                return true
+            }
+            return false
+        })
         XCTAssertEqual(session.clipboardImageCounters.sharesCompleted, 1)
 
         // The boomerang proof, client side: the NSPasteboard echo of
@@ -345,11 +351,11 @@ final class ClipboardImageGateTests: XCTestCase {
         // Empty and over-ceiling copies settle without a digest.
         XCTAssertEqual(
             session.prejudgeHostClipboardImage(byteCount: 0, now: t * 1_000),
-            [.clipboardImageSuppressed(.emptyImage)])
+            [.clipboardImage(.suppressed(.emptyImage))])
         let over = ClipboardImageWire.maxImageByteCount + 1
         XCTAssertEqual(
             session.prejudgeHostClipboardImage(byteCount: over, now: t * 1_000),
-            [.clipboardImageSuppressed(.overBudget(over))])
+            [.clipboardImage(.suppressed(.overBudget(over)))])
 
         // A fitting copy leaves only the digest-keyed book: hash, then
         // judge again under the lock.
@@ -361,8 +367,12 @@ final class ClipboardImageGateTests: XCTestCase {
             image, sha256: { hashes += 1; return Sha256.digest(image) },
             now: t * 1_000, hostMicroseconds: t)
         XCTAssertEqual(hashes, 1)
-        XCTAssertTrue(started.contains(
-            .clipboardImageShareStarted(byteCount: image.count)))
+        XCTAssertTrue(started.contains {
+            if case .clipboardImage(.shareStarted(_, image.count)) = $0 {
+                return true
+            }
+            return false
+        })
 
         // While that share is in flight the lane is busy: the next copy
         // is refused before its digest, in both entry points.
@@ -370,11 +380,11 @@ final class ClipboardImageGateTests: XCTestCase {
         XCTAssertEqual(
             session.prejudgeHostClipboardImage(
                 byteCount: next.count, now: t * 1_000),
-            [.clipboardImageSuppressed(.sendBusy)])
+            [.clipboardImage(.suppressed(.sendBusy))])
         XCTAssertEqual(
             session.noteHostClipboardImageChanged(
                 next, sha256: noHash, now: t * 1_000, hostMicroseconds: t),
-            [.clipboardImageSuppressed(.sendBusy)])
+            [.clipboardImage(.suppressed(.sendBusy))])
 
         // A session whose image gate is shut says nothing at all.
         let (textOnly, textClientValue) = try establish(
@@ -484,7 +494,7 @@ final class ClipboardImageGateTests: XCTestCase {
         var refused: [ClipboardImageRefuseReason] = []
         var surfaced = 0
         try host.settle(&client, t: &t) {
-            if case .clipboardImageRefused(let reason) = $0 {
+            if case .clipboardImage(.refused(let reason)) = $0 {
                 refused.append(reason)
             }
             if case .bulkMessageReceived = $0 { surfaced += 1 }

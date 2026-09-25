@@ -32,7 +32,6 @@ final class ArqCtrlGateTests: XCTestCase {
     /// ArqEndpoint, and the bookkeeping the gate asserts against.
     private struct ArqClient: PeerBackedClient {
         var peer: SealedCtrlPeer<ClientClock>
-        var oneShotAcks: [ArqGroupId] = []
         var beaconSeqsSeen: [UInt32] = []
         var arqIgnored = 0
         /// Byte-identical network duplicates die at the transport's
@@ -63,10 +62,8 @@ final class ArqCtrlGateTests: XCTestCase {
                 )
                 for event in events {
                     switch event {
-                    case .message:
-                        break // in `received`
-                    case .oneShotAcknowledged(let group):
-                        oneShotAcks.append(group)
+                    case .message, .oneShotAcknowledged:
+                        break // messages are in `received`
                     case .ignored:
                         arqIgnored += 1
                     }
@@ -177,15 +174,12 @@ final class ArqCtrlGateTests: XCTestCase {
         )
 
         // Traffic both ways: the ordered stream in mixed sizes (single
-        // and multi-segment) plus independent one-shots.
+        // and multi-segment), plus the client's independent one-shots.
         let sizes = [1, 17, 300, 1_093, 1_500, 2_600]
         let hostStream: [[UInt8]] = (0..<30).map { i in
             [UInt8](repeating: UInt8(truncatingIfNeeded: i &+ 1),
                     count: sizes[i % sizes.count])
         }
-        let hostOneShots: [UInt16: [UInt8]] = [
-            1: [0xB1, 0xB1], 2: [UInt8](repeating: 0xB2, count: 2_000),
-        ]
         let clientStream: [[UInt8]] = (0..<30).map { i in
             [UInt8](repeating: UInt8(truncatingIfNeeded: 0x40 &+ i),
                     count: sizes[(i + 3) % sizes.count])
@@ -247,13 +241,6 @@ final class ArqCtrlGateTests: XCTestCase {
             }
             if !oneShotsSent, t >= 1_200_000 {
                 oneShotsSent = true
-                for (group, message) in hostOneShots.sorted(by: { $0.key < $1.key }) {
-                    let allocated = try session.sendReliableOneShot(
-                        message, now: t * 1_000, hostMicroseconds: t
-                    )
-                    XCTAssertEqual(allocated, ArqGroupId(rawValue: group),
-                                   "the endpoint allocates 1, 2, … in order")
-                }
                 for (group, message) in clientOneShots.sorted(by: { $0.key < $1.key }) {
                     try client.arq.sendOneShot(
                         message: message, group: ArqGroupId(rawValue: group),
@@ -288,7 +275,7 @@ final class ArqCtrlGateTests: XCTestCase {
             if hostSent == hostStream.count, clientSent == clientStream.count,
                oneShotsSent, idrSeen,
                session.arqIsQuiescent, client.arq.isQuiescent,
-               client.received.count == hostStream.count + hostOneShots.count,
+               client.received.count == hostStream.count,
                hostGot == clientStream.count + clientOneShots.count,
                net.nextArrivalTime == nil {
                 converged = t
@@ -311,25 +298,8 @@ final class ArqCtrlGateTests: XCTestCase {
         XCTAssertGreaterThan(net.lostCount, 0, "the storm must be real")
         XCTAssertGreaterThan(net.duplicatedCount, 0)
 
-        let clientOrdered = client.received
-            .filter { $0.group == .orderedStream }.map(\.bytes)
-        XCTAssertEqual(clientOrdered, hostStream,
+        XCTAssertEqual(client.received.map(\.bytes), hostStream,
                        "host→client stream: exactly once, in order")
-        for (group, message) in hostOneShots {
-            let hits = client.received.filter {
-                $0.group == ArqGroupId(rawValue: group)
-            }
-            XCTAssertEqual(hits.count, 1, "one-shot \(group) exactly once")
-            XCTAssertEqual(hits.first?.bytes, message)
-        }
-        for group in hostOneShots.keys {
-            XCTAssertTrue(
-                hostEvents.contains(
-                    .reliableOneShotAcknowledged(ArqGroupId(rawValue: group))
-                ),
-                "one-shot \(group): full acknowledgment must surface"
-            )
-        }
 
         var hostOrdered: [[UInt8]] = []
         var hostOneShotHits: [UInt16: [[UInt8]]] = [:]
@@ -353,8 +323,7 @@ final class ArqCtrlGateTests: XCTestCase {
         // host emitted strictly more ARQ datagrams than its messages
         // needed fresh (retransmits + re-ACKs under duplication).
         XCTAssertGreaterThan(
-            session.counters.arqDatagramsSent,
-            hostStream.count + hostOneShots.count
+            session.counters.arqDatagramsSent, hostStream.count
         )
 
         // ── Exempt stays exempt ────────────────────────────────────────
@@ -633,21 +602,6 @@ final class ArqCtrlGateTests: XCTestCase {
         )) {
             XCTAssertEqual($0 as? ArqSendError, .emptyMessage)
         }
-        XCTAssertThrowsError(try live.sendReliableOneShot(
-            [], now: 1_000, hostMicroseconds: 1
-        )) {
-            XCTAssertEqual($0 as? ArqSendError, .emptyMessage)
-        }
-        // The endpoint allocates one-shot groups, so a caller can no
-        // longer present an ordered-stream or non-ascending id.
-        XCTAssertEqual(
-            try live.sendReliableOneShot([0x10], now: 1_000, hostMicroseconds: 1),
-            ArqGroupId(rawValue: 1)
-        )
-        XCTAssertEqual(
-            try live.sendReliableOneShot([0x10], now: 1_000, hostMicroseconds: 1),
-            ArqGroupId(rawValue: 2)
-        )
     }
 
     /// A peer that never acknowledges fills a group's segment bound: the

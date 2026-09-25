@@ -2,6 +2,7 @@ import XCTest
 import Foundation
 import HostCore
 import HostWire
+import HostWireTestKit
 import LyteCore
 import LyteWire
 import LyteWireTestKit
@@ -285,7 +286,6 @@ final class VideoChannelGateTests: XCTestCase {
                 let expectedBox = Box()
                 let borrowedBox = Box()
                 let config = VideoChannelConfig(
-                    firstSeq: ChannelSeq(rawValue: 700),
                     regime: regime,
                     rateBitsPerSecond: Self.rateBPS,
                     connectionId: try ConnectionId(
@@ -312,15 +312,15 @@ final class VideoChannelGateTests: XCTestCase {
                     capacity: original.count
                 )
                 _ = pointer.initialize(from: original)
-                _ = try borrowed.ingest(
-                    frame: UnsafeBufferPointer(pointer),
-                    frameNumber: frameNumber,
-                    captureTimestampMicroseconds: Self.captureMicros(index),
-                    isKeyframe: isKeyframe, lastInputSeq: 0x1020_3040,
-                    now: 0
-                )
+                let prepared = try VideoChannel.prepareFrame(
+                    UnsafeBufferPointer(pointer), isKeyframe: isKeyframe,
+                    config: borrowed.preparationConfig(hasLastInputSeq: true))
                 pointer.update(repeating: 0xDB)
                 pointer.deallocate()
+                borrowed.ingestPrepared(
+                    prepared, frameNumber: frameNumber,
+                    captureTimestampMicroseconds: Self.captureMicros(index),
+                    lastInputSeq: 0x1020_3040, now: 0)
 
                 var expectedNow: UInt64 = 0
                 var borrowedNow: UInt64 = 0
@@ -359,14 +359,15 @@ final class VideoChannelGateTests: XCTestCase {
                     capacity: original.count
                 )
                 _ = purgePointer.initialize(from: original)
-                _ = try borrowed.ingest(
-                    frame: UnsafeBufferPointer(purgePointer),
-                    frameNumber: purgeFrame,
-                    captureTimestampMicroseconds: 9_000_000,
-                    isKeyframe: isKeyframe, now: borrowedNow
-                )
+                let purgePrepared = try VideoChannel.prepareFrame(
+                    UnsafeBufferPointer(purgePointer), isKeyframe: isKeyframe,
+                    config: borrowed.preparationConfig(hasLastInputSeq: false))
                 purgePointer.update(repeating: 0x7E)
                 purgePointer.deallocate()
+                borrowed.ingestPrepared(
+                    purgePrepared, frameNumber: purgeFrame,
+                    captureTimestampMicroseconds: 9_000_000,
+                    lastInputSeq: nil, now: borrowedNow)
                 let expectedPurge = expected.purgeQueuedVideo()
                 let borrowedPurge = borrowed.purgeQueuedVideo()
                 XCTAssertEqual(borrowedPurge.datagrams, expectedPurge.datagrams)

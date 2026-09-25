@@ -2,6 +2,7 @@ import XCTest
 import Foundation
 import HostSession
 @_spi(Testing) import HostWire
+import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 

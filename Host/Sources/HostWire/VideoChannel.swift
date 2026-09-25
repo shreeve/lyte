@@ -68,8 +68,6 @@ public typealias VideoChannelSealer = (
 ) throws -> [UInt8]
 
 public struct VideoChannelConfig: Sendable {
-    public var channel: ChannelId
-    public var firstSeq: ChannelSeq
     /// The starting FEC regime; `setRegime` moves it per frame.
     public var regime: FecRegime
     public var rateBitsPerSecond: Int
@@ -90,8 +88,6 @@ public struct VideoChannelConfig: Sendable {
     public var repairQueueUsefulnessNS: UInt64
 
     public init(
-        channel: ChannelId = .videoActive,
-        firstSeq: ChannelSeq = ChannelSeq(rawValue: 0),
         regime: FecRegime = .clean,
         rateBitsPerSecond: Int,
         pacerQuantumNS: UInt64 = 1_000_000,
@@ -100,8 +96,6 @@ public struct VideoChannelConfig: Sendable {
         repairStoreByteCap: Int = 16 << 20,
         repairQueueUsefulnessNS: UInt64 = 100_000_000
     ) {
-        self.channel = channel
-        self.firstSeq = firstSeq
         self.regime = regime
         self.rateBitsPerSecond = rateBitsPerSecond
         self.pacerQuantumNS = pacerQuantumNS
@@ -289,7 +283,7 @@ public final class VideoChannel {
             quantumNS: config.pacerQuantumNS,
             now: now
         )
-        self.nextSeq = config.firstSeq
+        self.nextSeq = ChannelSeq(rawValue: 0)
         self.regime = config.regime
         self.seal = seal
         self.sealOverheadByteCount = seal == nil ? 0 : sealTagByteCount
@@ -367,74 +361,12 @@ public final class VideoChannel {
             )
     }
 
-    /// Packetizes one encoded frame and enqueues every shard; returns the
-    /// shard count. Throws on non-frame-shaped bytes, a lying keyframe
-    /// flag or an unprotectable size.
-    /// `captureTimestampMicroseconds` rides the envelope timestamp
-    /// verbatim. `lastInputSeq`, when set, rides every shard of this frame
-    /// as TLV 0x03 and shrinks the frame's shard budget accordingly.
-    @discardableResult
-    public func ingest(
-        frame annexB: [UInt8],
-        frameNumber: FrameNumber,
-        captureTimestampMicroseconds: UInt64,
-        isKeyframe: Bool,
-        lastInputSeq: UInt32? = nil,
-        now: UInt64
-    ) throws -> Int {
-        try ingestBytes(
-            frame: annexB, frameNumber: frameNumber,
-            captureTimestampMicroseconds: captureTimestampMicroseconds,
-            isKeyframe: isKeyframe, lastInputSeq: lastInputSeq,
-            now: now
-        )
-    }
-
-    /// Synchronous borrowed ingress. Packetization, FEC, queueing and
-    /// repair retention finish before return; no input view escapes.
-    @discardableResult
-    public func ingest(
-        frame annexB: UnsafeBufferPointer<UInt8>,
-        frameNumber: FrameNumber,
-        captureTimestampMicroseconds: UInt64,
-        isKeyframe: Bool,
-        lastInputSeq: UInt32? = nil,
-        now: UInt64
-    ) throws -> Int {
-        try ingestBytes(
-            frame: annexB, frameNumber: frameNumber,
-            captureTimestampMicroseconds: captureTimestampMicroseconds,
-            isKeyframe: isKeyframe, lastInputSeq: lastInputSeq,
-            now: now
-        )
-    }
-
-    func ingestBytes<C>(
-        frame annexB: C,
-        frameNumber: FrameNumber,
-        captureTimestampMicroseconds: UInt64,
-        isKeyframe: Bool,
-        lastInputSeq: UInt32?,
-        now: UInt64
-    ) throws -> Int
-    where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
-        let prepared = try Self.prepareFrame(
-            annexB,
-            isKeyframe: isKeyframe,
-            config: preparationConfig(hasLastInputSeq: lastInputSeq != nil)
-        )
-        return ingestPrepared(
-            prepared,
-            frameNumber: frameNumber,
-            captureTimestampMicroseconds: captureTimestampMicroseconds,
-            lastInputSeq: lastInputSeq,
-            now: now
-        )
-    }
-
-    /// Ordered half: enqueue every shard unsealed and retain the frame.
-    /// Seqs and seals are assigned at release (see the header). Callers
-    /// serialize this with every other Session mutation.
+    /// Ordered half: enqueue every shard unsealed and retain the frame;
+    /// returns the shard count. Seqs and seals are assigned at release
+    /// (see the header). Callers serialize this with every other Session
+    /// mutation. `captureTimestampMicroseconds` rides the envelope
+    /// timestamp verbatim. `lastInputSeq`, when set, rides every shard of
+    /// this frame as TLV 0x03; it must match the preparation config's.
     @discardableResult
     public func ingestPrepared(
         _ prepared: PreparedVideoFrame,
@@ -687,7 +619,7 @@ public final class VideoChannel {
         let frame = video.frameNumber.rawValue
         queuedShardsByFrame[frame, default: 0] += 1
         let headerBytes = Envelope(
-            channel: config.channel, seq: nextSeq, frame: video.frameNumber,
+            channel: .videoActive, seq: nextSeq, frame: video.frameNumber,
             timestamp: 0, fec: 0, extensions: video.extensions
         ).headerByteCount
         pacer.enqueue(
@@ -875,7 +807,7 @@ public final class VideoChannel {
     /// seq, so the seqs that do reach the wire stay gap-free.
     private func release(_ video: PendingVideo) -> VideoChannelDatagram? {
         let envelope = Envelope(
-            channel: config.channel,
+            channel: .videoActive,
             seq: nextSeq,
             frame: video.frameNumber,
             timestamp: video.captureMicros,

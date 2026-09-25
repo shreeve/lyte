@@ -24,14 +24,6 @@ struct SessionArqLane: Sendable {
         try endpoint.send(message: message, now: instant(now))
     }
 
-    /// Queues a one-shot group under the endpoint's next group id.
-    @discardableResult
-    mutating func sendOneShot(
-        _ message: [UInt8], now: UInt64
-    ) throws -> ArqGroupId {
-        try endpoint.sendOneShot(message: message, now: instant(now))
-    }
-
     mutating func ingest(
         _ payload: ArraySlice<UInt8>, now: UInt64
     ) -> [ArqEvent] {

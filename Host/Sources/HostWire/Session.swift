@@ -177,8 +177,6 @@ public enum SessionEvent: Equatable, Sendable {
     /// The ARQ delivered one reliable CTRL message — exactly once, in
     /// order within its group. The bytes start with its CTRL type byte.
     case reliableCtrl(group: ArqGroupId, message: [UInt8])
-    /// A one-shot group this session sent is fully acknowledged.
-    case reliableOneShotAcknowledged(ArqGroupId)
     /// The ARQ endpoint ignored (part of) an ingested payload. Some
     /// reasons are routine protocol weather (a duplicate from a
     /// retransmit crossing its ACK); the shell decides what to log.
@@ -270,31 +268,11 @@ public enum SessionEvent: Equatable, Sendable {
     /// (only when bulkTransfer was agreed). The shell feeds it to the
     /// BulkReceiveShell, whose replies come back through `sendBulk`.
     case bulkMessageReceived(BulkMessage)
-    /// A sha-verified clipboard image arrived over the bulk channel (only
-    /// when keys 10 ∧ 12 were agreed); the sync book is already pre-armed
-    /// against the apply's OS echo. Payload bytes appear here and never in
-    /// logs.
-    case clipboardImageReceived(data: [UInt8], mime: String)
-    /// A host image copy left as bulk cargo (byte count only).
-    case clipboardImageShareStarted(byteCount: Int)
-    /// The client verified the digest — the image landed.
-    case clipboardImageShareCompleted(byteCount: Int)
-    /// An image share died; `byRemote` says whose abort it was (a remote
-    /// decline/busy is routine — best-effort, latest wins).
-    case clipboardImageShareAborted(
-        reason: BulkAbortReason, byRemote: Bool
-    )
-    /// An admitted incoming image died before landing; nothing applied.
-    case clipboardImageReceiveAborted(
-        reason: BulkAbortReason, byRemote: Bool
-    )
-    /// A leaf-reported image copy was judged and not shared.
-    case clipboardImageSuppressed(ClipboardImageSuppressReason)
-    /// Incoming image cargo was refused; the typed abort is already queued.
-    case clipboardImageRefused(ClipboardImageRefuseReason)
-    /// The peer broke the bulk state machine inside the
-    /// clipboard lane (the abort is already queued).
-    case clipboardImageViolation(BulkTransferViolation)
+    /// The clipboard-image lane's outcome (only when keys 10 ∧ 12 were
+    /// agreed), never `.send`: the session puts those on chan 8 itself.
+    /// On `.applyImage` the sync book is already armed against the
+    /// apply's OS echo; payload bytes appear there and never in logs.
+    case clipboardImage(ClipboardImageEvent)
 }
 
 /// Why a leaf-reported host clipboard change did not become a 0x1B.
@@ -799,7 +777,6 @@ public final class Session {
         )
         self.channel = VideoChannel(
             config: VideoChannelConfig(
-                channel: .videoActive,
                 regime: config.regime,
                 rateBitsPerSecond: config.rateBitsPerSecond,
                 pacerQuantumNS: config.pacerQuantumNS,
@@ -1055,9 +1032,9 @@ public final class Session {
 
     // MARK: Video
 
-    /// One encoded frame into the sealed, paced, conn-id-tagged stream.
-    /// The session owns frame numbering (from 0). Throws whatever the
-    /// packetize/seal path throws.
+    /// One encoded frame into the sealed, paced, conn-id-tagged stream,
+    /// all three phases below in one call. The session owns frame
+    /// numbering (from 0). Throws whatever the packetize/seal path throws.
     @discardableResult
     public func ingestVideoFrame(
         _ annexB: [UInt8],
@@ -1065,32 +1042,6 @@ public final class Session {
         isKeyframe: Bool,
         now: UInt64
     ) throws -> Int {
-        try ingestVideoFrameBytes(
-            annexB, captureTimestampMicroseconds: captureTimestampMicroseconds,
-            isKeyframe: isKeyframe, now: now)
-    }
-
-    /// Borrowed encoder-buffer ingress. The pointer is consumed
-    /// synchronously and is never retained past this call.
-    @discardableResult
-    public func ingestVideoFrame(
-        _ annexB: UnsafeBufferPointer<UInt8>,
-        captureTimestampMicroseconds: UInt64,
-        isKeyframe: Bool,
-        now: UInt64
-    ) throws -> Int {
-        try ingestVideoFrameBytes(
-            annexB, captureTimestampMicroseconds: captureTimestampMicroseconds,
-            isKeyframe: isKeyframe, now: now)
-    }
-
-    private func ingestVideoFrameBytes<C>(
-        _ annexB: C,
-        captureTimestampMicroseconds: UInt64,
-        isKeyframe: Bool,
-        now: UInt64
-    ) throws -> Int
-    where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
         guard let context = try beginVideoFramePreparation(
             encodedByteCount: annexB.count
         ) else { return 0 }
@@ -1251,11 +1202,6 @@ public final class Session {
         channel.queuedBytes(.freshVideo) + channel.queuedBytes(.videoTail)
             + socketPending.videoByteCount
     }
-
-    /// Accepted and discarded: nothing reads per-frame flight records.
-    public func annotateVideoFrameTelemetry(
-        frame: FrameNumber, averageQP: Int?, idrCauses: [String]
-    ) {}
 
     /// Queue latency budget currently in force. The FEC regime is the
     /// existing clean/impaired posture, so admission and fall purge use
@@ -1525,25 +1471,6 @@ public final class Session {
         )
     }
 
-    /// Queues one one-shot group's single message under the CTRL
-    /// endpoint's next group id, which it returns. The group retransmits
-    /// independently of the ordered stream and of every other one-shot;
-    /// full acknowledgment surfaces as `.reliableOneShotAcknowledged`.
-    @discardableResult
-    public func sendReliableOneShot(
-        _ message: [UInt8],
-        now: UInt64,
-        hostMicroseconds: UInt64
-    ) throws -> ArqGroupId {
-        let group = try enqueueReliable(on: .ctrl) {
-            try ctrlArqLane.sendOneShot(message, now: now)
-        }
-        _ = serviceArqLane(
-            .control, now: now, hostMicroseconds: hostMicroseconds
-        )
-        return group
-    }
-
     /// True when the reliable sublayers (CTRL and, if present, bulk) have
     /// nothing left to send, retransmit or acknowledge. The teardown drain
     /// waits on both: a final bulk ack/abort deserves its retransmits too.
@@ -1692,32 +1619,8 @@ public final class Session {
                         .sendFailed("clipboard image: \(error)")
                     )
                 }
-            case .shareStarted(_, let byteCount):
-                events.append(
-                    .clipboardImageShareStarted(byteCount: byteCount)
-                )
-            case .shareCompleted(_, let byteCount):
-                events.append(
-                    .clipboardImageShareCompleted(byteCount: byteCount)
-                )
-            case .shareAborted(let reason, let byRemote):
-                events.append(.clipboardImageShareAborted(
-                    reason: reason, byRemote: byRemote
-                ))
-            case .receiveAborted(let reason, let byRemote):
-                events.append(.clipboardImageReceiveAborted(
-                    reason: reason, byRemote: byRemote
-                ))
-            case .suppressed(let reason):
-                events.append(.clipboardImageSuppressed(reason))
-            case .refused(let reason):
-                events.append(.clipboardImageRefused(reason))
-            case .applyImage(let data, let mime):
-                events.append(
-                    .clipboardImageReceived(data: data, mime: mime)
-                )
-            case .violated(let violation):
-                events.append(.clipboardImageViolation(violation))
+            default:
+                events.append(.clipboardImage(event))
             }
         }
         return events
@@ -1744,9 +1647,9 @@ public final class Session {
     }
 
     /// Ingest events → session events, with the counters kept honest.
-    /// Lifecycle (0x09/0x0A) and capability (0x0F/0x11/0x12) messages are
-    /// consumed here; everything else (the pairing quartet, future types)
-    /// surfaces as `.reliableCtrl` for the shell.
+    /// The session's own types are consumed or refused here (see
+    /// `consumeReliable`); everything else (the pairing quartet, future
+    /// types) surfaces as `.reliableCtrl` for the shell.
     private func absorbArq(
         _ arqEvents: [ArqEvent], now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
@@ -1761,8 +1664,8 @@ public final class Session {
                 } else {
                     events.append(.reliableCtrl(group: group, message: bytes))
                 }
-            case .oneShotAcknowledged(let group):
-                events.append(.reliableOneShotAcknowledged(group))
+            case .oneShotAcknowledged:
+                break // the host sends no one-shots
             case .ignored(.orderedStreamPoisoned):
                 events += tearDownPoisonedStream(
                     now: now, hostMicroseconds: hostMicroseconds)
@@ -1793,9 +1696,6 @@ public final class Session {
             return receiveDeclaration(
                 message, now: now, hostMicroseconds: hostMicroseconds
             )
-        case CtrlMessageType.capabilityUpdateAck:
-            // The host never proposes, so every ack is unsolicited.
-            return drop(.malformedCtrl)
         case CtrlMessageType.inputEvent:
             guard let event = try? InputEvent.decode(message) else {
                 return drop(.malformedCtrl)
@@ -1835,13 +1735,15 @@ public final class Session {
             clipboardBook.noteRemoteApplied(set.text)
             return [.clipboardSetReceived(text: set.text)]
         case CtrlMessageType.modeTransition, CtrlMessageType.capabilityUpdate,
-             CtrlMessageType.inputEcho,
+             CtrlMessageType.capabilityUpdateAck, CtrlMessageType.inputEcho,
              CtrlMessageType.audioRoutingStatus,
              CtrlMessageType.clipboardAnnounce,
              CtrlMessageType.cursorShape:
             // Receiver-role messages arriving at the mediaSender /
-            // sole proposer / echo emitter / status emitter / announce
-            // emitter / shape emitter: hostile or confused. Dropped loud.
+            // sole proposer / non-proposer (the host proposes nothing, so
+            // any ack is unsolicited) / echo emitter / status emitter /
+            // announce emitter / shape emitter: hostile or confused.
+            // Dropped loud.
             return drop(.unexpectedCtrlType(message.first!))
         case CtrlMessageType.bulkOffer, CtrlMessageType.bulkAccept,
              CtrlMessageType.bulkChunk, CtrlMessageType.bulkAck,

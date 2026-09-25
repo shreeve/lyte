@@ -3,6 +3,7 @@ import Foundation
 import HostCore
 import HostSession
 @_spi(Testing) import HostWire
+import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 

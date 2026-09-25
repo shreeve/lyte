@@ -280,6 +280,31 @@ public enum HostSessionHarnessError: Error {
     case notAuthenticated
 }
 
+extension VideoChannel {
+    /// Both halves of a frame's ingest at once: packetize at this
+    /// channel's shard budget, then enqueue; returns the shard count.
+    /// Throws on non-frame-shaped bytes, a lying keyframe flag or an
+    /// unprotectable size.
+    @discardableResult
+    public func ingest(
+        frame annexB: [UInt8],
+        frameNumber: FrameNumber,
+        captureTimestampMicroseconds: UInt64,
+        isKeyframe: Bool,
+        lastInputSeq: UInt32? = nil,
+        now: UInt64
+    ) throws -> Int {
+        ingestPrepared(
+            try Self.prepareFrame(
+                annexB, isKeyframe: isKeyframe,
+                config: preparationConfig(
+                    hasLastInputSeq: lastInputSeq != nil)),
+            frameNumber: frameNumber,
+            captureTimestampMicroseconds: captureTimestampMicroseconds,
+            lastInputSeq: lastInputSeq, now: now)
+    }
+}
+
 /// A frame-shaped Annex-B blob of exactly `byteCount` bytes: a 4-byte start
 /// code, a TRAIL_R NAL header (IDR_W_RADL with `irap`), and padding that can
 /// never form a start code.
