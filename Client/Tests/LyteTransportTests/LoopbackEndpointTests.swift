@@ -5,9 +5,9 @@ import LyteTransport
 import LyteWire
 import LyteWireTestKit
 
-// Live-socket integration: spin the endpoint on 127.0.0.1, fire hand-built
-// datagrams (valid via LyteWire encode, plus malformed ones), and assert
-// the counters, gap tracking, and reject behavior the CL-1 gate names.
+// Live-socket integration: the endpoint on 127.0.0.1 against hand-built
+// datagrams (valid ones via LyteWire, plus malformed ones) — counters, gap
+// tracking, rejects, and the reply path to the datagram source.
 
 final class LoopbackEndpointTests: XCTestCase {
     /// Short enough that stop()'s join costs milliseconds, not the
@@ -159,7 +159,7 @@ final class LoopbackEndpointTests: XCTestCase {
         XCTAssertEqual(delivered.all, [[0x7E]])
     }
 
-    // MARK: CL-3's return leg
+    // MARK: The return leg
 
     func testSendToPeerReachesTheDatagramSource() throws {
         let endpoint = UdpReceiveEndpoint(
@@ -294,7 +294,7 @@ private final class LoopbackSender {
         }
     }
 
-    /// Blocks for one datagram on the connected socket (the CL-3 return
+    /// Blocks for one datagram on the connected socket (the return
     /// leg lands here).
     func receive(timeoutSeconds: Double) throws -> [UInt8] {
         var tv = timeval(tv_sec: Int(timeoutSeconds),

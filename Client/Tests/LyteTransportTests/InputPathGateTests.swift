@@ -334,13 +334,13 @@ final class InputPathGateTests: XCTestCase {
             .keyKeycode(keycode: 999, pressed: true)))
     }
 
-    // MARK: - The host stand-in (HS-13's Session discipline from Wire parts)
+    // MARK: - The host stand-in (the Session discipline from Wire parts)
 
-    /// Noise responder + host-clock ARQ + the HS-13 input arm: consumes
+    /// Noise responder + host-clock ARQ + the host input arm: consumes
     /// 0x16 from the ordered stream, "injects" after a fixed synthetic
     /// delay, buffers echo tuples flushed as 0x17 on advance (≤ 32 per
     /// message), moves the lastInputSeq stamp, and packetizes video at
-    /// the STAMPED shard budget (the HS-13 geometry-honesty rule) so
+    /// the STAMPED shard budget (the geometry-honesty rule) so
     /// every datagram fits 1152 B with the TLV aboard.
     private final class HostInputStandIn: NoiseHandshakeIO {
         var peer: SealedCtrlPeer<HostClock>
@@ -360,7 +360,7 @@ final class InputPathGateTests: XCTestCase {
         var pendingEchoes: [InputEchoTuple] = []
         var echoTuplesSent = 0
 
-        // The beacon mirror (the real CL-10 loop: beacon → echo →
+        // The beacon mirror (the real loop: beacon → echo →
         // mirrored t3/t4 on the next beacon → client clock sample).
         var beaconSeq: UInt32 = 0
         var lastBeaconAt: UInt64 = 0
@@ -408,7 +408,7 @@ final class InputPathGateTests: XCTestCase {
                 switch plaintext.first {
                 case CtrlMessageType.beaconEcho:
                     // The mirror's food: t3 echoed verbatim, t4 measured
-                    // here — rides the NEXT beacon (W4a's lastEcho rule).
+                    // here — rides the NEXT beacon (the lastEcho rule).
                     if let echo = try? BeaconEcho.decode(plaintext) {
                         pendingMirror = ClockBeacon.LastEcho(
                             beaconSeq: echo.beaconSeq,
@@ -434,7 +434,7 @@ final class InputPathGateTests: XCTestCase {
                     return XCTFail("malformed input event reached the host")
                 }
                 receivedEvents.append(event)
-                // The HS-13 shell: inject, then noteInputInjected —
+                // The host shell: inject, then noteInputInjected —
                 // the stamp moves and one echo tuple buffers.
                 lastInputSeq = event.seq
                 pendingEchoes.append(InputEchoTuple(
@@ -483,7 +483,7 @@ final class InputPathGateTests: XCTestCase {
 
         /// Video at the STAMPED budget: when lastInputSeq is set, every
         /// shard carries TLV 0x03 and the geometry derives from the
-        /// correspondingly smaller shard ceiling (the HS-13 VideoChannel
+        /// correspondingly smaller shard ceiling (the host VideoChannel
         /// rule, mirrored from LyteWire parts) — so the sealed datagram
         /// NEVER bursts 1152 B, asserted per datagram.
         func videoDatagrams(
@@ -585,7 +585,7 @@ final class InputPathGateTests: XCTestCase {
         }
     }
 
-    // MARK: - The full loop through the W-G4 storm
+    // MARK: - The full loop through the SimNet storm
 
     func testGateSyntheticInputThroughStormWithEchoesAndPhotonLoop() throws {
         let corpus = try ClientTestPaths.videoCorpusFrames(2)
@@ -604,7 +604,7 @@ final class InputPathGateTests: XCTestCase {
         // The script (virtual µs). Beacons run from establishment so
         // the clock model has a fit before the first echo returns:
         //   3.0–4.0 s  40 input events, all five kinds, one per 25 ms,
-        //              THROUGH the W-G4 storm (5% loss, 2% dup, jitter)
+        //              THROUGH the SimNet storm (5% loss, 2% dup, jitter)
         //   4.2 s      storm clears (input proven under impairment;
         //              the photon leg wants a deliverable frame)
         //   4.5 s      video frame 0 (IDR) — stamped: injections
@@ -729,7 +729,7 @@ final class InputPathGateTests: XCTestCase {
                        HostInputStandIn.injectDelayMicroseconds)
 
         // ── input→inject through the REAL clock loop (beacon → echo →
-        // mirror → CL-10 fit): every echo that found a fit recorded,
+        // mirror → clock fit): every echo that found a fit recorded,
         // and the values sit where SimNet's one-way delay + the
         // synthetic inject delay put them (identical virtual clocks →
         // true offset 0; the fit's error is bounded by the jitter). ──

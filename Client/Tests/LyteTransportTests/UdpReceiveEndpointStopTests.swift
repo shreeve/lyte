@@ -87,7 +87,7 @@ final class UdpReceiveEndpointStopTests: XCTestCase {
 
     /// A datagram handler blocks mid-flight while another thread calls
     /// stop(): stop() must wait for the handler (the receive thread) to
-    /// finish before returning. Pre-fix, stop() closed the fd and could
+    /// finish before returning, rather than closing the fd and possibly
     /// return with the thread still running inside the loop.
     func testStopJoinsTheReceiveThreadBeforeReturning() throws {
         let handlerEntered = DispatchSemaphore(value: 0)
@@ -139,7 +139,7 @@ final class UdpReceiveEndpointStopTests: XCTestCase {
             + "— the fd number was freed under a live loop")
         XCTAssertFalse(handlerFinished.value)
         // The discriminating observable: the fd number must still be
-        // OURS while the thread lives. Pre-fix, stop() closed it at
+        // OURS while the thread lives; closing it at
         // entry — a concurrent re-dial could be handed the recycled
         // number while this loop still runs.
         XCTAssertGreaterThanOrEqual(

@@ -7,14 +7,11 @@ import LyteTransport
 import LyteWire
 import LyteWireTestKit
 
-// THE CL-2 GATE (corpus leg): the golden W2 corpus, packetized by the
-// real VideoPacketizer, survives shuffle and parity-bounded loss through
-// the full render pipeline — headless: LyteVideoPipeline emits
-// CMSampleBuffers with no window or display layer anywhere. Asserts the
-// DecodeUnit sequence, byte-exact Annex-B out vs corpus in, sample-buffer
-// creation (format-description bootstrap from the corpus IDR's in-band
-// VPS/SPS/PPS), FEC recovery at 5% seeded drop, and the fecImpossible
-// seam CL-3's IDR request will hook.
+// The golden corpus, packetized by the real VideoPacketizer, survives
+// shuffle and parity-bounded loss through the headless render pipeline:
+// the DecodeUnit sequence, byte-exact Annex-B, sample-buffer creation
+// (the format description bootstraps from the corpus IDR's in-band
+// VPS/SPS/PPS), and the fecImpossible seam.
 
 final class VideoPipelineTests: XCTestCase {
 
@@ -189,8 +186,6 @@ final class VideoPipelineTests: XCTestCase {
         }
     }
 
-    // MARK: - 5% drop recovers via FEC (the CL-2 gate's loss clause)
-
     func testDuplicateRepairRoutesFromAssemblerIntoPolicyBook() throws {
         let frame = try XCTUnwrap(loadPrefix().first)
         let shards = try XCTUnwrap(try packetizePrefix([frame]).first)
@@ -252,7 +247,7 @@ final class VideoPipelineTests: XCTestCase {
         XCTAssertEqual(policyStats.repairsDuplicate, 1)
     }
 
-    // MARK: - fecImpossible fires the CL-3 seam
+    // MARK: - fecImpossible fires its seam
 
     func testFecImpossibleFiresSeamAndPipelineMovesOn() throws {
         let frames = try loadPrefix()
@@ -278,7 +273,7 @@ final class VideoPipelineTests: XCTestCase {
         XCTAssertEqual(collector.pipeline.snapshotStats().fecImpossibleCount, 1)
 
         // The stale window expires: frame 1 is skipped, frame 2 renders —
-        // the pipeline moves on without CL-3's feedback loop existing yet.
+        // the pipeline moves on.
         now = now.advanced(byMicroseconds: 300_000)
         collector.pipeline.tick(now: now)
 
@@ -343,7 +338,7 @@ final class VideoPipelineTests: XCTestCase {
     }
 
     /// Pipeline-level bootstrap: P-frames delivered before the IDR count
-    /// as withheld, never as failures — CL-2 renders from the first IDR.
+    /// as withheld, never as failures — rendering starts at the first IDR.
     func testPipelineWithholdsPreIdrFrames() throws {
         let frames = try loadPrefix()
         var packetizer = VideoPacketizer()
@@ -402,7 +397,7 @@ final class VideoPipelineTests: XCTestCase {
         XCTAssertEqual(failures.frames, [7])
     }
 
-    // MARK: - The HS-22 quality window (the overlay/wire-view line)
+    // MARK: - The quality window (the overlay/wire-view line)
 
     /// The receive-side quality snapshot derives entirely from decoded
     /// frames: cadence and bitrate over the frames' actual span,

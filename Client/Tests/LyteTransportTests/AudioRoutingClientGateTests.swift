@@ -62,7 +62,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
 
     /// The REAL production core minus the socket, on a virtual clock,
     /// piped directly to the stand-in (this gate needs determinism,
-    /// not impairment — CL-8's gate owns the storm legs).
+    /// not impairment).
     private typealias Harness = ClientCoreHarness<RoutingHostStandIn>
 
     // MARK: The negotiated flip, end to end
@@ -70,7 +70,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
     func testGateNegotiatedFlipRoundTripAndFailedFlipReportsOldPosture() throws {
         let host = RoutingHostStandIn(
             localCapabilities: .wireDefault.declaringHostAudioRouting())
-        // The NEUTRAL posture, explicit since CL-18 flipped the
+        // The NEUTRAL posture, explicit since the default flipped the
         // config default to hostMuted: this leg is about the flip
         // round-trip, so the session-start ask stays out of the way.
         var config = LyteUdpSessionCoreConfig()

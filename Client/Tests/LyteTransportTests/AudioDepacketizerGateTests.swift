@@ -2,13 +2,8 @@ import XCTest
 import LyteTransport
 import LyteWire
 
-// THE GATE (CL-11, layout half): the client's audio depacketizer is a
-// BYTE MIRROR of HS-15's HOST-PINNED AudioFramer layout — pinned here
-// against hand-built wire bytes (the identical hand-built arrays
-// Host/Tests/HostWireTests/AudioGateTests.swift leg 1 pins the framer
-// against — the cross-pin), and against the frozen FEC machinery for
-// recovery. Both copies promote into Wire/ together; neither may move
-// a byte.
+// The client's audio depacketizer against hand-built wire bytes (the host
+// framer's layout) and against the frozen FEC machinery for recovery.
 
 final class AudioDepacketizerGateTests: XCTestCase {
 

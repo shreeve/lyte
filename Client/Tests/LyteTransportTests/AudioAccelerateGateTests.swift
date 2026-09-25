@@ -4,13 +4,11 @@ import LyteTransport
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (CL-17): the M7 audio remainder in virtual time — WSOLA
-// accelerate drains an overfull pipe to target at a bounded rate with
-// sine-wave continuity (the CL-11 evidence pattern), the skew term
-// reads clock drift as a rate instead of depth, and a drain that runs
-// dry hands to PLC cleanly. The route-change leg drives the production
-// rebuild path against the real engine (skipped where no device
-// exists).
+// Audio playout in virtual time: WSOLA accelerate drains an overfull pipe
+// to target at a bounded rate with sine-wave continuity, the skew term
+// reads clock drift as a rate instead of depth, and a drain that runs dry
+// hands to PLC cleanly. The route-change leg drives the production rebuild
+// path against the real engine (skipped where no device exists).
 
 final class AudioAccelerateGateTests: XCTestCase {
 
@@ -169,7 +167,7 @@ final class AudioAccelerateGateTests: XCTestCase {
                              "silence must drain at full rate")
     }
 
-    // MARK: - The virtual-time pump harness (the CL-11 sim grown the
+    // MARK: - The virtual-time pump harness (the sim grown the
     // accelerator: receiver → synthetic decode → WSOLA → ring → DAC)
 
     private struct PumpResult {
@@ -263,7 +261,7 @@ final class AudioAccelerateGateTests: XCTestCase {
     }
 
     /// One audio packet as the wire carries it (the leg-3 pattern from
-    /// the CL-11 gate: real envelopes through the real depacketizer,
+    /// the depacketizer gate: real envelopes through the real depacketizer,
     /// data shards only — loss is not this gate's subject).
     private func wireArrivals(
         count: Int,

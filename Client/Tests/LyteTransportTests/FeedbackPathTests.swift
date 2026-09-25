@@ -7,15 +7,11 @@ import LyteTransport
 import LyteWire
 import LyteWireTestKit
 
-// THE CL-3 GATE (client-side legs): the return path exists and tells the
-// truth. FeedbackReports built from a known demux state carry the exact
-// ledgers and dispersion samples that went in; the cadence is pinned to
-// 25–50 ms; the send path seals through the TransportCrypto seam with the
-// envelope header as AAD (byte-identical to what the receiver slices
-// off); IDR requests coalesce instead of spamming; and a ClockBeacon in
-// produces a BeaconEcho out with the four timestamps in the right slots —
-// offset/RTT computable, cross-checked against the frozen W4a worked
-// example.
+// The return path tells the truth: reports built from a known demux state
+// carry its exact ledgers and dispersion samples; the cadence is clamped
+// to 25–50 ms; sends seal with the envelope header as AAD; IDR requests
+// coalesce; and a ClockBeacon in produces a BeaconEcho out with the four
+// timestamps in the right slots, checked against the worked example.
 
 final class FeedbackPathTests: XCTestCase {
 
@@ -461,7 +457,7 @@ final class FeedbackPathTests: XCTestCase {
         XCTAssertEqual(echo.clientReceive.microseconds, 1_253_000, "t2 = arrival stamp")
         XCTAssertEqual(echo.clientSend.microseconds, 1_253_500, "t3 = emit instant")
 
-        // The echo's bytes match the frozen W4a worked example, and the
+        // The echo's bytes match the frozen worked example, and the
         // host-side computation with its t4 gives the pinned offset/RTT.
         let file = try BeaconVectorFile.loadCommitted()
         let example = file.clockWorkedExample

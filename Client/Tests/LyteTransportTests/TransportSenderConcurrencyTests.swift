@@ -1,12 +1,8 @@
-// The chan-0 seal-order pin (v1-final analysis, finding 4). Channel 0
-// carries three independent senders on three threads — ARQ service,
-// beacon echoes, IDR requests — and NoiseTransport's extended counter
-// demands strict per-channel commit monotonicity at seal time. The
-// sender must therefore make allocation order the commit order: seq
-// allocation and seal are one critical section. This gate hammers one
-// sender from several threads through a crypto that enforces exactly
-// Noise's law, and fails loudly if any seal ever observes seqs out of
-// order (the pre-fix shape: allocate under the lock, seal outside it).
+// Channel 0 carries three independent senders on three threads — ARQ
+// service, beacon echoes, IDR requests — and NoiseTransport's extended
+// counter demands strict per-channel commit monotonicity at seal time, so
+// seq allocation and seal are one critical section. This hammers one
+// sender from several threads through a crypto that enforces Noise's law.
 
 import LyteWire
 import XCTest
@@ -57,7 +53,7 @@ final class TransportSenderConcurrencyTests: XCTestCase {
     /// Four threads, one channel, 2,000 sends each: every seal must
     /// observe its seq in exact allocation order (the strict crypto
     /// throws otherwise and the sender counts it), and the far side
-    /// must see one contiguous serial stream. Pre-fix, the
+    /// must see one contiguous serial stream. Otherwise the
     /// allocate-then-unlock-then-seal window made this fail within a
     /// few hundred iterations.
     func testConcurrentSendersOnOneChannelNeverCommitOutOfOrder() {

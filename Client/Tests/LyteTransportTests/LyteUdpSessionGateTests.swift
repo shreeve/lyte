@@ -7,36 +7,26 @@ import LyteTransport
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (build plan CL-8 + CL-7's deferred session slice): the
-// client's REAL production session core — NoiseTransportCrypto
-// initiator (with the W8 0x13→0x14 retry answer in the dial),
-// ReceiveDemux unseal, TransportSender seal, ReliableCtrlEndpoint,
-// CapabilityNegotiator(client), SessionStateMachine(mediaReceiver),
-// the 0x15 idle-frame render seam through the shared factory, and the
-// typed teardown both directions — driven end to end in virtual time
-// against a LyteWire host build-up running the REAL mediaSender
-// machine, through SimNet impairment schedules (the established
-// ReliableCtrlGateTests/PairingGateTests pattern; this gate keeps an
-// isolated stand-in assembled from the same Wire parts that pin the
-// HS-11 Session's discipline).
+// The client's production session core — Noise initiator (answering a
+// 0x13 retry challenge in the dial), demux, sealed sender, reliable CTRL,
+// capability negotiation, the receiver state machine, the 0x15 idle-frame
+// render seam and the typed teardown both ways — end to end in virtual
+// time against a host stand-in built from LyteWire parts running the real
+// mediaSender machine through SimNet impairment.
 //
-// The scripted lifecycle mirrors the W4b simulation's G6 shape, now
-// over the production client object: capabilities as the first
-// reliable word both ways → datagram video (real corpus frames) → the
-// ratchet convergence handoff (idle frame one-shot, ack-gated flip,
-// mode=idle) → WAKE (damage → mode=active) → a second convergence
-// whose idle frame DEDUPES (the datagram path already delivered that
-// frame) → a full blackout deriving the FROZEN pill → recovery
-// clearing it → the host's typed teardown closing the client with its
-// reason. Client-initiated teardown and the unworkable-intersection
-// refusal run as separate legs.
+// The scripted lifecycle: capabilities as the first reliable word both
+// ways → datagram video → the idle convergence (one-shot idle frame,
+// ack-gated flip, mode=idle) → wake → a second convergence whose idle
+// frame dedupes → a blackout deriving the FROZEN pill → recovery → the
+// host's typed teardown. Client-initiated teardown and the unworkable
+// intersection run as separate legs.
 
 final class LyteUdpSessionGateTests: XCTestCase {
 
     // MARK: - The host stand-in
 
-    /// The HS-11 host discipline from LyteWire parts: Noise responder
-    /// (optionally behind W8 retry challenges), mediaSender machine,
+    /// The host discipline from LyteWire parts: Noise responder
+    /// (optionally behind retry challenges), mediaSender machine,
     /// host-clock ARQ, capability negotiator (declaration = first
     /// reliable word), the idle-frame one-shot whose ack flips to
     /// IDLE, conn-id-tagged sealed CTRL, and corpus video on chan 2.
@@ -51,7 +41,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
         var lastBeaconAt: UInt64 = 0
         private var handshakeOutbox: [[UInt8]] = []
 
-        // W8 retry posture: refuse this many message 1s with a
+        // Retry posture: refuse this many message 1s with a
         // stateless challenge before establishing.
         var retryChallengesToIssue: Int
         let retrySecret: [UInt8] = (0..<32).map { UInt8($0) }
@@ -95,7 +85,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
         var transport: NoiseTransport? { peer.transport }
 
         // NoiseHandshakeIO — the pre-thread handshake window, answered
-        // in-process, with the W8 challenge leg in front when scripted.
+        // in-process, with the challenge leg in front when scripted.
 
         func sendToHost(_ datagram: [UInt8]) throws {
             guard let (envelope, payload) = try? Envelope.decode(datagram[...]),
@@ -147,7 +137,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
 
         private func establish(message1: [UInt8]) throws {
             let message2 = try peer.answer(message1: message1[...])
-            // The machine begins at establishment, ACTIVE (W4b).
+            // The machine begins at establishment, ACTIVE.
             machine = SessionStateMachine(
                 role: .mediaSender,
                 now: HostTimestamp(microseconds: 0)
@@ -201,7 +191,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
 
         /// One client datagram: unseal → route. Feedback (chan 3) is
         /// the 350 ms detector's food; CTRL splits at the one-byte
-        /// peek (HS-11's evidence discipline).
+        /// peek (the evidence discipline).
         func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
             guard let (envelope, plaintext) = try peer.open(bytes) else {
                 replayDrops += 1
@@ -282,7 +272,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
             guard transport != nil else { return [] }
             var out: [[UInt8]] = []
             if !capabilitiesDeclared {
-                // HS-11's rule: the declaration is the FIRST
+                // The declaration is the FIRST
                 // sendReliable post-establishment.
                 capabilitiesDeclared = true
                 try peer.arq.send(
@@ -311,7 +301,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
             return out
         }
 
-        /// Apply + poll, actions executed — the W4b shell discipline.
+        /// Apply + poll, actions executed — the shell discipline.
         func runMachine(_ input: SessionInput?, nowMicros: UInt64) {
             guard machine != nil else { return }
             let instant = HostTimestamp(microseconds: nowMicros)
@@ -459,7 +449,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
         }
     }
 
-    // MARK: - W8: the dial answers a retry challenge
+    // MARK: - The dial answers a retry challenge
 
     func testDialAnswersRetryChallengeWithVerbatimMessage1() throws {
         let host = HostStandIn(retryChallenges: 1)
@@ -514,7 +504,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
         //          ack-gated flip → mode=idle
         //   3.0 s  damage → WAKE → mode=active; frame 3 datagram
         //   3.5 s  converges again → IdleFrame(3) DEDUPES client-side
-        //   4.5 s  the W-G4 storm (5% loss, 2% dup, jitter)
+        //   4.5 s  the SimNet storm (5% loss, 2% dup, jitter)
         //   5.0 s  blackout (100% loss) → both ends derive FROZEN;
         //          the client pill by 7.5 s (2.5 s beacon-bounded
         //          detector)
@@ -632,7 +622,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
                     now: ClientTimestamp(microseconds: t))
             }
             // Host feedback-window verdicts (40 ms), the estimator
-            // seam's stub — the W4b sim's shape.
+            // seam's stub.
             if t - lastWindowAt >= 40_000 {
                 lastWindowAt = t
                 let clean = feedbackSinceWindow > 0

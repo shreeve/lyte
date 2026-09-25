@@ -1,9 +1,8 @@
 import LyteClientCore
 import XCTest
 
-// Pure, virtual-time legs of the F-5 client roaming gate. Integration with
-// persistence, Network.framework, and the real session core remains in
-// LyteTransportTests.
+// The roaming policy's pure, virtual-time legs. Persistence, the path
+// watcher and the real session core are LyteTransportTests'.
 final class RoamingPolicyTests: XCTestCase {
 
     private func makePolicy(

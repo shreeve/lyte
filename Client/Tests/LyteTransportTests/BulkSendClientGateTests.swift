@@ -579,7 +579,7 @@ final class BulkSendClientGateTests: XCTestCase {
         let receiver2 = ScriptedReceiver(
             window: 4, resumeBook: [persisted])
         // Seed the persisted chunks into the second session's store —
-        // exactly what F-3's host does with its tmp file.
+        // exactly what the host does with its tmp file.
         for index in 0..<persisted.possession.contiguousCount {
             receiver2.store[index] = Array(
                 payload[Int(index) * 4_096..<(Int(index) + 1) * 4_096])

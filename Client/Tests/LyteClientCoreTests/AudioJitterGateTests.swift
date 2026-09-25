@@ -224,7 +224,7 @@ final class AudioJitterGateTests: XCTestCase {
 
     func testBurstyJitterAdaptsTargetAndStaysContinuous() {
         let buffer = AudioJitterBuffer()
-        var rng = SplitMix64(seed: 0xC111)   // "CL-11"
+        var rng = SplitMix64(seed: 0xC111)
         let count = 2_000
         let arrivals = (0..<count).map { n -> (UInt64, AudioPacket) in
             let jitter = Int64(rng.next() % 30_001) - 15_000

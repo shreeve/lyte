@@ -3,10 +3,9 @@ import Foundation
 @testable import LyteTransport
 import LyteWire
 
-// CL-5's testable core: the TXT identity parse and the pinned-key hash
-// match. The browse/resolve legs need a live mDNS advertiser and are
-// gated live against the HS-10 host (`lyte-host advertise`); the seam
-// tested here is everything between the TXT bytes and the API surface.
+// The TXT identity parse and the pinned-key hash match: everything between
+// the TXT bytes and the API surface. Browse and resolve need a live mDNS
+// advertiser.
 final class LyteDiscoveryTests: XCTestCase {
 
     /// SHA-256(32 zero bytes) — independently computable

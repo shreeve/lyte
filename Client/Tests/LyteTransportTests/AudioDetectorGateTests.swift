@@ -4,14 +4,11 @@ import CoreMedia
 import LyteTransport
 import LyteWire
 
-// THE GATE (CL-11, detector half): CL-8's documented deviation closes.
-// The client's FROZEN detector defaults to 2.5 s (beacon-bounded — an
-// IDLE host emits only 1 Hz beacons); the moment the session SEES
-// audio (the 5 ms path probe HS-15 keeps flowing through ACTIVE, IDLE
-// and FROZEN), it tightens to the pillar's 350 ms. Evidence-gated
-// deliberately: W7's registry carries only the reserved audioExpress
-// escape hatch, no audio-presence key — a no-audio host never sends
-// chan-1 and keeps the 2.5 s behavior, asserted below.
+// The client's FROZEN detector defaults to 2.5 s (an idle host emits only
+// 1 Hz beacons); the moment the session sees audio (a 5 ms path probe that
+// flows through ACTIVE, IDLE and FROZEN) it tightens to 350 ms. It is
+// evidence-gated: no capability announces audio presence, so a host that
+// never sends chan 1 keeps the 2.5 s bound.
 
 final class AudioDetectorGateTests: XCTestCase {
 
@@ -49,7 +46,7 @@ final class AudioDetectorGateTests: XCTestCase {
             onEvent: { events.append($0) })
     }
 
-    /// One HS-15-shaped audio datagram (data shard 0 of a 4+2 group).
+    /// One audio datagram (data shard 0 of a 4+2 group).
     private func audioDatagram(
         group: UInt32, captureMicros: UInt64
     ) throws -> (envelope: Envelope, payload: [UInt8]) {
@@ -72,7 +69,7 @@ final class AudioDetectorGateTests: XCTestCase {
         XCTAssertFalse(core.control.detectorTightened)
 
         // 400 ms of silence: WELL past 350 ms, far under 2.5 s — a
-        // no-audio session must NOT freeze here (the CL-8 rationale:
+        // no-audio session must NOT freeze here (the rationale:
         // an IDLE host's 1 Hz beacons would flap a 350 ms detector).
         clock.advance(400_000)
         core.tick(now: clock.now)
@@ -167,7 +164,7 @@ final class AudioDetectorGateTests: XCTestCase {
         // Drive the receiver machine to IDLE the wire way: a real ARQ
         // segment carrying ModeTransition(idle), built with a LyteWire
         // host-clock endpoint and delivered through the core's CTRL
-        // peek — then let audio arrive. HS-15's ruling: audio flows in
+        // peek — then let audio arrive. Audio flows in
         // IDLE and must not wake or corrupt the mode.
         var hostArq = ArqEndpoint<HostClock>(channel: .ctrl)
         try hostArq.send(

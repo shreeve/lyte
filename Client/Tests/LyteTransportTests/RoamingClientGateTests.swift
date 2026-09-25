@@ -7,43 +7,12 @@ import LyteTransport
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (F-5, the client half of roaming/reconnect — the host
-// session-busy/takeover half is Host territory). Pinned behaviors:
-//
-//   • the detection ladder in virtual time: FROZEN alone is a blip
-//     (no roaming action); silence past the scan threshold begins the
-//     QUIET re-browse; evidence returning cancels everything and the
-//     ladders reset;
-//   • host-moved vs host-silent: the same identity (pkh — sha256 of
-//     the Noise static, the advertisement's TXT record and the pinned
-//     store's key) at a NEW address dials immediately; at the SAME
-//     address only past the redial threshold (the network works, the
-//     session is dark); foreign identities never trigger anything;
-//   • the give-up posture: there isn't one — fruitless scans back off
-//     1 s doubling to the 15 s ceiling, dial retries 2 s doubling to
-//     30 s, deadlines always in the future (never spin hot), forever;
-//   • client-side path change: the migration grace (HS-12's mechanism
-//     gets first refusal), dissolved by evidence, escalating to the
-//     scan ladder over a frozen path with the same-address threshold
-//     waived (our own address moved);
-//   • the manual Reconnect verb resets every ladder and acts NOW
-//     (probe dial + scan);
-//   • the pairing store keys by host identity, not address — a pinned
-//     host that moved is the same pinned host, preferences intact;
-//   • the banner speaks ("looking for …", "found at … — reconnecting")
-//     and the path watcher's trigger rule (baseline never notifies,
-//     any later signature change does);
-//   • end to end through the REAL session core in virtual time: a
-//     mid-transfer blackout at address A drives FROZEN at the
-//     detector and the liveness close at 30 s, the policy scans,
-//     sights the same pkh at address B, dials — and the fresh session
-//     (same pinned static, new "address") re-offers the SAME transfer
-//     id whose resume finishes sha-exact, reading only the gap.
-//
-// NOT here, deliberately (DEFERRED-PENDING-HOST — the wave-entry
-// ledger): the live host-IP flip on pup, the Mac Wi-Fi hop, and the
-// mid-bulk-transfer roam completing sha-exact at the glass; the
-// host's session-busy/takeover story is the F-5 Host half.
+// Roaming on the client: the path watcher's trigger rule, and end to end
+// through the real session core in virtual time — a mid-transfer blackout
+// at address A drives FROZEN and the liveness close at 30 s, the policy
+// scans, sights the same identity at address B and dials, and the fresh
+// session re-offers the same transfer id, whose resume reads only the gap
+// and finishes sha-exact. The policy's own ladders are RoamingPolicyTests'.
 
 final class RoamingClientGateTests: XCTestCase {
 
@@ -99,7 +68,7 @@ final class RoamingClientGateTests: XCTestCase {
     }
 
     // MARK: - The client harness (real core, virtual clock, direct
-    // pipes — plus the F-5 blackout: the clock advances, the wire
+    // pipes — plus the blackout: the clock advances, the wire
     // carries NOTHING either way)
 
     private typealias RoamHarness = ClientCoreHarness<RoamHostStandIn>
@@ -163,7 +132,7 @@ final class RoamingClientGateTests: XCTestCase {
         let pkh = LyteDiscovery.publicKeyHash(
             ofStaticPublicKey: hostKeys.publicKey)
 
-        // The coordinator with synchronous seams (the F-4 rig): one
+        // The coordinator with synchronous seams (the bulk gate's rig): one
         // 32 KiB fixture in 4 KiB chunks.
         let readers = Locked<[RecordingReader]>()
         let prepared = Locked(0)
@@ -295,7 +264,7 @@ final class RoamingClientGateTests: XCTestCase {
         XCTAssertEqual(policy.status, .attached)
         XCTAssertEqual(policy.lastKnownAddress, "10.9.9.9")
 
-        // The re-attach re-offers the SAME id (the F-4 resume path —
+        // The re-attach re-offers the SAME id (the resume path —
         // roaming rides it unchanged), and the possession-seeded
         // receiver resumes from the gap.
         let core2 = harness2.core!
@@ -344,7 +313,7 @@ where Host == RoamingClientGateTests.RoamHostStandIn {
             clientKeys: clientKeys, clock: clock)
     }
 
-    /// The F-5 blackout: the core lives through `duration` of total
+    /// The blackout: the core lives through `duration` of total
     /// wire silence — 100 ms machine beats, nothing forwarded either
     /// way (retransmissions pile up unheard).
     func blackout(t: inout UInt64, duration: UInt64) {

@@ -4,13 +4,11 @@ import LyteClientTestKit
 @testable import LyteTransport
 import LyteWire
 
-// The client Noise leg (CL-1 closed): NoiseTransportCrypto as IK
-// initiator against an in-process LyteWire responder — the exact
-// counterpart of the host's HS-7 gate, which drives a LyteWire initiator
-// against HostWire.Session. Covers: the 1-RTT handshake over the promoted
-// 0x05/0x06 carriage, sealed round trips both directions with
-// envelope-header AAD and (chan, seq) ROC, tamper rejection, replay
-// rejection, and the wrong-pinned-pubkey refusal.
+// NoiseTransportCrypto as IK initiator against an in-process LyteWire
+// responder: the 1-RTT handshake over 0x05/0x06, sealed round trips both
+// directions with envelope-header AAD and (chan, seq) ROC, tamper and
+// replay rejection, the wrong-pinned-pubkey refusal, and the directional
+// seal/unseal locks.
 
 final class NoiseClientTests: XCTestCase {
 
@@ -40,7 +38,7 @@ final class NoiseClientTests: XCTestCase {
     }
 
     /// The host's half, in-process: answers a carried message 1 from
-    /// fresh responder state (the HS-7 rule) and exposes the transport it
+    /// fresh responder state and exposes the transport it
     /// derives, so tests can seal/unseal as the host would.
     private final class InProcessHost: NoiseHandshakeIO {
         let hostStatic: NoiseKeyPair

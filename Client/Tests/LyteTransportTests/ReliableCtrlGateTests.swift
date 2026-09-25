@@ -231,7 +231,7 @@ final class ReliableCtrlGateTests: XCTestCase {
         harness.absorb(try host.beaconDatagram(hostMicros: 100), tMicros: 200)
         XCTAssertEqual(harness.reliable.learnedConnectionId, host.connectionId)
 
-        // The W-G4 fault model: 5% loss, 2% duplication, 3 ms base
+        // The fault model: 5% loss, 2% duplication, 3 ms base
         // delay with 4 ms jitter — displacement reorder emerges.
         var net = SimNet(
             config: SimNetConfig(
