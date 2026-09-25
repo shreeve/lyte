@@ -43,48 +43,7 @@ final class CursorGateTests: XCTestCase {
 
     // MARK: Leg 1 — the 0x24 bytes, pinned (the Wire cross-pin)
 
-    func testCursorCodecPinsBytes() throws {
-        XCTAssertEqual(
-            try Self.arrow.encode(),
-            [0x24, 0x02, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00,
-             0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]
-        )
-        XCTAssertEqual(
-            try CursorShape.decode(try Self.arrow.encode()), Self.arrow
-        )
-        XCTAssertEqual(
-            try CursorShape.hidden.encode(),
-            [0x24, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
-        )
-        // Hostile bytes reject, never trap.
-        XCTAssertThrowsError(try CursorShape.decode([]))
-        XCTAssertThrowsError(try CursorShape.decode([0x24, 0x01, 0x00]))
-        XCTAssertThrowsError(try CursorShape.decode(
-            [0x23, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
-        ))
-        XCTAssertThrowsError(try CursorShape.decode(
-            [0x24, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00]
-        ))
-    }
-
     // MARK: Leg 2 — key 13 on the spine, mutual-only intersection
-
-    func testCapabilityKeyThirteenRidesTheSpineAndIntersectsMutualOnly(
-    ) throws {
-        let base = try Capabilities.wireDefault.encodeCbor()
-        XCTAssertEqual(base.first, 0xA8)
-        var expected = base
-        expected[0] = 0xA9
-        expected += [0x0D, 0xF5]
-        let declared = Capabilities.wireDefault.declaringCursorShape()
-        XCTAssertEqual(try declared.encodeCbor(), expected)
-
-        XCTAssertTrue(declared.intersecting(declared).cursorShape)
-        XCTAssertFalse(declared.intersecting(.wireDefault).cursorShape)
-        XCTAssertFalse(
-            Capabilities.wireDefault.intersecting(declared).cursorShape
-        )
-    }
 
     // MARK: The scripted client (the ClipboardGateTests harness)
 

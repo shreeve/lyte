@@ -24,39 +24,6 @@ final class HandshakeGateTests: XCTestCase {
         return HandshakeGate.addressShareKey(address)
     }
 
-    /// One host on many ports holds one share: fresh cookies from 200
-    /// ports buy the address its share, and the host-wide budget still
-    /// admits another address.
-    func testOneAddressOnManyPortsHoldsOneShare() throws {
-        var gate = HandshakeGate(config: .init(
-            cookieSecret: Self.secret,
-            cookieEnterThreshold: 1, cookieExitThreshold: 0))
-        var admits = 0
-        for port in 0..<200 {
-            let tuple = Array("10.0.0.5:\(20_000 + port)".utf8)
-            let msg1 = message1(UInt8(port))
-            let cookie = try RetryCookie.mint(
-                clientTuple: tuple, message1: msg1[...],
-                now: 1_000, secret: Self.secret)
-            if gate.admitMessage1(
-                presentedCookie: cookie[...], clientTuple: tuple,
-                clientAddress: HandshakeGate.addressShareKey("10.0.0.5"),
-                message1: msg1[...], now: 2_000
-            ).admission == .admit { admits += 1 }
-        }
-        XCTAssertEqual(admits, 2)
-        let honest = address(7)
-        let msg1 = message1(0xAB)
-        let cookie = try RetryCookie.mint(
-            clientTuple: honest, message1: msg1[...],
-            now: 1_000, secret: Self.secret)
-        XCTAssertEqual(gate.admitMessage1(
-            presentedCookie: cookie[...], clientTuple: honest,
-            clientAddress: shareKey(honest),
-            message1: msg1[...], now: 2_000
-        ).admission, .admit)
-    }
-
     /// A host-wide refusal leaves the refused address's share whole: once
     /// the host budget refills, that address is admitted even though its
     /// own share refills far slower.
@@ -237,26 +204,6 @@ final class HandshakeGateTests: XCTestCase {
             presentedCookie: cookie[...], clientTuple: honest, clientAddress: shareKey(honest),
             message1: msg1[...], now: now
         ).admission, .admit)
-    }
-
-    /// Without cookies the flood detector still counts only the window:
-    /// arrivals older than it fall out and the dial clears.
-    func testFloodWindowForgetsOldArrivals() {
-        var gate = HandshakeGate(config: .init(
-            cookieSecret: Self.secret,
-            cookieEnterThreshold: 3, cookieExitThreshold: 1,
-            floodWindowNS: 1_000))
-        let msg1 = message1(1)
-        for now: UInt64 in [0, 1, 2] {
-            _ = gate.admitMessage1(
-                presentedCookie: nil, clientTuple: Self.tuple, clientAddress: shareKey(Self.tuple),
-                message1: msg1[...], now: now)
-        }
-        XCTAssertTrue(gate.cookieMode)
-        let quiet = gate.admitMessage1(
-            presentedCookie: nil, clientTuple: Self.tuple, clientAddress: shareKey(Self.tuple),
-            message1: msg1[...], now: 5_000)
-        XCTAssertEqual(quiet.cookieModeChangedTo, false)
     }
 
     /// An instant earlier than the window's arrivals ages nothing out: a

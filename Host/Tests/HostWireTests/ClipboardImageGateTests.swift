@@ -39,16 +39,7 @@ final class ClipboardImageGateTests: XCTestCase {
 
     private func makePayload(count: Int, seed: UInt64) -> [UInt8] {
         var rng = SplitMix64(seed: seed)
-        var bytes = [UInt8]()
-        bytes.reserveCapacity(count)
-        while bytes.count < count {
-            var word = rng.next()
-            for _ in 0..<8 where bytes.count < count {
-                bytes.append(UInt8(truncatingIfNeeded: word))
-                word >>= 8
-            }
-        }
-        return bytes
+        return rng.bytes(count)
     }
 
     // MARK: The client end (the REAL Wire ClipboardImageChannel — both

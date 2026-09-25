@@ -40,56 +40,7 @@ final class ClipboardGateTests: XCTestCase {
 
     // MARK: Leg 1 — the 0x1A/0x1B bytes, pinned (the Wire cross-pin)
 
-    func testClipboardCodecsPinBytes() throws {
-        // "hello" = 68 65 6C 6C 6F — the same hand-computed arrays as
-        // Wire's ClipboardCodecTests.
-        XCTAssertEqual(
-            try ClipboardSet(text: "hello").encode(),
-            [0x1A, 0x68, 0x65, 0x6C, 0x6C, 0x6F]
-        )
-        XCTAssertEqual(
-            try ClipboardAnnounce(text: "hello").encode(),
-            [0x1B, 0x68, 0x65, 0x6C, 0x6C, 0x6F]
-        )
-        XCTAssertEqual(
-            try ClipboardSet.decode(
-                [0x1A, 0x68, 0x65, 0x6C, 0x6C, 0x6F]
-            ).text, "hello"
-        )
-        XCTAssertEqual(
-            try ClipboardAnnounce.decode(
-                [0x1B, 0x68, 0x65, 0x6C, 0x6C, 0x6F]
-            ).text, "hello"
-        )
-        // Hostile bytes reject, never trap.
-        XCTAssertThrowsError(try ClipboardSet.decode([]))
-        XCTAssertThrowsError(try ClipboardSet.decode([0x1A]))
-        XCTAssertThrowsError(try ClipboardSet.decode([0x1B, 0x61]))
-        XCTAssertThrowsError(try ClipboardAnnounce.decode([0x1A, 0x61]))
-        XCTAssertThrowsError(try ClipboardSet.decode([0x1A, 0xFF]))
-        XCTAssertThrowsError(try ClipboardSet.decode(
-            [0x1A] + [UInt8](repeating: 0x61,
-                             count: ClipboardWire.maxTextByteCount + 1)
-        ))
-    }
-
     // MARK: Leg 2 — key 10 on the spine, mutual-only intersection
-
-    func testCapabilityKeyTenRidesTheSpineAndIntersectsMutualOnly() throws {
-        let base = try Capabilities.wireDefault.encodeCbor()
-        XCTAssertEqual(base.first, 0xA8)
-        var expected = base
-        expected[0] = 0xA9
-        expected += [0x0A, 0xF5]
-        let declared = Capabilities.wireDefault.declaringClipboardText()
-        XCTAssertEqual(try declared.encodeCbor(), expected)
-
-        XCTAssertTrue(declared.intersecting(declared).clipboardText)
-        XCTAssertFalse(declared.intersecting(.wireDefault).clipboardText)
-        XCTAssertFalse(
-            Capabilities.wireDefault.intersecting(declared).clipboardText
-        )
-    }
 
     // MARK: Leg 2b — the leaf's text-flavor policy (HS-19), pinned
     // everywhere: the Linux leaf itself compiles only on Linux, but

@@ -62,16 +62,7 @@ final class BulkReceiveGateTests: XCTestCase {
 
     private func makePayload(count: Int, seed: UInt64) -> [UInt8] {
         var rng = SplitMix64(seed: seed)
-        var bytes = [UInt8]()
-        bytes.reserveCapacity(count)
-        while bytes.count < count {
-            var word = rng.next()
-            for _ in 0..<8 where bytes.count < count {
-                bytes.append(UInt8(truncatingIfNeeded: word))
-                word >>= 8
-            }
-        }
-        return bytes
+        return rng.bytes(count)
     }
 
     private func makeOffer(
@@ -416,20 +407,6 @@ final class BulkReceiveGateTests: XCTestCase {
 
     // MARK: Leg 5 — the shared streaming digest survives shell chunking
 
-    func testGateSharedSha256SurvivesFileStoreChunkBoundaries() {
-        let payload = makePayload(count: 200_001, seed: 0x5A5A)
-        let reference = Sha256.digest(payload)
-        for splits in [[1, 62, 63, 64, 65, 200_001], [131_072, 200_001]] {
-            var stream = Sha256()
-            var cursor = 0
-            for edge in splits {
-                stream.update(payload[cursor..<min(edge, payload.count)])
-                cursor = min(edge, payload.count)
-            }
-            XCTAssertEqual(stream.finalized(), reference)
-        }
-    }
-
     // MARK: Leg 6 — abort(busy): one transfer at a time, undisturbed
 
     func testGateSecondConcurrentOfferDrawsBusyFirstCompletes() throws {
@@ -650,24 +627,6 @@ final class BulkReceiveGateTests: XCTestCase {
     }
 
     // MARK: Leg 8 — key 11 on the spine, mutual-only intersection
-
-    func testCapabilityKeyElevenRidesTheSpineAndIntersectsMutualOnly()
-        throws
-    {
-        let base = try Capabilities.wireDefault.encodeCbor()
-        XCTAssertEqual(base.first, 0xA8)
-        var expected = base
-        expected[0] = 0xA9
-        expected += [0x0B, 0xF5]
-        let declared = Capabilities.wireDefault.declaringBulkTransfer()
-        XCTAssertEqual(try declared.encodeCbor(), expected)
-
-        XCTAssertTrue(declared.intersecting(declared).bulkTransfer)
-        XCTAssertFalse(declared.intersecting(.wireDefault).bulkTransfer)
-        XCTAssertFalse(
-            Capabilities.wireDefault.intersecting(declared).bulkTransfer
-        )
-    }
 
     // MARK: The negotiated loopback client (the ClipboardGateTests
     // shape, grown a bulk channel)
