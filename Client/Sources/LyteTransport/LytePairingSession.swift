@@ -131,12 +131,22 @@ public enum LytePairing {
         // Wait for an acknowledged verdict.
         let deadline = SystemMonotonicClock.nowNanoseconds
             + UInt64(Int(config.timeoutSeconds * 1000)) * 1_000_000
-        while SystemMonotonicClock.nowNanoseconds < deadline {
-            if let outcome = flow.settledOutcome { return outcome }
-            usleep(50_000)
+        var settled: Outcome?
+        while settled == nil, SystemMonotonicClock.nowNanoseconds < deadline {
+            settled = flow.settledOutcome
+            if settled == nil { usleep(50_000) }
+        }
+        // The typed goodbye frees the host's session now rather than at
+        // its idle timeout; the linger is bounded.
+        do { try flow.sendTeardown() }
+        catch { progress("teardown send refused: \(error)") }
+        let lingerEnd = SystemMonotonicClock.nowNanoseconds + 500_000_000
+        while !flow.isReliableQuiescent,
+              SystemMonotonicClock.nowNanoseconds < lingerEnd {
+            usleep(10_000)
         }
         // A lost final ACK must not un-pair a paired run.
-        return flow.outcome ?? .timedOut
+        return settled ?? flow.outcome ?? .timedOut
     }
 }
 
@@ -213,6 +223,14 @@ public final class LytePairingFlow: @unchecked Sendable {
 
     public func start(now: ClientTimestamp) throws {
         try reliable.send(try service.start(), now: now)
+    }
+
+    /// Ends the run with the typed 0x0A (`shuttingDown`) on the ordered
+    /// stream, behind whatever the exchange still has in flight.
+    public func sendTeardown(now: ClientTimestamp? = nil) throws {
+        try reliable.send(
+            SessionTeardown(reason: .shuttingDown).encode(),
+            now: now ?? self.now())
     }
 
     /// Only CTRL matters: ARQ frames feed pairing, beacons are echoed.
