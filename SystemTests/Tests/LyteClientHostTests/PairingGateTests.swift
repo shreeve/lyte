@@ -8,7 +8,7 @@ import LyteWireTestKit
 
 // The cross-role pairing gate: the client's production pairing
 // composition (LytePairingFlow — ReliableCtrlEndpoint, the sealed sender
-// and PairingInitiatorService over a persistent-static Noise session) and
+// and ClientPairing over a persistent-static Noise session) and
 // the real HostWire Session with PairingResponderService complete the
 // CPace exchange through the fault model (SimNet loss, duplication,
 // jitter-reorder): exactly-once pairing, both ends pinning the statics the
@@ -124,13 +124,16 @@ final class PairingGateTests: XCTestCase {
         }
     }
 
-    /// Drives the exchange over SimNet to quiescence (virtual time).
+    /// Drives the exchange over SimNet to quiescence (virtual time). Once
+    /// it settles the client says its typed goodbye, as the production
+    /// pairing run does.
     private func converge(
         _ harness: Harness, net: inout SimNet,
         horizon: UInt64 = 30_000_000
     ) throws {
         var t: UInt64 = 1_000
         var forwarded = 0
+        var tornDown = false
         // The real Session's startup flight teaches the conn-id first;
         // then share A opens the pairing run on the same ARQ lane.
         for datagram in try harness.pollHost(nowMicros: t) {
@@ -151,6 +154,11 @@ final class PairingGateTests: XCTestCase {
                 }
             }
             harness.flow.tick(now: ClientTimestamp(microseconds: t))
+            if harness.flow.settledOutcome != nil, !tornDown {
+                try harness.flow.sendTeardown(
+                    now: ClientTimestamp(microseconds: t))
+                tornDown = true
+            }
             while forwarded < harness.outbound.count {
                 net.send(from: 0, bytes: harness.outbound.all[forwarded], now: t)
                 forwarded += 1
@@ -158,7 +166,7 @@ final class PairingGateTests: XCTestCase {
             for datagram in try harness.pollHost(nowMicros: t) {
                 net.send(from: 1, bytes: datagram, now: t)
             }
-            if harness.flow.settledOutcome != nil,
+            if tornDown, harness.flow.isReliableQuiescent,
                harness.host.session.arqIsQuiescent,
                net.nextArrivalTime == nil {
                 return
@@ -175,7 +183,7 @@ final class PairingGateTests: XCTestCase {
         XCTFail("pairing did not converge within \(horizon) virtual µs")
     }
 
-    // MARK: The gate — correct PIN through the W-G4 storm
+    // MARK: The gate — correct PIN through a loss, duplication and jitter storm
 
     func testGatePairingCompletesThroughStorm() throws {
         let pin = Array("428519".utf8)
@@ -214,6 +222,9 @@ final class PairingGateTests: XCTestCase {
             .attemptOpened(attempt: 1, of: 3),
             .paired(clientStaticPublicKey: harness.clientStatic.publicKey),
         ])
+        // The client's goodbye freed the host's session at once.
+        XCTAssertTrue(harness.host.events.contains(
+            .sessionClosed(.peerTeardown(.shuttingDown))))
 
         // The storm was real, and the reliable carriage healed it.
         XCTAssertGreaterThan(net.lostCount + net.duplicatedCount, 0,
