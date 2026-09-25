@@ -2,13 +2,12 @@ import XCTest
 import LyteWire
 import LyteWireTestKit
 
-// The pre-H1 Crypto/ review's direct pins on the hand-written
-// GF(2²⁵⁵ − 19) arithmetic: canonical-form enforcement at the
-// decode/encode boundary (non-canonical inputs at every public entry),
-// the constant-time zero mask and select primitives, and arithmetic
-// identities that would catch a broken carry chain. The draft-vector
-// end-to-end pins live in CPaceCoreTests; this file is where a
-// field-arithmetic regression names itself.
+// Direct pins on the hand-written GF(2²⁵⁵ − 19) arithmetic:
+// canonical-form enforcement at the decode/encode boundary (non-canonical
+// inputs at every public entry), the constant-time zero mask and select
+// primitives, and arithmetic identities that would catch a broken carry
+// chain. The draft-vector end-to-end pins live in PairingVectorFileTests;
+// this file is where a field-arithmetic regression names itself.
 
 final class Field25519Tests: XCTestCase {
 
@@ -74,8 +73,6 @@ final class Field25519Tests: XCTestCase {
         XCTAssertEqual(Fe25519.fromBytes(Self.pBytes).isZeroMask, UInt64.max)
         XCTAssertEqual(Fe25519.one.isZeroMask, 0)
         XCTAssertEqual(Fe25519.fromBytes(pPlus(1)).isZeroMask, 0)
-        XCTAssertTrue(Fe25519.zero.isZero)
-        XCTAssertFalse(Fe25519.one.isZero)
     }
 
     func testSelectPicksByMask() {
@@ -96,8 +93,8 @@ final class Field25519Tests: XCTestCase {
             (0..<32).map { UInt8(truncatingIfNeeded: 0x61 &+ $0) }
         )
         // x − x = 0, x + (−x) = 0, x · 1 = x.
-        XCTAssertTrue(Fe25519.sub(x, x).isZero)
-        XCTAssertTrue(Fe25519.add(x, Fe25519.neg(x)).isZero)
+        XCTAssertTrue(Fe25519.sub(x, x).isZeroMask == .max)
+        XCTAssertTrue(Fe25519.add(x, Fe25519.neg(x)).isZeroMask == .max)
         XCTAssertEqual(Fe25519.mul(x, .one).toBytes(), x.toBytes())
         // (p − 1) + 2 = 1: the wrap through the modulus.
         var pMinusOne = Self.pBytes
@@ -110,7 +107,7 @@ final class Field25519Tests: XCTestCase {
         let inverse = Fe25519.pow(x, exponent: Fe25519.inversionExponent)
         XCTAssertEqual(Fe25519.mul(x, inverse).toBytes(), littleEndian(1))
         XCTAssertTrue(
-            Fe25519.pow(.zero, exponent: Fe25519.inversionExponent).isZero
+            Fe25519.pow(.zero, exponent: Fe25519.inversionExponent).isZeroMask == .max
         )
         // Legendre: a square (4) → 1; a known non-square (2) → p − 1.
         XCTAssertEqual(
@@ -161,26 +158,13 @@ final class Field25519Tests: XCTestCase {
         )
     }
 
-    func testMapToCurveOfZeroIsWellDefined() {
-        // r = 0: denominator = 1, v = −A, ε = legendre(−A³ + A³ − A)
-        // = legendre(−A)… the point is only that the output is a
-        // stable, canonical 32 bytes — the exceptional SELECT path is
-        // unreachable (see Elligator2.swift) and r = 0 does not hit it.
-        let u = Elligator2.mapToCurve(littleEndian(0))
-        XCTAssertEqual(u.count, 32)
-        XCTAssertEqual(u, Elligator2.mapToCurve(littleEndian(0)))
-        // The output must itself be canonical: decode/encode fixed point.
-        XCTAssertEqual(Fe25519.fromBytes(u).toBytes(), u)
-    }
-
     func testMapToCurveOutputsAreCanonical() {
-        // Every map output is an encode of toBytes — spot-check the
-        // canonical fixed-point property across assorted inputs.
+        // Every map output is an encode of toBytes — the canonical
+        // fixed-point property, from r = 0 and assorted inputs.
         var rng = SplitMix64(seed: 0xE11162)
-        for _ in 0..<16 {
-            let input = (0..<32).map { _ in UInt8(truncatingIfNeeded: rng.next()) }
+        for input in [littleEndian(0)] + (0..<16).map({ _ in rng.bytes(32) }) {
             let u = Elligator2.mapToCurve(input)
-            XCTAssertEqual(Fe25519.fromBytes(u).toBytes(), u)
+            XCTAssertEqual(Fe25519.fromBytes(u).toBytes(), u, "\(input)")
         }
     }
 }

@@ -151,11 +151,12 @@ public final class AudioJitterBuffer {
     private var lastArrival: (number: UInt32, atMicroseconds: UInt64)?
     private var deviationWindow: [Int64] = []
     private var deviationCursor = 0
-    // Retarget cadence, post-raise hold and between-sheds step, each a
-    // ProofCounter fed one fresh packet at a time.
-    private var retargetProof = ProofCounter()
-    private var raiseHoldProof = ProofCounter()
-    private var shedStepProof = ProofCounter()
+    // Proof before shed: fresh packets counted toward the retarget
+    // cadence, the post-raise hold and the between-sheds step; any
+    // contrary event starts a count over.
+    private var retargetProof = 0
+    private var raiseHoldProof = 0
+    private var shedStepProof = 0
     /// A configured opening is deliberately drainable at once; only cushion
     /// raised by measured path tails earns the long hold.
     private var targetCushionEarnedByPath = false
@@ -209,8 +210,8 @@ public final class AudioJitterBuffer {
                         config.maxTargetPackets,
                         targetPackets + behind)
                     targetCushionEarnedByPath = true
-                    raiseHoldProof.reset()
-                    shedStepProof.reset()
+                    raiseHoldProof = 0
+                    shedStepProof = 0
                     stats.targetPackets = targetPackets
                 }
                 stats.latePacketsDropped += 1
@@ -429,12 +430,12 @@ public final class AudioJitterBuffer {
                 for index in skewWindow.indices { skewWindow[index] -= low }
             }
         }
-        retargetProof.advance()
-        raiseHoldProof.advance()
-        shedStepProof.advance()
+        retargetProof += 1
+        raiseHoldProof += 1
+        shedStepProof += 1
         let cadence = max(1, config.retargetCadencePackets)
-        guard retargetProof.reached(cadence) else { return }
-        retargetProof.reset()
+        guard retargetProof >= cadence else { return }
+        retargetProof = 0
         retarget()
     }
 
@@ -493,17 +494,15 @@ public final class AudioJitterBuffer {
         if desired > targetPackets {
             targetPackets = desired
             targetCushionEarnedByPath = true
-            raiseHoldProof.reset()
-            shedStepProof.reset()
+            raiseHoldProof = 0
+            shedStepProof = 0
         } else if desired < targetPackets, !targetCushionEarnedByPath {
             targetPackets = desired
         } else if desired < targetPackets,
-                  raiseHoldProof.reached(
-                    max(1, config.targetDecayHoldPackets)),
-                  shedStepProof.reached(
-                    max(1, config.targetDecayStepPackets)) {
+                  raiseHoldProof >= max(1, config.targetDecayHoldPackets),
+                  shedStepProof >= max(1, config.targetDecayStepPackets) {
             targetPackets -= 1
-            shedStepProof.reset()
+            shedStepProof = 0
             if targetPackets == config.minTargetPackets {
                 targetCushionEarnedByPath = false
             }

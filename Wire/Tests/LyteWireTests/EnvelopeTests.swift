@@ -3,7 +3,9 @@ import LyteWire
 
 // The anchor bytes below were computed by hand from the layout comment in
 // Envelope.swift, not by running the codec — they are what breaks the
-// circularity between the codec and the vector files it generated.
+// circularity between the codec and the vector files it generated. The
+// TLV layout, leniency rules and datagram ceilings live in
+// envelope-v1.json.
 
 final class EnvelopeTests: XCTestCase {
 
@@ -25,50 +27,15 @@ final class EnvelopeTests: XCTestCase {
         0x6C, 0x79, 0x74, 0x65,  // "lyte"
     ]
 
-    func testAnchorEncode() throws {
-        let encoded = try nominal.encode(payload: Array("lyte".utf8))
-        XCTAssertEqual(encoded, nominalBytes)
-    }
-
-    func testAnchorDecode() throws {
+    func testAnchor() throws {
+        XCTAssertEqual(try nominal.encode(payload: Array("lyte".utf8)), nominalBytes)
         let (envelope, payload) = try Envelope.decode(nominalBytes)
         XCTAssertEqual(envelope, nominal)
         XCTAssertEqual(Array(payload), Array("lyte".utf8))
     }
 
-    func testEmptyPayloadIsExactlyTwentyFourBytes() throws {
-        let envelope = Envelope(
-            channel: .ctrl,
-            seq: ChannelSeq(rawValue: 0),
-            frame: FrameNumber(rawValue: 0),
-            timestamp: 0,
-            fec: 0
-        )
-        let encoded = try envelope.encode()
-        XCTAssertEqual(encoded.count, WireBudget.envelopeByteCount)
-        XCTAssertEqual(encoded, [0x00, 0x00] + [UInt8](repeating: 0, count: 22))
-        let (decoded, payload) = try Envelope.decode(encoded)
-        XCTAssertEqual(decoded, envelope)
-        XCTAssertTrue(payload.isEmpty)
-    }
-
-    func testTlvAnchorEncode() throws {
-        var envelope = nominal
-        envelope.extensions = [
-            try WireExtension(type: 0x7F, value: [0xAA, 0xBB, 0xCC])
-        ]
-        let encoded = try envelope.encode(payload: [0x01])
-        // Header: fixed 24 with flags bit0, then count=1, then 7F 03 AA BB CC.
-        var expected = nominalBytes.prefix(24).map { $0 }
-        expected[1] = 0x01
-        expected += [0x01, 0x7F, 0x03, 0xAA, 0xBB, 0xCC, 0x01]
-        XCTAssertEqual(encoded, expected)
-
-        let (decoded, payload) = try Envelope.decode(encoded)
-        XCTAssertEqual(decoded, envelope)
-        XCTAssertEqual(Array(payload), [0x01])
-    }
-
+    /// Unknown TLV types, including a zero-length value, survive a
+    /// decode/re-encode byte-exactly.
     func testUnknownTlvTypesDecodeAndSurviveReencode() throws {
         var envelope = nominal
         envelope.extensions = [
@@ -83,20 +50,10 @@ final class EnvelopeTests: XCTestCase {
         XCTAssertEqual(try decoded.encode(payload: Array(payload)), encoded)
     }
 
-    func testReservedFlagBitsIgnoredOnReceive() throws {
-        var bytes = nominalBytes
-        bytes[1] = 0x80
-        let (envelope, payload) = try Envelope.decode(bytes)
-        XCTAssertEqual(envelope, nominal)
-        XCTAssertEqual(Array(payload), Array("lyte".utf8))
-    }
-
     func testTruncatedEnvelopeRejected() {
         for length in 0..<WireBudget.envelopeByteCount {
-            XCTAssertThrowsError(
+            assertThrows(WireError.truncatedEnvelope) {
                 try Envelope.decode(Array(nominalBytes.prefix(length)))
-            ) { error in
-                XCTAssertEqual(error as? WireError, .truncatedEnvelope)
             }
         }
     }
@@ -110,19 +67,15 @@ final class EnvelopeTests: XCTestCase {
         // Every strict prefix that still passes the fixed-envelope check
         // must fail as a truncated extension block, never trap.
         for length in WireBudget.envelopeByteCount..<encoded.count {
-            XCTAssertThrowsError(
+            assertThrows(WireError.truncatedExtensions) {
                 try Envelope.decode(Array(encoded.prefix(length)))
-            ) { error in
-                XCTAssertEqual(error as? WireError, .truncatedExtensions)
             }
         }
     }
 
     func testExtensionValueTooLongRejectedAtConstruction() {
-        XCTAssertThrowsError(
+        assertThrows(WireError.extensionValueTooLong) {
             try WireExtension(type: 1, value: [UInt8](repeating: 0, count: 256))
-        ) { error in
-            XCTAssertEqual(error as? WireError, .extensionValueTooLong)
         }
     }
 
@@ -135,9 +88,7 @@ final class EnvelopeTests: XCTestCase {
             frame: FrameNumber(rawValue: 0), timestamp: 0, fec: 0
         )
         envelope.extensions = Array(repeating: tlv, count: 256)
-        XCTAssertThrowsError(try envelope.encode()) {
-            XCTAssertEqual($0 as? WireError, .tooManyExtensions)
-        }
+        assertThrows(WireError.tooManyExtensions) { try envelope.encode() }
     }
 }
 
@@ -179,8 +130,8 @@ final class BudgetTests: XCTestCase {
         XCTAssertNoThrow(try envelope().encode(plaintextShard: atLimit))
 
         let over = [UInt8](repeating: 0xAB, count: 1113)
-        XCTAssertThrowsError(try envelope().encode(plaintextShard: over)) {
-            XCTAssertEqual($0 as? WireError, .shardOverBudget(1113))
+        assertThrows(WireError.shardOverBudget(1113)) {
+            try envelope().encode(plaintextShard: over)
         }
     }
 
@@ -190,8 +141,8 @@ final class BudgetTests: XCTestCase {
         XCTAssertEqual(datagram.count, WireBudget.maxDatagramByteCount)
 
         let over = [UInt8](repeating: 0xCD, count: 1129)
-        XCTAssertThrowsError(try envelope().encode(payload: over)) {
-            XCTAssertEqual($0 as? WireError, .payloadOverBudget(1129))
+        assertThrows(WireError.payloadOverBudget(1129)) {
+            try envelope().encode(payload: over)
         }
     }
 
@@ -202,25 +153,12 @@ final class BudgetTests: XCTestCase {
         ]
         // Header grows to 48; a max wire payload no longer fits.
         let payload = [UInt8](repeating: 0xEF, count: 1128)
-        XCTAssertThrowsError(try withTlv.encode(payload: payload)) {
-            XCTAssertEqual($0 as? WireError, .datagramOverBudget(1176))
+        assertThrows(WireError.datagramOverBudget(1176)) {
+            try withTlv.encode(payload: payload)
         }
         // Shrinking the payload by the TLV block size fits exactly.
         let fitted = [UInt8](repeating: 0xEF, count: 1128 - 24)
         let datagram = try withTlv.encode(payload: fitted)
         XCTAssertEqual(datagram.count, WireBudget.maxDatagramByteCount)
-    }
-
-    func testOversizeDatagramRejectedOnDecode() throws {
-        let junk = [UInt8](repeating: 0, count: 1153)
-        XCTAssertThrowsError(try Envelope.decode(junk)) {
-            XCTAssertEqual($0 as? WireError, .datagramOverBudget(1153))
-        }
-        // At exactly the budget, decode proceeds.
-        let atLimit = try envelope().encode(
-            payload: [UInt8](repeating: 1, count: 1128)
-        )
-        XCTAssertEqual(atLimit.count, 1152)
-        XCTAssertNoThrow(try Envelope.decode(atLimit))
     }
 }

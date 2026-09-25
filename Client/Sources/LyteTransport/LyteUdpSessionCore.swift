@@ -34,12 +34,14 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public private(set) var reliable: ReliableCtrlEndpoint!
     public private(set) var bulkReliable: ReliableCtrlEndpoint!
     public private(set) var echoResponder: BeaconEchoResponder!
-    public private(set) var idrRequester: IdrRequester!
     public private(set) var feedback: FeedbackSender!
     public private(set) var input: InputSender!
     public private(set) var audio: AudioReceiver!
-    public private(set) var nackPolicy: NackPolicy!
     public let clockModel: HostClockModel
+    /// The IDR episode (also the render gate) and the NACK book, each under
+    /// its own lock; their decisions execute after it is released.
+    private let idrRecovery = Mutex(ClientIdrRecovery())
+    private let nackPolicy: Mutex<ClientNackPolicy>
 
     // IO-free session policy + transport-owned counters, one lock.
     private let lock = NSLock()
@@ -106,6 +108,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         self.onEvent = onEvent
         self.onVideoRecoveryDemand = onVideoRecoveryDemand
         self.onVideoRecoveryTrace = onVideoRecoveryTrace
+        self.nackPolicy = Mutex(ClientNackPolicy(config: config.nackPolicy))
         // Constructed only after the handshake, so the machine starts ACTIVE.
         self.controlSession = ClientControlSession(
             localCapabilities: config.capabilities,
@@ -126,9 +129,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                 // repair window; everything else requests an IDR now.
                 guard let self else { return }
                 let now = self.now()
-                if !self.nackPolicy.shouldDeferFecImpossible(
-                    frame: frame, now: now
-                ) {
+                if !self.nackPolicy.withLock({
+                    $0.shouldDeferFecImpossible(frame: frame, now: now)
+                }) {
                     self.beginVideoRecovery(
                         cause: .fecAssemblerDamage, frame: frame, now: now)
                 }
@@ -140,7 +143,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                         cause: .hostPurgeInferredDamage,
                         frame: from, now: now)
                 }
-                self.nackPolicy.handle(signal, now: now)
+                self.handleRepairSignal(signal, now: now)
             },
             onSampleFailure: { [weak self] frame in
                 // The frame never reaches the renderer, so the chain after
@@ -176,44 +179,15 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                     channel: .ctrl, timestamp: self.now(),
                     plaintext: echo.encode())
             })
-        self.idrRequester = IdrRequester(emit: { [weak self] request in
-            guard let self else { return }
-            _ = try? sender.send(
-                channel: .ctrl, timestamp: self.now(),
-                plaintext: request.encode())
-        })
+        // The cadence beat retries an open IDR episode and runs the NACK
+        // deadlines.
         self.feedback = FeedbackSender(
             demux: demux, sender: sender,
             onTick: { [weak self] tickNow in
-                self?.idrRequester.flushIfDue(now: tickNow)
-                self?.nackPolicy.tick(now: tickNow)
-            })
-        self.nackPolicy = NackPolicy(
-            config: config.nackPolicy,
-            rtt: { [weak self] in
-                self?.clockModel.estimate()?.minRttMicroseconds
-            },
-            emit: { [weak self] entries in
                 guard let self else { return }
-                // Report immediately: the host's freeze budget derives
-                // from the feedback cadence, so skipping the wait saves it.
-                self.feedback.enqueueNacks(entries)
-                self.feedback.tick(now: self.now())
-                for entry in entries {
-                    self.onEvent(.protocolNote(
-                        "nack: frame \(entry.frame.rawValue) asks "
-                        + "shards \(entry.missingShards)"))
-                }
-            },
-            escalate: { [weak self] frame, now in
-                guard let self else { return }
-                self.beginVideoRecovery(
-                    cause: .fecAssemblerDamage, frame: frame, now: now)
-                // Reason-neutral: expiries, framesGone and host refusals
-                // all exit here.
-                self.onEvent(.protocolNote(
-                    "nack: frame \(frame.rawValue) repair abandoned — "
-                    + "IDR instead"))
+                self.sendIdrRequest(
+                    self.idrRecovery.withLock { $0.requestDue(now: tickNow) })
+                self.tickNackPolicy(now: tickNow)
             })
         self.audio = AudioReceiver(jitterConfig: config.audioJitter)
         sessionSink.bind(self)
@@ -227,7 +201,8 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         // with lastInputSeq closes every pending event at or below it.
         // Upstream half of the renderer recovery gate: P samples already
         // queued when damage is discovered must not race the handoff flush.
-        guard idrRequester.admits(isRandomAccess: unit.isIDR) else {
+        guard idrRecovery.withLock({ $0.admits(isRandomAccess: unit.isIDR) })
+        else {
             onVideoRecoveryTrace(.init(
                 kind: "coreRejectedNonIrap",
                 frame: unit.frameNumber,
@@ -297,7 +272,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         reliable.tick(now: now)
         bulkReliable.tick(now: now)
         pipeline.tick(now: now)
-        nackPolicy.tick(now: now)
+        tickNackPolicy(now: now)
         machineBeat(now: now)
     }
 
@@ -371,7 +346,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                 isRandomAccess: true))
             return
         }
-        idrRequester.noteUsableIrapAccepted()
+        idrRecovery.withLock { $0.noteUsableIrapAccepted() }
         onVideoRecoveryTrace(.init(
             kind: "coreRecoveryClosedAfterIrapEnqueue",
             frame: frame,
@@ -383,9 +358,14 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public func ensureVideoRecoveryOpen(
         after frame: FrameNumber, cause: VideoRecoveryCause
     ) {
-        guard idrRequester.reopenIfClosed(frame: frame, now: now()) else {
-            return
+        let now = now()
+        let request = idrRecovery.withLock { recovery -> IdrRequest? in
+            guard !recovery.isOutstanding else { return nil }
+            recovery.recordDemand(frame: frame)
+            return recovery.requestDue(now: now)
         }
+        guard let request else { return }
+        sendIdrRequest(request)
         onVideoRecoveryTrace(.init(
             kind: "coreRecoveryReopenedForRendererGate",
             frame: frame,
@@ -403,12 +383,68 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     ) {
         // The episode gates this core's render seam at once; the
         // handoff's own gate follows before any later sink submit.
-        let overlap = idrRequester.recordRecoveryDemand(frame: frame, now: now)
+        // The first verdict emits at once; later ones join its episode and
+        // emit only when its retry is due.
+        let (overlap, request) = idrRecovery.withLock {
+            ($0.recordDemand(frame: frame), $0.requestDue(now: now))
+        }
+        sendIdrRequest(request)
         onVideoRecoveryTrace(.init(
             kind: overlap ? "coreDamageOverlap" : "coreDamageKnown",
             frame: frame,
             cause: cause))
         if notifyHandoff { onVideoRecoveryDemand(cause, frame) }
+    }
+
+    private func sendIdrRequest(_ request: IdrRequest?) {
+        guard let request else { return }
+        _ = try? sender.send(
+            channel: .ctrl, timestamp: now(), plaintext: request.encode())
+    }
+
+    // MARK: NACK repair
+
+    /// The clock model's RTT (a lock of its own) is read only for the
+    /// signal that uses it: every shard's signal passes here.
+    private func handleRepairSignal(
+        _ signal: VideoRepairSignal, now: ClientTimestamp
+    ) {
+        var rtt: Int64?
+        if case .nackCandidates = signal {
+            rtt = clockModel.estimate()?.minRttMicroseconds
+        }
+        executeNack(nackPolicy.withLock {
+            $0.handle(signal, rttMicroseconds: rtt, now: now)
+        }, now: now)
+    }
+
+    /// Rule-4 deadlines and book hygiene.
+    private func tickNackPolicy(now: ClientTimestamp) {
+        executeNack(nackPolicy.withLock { $0.tick(now: now) }, now: now)
+    }
+
+    /// Asks are reported at once: the host's freeze budget derives from
+    /// the feedback cadence. Escalations (expiries, framesGone and host
+    /// refusals alike) join the IDR recovery.
+    private func executeNack(
+        _ decision: ClientNackPolicy.Decision, now: ClientTimestamp
+    ) {
+        if !decision.nacks.isEmpty {
+            feedback.enqueueNacks(decision.nacks)
+            feedback.tick(now: self.now())
+            for entry in decision.nacks {
+                onEvent(.protocolNote(
+                    "nack: frame \(entry.frame.rawValue) asks "
+                    + "shards \(entry.missingShards)"))
+            }
+        }
+        for frame in decision.escalations {
+            beginVideoRecovery(
+                cause: .fecAssemblerDamage, frame: frame, now: now)
+            onEvent(.protocolNote(
+                "nack: frame \(frame.rawValue) repair abandoned — "
+                + "IDR instead"))
+        }
     }
 
     // MARK: Host audio routing
@@ -644,7 +680,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             onEvent(.protocolNote(
                 "nack: frame \(refusal.frame.rawValue) repair refused "
                 + "by host (\(refusal.reason)) — IDR now"))
-            nackPolicy.handleRefusal(frame: refusal.frame, now: now)
+            executeNack(nackPolicy.withLock {
+                $0.handleRefusal(frame: refusal.frame, now: now)
+            }, now: now)
         case .malformed(type: CtrlMessageType.clockBeacon):
             echoResponder.noteMalformedBeacon()
         case .malformed(type: CtrlMessageType.pathChallenge):
@@ -714,6 +752,14 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
 
     public func snapshotCounters() -> LyteUdpSessionCounters {
         lock.withLock { counters }
+    }
+
+    public var idrStats: ClientIdrRecovery.Stats {
+        idrRecovery.withLock { $0.stats }
+    }
+
+    public var nackStats: ClientNackPolicy.Stats {
+        nackPolicy.withLock { $0.stats }
     }
 
     // MARK: The machine

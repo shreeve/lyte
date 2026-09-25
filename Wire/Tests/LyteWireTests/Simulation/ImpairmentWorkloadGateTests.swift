@@ -360,10 +360,9 @@ final class ImpairmentWorkloadGateTests: XCTestCase {
             }
 
             queueSamples.append(net.queuedByteCount(from: 0, at: now))
-            let tracked = sentFrames.keys.count {
-                assembler.status(of: FrameNumber(rawValue: $0)) != nil
-            }
-            peakTrackedGroups = max(peakTrackedGroups, tracked)
+            peakTrackedGroups = max(
+                peakTrackedGroups, assembler.trackedGroupCount
+            )
             peakArqOutstanding = max(
                 peakArqOutstanding,
                 hostCtrl.outstandingSegmentCount

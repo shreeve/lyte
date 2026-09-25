@@ -160,24 +160,3 @@ public struct BoundedRendererHandoff<Element: Sendable>: Sendable {
         return discarded
     }
 }
-
-/// State seam for a platform renderer's asynchronous recovery flush. No
-/// compressed sample may dequeue until the completion callback.
-public struct RendererRecoveryFlushBarrier: Sendable, Equatable {
-    public private(set) var isFlushInProgress = false
-
-    public init() {}
-
-    @discardableResult
-    public mutating func begin() -> Bool {
-        guard !isFlushInProgress else { return false }
-        isFlushInProgress = true
-        return true
-    }
-
-    public mutating func complete() {
-        isFlushInProgress = false
-    }
-
-    public var mayEnqueue: Bool { !isFlushInProgress }
-}

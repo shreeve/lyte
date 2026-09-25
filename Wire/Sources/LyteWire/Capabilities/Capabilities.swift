@@ -25,9 +25,10 @@
 //                        intersect(a, a) == a without understanding
 //                        foreign semantics.
 //
-// Capabilities are fixed after the exchange except keys in
-// `renegotiableKeys`: only maxDatagramBytes, raised on direct paths at an
-// IDR boundary and never past either end's declared ceiling. The raise is
+// Capabilities are fixed after the exchange except maxDatagramBytes, the
+// one renegotiable key (a CapabilityUpdate naming any other rejects):
+// raised on direct paths at an IDR boundary and never past either end's
+// declared ceiling. The raise is
 // dormant in v1: the envelope and transport enforce the WireBudget
 // constants, and no end applies an agreed value past 1152.
 
@@ -68,52 +69,45 @@ public enum CapabilityKey {
     /// `unknownEntries` as one canonical `key F5` map entry (see
     /// `declaresFlag(_:)`), so the frozen v1 encoding and
     /// capabilities-v1.json never move and the flag survives
-    /// intersection only on mutual declaration. Accessors live beside
-    /// each feature's codecs (here: AudioRouting.swift).
+    /// intersection only on mutual declaration. Each has a named
+    /// accessor pair (`hostAudioRouting`, `declaringHostAudioRouting()`).
     public static let hostAudioRouting: UInt64 = 9
     /// bool — this end speaks the v1 clipboard-text sync (CTRL
     /// 0x1A/0x1B on the ordered stream). Deliberately NOT
     /// featureChannels id 1, which promises the chan ≥ 8 feature-channel
     /// architecture. Declaration is dialect, not consent: sharing is
-    /// gated locally on each end. Accessors in Clipboard.swift.
+    /// gated locally on each end.
     public static let clipboardText: UInt64 = 10
     /// bool — this end speaks the bulk-transfer channel (chan 8's ARQ
     /// ordered stream carrying messages 0x1C–0x21). It gates the
     /// MECHANISM; features riding it gate at the ends. Declaration is
     /// dialect, not consent: direction and the per-host toggle live in
-    /// the end shells. Accessors in BulkMessages.swift.
+    /// the end shells.
     public static let bulkTransfer: UInt64 = 11
     /// bool — this end speaks clipboard-image sync: PNG blobs as
     /// bulk-channel cargo marked by the 0x22 ClipboardImageCargo
     /// message. Images move only when keys 10 AND 12 both agreed. Key
     /// 11 is deliberately NOT in the gate: it is the file-drop consent,
-    /// which must not couple to image sync. Accessors in
-    /// ClipboardImages.swift.
+    /// which must not couple to image sync.
     public static let clipboardImages: UInt64 = 12
     /// bool — this end speaks cursor-shape sync (CTRL 0x24 on the
     /// ordered stream). A host that composites the cursor into the video
     /// never declares it, and the client uses the in-video cursor.
-    /// Accessors in Cursor.swift.
     public static let cursorShape: UInt64 = 13
     /// bool — this end speaks routing mode 0x04 (streamOff: the host
     /// captures and sends no audio). A client never sends 0x04 without
-    /// it. Accessors in AudioRouting.swift.
+    /// it.
     public static let audioStreamOff: UInt64 = 14
     /// bool — this end speaks the audio track-state announcement (CTRL
     /// 0x25: the host may gate audio transmission during announced
     /// silence and ships a pre-roll ring on wake). A host never gates
-    /// without it. Accessors in AudioTrackState.swift.
+    /// without it.
     public static let audioQuietPosture: UInt64 = 15
     /// bool — this end speaks the video posture announcement (CTRL
     /// 0x26: after ~30 s without damage the host's keepalive backs off
     /// toward 30 s, each step announced; damage or client input wakes
-    /// it). A host never backs off without it. Accessors in
-    /// VideoPosture.swift.
+    /// it). A host never backs off without it.
     public static let videoQuietPosture: UInt64 = 16
-
-    /// The renegotiable subset. Everything else is connect-time only
-    /// and a CapabilityUpdate naming it rejects.
-    public static let renegotiableKeys: Set<UInt64> = [maxDatagramBytes]
 }
 
 /// Video codec ids for the `videoCodecs` list. Only HEVC is assigned
@@ -396,6 +390,50 @@ public struct Capabilities: Hashable, Sendable {
         CborMapEntry(key: .unsigned(key), value: .bool(true))
     }
 
+    // MARK: - Keys 9–16, one flag each
+
+    public var hostAudioRouting: Bool { declaresFlag(Key.hostAudioRouting) }
+    public var clipboardText: Bool { declaresFlag(Key.clipboardText) }
+    public var bulkTransfer: Bool { declaresFlag(Key.bulkTransfer) }
+    public var clipboardImages: Bool { declaresFlag(Key.clipboardImages) }
+    public var cursorShape: Bool { declaresFlag(Key.cursorShape) }
+    public var audioStreamOff: Bool { declaresFlag(Key.audioStreamOff) }
+    public var audioQuietPosture: Bool { declaresFlag(Key.audioQuietPosture) }
+    public var videoQuietPosture: Bool { declaresFlag(Key.videoQuietPosture) }
+
+    public func declaringHostAudioRouting() -> Self {
+        declaringFlag(Key.hostAudioRouting)
+    }
+    public func declaringClipboardText() -> Self {
+        declaringFlag(Key.clipboardText)
+    }
+    public func declaringBulkTransfer() -> Self {
+        declaringFlag(Key.bulkTransfer)
+    }
+    public func declaringClipboardImages() -> Self {
+        declaringFlag(Key.clipboardImages)
+    }
+    public func declaringCursorShape() -> Self {
+        declaringFlag(Key.cursorShape)
+    }
+    public func declaringAudioStreamOff() -> Self {
+        declaringFlag(Key.audioStreamOff)
+    }
+    public func declaringAudioQuietPosture() -> Self {
+        declaringFlag(Key.audioQuietPosture)
+    }
+    public func declaringVideoQuietPosture() -> Self {
+        declaringFlag(Key.videoQuietPosture)
+    }
+
+    /// The full image gate: keys 10 ∧ 12 both survived intersection.
+    /// Key 11 (file-drop consent) is deliberately absent; an end with
+    /// this gate true runs chan-8 bulk machinery for clipboard cargo
+    /// regardless of key 11.
+    public var clipboardImagesAgreed: Bool {
+        clipboardText && clipboardImages
+    }
+
     /// Entries in the CBOR map's canonical order (bytewise ascending
     /// encoded keys) — the order decode produces, so equal sets compare
     /// equal however they were built.
@@ -453,22 +491,10 @@ private func decodeBool(_ value: CborValue, key: UInt64) throws -> Bool {
     return b
 }
 
-/// Both inputs canonical ascending, so a linear merge-intersect keeps
-/// the output canonical.
+/// The ids in both lists, in `a`'s order: canonical (strictly
+/// ascending) when `a` is.
 private func intersectIdLists(_ a: [UInt64], _ b: [UInt64]) -> [UInt64] {
-    var out: [UInt64] = []
-    var i = a.startIndex
-    var j = b.startIndex
-    while i < a.endIndex && j < b.endIndex {
-        if a[i] == b[j] {
-            out.append(a[i])
-            i += 1
-            j += 1
-        } else if a[i] < b[j] {
-            i += 1
-        } else {
-            j += 1
-        }
-    }
-    return out
+    a.filter(Set(b).contains)
 }
+
+private typealias Key = CapabilityKey

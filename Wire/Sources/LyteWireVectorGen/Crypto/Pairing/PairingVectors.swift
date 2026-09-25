@@ -8,13 +8,13 @@
 // - `messageVectors`: codec byte layouts, anchored against the hand-built
 //   bytes in PairingCodecTests.
 
-import Foundation
 import LyteWire
+import LyteWireTestKit
 
 public struct PairingVectorFile: FrozenVectorFile {
-    public var format: String
-    public var formatVersion: Int
-    public var wireVersion: Int
+    public var format = Self.expectedFormat
+    public var formatVersion = 1
+    public var wireVersion = 1
     public var draftVectors: PairingDraftVectors
     public var exchangeVectors: [PairingExchangeVector]
     public var messageVectors: [PairingMessageVector]
@@ -25,23 +25,6 @@ public struct PairingVectorFile: FrozenVectorFile {
     public var vectorNameGroups: [[String]] {
         [exchangeVectors.map(\.name), messageVectors.map(\.name)]
     }
-
-    public init(
-        format: String,
-        formatVersion: Int,
-        wireVersion: Int,
-        draftVectors: PairingDraftVectors,
-        exchangeVectors: [PairingExchangeVector],
-        messageVectors: [PairingMessageVector]
-    ) {
-        self.format = format
-        self.formatVersion = formatVersion
-        self.wireVersion = wireVersion
-        self.draftVectors = draftVectors
-        self.exchangeVectors = exchangeVectors
-        self.messageVectors = messageVectors
-    }
-
 }
 
 /// The external draft vectors. `source`/`sourceSha256` record the exact
@@ -63,21 +46,11 @@ public struct PairingDraftVectors: Codable, Sendable {
         public struct InOut: Codable, Sendable {
             public var inputHex: String
             public var outputHex: String
-
-            public init(inputHex: String, outputHex: String) {
-                self.inputHex = inputHex
-                self.outputHex = outputHex
-            }
         }
 
         public struct PartsOut: Codable, Sendable {
             public var partsHex: [String]
             public var outputHex: String
-
-            public init(partsHex: [String], outputHex: String) {
-                self.partsHex = partsHex
-                self.outputHex = outputHex
-            }
         }
 
         public struct TranscriptCase: Codable, Sendable {
@@ -86,26 +59,6 @@ public struct PairingDraftVectors: Codable, Sendable {
             public var ybHex: String
             public var adbHex: String
             public var outputHex: String
-
-            public init(
-                yaHex: String, adaHex: String, ybHex: String,
-                adbHex: String, outputHex: String
-            ) {
-                self.yaHex = yaHex
-                self.adaHex = adaHex
-                self.ybHex = ybHex
-                self.adbHex = adbHex
-                self.outputHex = outputHex
-            }
-        }
-
-        public init(
-            prependLen: [InOut], lvCat: PartsOut,
-            transcriptIr: [TranscriptCase]
-        ) {
-            self.prependLen = prependLen
-            self.lvCat = lvCat
-            self.transcriptIr = transcriptIr
         }
     }
 
@@ -116,17 +69,6 @@ public struct PairingDraftVectors: Codable, Sendable {
         public var sidHex: String
         public var generatorStringHex: String
         public var generatorHex: String
-
-        public init(
-            prsHex: String, ciHex: String, sidHex: String,
-            generatorStringHex: String, generatorHex: String
-        ) {
-            self.prsHex = prsHex
-            self.ciHex = ciHex
-            self.sidHex = sidHex
-            self.generatorStringHex = generatorStringHex
-            self.generatorHex = generatorHex
-        }
     }
 
     /// B.1.2–B.1.5: scalars → shares → K → ISK (initiator-responder).
@@ -139,21 +81,6 @@ public struct PairingDraftVectors: Codable, Sendable {
         public var ybShareHex: String
         public var kHex: String
         public var iskIrHex: String
-
-        public init(
-            yaHex: String, adaHex: String, yaShareHex: String,
-            ybHex: String, adbHex: String, ybShareHex: String,
-            kHex: String, iskIrHex: String
-        ) {
-            self.yaHex = yaHex
-            self.adaHex = adaHex
-            self.yaShareHex = yaShareHex
-            self.ybHex = ybHex
-            self.adbHex = adbHex
-            self.ybShareHex = ybShareHex
-            self.kHex = kHex
-            self.iskIrHex = iskIrHex
-        }
     }
 
     /// B.1.10: scalar_mult_vfy over low-order and non-canonical points.
@@ -166,29 +93,7 @@ public struct PairingDraftVectors: Codable, Sendable {
         public struct Case: Codable, Sendable {
             public var uHex: String
             public var resultHex: String?
-
-            public init(uHex: String, resultHex: String?) {
-                self.uHex = uHex
-                self.resultHex = resultHex
-            }
         }
-
-        public init(scalarHex: String, cases: [Case]) {
-            self.scalarHex = scalarHex
-            self.cases = cases
-        }
-    }
-
-    public init(
-        source: String, sourceSha256: String, utilities: Utilities,
-        generator: Generator, exchange: Exchange, lowOrder: LowOrder
-    ) {
-        self.source = source
-        self.sourceSha256 = sourceSha256
-        self.utilities = utilities
-        self.generator = generator
-        self.exchange = exchange
-        self.lowOrder = lowOrder
     }
 }
 
@@ -210,29 +115,6 @@ public struct PairingExchangeVector: Codable, Sendable {
     public var shareBMessageHex: String
     public var confirmMessageHex: String
     public var iskHex: String
-
-    public init(
-        name: String, description: String, provenance: String,
-        pinHex: String, clientStaticHex: String, hostStaticHex: String,
-        handshakeHashHex: String, initiatorScalarHex: String,
-        responderScalarHex: String, shareAMessageHex: String,
-        shareBMessageHex: String, confirmMessageHex: String,
-        iskHex: String
-    ) {
-        self.name = name
-        self.description = description
-        self.provenance = provenance
-        self.pinHex = pinHex
-        self.clientStaticHex = clientStaticHex
-        self.hostStaticHex = hostStaticHex
-        self.handshakeHashHex = handshakeHashHex
-        self.initiatorScalarHex = initiatorScalarHex
-        self.responderScalarHex = responderScalarHex
-        self.shareAMessageHex = shareAMessageHex
-        self.shareBMessageHex = shareBMessageHex
-        self.confirmMessageHex = confirmMessageHex
-        self.iskHex = iskHex
-    }
 }
 
 /// One codec vector for the 0x0B–0x0E message layouts, the lifecycle
@@ -261,21 +143,5 @@ public struct PairingMessageVector: Codable, Sendable {
         case shareB
         case confirm
         case reject
-    }
-
-    public init(
-        name: String, description: String, kind: Kind, codec: Codec,
-        messageHex: String, shareHex: String? = nil,
-        tagHex: String? = nil, reason: UInt8? = nil, error: String? = nil
-    ) {
-        self.name = name
-        self.description = description
-        self.kind = kind
-        self.codec = codec
-        self.messageHex = messageHex
-        self.shareHex = shareHex
-        self.tagHex = tagHex
-        self.reason = reason
-        self.error = error
     }
 }

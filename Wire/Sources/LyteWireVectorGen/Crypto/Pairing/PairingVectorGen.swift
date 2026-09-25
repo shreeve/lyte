@@ -14,9 +14,6 @@ private let draftSha256 =
 
 public func makePairingVectorFile() throws -> PairingVectorFile {
     PairingVectorFile(
-        format: PairingVectorFile.expectedFormat,
-        formatVersion: 1,
-        wireVersion: 1,
         draftVectors: makeDraftVectors(),
         exchangeVectors: try makeExchangeVectors(),
         messageVectors: try makeMessageVectors()
@@ -26,8 +23,8 @@ public func makePairingVectorFile() throws -> PairingVectorFile {
 // MARK: - External draft vectors (transcribed, not generated)
 
 private func makeDraftVectors() -> PairingDraftVectors {
-    let bytes127 = Hex.string((0..<127).map { UInt8($0) })
-    let bytes128 = Hex.string((0..<128).map { UInt8($0) })
+    let bytes127 = Hex.string(counting(from: 0, count: 127))
+    let bytes128 = Hex.string(counting(from: 0, count: 128))
     return PairingDraftVectors(
         source: draftSource,
         sourceSha256: draftSha256,
@@ -184,11 +181,11 @@ private func makeDraftVectors() -> PairingDraftVectors {
 private func makeExchangeVectors() throws -> [PairingExchangeVector] {
     // Counting-byte inputs, auditable by eye (the noise-v1 convention).
     let pin = Array("482913".utf8)
-    let clientStatic = (0..<32).map { UInt8(0x10 + $0) }
-    let hostStatic = (0..<32).map { UInt8(0x30 + $0) }
-    let handshakeHash = (0..<32).map { UInt8(0x50 + $0) }
-    let initiatorScalar = (0..<32).map { UInt8(0x70 + $0) }
-    let responderScalar = (0..<32).map { UInt8(0x90 + $0) }
+    let clientStatic = counting(from: 0x10, count: 32)
+    let hostStatic = counting(from: 0x30, count: 32)
+    let handshakeHash = counting(from: 0x50, count: 32)
+    let initiatorScalar = counting(from: 0x70, count: 32)
+    let responderScalar = counting(from: 0x90, count: 32)
 
     var initiator = try PairingPakeInitiator(
         pin: pin,
@@ -240,46 +237,38 @@ private func makeExchangeVectors() throws -> [PairingExchangeVector] {
 // MARK: - Codec vectors
 
 private func makeMessageVectors() throws -> [PairingMessageVector] {
-    let share = (0..<32).map { UInt8(0xA0 + $0) }
-    let tag = (0..<64).map { UInt8($0) }
+    let share = counting(from: 0xA0, count: 32)
+    let tag = counting(from: 0, count: 64)
     var vectors: [PairingMessageVector] = []
 
     // Round trips — the PairingCodecTests hand-computed anchors as data.
-    vectors.append(PairingMessageVector(
-        name: "share-a-nominal",
-        description: "Client's CPace share Ya, counting bytes from 0xA0.",
-        kind: .roundtrip, codec: .shareA,
-        messageHex: Hex.string(try PairingShareA(share: share).encode()),
-        shareHex: Hex.string(share)
-    ))
-    vectors.append(PairingMessageVector(
-        name: "share-b-nominal",
-        description: "Host's share Yb plus its confirmation tag Tb.",
-        kind: .roundtrip, codec: .shareB,
-        messageHex: Hex.string(
-            try PairingShareB(share: share, confirmationTag: tag).encode()
-        ),
-        shareHex: Hex.string(share),
-        tagHex: Hex.string(tag)
-    ))
-    vectors.append(PairingMessageVector(
-        name: "confirm-nominal",
-        description: "Client's confirmation tag Ta.",
-        kind: .roundtrip, codec: .confirm,
-        messageHex: Hex.string(
-            try PairingConfirm(confirmationTag: tag).encode()
-        ),
-        tagHex: Hex.string(tag)
-    ))
-    for reason in PairingRejectReason.allCases {
-        let slug = reason == .confirmationFailed
-            ? "confirmation-failed" : "invalid-share"
+    for (name, description, codec, message, shareHex, tagHex) in [
+        ("share-a-nominal",
+         "Client's CPace share Ya, counting bytes from 0xA0.",
+         PairingMessageVector.Codec.shareA,
+         try PairingShareA(share: share).encode(), Hex.string(share), nil),
+        ("share-b-nominal", "Host's share Yb plus its confirmation tag Tb.",
+         .shareB, try PairingShareB(share: share, confirmationTag: tag).encode(),
+         Hex.string(share), Hex.string(tag)),
+        ("confirm-nominal", "Client's confirmation tag Ta.",
+         .confirm, try PairingConfirm(confirmationTag: tag).encode(),
+         nil, Hex.string(tag)),
+    ] as [(String, String, PairingMessageVector.Codec, [UInt8], String?, String?)] {
         vectors.append(PairingMessageVector(
-            name: "reject-\(slug)",
-            description: reason == .confirmationFailed
-                ? "Refusal after a bad tag — wrong PIN and tampered"
-                    + " binding share one value on purpose (no oracle)."
-                : "Refusal of a low-order share (the G.I abort).",
+            name: name, description: description,
+            kind: .roundtrip, codec: codec,
+            messageHex: Hex.string(message), shareHex: shareHex, tagHex: tagHex
+        ))
+    }
+    for (reason, name, description) in [
+        (PairingRejectReason.confirmationFailed, "reject-confirmation-failed",
+         "Refusal after a bad tag — wrong PIN and tampered binding share one "
+            + "value on purpose (no oracle)."),
+        (.invalidShare, "reject-invalid-share",
+         "Refusal of a low-order share (the G.I abort)."),
+    ] {
+        vectors.append(PairingMessageVector(
+            name: name, description: description,
             kind: .roundtrip, codec: .reject,
             messageHex: Hex.string(PairingReject(reason: reason).encode()),
             reason: reason.rawValue
@@ -287,64 +276,37 @@ private func makeMessageVectors() throws -> [PairingMessageVector] {
     }
 
     // Decode rejects — the fixed-frame discipline.
-    vectors.append(PairingMessageVector(
-        name: "share-a-truncated",
-        description: "The type byte alone — share A is exactly 33 bytes.",
-        kind: .decodeReject, codec: .shareA,
-        messageHex: "0b", error: "truncatedMessage"
-    ))
-    vectors.append(PairingMessageVector(
-        name: "share-a-trailing-byte",
-        description: "34 bytes where the message is exactly its layout.",
-        kind: .decodeReject, codec: .shareA,
-        messageHex: Hex.string([0x0B] + share + [0x00]),
-        error: "trailingBytes"
-    ))
-    vectors.append(PairingMessageVector(
-        name: "share-a-bad-type",
-        description: "A share-B type byte fed to the share-A decoder.",
-        kind: .decodeReject, codec: .shareA,
-        messageHex: Hex.string([0x0C] + share), error: "unexpectedType"
-    ))
-    vectors.append(PairingMessageVector(
-        name: "share-b-truncated",
-        description: "Share without the tag — share B is exactly"
-            + " 97 bytes.",
-        kind: .decodeReject, codec: .shareB,
-        messageHex: Hex.string([0x0C] + share), error: "truncatedMessage"
-    ))
-    vectors.append(PairingMessageVector(
-        name: "confirm-bad-type",
-        description: "A share-A type byte fed to the confirm decoder.",
-        kind: .decodeReject, codec: .confirm,
-        messageHex: Hex.string([0x0B] + tag), error: "unexpectedType"
-    ))
-    vectors.append(PairingMessageVector(
-        name: "confirm-trailing-byte",
-        description: "66 bytes where the message is exactly its layout.",
-        kind: .decodeReject, codec: .confirm,
-        messageHex: Hex.string([0x0D] + tag + [0x00]),
-        error: "trailingBytes"
-    ))
-    vectors.append(PairingMessageVector(
-        name: "reject-truncated",
-        description: "The type byte alone — a reject is exactly 2 bytes.",
-        kind: .decodeReject, codec: .reject,
-        messageHex: "0e", error: "truncatedMessage"
-    ))
-    vectors.append(PairingMessageVector(
-        name: "reject-zero",
-        description: "Reason 0x00 — the loud zero-fill bug, never a"
-            + " value.",
-        kind: .decodeReject, codec: .reject,
-        messageHex: "0e00", error: "unknownReason"
-    ))
-    vectors.append(PairingMessageVector(
-        name: "reject-unknown",
-        description: "Reason 0x7f — unassigned reasons reject.",
-        kind: .decodeReject, codec: .reject,
-        messageHex: "0e7f", error: "unknownReason"
-    ))
+    for (name, description, codec, message, error) in [
+        ("share-a-truncated",
+         "The type byte alone — share A is exactly 33 bytes.",
+         PairingMessageVector.Codec.shareA, [0x0B], "truncatedMessage"),
+        ("share-a-trailing-byte",
+         "34 bytes where the message is exactly its layout.",
+         .shareA, [0x0B] + share + [0x00], "trailingBytes"),
+        ("share-a-bad-type", "A share-B type byte fed to the share-A decoder.",
+         .shareA, [0x0C] + share, "unexpectedType"),
+        ("share-b-truncated",
+         "Share without the tag — share B is exactly 97 bytes.",
+         .shareB, [0x0C] + share, "truncatedMessage"),
+        ("confirm-bad-type", "A share-A type byte fed to the confirm decoder.",
+         .confirm, [0x0B] + tag, "unexpectedType"),
+        ("confirm-trailing-byte",
+         "66 bytes where the message is exactly its layout.",
+         .confirm, [0x0D] + tag + [0x00], "trailingBytes"),
+        ("reject-truncated",
+         "The type byte alone — a reject is exactly 2 bytes.",
+         .reject, [0x0E], "truncatedMessage"),
+        ("reject-zero", "Reason 0x00 — the loud zero-fill bug, never a value.",
+         .reject, [0x0E, 0x00], "unknownReason"),
+        ("reject-unknown", "Reason 0x7f — unassigned reasons reject.",
+         .reject, [0x0E, 0x7F], "unknownReason"),
+    ] as [(String, String, PairingMessageVector.Codec, [UInt8], String)] {
+        vectors.append(PairingMessageVector(
+            name: name, description: description,
+            kind: .decodeReject, codec: codec,
+            messageHex: Hex.string(message), error: error
+        ))
+    }
 
     return vectors
 }

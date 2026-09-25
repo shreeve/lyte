@@ -20,7 +20,7 @@ final class DialCancellationTests: XCTestCase {
             inner = try NoiseTransportCrypto(
                 hostAddress: "127.0.0.1", hostPort: 9,
                 hostStaticPublicKey: NoiseKeyPair.generate().publicKey,
-                attempts: 5, attemptTimeoutMilliseconds: 1_000)
+                retry: .init(attempts: 5, intervalMicroseconds: 1_000_000))
         }
 
         var hostAddress: String { inner.hostAddress }

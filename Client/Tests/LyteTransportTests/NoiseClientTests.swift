@@ -94,7 +94,7 @@ final class NoiseClientTests: XCTestCase {
         let crypto = try NoiseTransportCrypto(
             hostAddress: "10.0.0.249", hostPort: 41_000,
             hostStaticPublicKey: host.hostStatic.publicKey,
-            attempts: 3, attemptTimeoutMilliseconds: 200)
+            retry: .init(attempts: 3, intervalMicroseconds: 200_000))
         try crypto.performHandshake(io: host)
         return (crypto, host)
     }
@@ -134,7 +134,7 @@ final class NoiseClientTests: XCTestCase {
         let crypto = try NoiseTransportCrypto(
             hostAddress: "10.0.0.249", hostPort: 41_000,
             hostStaticPublicKey: host.hostStatic.publicKey,
-            attempts: 3, attemptTimeoutMilliseconds: 60)
+            retry: .init(attempts: 3, intervalMicroseconds: 60_000))
         try crypto.performHandshake(io: host)
         XCTAssertEqual(host.message1Attempts, 2,
                        "the client owns the retry timer")
@@ -146,7 +146,7 @@ final class NoiseClientTests: XCTestCase {
         let crypto = try NoiseTransportCrypto(
             hostAddress: "10.0.0.249", hostPort: 41_000,
             hostStaticPublicKey: NoiseKeyPair.generate().publicKey, // not the host's
-            attempts: 2, attemptTimeoutMilliseconds: 40)
+            retry: .init(attempts: 2, intervalMicroseconds: 40_000))
         XCTAssertThrowsError(try crypto.performHandshake(io: host)) {
             XCTAssertEqual(($0 as? HandshakeExhausted)?
                 .counters.message1Transmissions, 2,
@@ -214,7 +214,7 @@ final class NoiseClientTests: XCTestCase {
         let crypto = try NoiseTransportCrypto(
             hostAddress: "10.0.0.249", hostPort: 41_000,
             hostStaticPublicKey: host.hostStatic.publicKey,
-            attempts: 3, attemptTimeoutMilliseconds: 200)
+            retry: .init(attempts: 3, intervalMicroseconds: 200_000))
         try crypto.performHandshake(io: host)
         crypto.testingInsideDirection = { probe.inside(seal: $0) }
 
@@ -275,7 +275,7 @@ final class NoiseClientTests: XCTestCase {
         let crypto = try NoiseTransportCrypto(
             hostAddress: "10.0.0.249", hostPort: 41_000,
             hostStaticPublicKey: host.hostStatic.publicKey,
-            attempts: 3, attemptTimeoutMilliseconds: 200)
+            retry: .init(attempts: 3, intervalMicroseconds: 200_000))
         try crypto.performHandshake(io: host)
         crypto.testingInsideDirection = { probe.inside(seal: $0) }
 

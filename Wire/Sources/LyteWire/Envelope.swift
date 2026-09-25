@@ -7,7 +7,7 @@
 //                          MUST be 0 on send, ignored on receive
 //   2      2    seq        per-channel datagram sequence (serial u16)
 //   4      4    frame      frame number / audio packet number / FEC group id
-//   8      8    timestamp  µs; host PipeWire monotonic domain on host-sent
+//   8      8    timestamp  µs; host monotonic (CLOCK_MONOTONIC) on host-sent
 //                          datagrams, client monotonic on client-sent —
 //                          apply WireTimestamp<Domain> at the ends
 //   16     8    fec        FEC field; layout and codec in FecField.swift

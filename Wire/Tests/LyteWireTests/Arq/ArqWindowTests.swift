@@ -15,17 +15,6 @@ final class ArqWindowTests: XCTestCase {
         HostTimestamp(microseconds: microseconds)
     }
 
-    private func frames(_ datagrams: [[UInt8]]) throws -> [ArqFrame] {
-        try datagrams.flatMap { try ArqFrame.decodeAll($0) }
-    }
-
-    private func messages(_ events: [ArqEvent]) -> [[UInt8]] {
-        events.compactMap { event -> [UInt8]? in
-            if case .message(_, let bytes) = event { return bytes }
-            return nil
-        }
-    }
-
     private func message(_ index: Int) -> [UInt8] {
         [0x40, UInt8(truncatingIfNeeded: index >> 8), UInt8(truncatingIfNeeded: index)]
     }
@@ -44,7 +33,7 @@ final class ArqWindowTests: XCTestCase {
             for index in 0...buffered {
                 try a.send(message: message(index), now: at(0))
             }
-            let sent = try frames(a.poll(now: at(0)).datagrams)
+            let sent = try a.poll(now: at(0)).datagrams.arqFrames()
             XCTAssertEqual(sent.count, buffered + 1)
             // Lose seq 0; everything else buffers behind the hole.
             for frame in sent.dropFirst() {
@@ -52,9 +41,10 @@ final class ArqWindowTests: XCTestCase {
                     b.ingest(payload: frame.encode(), now: at(1_000)), []
                 )
             }
-            let acks = try frames(b.poll(now: at(1_000)).datagrams)
+            let acks = try b.poll(now: at(1_000)).datagrams.arqFrames()
             guard acks.count == 1, case .ack(let ack) = acks[0] else {
-                return XCTFail("one ACK frame expected, got \(acks)")
+                XCTFail("one ACK frame expected, got \(acks)")
+                continue
             }
             let block = try XCTUnwrap(ack.blocks.first)
             XCTAssertEqual(block.cumulative.rawValue, 0xFFFF)
@@ -62,10 +52,12 @@ final class ArqWindowTests: XCTestCase {
                 block.highestReported.rawValue, UInt16(buffered),
                 "\(buffered) buffered segments"
             )
-            XCTAssertEqual(
-                block.bitmapSeqs.map(\.rawValue),
-                (1...buffered).map { UInt16($0) }
-            )
+            // Seqs 1…buffered sit at offsets 1…buffered past 0xFFFF.
+            var expected = [UInt8](repeating: 0, count: buffered / 8 + 1)
+            for offset in 1...buffered {
+                expected[offset / 8] |= 1 << (offset % 8)
+            }
+            XCTAssertEqual(block.receivedBitmap, expected)
         }
     }
 
@@ -86,7 +78,7 @@ final class ArqWindowTests: XCTestCase {
         var overruns = 0
         var now: UInt64 = 0
         for _ in 0..<2_000 {
-            for frame in try frames(a.poll(now: at(now)).datagrams) {
+            for frame in try a.poll(now: at(now)).datagrams.arqFrames() {
                 if case .segment(let segment) = frame,
                    segment.seq.rawValue == 0, now < 400_000 {
                     continue // the head keeps getting lost
@@ -134,26 +126,11 @@ final class ArqWindowTests: XCTestCase {
         XCTAssertLessThan(accepted, 32_768)
         XCTAssertGreaterThan(accepted, 16_384)
 
-        var delivered = 0
-        var inOrder = true
-        var now: UInt64 = 0
-        for _ in 0..<2_000 where !(a.isQuiescent && b.isQuiescent) {
-            for datagram in a.poll(now: at(now)).datagrams {
-                for bytes in messages(b.ingest(payload: datagram, now: at(now))) {
-                    inOrder = inOrder && bytes == message(delivered)
-                    delivered += 1
-                }
-            }
-            for datagram in b.poll(now: at(now)).datagrams {
-                _ = a.ingest(payload: datagram, now: at(now))
-            }
-            now += 1_000
-        }
-        XCTAssertEqual(delivered, accepted)
-        XCTAssertTrue(inOrder)
+        let drained = a.drain(with: &b, step: 1_000, maxRounds: 2_000)
+        XCTAssertTrue(drained.peer.messages == (0..<accepted).map(message))
         XCTAssertTrue(a.isQuiescent)
         // Drained, the queue accepts again.
-        XCTAssertNoThrow(try a.send(message: [0x40], now: at(now)))
+        XCTAssertNoThrow(try a.send(message: [0x40], now: at(drained.end)))
     }
 
     /// Hundreds of queued segments crossing the u16 wrap under loss
@@ -170,9 +147,9 @@ final class ArqWindowTests: XCTestCase {
         var delivered: [[UInt8]] = []
         var now: UInt64 = 0
         for _ in 0..<10_000 where !(a.isQuiescent && b.isQuiescent) {
-            for frame in try frames(a.poll(now: at(now)).datagrams)
+            for frame in try a.poll(now: at(now)).datagrams.arqFrames()
             where rng.next() % 5 != 0 {
-                delivered += messages(b.ingest(payload: frame.encode(), now: at(now)))
+                delivered += b.ingest(payload: frame.encode(), now: at(now)).messages
             }
             for datagram in b.poll(now: at(now)).datagrams
             where rng.next() % 5 != 0 {
@@ -198,12 +175,7 @@ final class ArqWindowTests: XCTestCase {
                 var now: UInt64 = 0
                 let elapsed = ContinuousClock().measure {
                     while !(a.isQuiescent && b.isQuiescent) {
-                        for datagram in a.poll(now: at(now)).datagrams {
-                            _ = b.ingest(payload: datagram, now: at(now))
-                        }
-                        for datagram in b.poll(now: at(now)).datagrams {
-                            _ = a.ingest(payload: datagram, now: at(now))
-                        }
+                        a.exchange(with: &b, now: at(now))
                         now += 100
                     }
                 }
@@ -232,14 +204,14 @@ final class ArqWindowTests: XCTestCase {
             if id == 1 { firstSegment = datagrams[0] }
             for datagram in datagrams {
                 XCTAssertEqual(
-                    messages(b.ingest(payload: datagram, now: at(0))).count, 1
+                    b.ingest(payload: datagram, now: at(0)).messages.count, 1
                 )
             }
         }
         _ = b.poll(now: at(0))
 
         let late = b.ingest(payload: firstSegment, now: at(1_000))
-        XCTAssertEqual(messages(late), [], "group 1 delivered twice")
+        XCTAssertEqual(late.messages, [], "group 1 delivered twice")
         XCTAssertEqual(late, [.ignored(.segmentOnClosedGroup(
             ArqGroupId(rawValue: 1), ArqSegmentSeq(rawValue: 0)
         ))])

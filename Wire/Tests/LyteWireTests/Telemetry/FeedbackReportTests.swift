@@ -3,7 +3,9 @@ import LyteWire
 
 // The anchor bytes below were computed by hand from the layout comment in
 // FeedbackReport.swift, not by running the codec — same circularity-
-// breaking rule as EnvelopeTests/FecFieldTests/ClockBeaconTests.
+// breaking rule as EnvelopeTests/FecFieldTests/ClockBeaconTests. The
+// empty-section, bounds-maxed and bitmap decode cases live in
+// beacon-v1.json's feedback vectors.
 
 final class FeedbackReportTests: XCTestCase {
 
@@ -71,37 +73,9 @@ final class FeedbackReportTests: XCTestCase {
         )
     }
 
-    func testAnchorEncode() throws {
+    func testAnchor() throws {
         XCTAssertEqual(try anchorReport().encode(), anchorBytes)
-    }
-
-    func testAnchorDecode() throws {
         XCTAssertEqual(try FeedbackReport.decode(anchorBytes), try anchorReport())
-    }
-
-    // MARK: Empty sections
-
-    func testEmptyReportRoundTrip() throws {
-        let report = FeedbackReport(
-            clientTimestamp: ClientTimestamp(microseconds: 123_456)
-        )
-        let bytes = try report.encode()
-        XCTAssertEqual(bytes.count, FeedbackBounds.fixedHeaderByteCount)
-        XCTAssertTrue(
-            bytes[10..<18].allSatisfy { $0 == 0 },
-            "dispersionBase must be zero without samples"
-        )
-        XCTAssertEqual(try FeedbackReport.decode(bytes), report)
-    }
-
-    func testNonZeroBaseWithoutSamplesRejected() throws {
-        var bytes = try FeedbackReport(
-            clientTimestamp: ClientTimestamp(microseconds: 1)
-        ).encode()
-        bytes[10] = 0x01
-        XCTAssertThrowsError(try FeedbackReport.decode(bytes)) {
-            XCTAssertEqual($0 as? FeedbackError, .nonZeroBaseWithoutSamples)
-        }
     }
 
     func testEmptyDispersionSectionRejectedAtEncode() {
@@ -109,8 +83,8 @@ final class FeedbackReportTests: XCTestCase {
             clientTimestamp: ClientTimestamp(microseconds: 1),
             dispersion: .init(base: ClientTimestamp(microseconds: 2), samples: [])
         )
-        XCTAssertThrowsError(try report.encode()) {
-            XCTAssertEqual($0 as? FeedbackError, .emptyDispersionSection)
+        assertThrows(FeedbackError.emptyDispersionSection) {
+            try report.encode()
         }
     }
 
@@ -132,8 +106,8 @@ final class FeedbackReportTests: XCTestCase {
             clientTimestamp: ClientTimestamp(microseconds: 1),
             channels: (0...8).map { statsBlock($0) }
         )
-        XCTAssertThrowsError(try over.encode()) {
-            XCTAssertEqual($0 as? FeedbackError, .tooManyChannelBlocks(9))
+        assertThrows(FeedbackError.tooManyChannelBlocks(9)) {
+            try over.encode()
         }
         var atBound = over
         atBound.channels.removeLast()
@@ -142,8 +116,8 @@ final class FeedbackReportTests: XCTestCase {
         // section parsing.
         var bytes = try atBound.encode()
         bytes[18] = 9
-        XCTAssertThrowsError(try FeedbackReport.decode(bytes)) {
-            XCTAssertEqual($0 as? FeedbackError, .tooManyChannelBlocks(9))
+        assertThrows(FeedbackError.tooManyChannelBlocks(9)) {
+            try FeedbackReport.decode(bytes)
         }
     }
 
@@ -155,8 +129,8 @@ final class FeedbackReportTests: XCTestCase {
                 samples: (0..<113).map { sample($0) }
             )
         )
-        XCTAssertThrowsError(try over.encode()) {
-            XCTAssertEqual($0 as? FeedbackError, .tooManyDispersionSamples(113))
+        assertThrows(FeedbackError.tooManyDispersionSamples(113)) {
+            try over.encode()
         }
         var atBound = over
         atBound.dispersion?.samples.removeLast()
@@ -164,8 +138,8 @@ final class FeedbackReportTests: XCTestCase {
         XCTAssertEqual(try FeedbackReport.decode(bytes), atBound)
         var corrupt = bytes
         corrupt[19] = 200
-        XCTAssertThrowsError(try FeedbackReport.decode(corrupt)) {
-            XCTAssertEqual($0 as? FeedbackError, .tooManyDispersionSamples(200))
+        assertThrows(FeedbackError.tooManyDispersionSamples(200)) {
+            try FeedbackReport.decode(corrupt)
         }
     }
 
@@ -178,16 +152,14 @@ final class FeedbackReportTests: XCTestCase {
         let over = FeedbackReport(
             clientTimestamp: ClientTimestamp(microseconds: 1), nacks: entries
         )
-        XCTAssertThrowsError(try over.encode()) {
-            XCTAssertEqual($0 as? FeedbackError, .tooManyNackEntries(7))
-        }
+        assertThrows(FeedbackError.tooManyNackEntries(7)) { try over.encode() }
         var atBound = over
         atBound.nacks.removeLast()
         var bytes = try atBound.encode()
         XCTAssertEqual(try FeedbackReport.decode(bytes), atBound)
         bytes[20] = 7
-        XCTAssertThrowsError(try FeedbackReport.decode(bytes)) {
-            XCTAssertEqual($0 as? FeedbackError, .tooManyNackEntries(7))
+        assertThrows(FeedbackError.tooManyNackEntries(7)) {
+            try FeedbackReport.decode(bytes)
         }
     }
 
@@ -201,8 +173,8 @@ final class FeedbackReportTests: XCTestCase {
                                 arrivalDeltaMicroseconds: 0x0100_0000)]
             )
         )
-        XCTAssertThrowsError(try report.encode()) {
-            XCTAssertEqual($0 as? FeedbackError, .arrivalDeltaOutOfRange(0x0100_0000))
+        assertThrows(FeedbackError.arrivalDeltaOutOfRange(0x0100_0000)) {
+            try report.encode()
         }
         report.dispersion?.samples[0].arrivalDeltaMicroseconds = 0xFF_FFFF
         XCTAssertEqual(
@@ -219,12 +191,10 @@ final class FeedbackReportTests: XCTestCase {
             missingShards: [200, 3, 3, 0, 200]
         )
         XCTAssertEqual(entry.missingShards, [0, 3, 200])
-        XCTAssertThrowsError(
+        assertThrows(FeedbackError.emptyNackShardList) {
             try FeedbackReport.NackEntry(
                 frame: FrameNumber(rawValue: 9), missingShards: []
             )
-        ) {
-            XCTAssertEqual($0 as? FeedbackError, .emptyNackShardList)
         }
     }
 
@@ -241,62 +211,23 @@ final class FeedbackReportTests: XCTestCase {
         XCTAssertEqual(try FeedbackReport.decode(bytes), report)
     }
 
-    func testNonCanonicalBitmapRejected() throws {
-        // frame 1, bitmapByteCount 2, bitmap 0x01 0x00: zero final byte.
-        let bytes = try FeedbackReport(
-            clientTimestamp: ClientTimestamp(microseconds: 1)
-        ).encode()
-        var corrupt = Array(bytes[..<20]) + [1]
-            + [0x01, 0x00, 0x00, 0x00, 0x02, 0x01, 0x00]
-        XCTAssertThrowsError(try FeedbackReport.decode(corrupt)) {
-            XCTAssertEqual($0 as? FeedbackError, .nonCanonicalNackBitmap)
-        }
-        // bitmapByteCount 0 and 33 both reject on the count itself.
-        corrupt = Array(bytes[..<20]) + [1] + [0x01, 0x00, 0x00, 0x00, 0x00]
-        XCTAssertThrowsError(try FeedbackReport.decode(corrupt)) {
-            XCTAssertEqual($0 as? FeedbackError, .nackBitmapByteCountOutOfRange(0))
-        }
-        corrupt = Array(bytes[..<20]) + [1] + [0x01, 0x00, 0x00, 0x00, 33]
-            + [UInt8](repeating: 0xFF, count: 33)
-        XCTAssertThrowsError(try FeedbackReport.decode(corrupt)) {
-            XCTAssertEqual($0 as? FeedbackError, .nackBitmapByteCountOutOfRange(33))
-        }
-    }
-
     // MARK: Budget
 
-    func testBoundsMaxedReportFitsTheShardBudget() throws {
-        XCTAssertEqual(FeedbackBounds.maxEncodedByteCountWithoutExtensions, 1035)
-        let maxed = try maxedReport()
-        let bytes = try maxed.encode()
-        XCTAssertEqual(bytes.count, 1035)
-        XCTAssertLessThanOrEqual(
-            bytes.count, WireBudget.maxPlaintextShardByteCount
-        )
-        XCTAssertEqual(try FeedbackReport.decode(bytes), maxed)
-    }
-
     func testOverBudgetViaExtensionsRejected() throws {
+        XCTAssertEqual(FeedbackBounds.maxEncodedByteCountWithoutExtensions, 1035)
         var report = try maxedReport()
         // 1035 structural + 1 TLV-count + (2 + 75) = 1113 > 1112.
         report.extensions = [try WireExtension(
             type: 0x7F, value: [UInt8](repeating: 0xEE, count: 75)
         )]
-        XCTAssertThrowsError(try report.encode()) {
-            XCTAssertEqual($0 as? FeedbackError, .reportOverBudget(1113))
+        assertThrows(FeedbackError.reportOverBudget(1113)) {
+            try report.encode()
         }
         // One byte less fits exactly.
         report.extensions = [try WireExtension(
             type: 0x7F, value: [UInt8](repeating: 0xEE, count: 74)
         )]
         XCTAssertEqual(try report.encode().count, 1112)
-    }
-
-    func testTrailingBytesRejected() throws {
-        let bytes = try anchorReport().encode()
-        XCTAssertThrowsError(try FeedbackReport.decode(bytes + [0x00])) {
-            XCTAssertEqual($0 as? FeedbackError, .trailingBytes)
-        }
     }
 
     func testTruncationSweepNeverTraps() throws {

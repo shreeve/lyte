@@ -212,20 +212,6 @@ public struct ArqAck: Hashable, Sendable {
             self.receivedBitmap = receivedBitmap
         }
 
-        /// The seqs the bitmap marks received, past the cumulative.
-        public var bitmapSeqs: [ArqSegmentSeq] {
-            var seqs: [ArqSegmentSeq] = []
-            for (byteOffset, byte) in receivedBitmap.enumerated() {
-                for bit in 0..<8 where byte & (1 << bit) != 0 {
-                    seqs.append(ArqSegmentSeq(
-                        rawValue: cumulative.rawValue &+ 1
-                            &+ UInt16(byteOffset * 8 + bit)
-                    ))
-                }
-            }
-            return seqs
-        }
-
         /// The serially highest seq this block reports received:
         /// the top bitmap bit, or the cumulative when the bitmap is
         /// empty (which may itself mean "nothing", initial − 1 — the
@@ -299,22 +285,6 @@ public enum ArqFrame: Hashable, Sendable {
         }
     }
 
-    /// Encodes a frame sequence into one datagram payload, enforcing
-    /// the 1112 B plaintext shard budget.
-    public static func encodeAll(_ frames: [ArqFrame]) throws -> [UInt8] {
-        guard !frames.isEmpty else {
-            throw ArqFrameError.emptyPayload
-        }
-        var out = [UInt8]()
-        for frame in frames {
-            out.append(contentsOf: frame.encode())
-        }
-        guard out.count <= WireBudget.maxPlaintextShardByteCount else {
-            throw ArqFrameError.payloadOverBudget(out.count)
-        }
-        return out
-    }
-
     /// Decodes a whole reliable-channel datagram payload into its frame
     /// sequence. Throws on truncation, unknown frame types, zero-length
     /// bodies, malformed ACK bounds, and empty payloads; never traps on
@@ -354,9 +324,6 @@ public enum ArqFrame: Hashable, Sendable {
         let group = try reader.u16()
         let seq = try reader.u16()
         let bodyLen = Int(try reader.u16())
-        guard bodyLen >= 1 else {
-            throw ArqFrameError.zeroLengthSegmentBody
-        }
         return try ArqSegment(
             group: ArqGroupId(rawValue: group),
             seq: ArqSegmentSeq(rawValue: seq),
@@ -373,9 +340,6 @@ public enum ArqFrame: Hashable, Sendable {
         _ = try reader.u8()
         _ = try reader.u8()
         let blockCount = Int(try reader.u8())
-        guard blockCount >= 1 else {
-            throw ArqFrameError.zeroAckBlocks
-        }
         guard blockCount <= ArqBounds.maxAckBlocks else {
             throw ArqFrameError.tooManyAckBlocks(blockCount)
         }
@@ -423,6 +387,4 @@ public enum ArqFrameError: Error, Hashable, Sendable {
     /// A bitmap whose final byte is zero: the bitmap is sized by its
     /// highest set bit, so a zero tail means the sender miscounted.
     case nonCanonicalAckBitmap
-    /// An encoded frame sequence over the 1112 B shard budget.
-    case payloadOverBudget(Int)
 }

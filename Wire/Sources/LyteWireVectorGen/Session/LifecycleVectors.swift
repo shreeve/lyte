@@ -2,14 +2,14 @@
 // `Wire/Vectors/lifecycle-v1.json` — mode transition 0x09 and session
 // teardown 0x0A.
 
-import Foundation
 import LyteWire
+import LyteWireTestKit
 
 /// One vector file: `Wire/Vectors/lifecycle-v1.json`.
 public struct LifecycleVectorFile: FrozenVectorFile {
-    public var format: String
-    public var formatVersion: Int
-    public var wireVersion: Int
+    public var format = Self.expectedFormat
+    public var formatVersion = 1
+    public var wireVersion = 1
     public var vectors: [LifecycleVector]
 
     public static let expectedFormat = "lyte-wire-lifecycle-vectors"
@@ -18,19 +18,6 @@ public struct LifecycleVectorFile: FrozenVectorFile {
     public var vectorNameGroups: [[String]] {
         [vectors.map(\.name)]
     }
-
-    public init(
-        format: String,
-        formatVersion: Int,
-        wireVersion: Int,
-        vectors: [LifecycleVector]
-    ) {
-        self.format = format
-        self.formatVersion = formatVersion
-        self.wireVersion = wireVersion
-        self.vectors = vectors
-    }
-
 }
 
 /// One lifecycle-codec vector. `codec` names the codec under test;
@@ -55,23 +42,5 @@ public struct LifecycleVector: Codable, Sendable {
     public enum LifecycleCodec: String, Codable, Sendable {
         case modeTransition
         case sessionTeardown
-    }
-
-    public init(
-        name: String,
-        description: String,
-        kind: Kind,
-        codec: LifecycleCodec,
-        messageHex: String,
-        value: UInt8? = nil,
-        error: String? = nil
-    ) {
-        self.name = name
-        self.description = description
-        self.kind = kind
-        self.codec = codec
-        self.messageHex = messageHex
-        self.value = value
-        self.error = error
     }
 }

@@ -2,14 +2,14 @@
 // (data segment 0x07, ACK 0x08, and the frame-sequence payload rule).
 
 import LyteCore
-import Foundation
 import LyteWire
+import LyteWireTestKit
 
 /// One vector file: `Wire/Vectors/arq-v1.json`.
 public struct ArqVectorFile: FrozenVectorFile {
-    public var format: String
-    public var formatVersion: Int
-    public var wireVersion: Int
+    public var format = Self.expectedFormat
+    public var formatVersion = 1
+    public var wireVersion = 1
     public var vectors: [ArqVector]
 
     public static let expectedFormat = "lyte-wire-arq-vectors"
@@ -18,19 +18,6 @@ public struct ArqVectorFile: FrozenVectorFile {
     public var vectorNameGroups: [[String]] {
         [vectors.map(\.name)]
     }
-
-    public init(
-        format: String,
-        formatVersion: Int,
-        wireVersion: Int,
-        vectors: [ArqVector]
-    ) {
-        self.format = format
-        self.formatVersion = formatVersion
-        self.wireVersion = wireVersion
-        self.vectors = vectors
-    }
-
 }
 
 /// One ARQ vector. `payloadHex` is a whole reliable-channel datagram
@@ -58,14 +45,6 @@ public struct ArqVector: Codable, Sendable {
     public struct Frame: Codable, Sendable {
         public var segment: Segment?
         public var ack: Ack?
-
-        public init(segment: Segment) {
-            self.segment = segment
-        }
-
-        public init(ack: Ack) {
-            self.ack = ack
-        }
     }
 
     public struct Segment: Codable, Sendable {
@@ -73,85 +52,39 @@ public struct ArqVector: Codable, Sendable {
         public var seq: UInt16
         public var endOfMessage: Bool
         public var bodyHex: String
-
-        public init(
-            group: UInt16, seq: UInt16, endOfMessage: Bool, bodyHex: String
-        ) {
-            self.group = group
-            self.seq = seq
-            self.endOfMessage = endOfMessage
-            self.bodyHex = bodyHex
-        }
     }
 
     public struct Ack: Codable, Sendable {
         public var blocks: [Block]
-
-        public init(blocks: [Block]) {
-            self.blocks = blocks
-        }
 
         public struct Block: Codable, Sendable {
             public var chan: UInt8
             public var group: UInt16
             public var cumulative: UInt16
             public var bitmapHex: String
-
-            public init(
-                chan: UInt8, group: UInt16, cumulative: UInt16,
-                bitmapHex: String
-            ) {
-                self.chan = chan
-                self.group = group
-                self.cumulative = cumulative
-                self.bitmapHex = bitmapHex
-            }
         }
-    }
-
-    public init(
-        name: String,
-        description: String,
-        kind: Kind,
-        payloadHex: String,
-        frames: [Frame]? = nil,
-        error: String? = nil
-    ) {
-        self.name = name
-        self.description = description
-        self.kind = kind
-        self.payloadHex = payloadHex
-        self.frames = frames
-        self.error = error
     }
 }
 
-/// Builds the LyteWire frame a typed vector frame describes. Traps on a
-/// malformed vector file — vectors are trusted repo artifacts.
+/// Builds the LyteWire frame a typed vector frame describes.
 public func arqFrame(from vector: ArqVector.Frame) throws -> ArqFrame {
     if let segment = vector.segment {
-        guard let body = Hex.bytes(segment.bodyHex) else {
-            fatalError("bad bodyHex in arq vector")
-        }
         return .segment(try ArqSegment(
             group: ArqGroupId(rawValue: segment.group),
             seq: ArqSegmentSeq(rawValue: segment.seq),
             endOfMessage: segment.endOfMessage,
-            body: body
+            body: try vectorBytes(segment.bodyHex, "bodyHex")
         ))
     }
     if let ack = vector.ack {
         return .ack(try ArqAck(blocks: ack.blocks.map { block in
-            guard let bitmap = Hex.bytes(block.bitmapHex) else {
-                fatalError("bad bitmapHex in arq vector")
-            }
-            return try ArqAck.Block(
+            try ArqAck.Block(
                 channel: ChannelId(rawValue: block.chan),
                 group: ArqGroupId(rawValue: block.group),
                 cumulative: ArqSegmentSeq(rawValue: block.cumulative),
-                receivedBitmap: bitmap
+                receivedBitmap: try vectorBytes(block.bitmapHex, "bitmapHex")
             )
         }))
     }
-    fatalError("vector frame with neither segment nor ack")
+    throw VectorFileError.malformedField("frame with neither segment nor ack")
 }

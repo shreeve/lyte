@@ -3,29 +3,17 @@ import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-// W-G6's live-handshake half: fresh-key IK handshakes succeed end to end,
+// The live handshake: fresh-key IK handshakes succeed end to end,
 // version mismatches abort loudly before any transport key exists,
 // tampered or truncated handshake bytes fail authentication without
-// panicking, and malformed-input fuzz never traps.
+// panicking or poisoning the session, and malformed input never traps.
 
 final class NoiseHandshakeTests: XCTestCase {
-
-    private func makeSessions() throws -> (client: NoiseSession, host: NoiseSession) {
-        let clientStatic = NoiseKeyPair.generate()
-        let hostStatic = NoiseKeyPair.generate()
-        let client = try NoiseSession(
-            role: .initiator,
-            staticKeys: clientStatic,
-            remoteStaticPublicKey: hostStatic.publicKey
-        )
-        let host = try NoiseSession(role: .responder, staticKeys: hostStatic)
-        return (client, host)
-    }
 
     // MARK: Success path
 
     func testFullHandshakeAndTransportRoundTrip() throws {
-        var (client, host) = try makeSessions()
+        var (client, host) = try NoisePair.sessions()
 
         let message1 = try client.writeMessage1(
             applicationPayload: Array("hello".utf8)[...]
@@ -38,8 +26,6 @@ final class NoiseHandshakeTests: XCTestCase {
 
         XCTAssertTrue(client.isComplete)
         XCTAssertTrue(host.isComplete)
-        XCTAssertEqual(client.negotiatedVersion, WireVersion.major)
-        XCTAssertEqual(host.negotiatedVersion, WireVersion.major)
 
         // Mutual authentication artifacts: each end holds the other's
         // static, ready to check against the paired set.
@@ -70,21 +56,19 @@ final class NoiseHandshakeTests: XCTestCase {
     }
 
     func testHandshakeHashHookForPake() throws {
-        // The W6 hook: both ends expose the same 32-byte transcript hash,
+        // The pairing hook: both ends expose the same 32-byte transcript hash,
         // it is stable across makeTransport, and it differs per session
         // (fresh ephemerals) — exactly what CPace needs to bind to.
-        var (client, host) = try makeSessions()
-        _ = try host.readMessage1(try client.writeMessage1()[...])
-        _ = try client.readMessage2(try host.writeMessage2()[...])
+        var (client, host) = try NoisePair.sessions()
+        try NoisePair.complete(&client, &host)
 
         XCTAssertEqual(client.handshakeHash.count, 32)
         XCTAssertEqual(client.handshakeHash, host.handshakeHash)
         XCTAssertEqual(try client.makeTransport().handshakeHash, client.handshakeHash)
         XCTAssertEqual(try host.makeTransport().handshakeHash, host.handshakeHash)
 
-        var (client2, host2) = try makeSessions()
-        _ = try host2.readMessage1(try client2.writeMessage1()[...])
-        _ = try client2.readMessage2(try host2.writeMessage2()[...])
+        var (client2, host2) = try NoisePair.sessions()
+        try NoisePair.complete(&client2, &host2)
         XCTAssertNotEqual(client.handshakeHash, client2.handshakeHash)
     }
 
@@ -103,15 +87,11 @@ final class NoiseHandshakeTests: XCTestCase {
         let message1 = try rawClient.writeMessage1(payload: [WireVersion.major + 1][...])
 
         var host = try NoiseSession(role: .responder, staticKeys: hostStatic)
-        XCTAssertThrowsError(try host.readMessage1(message1[...])) { error in
-            XCTAssertEqual(
-                error as? NoiseError,
-                .versionMismatch(
-                    received: WireVersion.major + 1, expected: WireVersion.major
-                )
-            )
+        assertThrows(
+            NoiseError.versionMismatch( received: WireVersion.major + 1, expected: WireVersion.major )
+        ) {
+            try host.readMessage1(message1[...])
         }
-        XCTAssertNil(host.negotiatedVersion)
         // The rejected message left no trace: the responder cannot
         // answer it or derive keys from it, and a genuine message 1
         // still completes.
@@ -121,8 +101,7 @@ final class NoiseHandshakeTests: XCTestCase {
             role: .initiator, staticKeys: clientStatic,
             remoteStaticPublicKey: hostStatic.publicKey
         )
-        _ = try host.readMessage1(try client.writeMessage1()[...])
-        _ = try client.readMessage2(try host.writeMessage2()[...])
+        try NoisePair.complete(&client, &host)
         XCTAssertEqual(try client.makeTransport().handshakeHash,
                        try host.makeTransport().handshakeHash)
     }
@@ -139,15 +118,13 @@ final class NoiseHandshakeTests: XCTestCase {
         _ = try rawHost.readMessage1(try client.writeMessage1()[...])
         // Version byte only travels — but wrong.
         let message2 = try rawHost.writeMessage2(payload: [0][...])
-        XCTAssertThrowsError(try client.readMessage2(message2[...])) { error in
-            XCTAssertEqual(
-                error as? NoiseError,
-                .versionMismatch(received: 0, expected: WireVersion.major)
-            )
+        assertThrows(
+            NoiseError.versionMismatch(received: 0, expected: WireVersion.major)
+        ) {
+            try client.readMessage2(message2[...])
         }
         // Keys never exist for a mismatched answer.
         XCTAssertFalse(client.isComplete)
-        XCTAssertNil(client.negotiatedVersion)
         XCTAssertThrowsError(try client.makeTransport())
     }
 
@@ -161,8 +138,8 @@ final class NoiseHandshakeTests: XCTestCase {
         )
         let message1 = try rawClient.writeMessage1(payload: [][...])
         var host = try NoiseSession(role: .responder, staticKeys: hostStatic)
-        XCTAssertThrowsError(try host.readMessage1(message1[...])) { error in
-            XCTAssertEqual(error as? NoiseError, .missingVersionPayload)
+        assertThrows(NoiseError.missingVersionPayload) {
+            try host.readMessage1(message1[...])
         }
     }
 
@@ -184,12 +161,12 @@ final class NoiseHandshakeTests: XCTestCase {
     /// A low-order `e` in message 1 aborts with invalidPublicKey and
     /// leaves the responder able to take a genuine message 1.
     func testLowOrderInitiatorEphemeralRejectedAndRetryable() throws {
-        var (client, host) = try makeSessions()
+        var (client, host) = try NoisePair.sessions()
         let genuine = try client.writeMessage1()
         for point in Self.lowOrderPoints {
             let forged = point + genuine.dropFirst(32)
-            XCTAssertThrowsError(try host.readMessage1(forged[...])) {
-                XCTAssertEqual($0 as? NoiseError, .invalidPublicKey)
+            assertThrows(NoiseError.invalidPublicKey) {
+                try host.readMessage1(forged[...])
             }
         }
         _ = try host.readMessage1(genuine[...])
@@ -200,13 +177,13 @@ final class NoiseHandshakeTests: XCTestCase {
     /// A low-order `e` in message 2 aborts with invalidPublicKey and
     /// leaves the initiator able to take the genuine message 2.
     func testLowOrderResponderEphemeralRejectedAndRetryable() throws {
-        var (client, host) = try makeSessions()
+        var (client, host) = try NoisePair.sessions()
         _ = try host.readMessage1(try client.writeMessage1()[...])
         let genuine = try host.writeMessage2()
         for point in Self.lowOrderPoints {
             let forged = point + genuine.dropFirst(32)
-            XCTAssertThrowsError(try client.readMessage2(forged[...])) {
-                XCTAssertEqual($0 as? NoiseError, .invalidPublicKey)
+            assertThrows(NoiseError.invalidPublicKey) {
+                try client.readMessage2(forged[...])
             }
             XCTAssertFalse(client.isComplete)
         }
@@ -230,57 +207,71 @@ final class NoiseHandshakeTests: XCTestCase {
         )
         var host = try NoiseSession(role: .responder, staticKeys: realHost)
         let message1 = try client.writeMessage1()
-        XCTAssertThrowsError(try host.readMessage1(message1[...])) { error in
-            XCTAssertEqual(error as? NoiseError, .authenticationFailure)
+        assertThrows(NoiseError.authenticationFailure) {
+            try host.readMessage1(message1[...])
         }
     }
 
-    func testTamperedMessage1FailsEverywhere() throws {
-        var (client, host) = try makeSessions()
-        let message1 = try client.writeMessage1()
+    /// A failed read is transactional: every tampered message 1 fails on
+    /// the SAME responder, which still takes the genuine one afterwards.
+    func testTamperedMessage1FailsAndLeavesResponderRetryable() throws {
+        var (client, host) = try NoisePair.sessions()
+        let message1 = try client.writeMessage1(
+            applicationPayload: Array("real".utf8)[...]
+        )
         // Flip one bit in every byte position class: the ephemeral, the
         // encrypted static, and the encrypted payload.
-        for index in [0, 16, 33, 60, message1.count - 1] {
+        for index in [0, 16, 33, 40, 60, message1.count - 1] {
             var tampered = message1
             tampered[index] ^= 0x01
-            var freshHost = host
-            XCTAssertThrowsError(
-                try freshHost.readMessage1(tampered[...]),
-                "byte \(index)"
-            ) { error in
-                XCTAssertEqual(
-                    error as? NoiseError, .authenticationFailure, "byte \(index)"
-                )
+            assertThrows(NoiseError.authenticationFailure, "byte \(index)") {
+                try host.readMessage1(tampered[...])
             }
+            XCTAssertNil(host.remoteStaticPublicKey, "byte \(index)")
         }
-        // The untampered original still works on the real host.
-        XCTAssertNoThrow(try host.readMessage1(message1[...]))
+        XCTAssertEqual(
+            try host.readMessage1(message1[...]), Array("real".utf8)
+        )
+        _ = try client.readMessage2(try host.writeMessage2()[...])
+        XCTAssertEqual(client.handshakeHash, host.handshakeHash)
     }
 
-    func testTamperedMessage2Fails() throws {
-        var (client, host) = try makeSessions()
+    /// The initiator retransmits one message 1 across the retry window,
+    /// so tampered answers and garbage on the port must leave the SAME
+    /// initiator able to read the genuine message 2.
+    func testTamperedMessage2FailsAndLeavesInitiatorRetryable() throws {
+        var (client, host) = try NoisePair.sessions()
         _ = try host.readMessage1(try client.writeMessage1()[...])
         let message2 = try host.writeMessage2()
         for index in [0, 31, 32, message2.count - 1] {
             var tampered = message2
             tampered[index] ^= 0x80
-            var freshClient = client
-            XCTAssertThrowsError(
-                try freshClient.readMessage2(tampered[...]),
-                "byte \(index)"
-            ) { error in
-                XCTAssertEqual(
-                    error as? NoiseError, .authenticationFailure, "byte \(index)"
-                )
+            assertThrows(NoiseError.authenticationFailure, "byte \(index)") {
+                try client.readMessage2(tampered[...])
             }
         }
+        var rng = SplitMix64(seed: 0xBAD2)
+        XCTAssertThrowsError(try client.readMessage2(rng.bytes(48)[...]))
+
         XCTAssertNoThrow(try client.readMessage2(message2[...]))
+        XCTAssertEqual(client.handshakeHash, host.handshakeHash)
+        var up = try client.makeTransport()
+        var down = try host.makeTransport()
+        let envelope = Envelope(
+            channel: .ctrl, seq: ChannelSeq(rawValue: 0),
+            frame: FrameNumber(rawValue: 0), timestamp: 7, fec: 0
+        )
+        XCTAssertEqual(
+            try down.openDatagram(up.sealDatagram(envelope, plaintext: [1, 2, 3]))
+                .plaintext,
+            [1, 2, 3]
+        )
     }
 
     // MARK: Malformed input never panics
 
     func testTruncatedAndHostileHandshakeBytesNeverTrap() throws {
-        var (client, host) = try makeSessions()
+        var (client, host) = try NoisePair.sessions()
         let message1 = try client.writeMessage1()
 
         // Every truncation of a real message 1.
@@ -309,94 +300,30 @@ final class NoiseHandshakeTests: XCTestCase {
     }
 
     func testOutOfOrderDrivingThrows() throws {
-        var (client, host) = try makeSessions()
+        var (client, host) = try NoisePair.sessions()
         // Responder writing first, double-write, reuse after completion —
         // all handshakeOutOfOrder, never a trap.
         var hostCopy = host
-        XCTAssertThrowsError(try hostCopy.writeMessage2()) { error in
-            XCTAssertEqual(error as? NoiseError, .handshakeOutOfOrder)
+        assertThrows(NoiseError.handshakeOutOfOrder) {
+            try hostCopy.writeMessage2()
         }
         let message1 = try client.writeMessage1()
         var clientCopy = client
-        XCTAssertThrowsError(try clientCopy.writeMessage1()) { error in
-            XCTAssertEqual(error as? NoiseError, .handshakeOutOfOrder)
+        assertThrows(NoiseError.handshakeOutOfOrder) {
+            try clientCopy.writeMessage1()
         }
         _ = try host.readMessage1(message1[...])
         let message2 = try host.writeMessage2()
         _ = try client.readMessage2(message2[...])
-        XCTAssertThrowsError(try client.readMessage2(message2[...])) { error in
-            XCTAssertEqual(error as? NoiseError, .handshakeOutOfOrder)
+        assertThrows(NoiseError.handshakeOutOfOrder) {
+            try client.readMessage2(message2[...])
         }
     }
 
     func testMakeTransportBeforeCompletionThrows() throws {
-        let (client, _) = try makeSessions()
-        XCTAssertThrowsError(try client.makeTransport()) { error in
-            XCTAssertEqual(error as? NoiseError, .handshakeIncomplete)
+        let (client, _) = try NoisePair.sessions()
+        assertThrows(NoiseError.handshakeIncomplete) {
+            try client.makeTransport()
         }
-    }
-
-    // MARK: Failed reads are transactional (pre-H1 Crypto/ review)
-
-    func testFailedMessage1LeavesResponderRetryable() throws {
-        // Hostile bytes first, the genuine message 1 second — on the
-        // SAME instance. A failed read must not leave half-mixed
-        // transcript state behind, or the genuine message could never
-        // verify.
-        var (client, host) = try makeSessions()
-        let message1 = try client.writeMessage1(
-            applicationPayload: Array("real".utf8)[...]
-        )
-        var tampered = message1
-        tampered[40] ^= 0xFF
-        XCTAssertThrowsError(try host.readMessage1(tampered[...]))
-        XCTAssertNil(host.remoteStaticPublicKey)
-
-        XCTAssertEqual(
-            try host.readMessage1(message1[...]), Array("real".utf8)
-        )
-        // …and the handshake completes normally afterwards.
-        let message2 = try host.writeMessage2()
-        XCTAssertNoThrow(try client.readMessage2(message2[...]))
-        XCTAssertEqual(client.handshakeHash, host.handshakeHash)
-    }
-
-    func testFailedMessage2LeavesInitiatorRetryable() throws {
-        // The load-bearing direction: the client retransmits ONE msg1
-        // across the retry window (0443beb), so garbage on the port
-        // must not poison its ability to read the real message 2 later.
-        var (client, host) = try makeSessions()
-        _ = try host.readMessage1(try client.writeMessage1()[...])
-        let message2 = try host.writeMessage2()
-
-        var tampered = message2
-        tampered[tampered.count - 1] ^= 0x01
-        XCTAssertThrowsError(try client.readMessage2(tampered[...]))
-        // Seeded garbage too, at message-2 minimum length.
-        var rng = SplitMix64(seed: 0xBAD2)
-        let garbage = (0..<48).map { _ in UInt8(truncatingIfNeeded: rng.next()) }
-        XCTAssertThrowsError(try client.readMessage2(garbage[...]))
-
-        XCTAssertNoThrow(try client.readMessage2(message2[...]))
-        XCTAssertTrue(client.isComplete)
-        XCTAssertEqual(client.handshakeHash, host.handshakeHash)
-        // The transports derived after the noisy path still agree.
-        var up = try client.makeTransport()
-        var down = try host.makeTransport()
-        let envelope = Envelope(
-            channel: .ctrl,
-            seq: ChannelSeq(rawValue: 0),
-            frame: FrameNumber(rawValue: 0),
-            timestamp: 7,
-            fec: 0
-        )
-        let aad = try envelope.encode(payload: [])
-        let sealed = try up.seal(
-            plaintext: [1, 2, 3][...], aad: aad[...], envelope: envelope
-        )
-        XCTAssertEqual(
-            try down.unseal(wirePayload: sealed[...], aad: aad[...], envelope: envelope),
-            [1, 2, 3]
-        )
     }
 }

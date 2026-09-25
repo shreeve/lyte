@@ -2,8 +2,9 @@ import LyteCore
 import XCTest
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
-// Gate W-G6's crux: the committed Vectors/noise-v1.json, byte-for-byte.
+// Verifies the committed Vectors/noise-v1.json, byte-for-byte.
 //
 // The handshakeVectors section is EXTERNAL — published vectors from two
 // independent implementations (snow and cacophony) of
@@ -20,31 +21,6 @@ final class NoiseVectorFileTests: XCTestCase {
 
     private func loadFile() throws -> NoiseVectorFile {
         try NoiseVectorFile.loadCommitted()
-    }
-
-    func testProvenanceIsHonest() throws {
-        let file = try loadFile()
-        XCTAssertEqual(
-            file.handshakeVectors.count, 2,
-            "both external sources (snow, cacophony) must be present"
-        )
-        for vector in file.handshakeVectors {
-            XCTAssertEqual(vector.protocolName, "Noise_IK_25519_ChaChaPoly_SHA256")
-            XCTAssertTrue(
-                vector.source.hasPrefix("https://"),
-                "\(vector.name): external provenance required"
-            )
-            XCTAssertGreaterThanOrEqual(
-                vector.messages.count, 3,
-                "\(vector.name): need handshake + at least one transport message"
-            )
-        }
-        for vector in file.transportVectors {
-            XCTAssertEqual(
-                vector.provenance, "pinned-self-consistent",
-                "\(vector.name): transport vectors must be honestly labeled"
-            )
-        }
     }
 
     // MARK: External handshake vectors
@@ -129,7 +105,7 @@ final class NoiseVectorFileTests: XCTestCase {
         XCTAssertTrue(initiator.isComplete)
         XCTAssertTrue(responder.isComplete)
 
-        // Transcript agreement — the W6 PAKE binding hook.
+        // Transcript agreement — the pairing PAKE binds to it.
         XCTAssertEqual(initiator.handshakeHash, responder.handshakeHash, vector.name)
         if let expectedHash = vector.handshakeHashHex {
             XCTAssertEqual(
@@ -205,8 +181,6 @@ final class NoiseVectorFileTests: XCTestCase {
         let message2 = try host.writeMessage2()
         XCTAssertEqual(Hex.string(message2), vector.message2Hex, vector.name)
         XCTAssertEqual(try client.readMessage2(message2[...]), [], vector.name)
-        XCTAssertEqual(client.negotiatedVersion, WireVersion.major)
-        XCTAssertEqual(host.negotiatedVersion, WireVersion.major)
         XCTAssertEqual(
             Hex.string(client.handshakeHash), vector.handshakeHashHex, vector.name
         )

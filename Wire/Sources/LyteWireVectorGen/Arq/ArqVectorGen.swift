@@ -47,236 +47,143 @@ public func makeArqVectorFile() throws -> ArqVectorFile {
         return (frame, ack.encode())
     }
 
+    func append(
+        _ name: String, _ kind: ArqVector.Kind, _ description: String,
+        _ payload: [UInt8], frames: [ArqVector.Frame]? = nil,
+        error: String? = nil
+    ) {
+        vectors.append(ArqVector(
+            name: name, description: description, kind: kind,
+            payloadHex: Hex.string(payload), frames: frames, error: error
+        ))
+    }
+
     // MARK: Round trips
 
-    let (nominalSegment, nominalSegmentBytes) = try segmentFrame(
+    let nominalSegment = try segmentFrame(
         group: 5, seq: 0x0203, endOfMessage: true, body: [0xAA, 0xBB, 0xCC]
     )
-    vectors.append(ArqVector(
-        name: "segment-nominal",
-        description: "One-shot group 5, seq 0x0203, endOfMessage, 3-byte "
-            + "body — the hand-computed anchor.",
-        kind: .roundtrip,
-        payloadHex: Hex.string(nominalSegmentBytes),
-        frames: [nominalSegment]
-    ))
-
-    let (streamSegment, streamSegmentBytes) = try segmentFrame(
-        group: 0, seq: 0, endOfMessage: false, body: counting(from: 1, count: 16)
-    )
-    vectors.append(ArqVector(
-        name: "segment-stream-first",
-        description: "The ordered stream's first segment: group 0, seq 0, "
-            + "mid-message (endOfMessage clear).",
-        kind: .roundtrip,
-        payloadHex: Hex.string(streamSegmentBytes),
-        frames: [streamSegment]
-    ))
-
-    let (maxSegment, maxSegmentBytes) = try segmentFrame(
-        group: 1, seq: 7, endOfMessage: true,
-        body: counting(from: 0, count: ArqBounds.maxSegmentBodyByteCount)
-    )
-    vectors.append(ArqVector(
-        name: "segment-max-body",
-        description: "A 1104-byte body: the frame fills the 1112 B "
-            + "plaintext shard budget exactly.",
-        kind: .roundtrip,
-        payloadHex: Hex.string(maxSegmentBytes),
-        frames: [maxSegment]
-    ))
-
-    let (wrapSegment, wrapSegmentBytes) = try segmentFrame(
-        group: 9, seq: 0xFFFF, endOfMessage: false, body: [0x11]
-    )
-    vectors.append(ArqVector(
-        name: "segment-seq-wrap-high",
-        description: "seq 0xFFFF — the serial u16's wrap edge.",
-        kind: .roundtrip,
-        payloadHex: Hex.string(wrapSegmentBytes),
-        frames: [wrapSegment]
-    ))
-
-    let (nominalAck, nominalAckBytes) = try ackFrame([
+    let nominalAck = try ackFrame([
         (chan: 0, group: 5, cumulative: 0x0203, bitmap: [0x05])
     ])
-    vectors.append(ArqVector(
-        name: "ack-nominal",
-        description: "CTRL group 5 received through 0x0203 plus bitmap "
-            + "0x05 = seqs 0x0204 and 0x0206 (bits 0 and 2 past the "
-            + "cumulative) — the hand-computed anchor.",
-        kind: .roundtrip,
-        payloadHex: Hex.string(nominalAckBytes),
-        frames: [nominalAck]
-    ))
-
-    let (nothingAck, nothingAckBytes) = try ackFrame([
-        (chan: 4, group: 12, cumulative: 0xFFFF, bitmap: [0x01])
-    ])
-    vectors.append(ArqVector(
-        name: "ack-nothing-in-order",
-        description: "cumulative 0xFFFF = initial − 1 (nothing in order "
-            + "yet); the bitmap's bit 0 names seq 0 received out of "
-            + "order.",
-        kind: .roundtrip,
-        payloadHex: Hex.string(nothingAckBytes),
-        frames: [nothingAck]
-    ))
-
-    let (multiAck, multiAckBytes) = try ackFrame([
-        (chan: 0, group: 0, cumulative: 41, bitmap: []),
-        (chan: 0, group: 7, cumulative: 2, bitmap: [0xFF, 0x80]),
-    ])
-    vectors.append(ArqVector(
-        name: "ack-two-blocks",
-        description: "One frame reporting two groups: the stream clean "
-            + "through 41 (empty bitmap), one-shot 7 with seqs 3…10 and "
-            + "18 received past cumulative 2.",
-        kind: .roundtrip,
-        payloadHex: Hex.string(multiAckBytes),
-        frames: [multiAck]
-    ))
-
-    // A coalesced datagram: ACK piggybacked ahead of two segments —
-    // the frame-sequence rule as bytes.
-    let (coSeg1, coSeg1Bytes) = try segmentFrame(
-        group: 0, seq: 3, endOfMessage: false, body: counting(from: 0x40, count: 8)
-    )
-    let (coSeg2, coSeg2Bytes) = try segmentFrame(
-        group: 0, seq: 4, endOfMessage: true, body: counting(from: 0x48, count: 4)
-    )
-    vectors.append(ArqVector(
-        name: "coalesced-ack-then-segments",
-        description: "One datagram payload = ACK frame then two stream "
-            + "segments; decodeAll yields the sequence in order and "
-            + "re-encodes byte-exactly.",
-        kind: .roundtrip,
-        payloadHex: Hex.string(nominalAckBytes + coSeg1Bytes + coSeg2Bytes),
-        frames: [nominalAck, coSeg1, coSeg2]
-    ))
+    for (name, description, parts) in [
+        ("segment-nominal",
+         "One-shot group 5, seq 0x0203, endOfMessage, 3-byte body — the "
+            + "hand-computed anchor.",
+         [nominalSegment]),
+        ("segment-stream-first",
+         "The ordered stream's first segment: group 0, seq 0, mid-message "
+            + "(endOfMessage clear).",
+         [try segmentFrame(group: 0, seq: 0, endOfMessage: false,
+                           body: counting(from: 1, count: 16))]),
+        ("segment-max-body",
+         "A 1104-byte body: the frame fills the 1112 B plaintext shard "
+            + "budget exactly.",
+         [try segmentFrame(
+            group: 1, seq: 7, endOfMessage: true,
+            body: counting(from: 0, count: ArqBounds.maxSegmentBodyByteCount)
+         )]),
+        ("segment-seq-wrap-high", "seq 0xFFFF — the serial u16's wrap edge.",
+         [try segmentFrame(group: 9, seq: 0xFFFF, endOfMessage: false,
+                           body: [0x11])]),
+        ("ack-nominal",
+         "CTRL group 5 received through 0x0203 plus bitmap 0x05 = seqs 0x0204 "
+            + "and 0x0206 (bits 0 and 2 past the cumulative) — the "
+            + "hand-computed anchor.",
+         [nominalAck]),
+        ("ack-nothing-in-order",
+         "cumulative 0xFFFF = initial − 1 (nothing in order yet); the "
+            + "bitmap's bit 0 names seq 0 received out of order.",
+         [try ackFrame([(chan: 4, group: 12, cumulative: 0xFFFF,
+                         bitmap: [0x01])])]),
+        ("ack-two-blocks",
+         "One frame reporting two groups: the stream clean through 41 (empty "
+            + "bitmap), one-shot 7 with seqs 3…10 and 18 received past "
+            + "cumulative 2.",
+         [try ackFrame([
+            (chan: 0, group: 0, cumulative: 41, bitmap: []),
+            (chan: 0, group: 7, cumulative: 2, bitmap: [0xFF, 0x80]),
+         ])]),
+        // The frame-sequence rule as bytes: an ACK piggybacked ahead of
+        // two segments in one datagram.
+        ("coalesced-ack-then-segments",
+         "One datagram payload = ACK frame then two stream segments; "
+            + "decodeAll yields the sequence in order and re-encodes "
+            + "byte-exactly.",
+         [nominalAck,
+          try segmentFrame(group: 0, seq: 3, endOfMessage: false,
+                           body: counting(from: 0x40, count: 8)),
+          try segmentFrame(group: 0, seq: 4, endOfMessage: true,
+                           body: counting(from: 0x48, count: 4))]),
+    ] {
+        append(name, .roundtrip, description,
+               parts.flatMap(\.1), frames: parts.map(\.0))
+    }
 
     // MARK: Lenient decodes
 
-    var reservedFlagsSegment = nominalSegmentBytes
+    let segmentBytes = nominalSegment.1
+    let ackBytes = nominalAck.1
+    var reservedFlagsSegment = segmentBytes
     reservedFlagsSegment[1] |= 0xFE
-    vectors.append(ArqVector(
-        name: "segment-reserved-flags-ignored",
-        description: "Reserved segment flag bits set: decodes (bit0 still "
-            + "read), re-encode differs.",
-        kind: .decodeLenient,
-        payloadHex: Hex.string(reservedFlagsSegment),
-        frames: [nominalSegment]
-    ))
-
-    var reservedFlagsAck = nominalAckBytes
+    append("segment-reserved-flags-ignored", .decodeLenient,
+           "Reserved segment flag bits set: decodes (bit0 still read), "
+            + "re-encode differs.",
+           reservedFlagsSegment, frames: [nominalSegment.0])
+    var reservedFlagsAck = ackBytes
     reservedFlagsAck[1] = 0x7F
-    vectors.append(ArqVector(
-        name: "ack-reserved-flags-ignored",
-        description: "Reserved ACK flag byte set: decodes, re-encode "
-            + "differs.",
-        kind: .decodeLenient,
-        payloadHex: Hex.string(reservedFlagsAck),
-        frames: [nominalAck]
-    ))
+    append("ack-reserved-flags-ignored", .decodeLenient,
+           "Reserved ACK flag byte set: decodes, re-encode differs.",
+           reservedFlagsAck, frames: [nominalAck.0])
 
     // MARK: Decode rejects
 
-    vectors.append(ArqVector(
-        name: "empty-payload",
-        description: "A zero-byte payload where a frame was promised.",
-        kind: .decodeReject, payloadHex: "", error: "emptyPayload"
-    ))
-    vectors.append(ArqVector(
-        name: "unknown-frame-type",
-        description: "0x7F where a frame must start.",
-        kind: .decodeReject, payloadHex: "7f", error: "unknownFrameType"
-    ))
-    vectors.append(ArqVector(
-        name: "segment-truncated-header",
-        description: "7 bytes of an 8-byte segment header.",
-        kind: .decodeReject,
-        payloadHex: Hex.string(nominalSegmentBytes.prefix(7)),
-        error: "truncatedFrame"
-    ))
-    vectors.append(ArqVector(
-        name: "segment-truncated-body",
-        description: "bodyLen promises 3 bytes, payload carries 2.",
-        kind: .decodeReject,
-        payloadHex: Hex.string(nominalSegmentBytes.dropLast()),
-        error: "truncatedFrame"
-    ))
-    var zeroBody = Array(nominalSegmentBytes.prefix(8))
+    var zeroBody = Array(segmentBytes.prefix(8))
     zeroBody[6] = 0
     zeroBody[7] = 0
-    vectors.append(ArqVector(
-        name: "segment-zero-length-body",
-        description: "bodyLen 0 — a segment that carries nothing is a "
-            + "fill bug, kept loud.",
-        kind: .decodeReject,
-        payloadHex: Hex.string(zeroBody),
-        error: "zeroLengthSegmentBody"
-    ))
-    vectors.append(ArqVector(
-        name: "trailing-garbage-after-frame",
-        description: "A well-formed segment followed by a byte that is "
-            + "not a frame type: the payload is exactly its frames.",
-        kind: .decodeReject,
-        payloadHex: Hex.string(nominalSegmentBytes + [0x00]),
-        error: "unknownFrameType"
-    ))
-    vectors.append(ArqVector(
-        name: "ack-zero-blocks",
-        description: "blockCount 0 — an ACK reporting nothing is a fill "
-            + "bug.",
-        kind: .decodeReject,
-        payloadHex: "080000",
-        error: "zeroAckBlocks"
-    ))
-    var tooManyBlocks = nominalAckBytes
+    var tooManyBlocks = ackBytes
     tooManyBlocks[2] = UInt8(ArqBounds.maxAckBlocks + 1)
-    vectors.append(ArqVector(
-        name: "ack-too-many-blocks",
-        description: "blockCount 17 rejects on the count byte.",
-        kind: .decodeReject,
-        payloadHex: Hex.string(tooManyBlocks),
-        error: "tooManyAckBlocks"
-    ))
-    var longBitmap = nominalAckBytes
+    var longBitmap = ackBytes
     longBitmap[8] = UInt8(ArqBounds.maxAckBitmapByteCount + 1)
-    vectors.append(ArqVector(
-        name: "ack-bitmap-too-long",
-        description: "bitmapLen 33 — past the 256-seq window an ACK can "
-            + "describe.",
-        kind: .decodeReject,
-        payloadHex: Hex.string(longBitmap),
-        error: "ackBitmapTooLong"
-    ))
-    var nonCanonical = nominalAckBytes
+    var nonCanonical = ackBytes
     nonCanonical[8] = 2
     nonCanonical[9] = 0x05
     nonCanonical.append(0x00)
-    vectors.append(ArqVector(
-        name: "ack-bitmap-noncanonical",
-        description: "A zero final bitmap byte: the bitmap is sized by "
-            + "its highest set bit, so a zero tail means the sender "
-            + "miscounted.",
-        kind: .decodeReject,
-        payloadHex: Hex.string(nonCanonical),
-        error: "nonCanonicalAckBitmap"
-    ))
-    vectors.append(ArqVector(
-        name: "ack-truncated-block",
-        description: "The block promises a bitmap byte the payload does "
-            + "not carry.",
-        kind: .decodeReject,
-        payloadHex: Hex.string(nominalAckBytes.dropLast()),
-        error: "truncatedFrame"
-    ))
+    for (name, description, payload, error) in [
+        ("empty-payload", "A zero-byte payload where a frame was promised.",
+         [], "emptyPayload"),
+        ("unknown-frame-type", "0x7F where a frame must start.",
+         [0x7F], "unknownFrameType"),
+        ("segment-truncated-header", "7 bytes of an 8-byte segment header.",
+         Array(segmentBytes.prefix(7)), "truncatedFrame"),
+        ("segment-truncated-body",
+         "bodyLen promises 3 bytes, payload carries 2.",
+         Array(segmentBytes.dropLast()), "truncatedFrame"),
+        ("segment-zero-length-body",
+         "bodyLen 0 — a segment that carries nothing is a fill bug, kept loud.",
+         zeroBody, "zeroLengthSegmentBody"),
+        ("trailing-garbage-after-frame",
+         "A well-formed segment followed by a byte that is not a frame type: "
+            + "the payload is exactly its frames.",
+         segmentBytes + [0x00], "unknownFrameType"),
+        ("ack-zero-blocks",
+         "blockCount 0 — an ACK reporting nothing is a fill bug.",
+         [0x08, 0x00, 0x00], "zeroAckBlocks"),
+        ("ack-too-many-blocks", "blockCount 17 rejects on the count byte.",
+         tooManyBlocks, "tooManyAckBlocks"),
+        ("ack-bitmap-too-long",
+         "bitmapLen 33 — past the 256-seq window an ACK can describe.",
+         longBitmap, "ackBitmapTooLong"),
+        ("ack-bitmap-noncanonical",
+         "A zero final bitmap byte: the bitmap is sized by its highest set "
+            + "bit, so a zero tail means the sender miscounted.",
+         nonCanonical, "nonCanonicalAckBitmap"),
+        ("ack-truncated-block",
+         "The block promises a bitmap byte the payload does not carry.",
+         Array(ackBytes.dropLast()), "truncatedFrame"),
+    ] as [(String, String, [UInt8], String)] {
+        append(name, .decodeReject, description, payload, error: error)
+    }
 
-    return ArqVectorFile(
-        format: ArqVectorFile.expectedFormat,
-        formatVersion: 1,
-        wireVersion: 1,
-        vectors: vectors
-    )
+    return ArqVectorFile(vectors: vectors)
 }

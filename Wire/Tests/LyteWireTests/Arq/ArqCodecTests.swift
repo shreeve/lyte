@@ -6,7 +6,8 @@ import LyteWireTestKit
 // The ARQ frame codecs against hand-computed bytes — the anchor that
 // keeps arq-v1.json honest (the vectorgen output is checked against
 // these exact frames, so the codec never grades its own homework) —
-// plus decode-reject coverage and a never-traps fuzz.
+// plus the construction bounds. Decode rejects live in the vectors and
+// the never-trap sweep in CtrlDecoderFuzzTests.
 
 final class ArqCodecTests: XCTestCase {
 
@@ -43,12 +44,7 @@ final class ArqCodecTests: XCTestCase {
         XCTAssertEqual(Hex.string(ack.encode()), "08000100050003020105")
         let decoded = try ArqFrame.decodeAll(ack.encode())
         XCTAssertEqual(decoded, [.ack(ack)])
-        // Bitmap bits 0 and 2 name the seqs one and three past the
-        // cumulative.
-        XCTAssertEqual(
-            ack.blocks[0].bitmapSeqs.map(\.rawValue),
-            [0x0204, 0x0206]
-        )
+        // Bitmap bit 2 names the seq three past the cumulative.
         XCTAssertEqual(ack.blocks[0].highestReported.rawValue, 0x0206)
     }
 
@@ -59,50 +55,26 @@ final class ArqCodecTests: XCTestCase {
             cumulative: ArqSegmentSeq(rawValue: 41)
         )
         XCTAssertEqual(block.highestReported.rawValue, 41)
-        XCTAssertEqual(block.bitmapSeqs, [])
-    }
-
-    func testCoalescedFrameSequence() throws {
-        let ack = try ArqAck(blocks: [
-            ArqAck.Block(
-                channel: .ctrl, group: .orderedStream,
-                cumulative: ArqSegmentSeq(rawValue: 2)
-            )
-        ])
-        let seg = try ArqSegment(
-            group: .orderedStream,
-            seq: ArqSegmentSeq(rawValue: 3),
-            endOfMessage: true,
-            body: [1, 2, 3, 4]
-        )
-        let payload = try ArqFrame.encodeAll([.ack(ack), .segment(seg)])
-        XCTAssertEqual(
-            try ArqFrame.decodeAll(payload),
-            [.ack(ack), .segment(seg)]
-        )
     }
 
     // MARK: Construction bounds
 
     func testSegmentBounds() {
-        XCTAssertThrowsError(try ArqSegment(
-            group: .orderedStream, seq: ArqSegmentSeq(rawValue: 0),
-            endOfMessage: true, body: []
-        )) {
-            XCTAssertEqual(
-                $0 as? ArqFrameError, .zeroLengthSegmentBody
+        assertThrows(ArqFrameError.zeroLengthSegmentBody) {
+            try ArqSegment(
+                group: .orderedStream, seq: ArqSegmentSeq(rawValue: 0),
+                endOfMessage: true, body: []
             )
         }
-        XCTAssertThrowsError(try ArqSegment(
-            group: .orderedStream, seq: ArqSegmentSeq(rawValue: 0),
-            endOfMessage: true,
-            body: [UInt8](
-                repeating: 0, count: ArqBounds.maxSegmentBodyByteCount + 1
-            )
-        )) {
-            XCTAssertEqual(
-                $0 as? ArqFrameError,
-                .segmentBodyOverBudget(ArqBounds.maxSegmentBodyByteCount + 1)
+        assertThrows(
+            ArqFrameError.segmentBodyOverBudget(ArqBounds.maxSegmentBodyByteCount + 1)
+        ) {
+            try ArqSegment(
+                group: .orderedStream, seq: ArqSegmentSeq(rawValue: 0),
+                endOfMessage: true,
+                body: [UInt8](
+                    repeating: 0, count: ArqBounds.maxSegmentBodyByteCount + 1
+                )
             )
         }
         // The max body fills the shard budget exactly.
@@ -119,41 +91,37 @@ final class ArqCodecTests: XCTestCase {
     }
 
     func testAckBounds() throws {
-        XCTAssertThrowsError(try ArqAck(blocks: [])) {
-            XCTAssertEqual($0 as? ArqFrameError, .zeroAckBlocks)
-        }
+        assertThrows(ArqFrameError.zeroAckBlocks) { try ArqAck(blocks: []) }
         let block = try ArqAck.Block(
             channel: .ctrl, group: .orderedStream,
             cumulative: ArqSegmentSeq(rawValue: 0)
         )
-        XCTAssertThrowsError(try ArqAck(
-            blocks: Array(
-                repeating: block, count: ArqBounds.maxAckBlocks + 1
-            )
-        )) {
-            XCTAssertEqual(
-                $0 as? ArqFrameError,
-                .tooManyAckBlocks(ArqBounds.maxAckBlocks + 1)
-            )
-        }
-        XCTAssertThrowsError(try ArqAck.Block(
-            channel: .ctrl, group: .orderedStream,
-            cumulative: ArqSegmentSeq(rawValue: 0),
-            receivedBitmap: [UInt8](
-                repeating: 1, count: ArqBounds.maxAckBitmapByteCount + 1
-            )
-        )) {
-            XCTAssertEqual(
-                $0 as? ArqFrameError,
-                .ackBitmapTooLong(ArqBounds.maxAckBitmapByteCount + 1)
+        assertThrows(
+            ArqFrameError.tooManyAckBlocks(ArqBounds.maxAckBlocks + 1)
+        ) {
+            try ArqAck(
+                blocks: Array(
+                    repeating: block, count: ArqBounds.maxAckBlocks + 1
+                )
             )
         }
-        XCTAssertThrowsError(try ArqAck.Block(
-            channel: .ctrl, group: .orderedStream,
-            cumulative: ArqSegmentSeq(rawValue: 0),
-            receivedBitmap: [0x05, 0x00]
-        )) {
-            XCTAssertEqual($0 as? ArqFrameError, .nonCanonicalAckBitmap)
+        assertThrows(
+            ArqFrameError.ackBitmapTooLong(ArqBounds.maxAckBitmapByteCount + 1)
+        ) {
+            try ArqAck.Block(
+                channel: .ctrl, group: .orderedStream,
+                cumulative: ArqSegmentSeq(rawValue: 0),
+                receivedBitmap: [UInt8](
+                    repeating: 1, count: ArqBounds.maxAckBitmapByteCount + 1
+                )
+            )
+        }
+        assertThrows(ArqFrameError.nonCanonicalAckBitmap) {
+            try ArqAck.Block(
+                channel: .ctrl, group: .orderedStream,
+                cumulative: ArqSegmentSeq(rawValue: 0),
+                receivedBitmap: [0x05, 0x00]
+            )
         }
     }
 
@@ -164,43 +132,5 @@ final class ArqCodecTests: XCTestCase {
         XCTAssertTrue(high < low)
         XCTAssertEqual(high.distance(to: low), 4)
         XCTAssertEqual(ArqSegmentSeq(rawValue: 0xFFFF).next.rawValue, 0)
-    }
-
-    // MARK: Never traps
-
-    func testDecodeNeverTrapsOnArbitraryBytes() {
-        var rng = SplitMix64(seed: 0xA2_00_00_01)
-        for _ in 0..<20_000 {
-            let length = rng.int(in: 0...1200)
-            var bytes = rng.bytes(length)
-            // Bias toward the parser's edges: valid-looking frame types
-            // with hostile interiors.
-            if !bytes.isEmpty, Bool.random(using: &rng) {
-                bytes[0] = Bool.random(using: &rng)
-                    ? CtrlMessageType.arqSegment : CtrlMessageType.arqAck
-            }
-            _ = try? ArqFrame.decodeAll(bytes)
-        }
-    }
-
-    func testDecodeOfTruncatedValidPayloadNeverTraps() throws {
-        var rng = SplitMix64(seed: 0xA2_00_00_02)
-        let seg = try ArqSegment(
-            group: ArqGroupId(rawValue: 3),
-            seq: ArqSegmentSeq(rawValue: 9),
-            endOfMessage: true,
-            body: rng.bytes(300)
-        )
-        let ack = try ArqAck(blocks: [
-            ArqAck.Block(
-                channel: .ctrl, group: ArqGroupId(rawValue: 3),
-                cumulative: ArqSegmentSeq(rawValue: 8),
-                receivedBitmap: [0xFF, 0x01]
-            )
-        ])
-        let payload = try ArqFrame.encodeAll([.ack(ack), .segment(seg)])
-        for cut in 0..<payload.count {
-            _ = try? ArqFrame.decodeAll(Array(payload.prefix(cut)))
-        }
     }
 }

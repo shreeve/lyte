@@ -64,16 +64,10 @@ public struct ModeTransition: Hashable, Sendable, SliceDecodable {
     public static func decode(
         _ payload: ArraySlice<UInt8>
     ) throws -> ModeTransition {
-        guard payload.count >= encodedByteCount else {
-            throw LifecycleMessageError.truncatedMessage
-        }
-        guard payload.count == encodedByteCount else {
-            throw LifecycleMessageError.trailingBytes
-        }
-        let base = payload.startIndex
-        guard payload[base] == CtrlMessageType.modeTransition else {
-            throw LifecycleMessageError.unexpectedType(payload[base])
-        }
+        let base = try checkFixedFrame(
+            payload, type: CtrlMessageType.modeTransition,
+            byteCount: encodedByteCount, LifecycleMessageError.self
+        )
         guard let mode = SessionWireMode(rawValue: payload[base + 1]) else {
             throw LifecycleMessageError.unknownMode(payload[base + 1])
         }
@@ -102,16 +96,10 @@ public struct SessionTeardown: Hashable, Sendable, SliceDecodable {
     public static func decode(
         _ payload: ArraySlice<UInt8>
     ) throws -> SessionTeardown {
-        guard payload.count >= encodedByteCount else {
-            throw LifecycleMessageError.truncatedMessage
-        }
-        guard payload.count == encodedByteCount else {
-            throw LifecycleMessageError.trailingBytes
-        }
-        let base = payload.startIndex
-        guard payload[base] == CtrlMessageType.sessionTeardown else {
-            throw LifecycleMessageError.unexpectedType(payload[base])
-        }
+        let base = try checkFixedFrame(
+            payload, type: CtrlMessageType.sessionTeardown,
+            byteCount: encodedByteCount, LifecycleMessageError.self
+        )
         guard let reason = SessionTeardownReason(
             rawValue: payload[base + 1]
         ) else {
@@ -123,7 +111,7 @@ public struct SessionTeardown: Hashable, Sendable, SliceDecodable {
 
 /// Everything the lifecycle codecs can refuse. Hostile bytes throw,
 /// never trap.
-public enum LifecycleMessageError: Error, Hashable, Sendable {
+public enum LifecycleMessageError: FixedFrameError, Hashable, Sendable {
     case truncatedMessage
     case trailingBytes
     case unexpectedType(UInt8)

@@ -125,10 +125,6 @@ package struct Fe25519: Sendable {
         return nonZeroBit &- 1
     }
 
-    /// Convenience over `isZeroMask` for non-secret contexts (tests,
-    /// assertions). Secret-dependent selection must use `select`.
-    package var isZero: Bool { isZeroMask == UInt64.max }
-
     /// Constant-time selection: `a` where `mask` is all-ones, `b` where
     /// it is all-zeros — the RFC 9380 CMOV, mask arithmetic only.
     package static func select(

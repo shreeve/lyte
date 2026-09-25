@@ -1814,11 +1814,6 @@ final class SessionWire {
                 capabilities: NO WORKABLE INTERSECTION (\(why)) — \
                 typed teardown follows
                 """)
-        case .capabilityUpdateAcknowledged(let accepted):
-            emit("""
-                capabilities: update \
-                \(accepted ? "accepted" : "rejected") by the client
-                """)
         case .modeTransitionSent(let mode):
             emit("""
                 mode: → \(mode == .idle ? "IDLE" : "ACTIVE") \

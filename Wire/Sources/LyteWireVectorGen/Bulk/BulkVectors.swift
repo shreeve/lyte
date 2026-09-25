@@ -2,14 +2,14 @@
 // (the bulk-channel messages 0x1C–0x21, the key-11 capability, and worked
 // multi-session transfer traces). u64 fields ride as hex.
 
-import Foundation
 import LyteWire
+import LyteWireTestKit
 
 /// One vector file: `Wire/Vectors/bulk-v1.json`.
 public struct BulkVectorFile: FrozenVectorFile {
-    public var format: String
-    public var formatVersion: Int
-    public var wireVersion: Int
+    public var format = Self.expectedFormat
+    public var formatVersion = 1
+    public var wireVersion = 1
     public var messageVectors: [BulkMessageVector]
     public var capabilityVectors: [BulkCapabilityVector]
     public var transferVectors: [BulkTransferVector]
@@ -20,23 +20,6 @@ public struct BulkVectorFile: FrozenVectorFile {
     public var vectorNameGroups: [[String]] {
         [messageVectors.map(\.name), capabilityVectors.map(\.name), transferVectors.map(\.name)]
     }
-
-    public init(
-        format: String,
-        formatVersion: Int,
-        wireVersion: Int,
-        messageVectors: [BulkMessageVector],
-        capabilityVectors: [BulkCapabilityVector],
-        transferVectors: [BulkTransferVector]
-    ) {
-        self.format = format
-        self.formatVersion = formatVersion
-        self.wireVersion = wireVersion
-        self.messageVectors = messageVectors
-        self.capabilityVectors = capabilityVectors
-        self.transferVectors = transferVectors
-    }
-
 }
 
 /// One message-codec vector. `codec` names the codec under test;
@@ -83,46 +66,6 @@ public struct BulkMessageVector: Codable, Sendable {
         case complete
         case abort
     }
-
-    public init(
-        name: String,
-        description: String,
-        kind: Kind,
-        codec: BulkCodec,
-        messageHex: String? = nil,
-        transferIdHex: String? = nil,
-        totalByteCountHex: String? = nil,
-        chunkByteCount: Int? = nil,
-        sha256Hex: String? = nil,
-        nameUtf8Hex: String? = nil,
-        mimeUtf8Hex: String? = nil,
-        creditTotalHex: String? = nil,
-        contiguousCountHex: String? = nil,
-        bitmapHex: String? = nil,
-        chunkIndexHex: String? = nil,
-        dataHex: String? = nil,
-        reason: String? = nil,
-        error: String? = nil
-    ) {
-        self.name = name
-        self.description = description
-        self.kind = kind
-        self.codec = codec
-        self.messageHex = messageHex
-        self.transferIdHex = transferIdHex
-        self.totalByteCountHex = totalByteCountHex
-        self.chunkByteCount = chunkByteCount
-        self.sha256Hex = sha256Hex
-        self.nameUtf8Hex = nameUtf8Hex
-        self.mimeUtf8Hex = mimeUtf8Hex
-        self.creditTotalHex = creditTotalHex
-        self.contiguousCountHex = contiguousCountHex
-        self.bitmapHex = bitmapHex
-        self.chunkIndexHex = chunkIndexHex
-        self.dataHex = dataHex
-        self.reason = reason
-        self.error = error
-    }
 }
 
 /// One key-11 capability-spine vector: `messageHex` is a declaration's
@@ -133,30 +76,13 @@ public struct BulkCapabilityVector: Codable, Sendable {
     public var description: String
     public var messageHex: String
     public var bulkTransfer: Bool
-
-    public init(
-        name: String,
-        description: String,
-        messageHex: String,
-        bulkTransfer: Bool
-    ) {
-        self.name = name
-        self.description = description
-        self.messageHex = messageHex
-        self.bulkTransfer = bulkTransfer
-    }
 }
 
 /// A possession set as vector data (small counts — plain JSON ints
 /// are safe here).
 public struct BulkPossessionSpec: Codable, Sendable {
     public var contiguousCount: Int
-    public var extraChunkIndices: [Int]
-
-    public init(contiguousCount: Int, extraChunkIndices: [Int] = []) {
-        self.contiguousCount = contiguousCount
-        self.extraChunkIndices = extraChunkIndices
-    }
+    public var extraChunkIndices: [Int] = []
 
     public var possession: BulkPossession {
         BulkPossession(
@@ -188,36 +114,6 @@ public struct BulkTransferVector: Codable, Sendable {
     public var receiveWindowChunks: Int
     public var initialPossession: BulkPossessionSpec?
     public var sessions: [BulkTransferSessionVector]
-
-    public init(
-        name: String,
-        description: String,
-        provenance: String,
-        transferIdHex: String,
-        totalByteCount: Int,
-        chunkByteCount: Int,
-        payloadStart: Int,
-        sha256Hex: String,
-        fileName: String,
-        mimeHint: String,
-        receiveWindowChunks: Int,
-        initialPossession: BulkPossessionSpec? = nil,
-        sessions: [BulkTransferSessionVector]
-    ) {
-        self.name = name
-        self.description = description
-        self.provenance = provenance
-        self.transferIdHex = transferIdHex
-        self.totalByteCount = totalByteCount
-        self.chunkByteCount = chunkByteCount
-        self.payloadStart = payloadStart
-        self.sha256Hex = sha256Hex
-        self.fileName = fileName
-        self.mimeHint = mimeHint
-        self.receiveWindowChunks = receiveWindowChunks
-        self.initialPossession = initialPossession
-        self.sessions = sessions
-    }
 }
 
 /// One session of a worked transfer: the complete emission lists,
@@ -227,29 +123,11 @@ public struct BulkTransferSessionVector: Codable, Sendable {
     public var receiverIngestLimit: Int?
     public var senderMessagesHex: [String]
     public var receiverMessagesHex: [String]
-
-    public init(
-        receiverIngestLimit: Int? = nil,
-        senderMessagesHex: [String],
-        receiverMessagesHex: [String]
-    ) {
-        self.receiverIngestLimit = receiverIngestLimit
-        self.senderMessagesHex = senderMessagesHex
-        self.receiverMessagesHex = receiverMessagesHex
-    }
 }
 
-/// Stable names for `BulkAbortReason` cases.
+/// A `BulkAbortReason`'s name in vector files: its Swift case name.
 public func bulkAbortReasonName(_ reason: BulkAbortReason) -> String {
-    switch reason {
-    case .declined: return "declined"
-    case .cancelled: return "cancelled"
-    case .resumeMismatch: return "resumeMismatch"
-    case .shaMismatch: return "shaMismatch"
-    case .storageFailure: return "storageFailure"
-    case .busy: return "busy"
-    case .protocolViolation: return "protocolViolation"
-    }
+    "\(reason)"
 }
 
 public func bulkAbortReason(named name: String) -> BulkAbortReason? {

@@ -21,7 +21,7 @@ final class LoopbackEndpointTests: XCTestCase {
         let crypto = try NoiseTransportCrypto(
             hostAddress: "127.0.0.1", hostPort: 9,
             hostStaticPublicKey: NoiseKeyPair.generate().publicKey,
-            attempts: 2, attemptTimeoutMilliseconds: 40)
+            retry: .init(attempts: 2, intervalMicroseconds: 40_000))
         let endpoint = UdpReceiveEndpoint(
             port: 0, bindAddress: "127.0.0.1", crypto: crypto,
             receiveTimeout: Self.receiveTimeout)

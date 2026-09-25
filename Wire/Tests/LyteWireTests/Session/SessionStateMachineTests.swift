@@ -1,16 +1,15 @@
 import XCTest
 import LyteWire
 
-// W-G5b's named properties (core plan §4), asserted as behavior:
+// The session machine's named properties, asserted as behavior:
 //   - the pre-arm flag survives FROZEN and is consumed exactly once,
 //     by RECOVERY's IDR;
-//   - RECOVERY's IDR is paced at the half-stale-estimate policy;
 //   - two consecutive clean windows graduate RECOVERY → ACTIVE (a
 //     dirty window resets the count);
-// plus the lifecycle sequences the pillars pin: the convergence
-// handoff (final frame acked before the idle flip; damage aborts),
-// WAKE pacing, the beacon-cannot-freeze rule, re-freeze from RECOVERY,
-// liveness accounting, and teardown ordering.
+// plus the lifecycle sequences: the convergence handoff (final frame
+// acked before the idle flip; damage aborts), the beacon-cannot-freeze
+// rule, RECOVERY's longer silence bar, liveness accounting, and the
+// receiver's FROZEN exit. Single transitions live in the coverage table.
 
 final class SessionStateMachineTests: XCTestCase {
 
@@ -23,7 +22,7 @@ final class SessionStateMachineTests: XCTestCase {
         Machine(role: .mediaSender, now: t0)
     }
 
-    // MARK: The convergence handoff (overview conflict 5)
+    // MARK: The convergence handoff
 
     func testIdleFlipWaitsForFinalFrameAck() {
         var m = freshSender()
@@ -86,25 +85,7 @@ final class SessionStateMachineTests: XCTestCase {
         XCTAssertEqual(m.state, .frozen)
     }
 
-    // MARK: WAKE (overview conflict 14, timing §7)
-
-    func testWakePacesAtLastGoodRate() {
-        var m = freshSender()
-        _ = m.apply(.ratchetConverged, now: t0)
-        _ = m.apply(.finalFrameAcknowledged, now: t0)
-        XCTAssertEqual(m.state, .idle)
-
-        let actions = m.apply(
-            .preArmInput, now: t0.advanced(byMicroseconds: 100_000)
-        )
-        XCTAssertEqual(actions, [
-            .sendModeMessage(.active),
-            .armNextDamageAsIdr(.lastGoodRate),
-        ])
-        XCTAssertEqual(m.state, .active)
-    }
-
-    // MARK: Pre-arm through FROZEN (the conflict-14 property)
+    // MARK: Pre-arm through FROZEN
 
     func testPreArmSurvivesFrozenAndIsConsumedExactlyOnce() {
         var m = freshSender()
@@ -142,20 +123,7 @@ final class SessionStateMachineTests: XCTestCase {
         XCTAssertFalse(m.isPreArmed)
     }
 
-    // MARK: RECOVERY (resiliency §4)
-
-    func testRecoveryIdrUsesHalfStalePolicy() {
-        var m = freshSender()
-        var now = t0.advanced(byMicroseconds: 350_000)
-        _ = m.poll(now: now)
-        now = now.advanced(byMicroseconds: 400_000)
-        let actions = m.apply(.mediaPathEvidence, now: now)
-        XCTAssertEqual(actions, [
-            .resumeDatagramSends,
-            .forceIdr(.halfStaleEstimate),
-        ])
-        XCTAssertEqual(m.state, .recovery)
-    }
+    // MARK: RECOVERY
 
     func testTwoCleanWindowsGraduateRecovery() {
         var m = freshSender()
@@ -195,28 +163,6 @@ final class SessionStateMachineTests: XCTestCase {
         now = now.advanced(byMicroseconds: 40_000)
         _ = m.apply(.feedbackWindow(clean: true), now: now)
         XCTAssertEqual(m.state, .active)
-    }
-
-    func testRenewedSilenceRefreezesRecovery() {
-        var m = freshSender()
-        var now = t0.advanced(byMicroseconds: 350_000)
-        _ = m.poll(now: now)
-        _ = m.apply(.mediaPathEvidence, now: now)
-        XCTAssertEqual(m.state, .recovery)
-
-        // ACTIVE's 350 ms bar must NOT re-freeze RECOVERY — that is the
-        // live thrash: CTRL wakes recovery, forceIdr starts, silence
-        // kills mid-flight, next beacon forceIdrs again.
-        now = now.advanced(byMicroseconds: 350_000)
-        var (actions, _) = m.poll(now: now)
-        XCTAssertEqual(m.state, .recovery)
-        XCTAssertEqual(actions, [])
-
-        // Renewed silence past the recovery grace still re-freezes.
-        now = now.advanced(byMicroseconds: 2_000_000 - 350_000)
-        (actions, _) = m.poll(now: now)
-        XCTAssertEqual(m.state, .frozen)
-        XCTAssertEqual(actions, [.freezeDatagramSends])
     }
 
     func testCtrlWakeDoesNotThrashRecoveryAtActiveSilenceBar() {
@@ -323,7 +269,7 @@ final class SessionStateMachineTests: XCTestCase {
         )
     }
 
-    // MARK: Liveness and teardown
+    // MARK: Liveness
 
     func testLivenessRunsOnAnyPeerEvidence() {
         var m = freshSender()
@@ -348,56 +294,7 @@ final class SessionStateMachineTests: XCTestCase {
         })
     }
 
-    func testOrderlyTeardownEmitsTypedMessageThenCloses() {
-        var m = freshSender()
-        let actions = m.apply(.teardownRequest(.takenOver), now: t0)
-        XCTAssertEqual(actions, [
-            .sendTeardownMessage(.takenOver),
-            .sessionClosed(.localTeardown(.takenOver)),
-        ])
-        XCTAssertEqual(m.state, .closed)
-        XCTAssertEqual(m.closeReason, .localTeardown(.takenOver))
-
-        // Absorbing: nothing ever comes out again.
-        XCTAssertEqual(
-            m.apply(.mediaPathEvidence, now: t0.advanced(byMicroseconds: 1)),
-            []
-        )
-    }
-
-    func testPeerTeardownCarriesItsReason() {
-        var m = Machine(role: .mediaReceiver, now: t0)
-        let actions = m.apply(.teardownMessage(.takenOver), now: t0)
-        XCTAssertEqual(
-            actions, [.sessionClosed(.peerTeardown(.takenOver))]
-        )
-        XCTAssertEqual(m.closeReason, .peerTeardown(.takenOver))
-    }
-
     // MARK: The receiver mirror
-
-    func testReceiverMirrorsModeAndDerivesFrozen() {
-        var m = Machine(role: .mediaReceiver, now: t0)
-        _ = m.apply(.modeMessage(.idle), now: t0)
-        XCTAssertEqual(m.state, .idle)
-
-        // Host goes dark: the pill state.
-        var now = t0.advanced(byMicroseconds: 350_000)
-        _ = m.poll(now: now)
-        XCTAssertEqual(m.state, .frozen)
-
-        // Host traffic returns; the receiver lands back on IDLE (the
-        // last agreed wire mode) with no actions — surfacing is the
-        // shell's job, driven by observing `state`.
-        now = now.advanced(byMicroseconds: 2_000_000)
-        XCTAssertEqual(m.apply(.mediaPathEvidence, now: now), [])
-        XCTAssertEqual(m.state, .idle)
-
-        // The wake arrives as a mode message.
-        now = now.advanced(byMicroseconds: 10_000)
-        _ = m.apply(.modeMessage(.active), now: now)
-        XCTAssertEqual(m.state, .active)
-    }
 
     func testModeMessageExitsReceiverFrozenDirectly() {
         // A delivered mode message during FROZEN is itself evidence

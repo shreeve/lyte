@@ -2,9 +2,10 @@ import LyteCore
 import XCTest
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // Verifies the committed Vectors/lifecycle-v1.json byte-exact — the
-// W4b lifecycle messages (mode transition 0x09, session teardown 0x0A)
+// lifecycle messages (mode transition 0x09, session teardown 0x0A)
 // both ends code against, on both platforms.
 
 final class LifecycleVectorFileTests: XCTestCase {
@@ -66,28 +67,16 @@ final class LifecycleVectorFileTests: XCTestCase {
                     vector.name
                 )
             case (.decodeReject, .modeTransition):
-                XCTAssertThrowsError(
-                    try ModeTransition.decode(message), vector.name
-                ) { error in
-                    guard let error = error as? LifecycleMessageError else {
-                        return XCTFail("\(vector.name): foreign error")
-                    }
-                    XCTAssertEqual(
-                        vectorErrorName(error), vector.error,
-                        vector.name
-                    )
+                assertVectorReject(
+                    LifecycleMessageError.self, vector.error, vector.name
+                ) {
+                    try ModeTransition.decode(message)
                 }
             case (.decodeReject, .sessionTeardown):
-                XCTAssertThrowsError(
-                    try SessionTeardown.decode(message), vector.name
-                ) { error in
-                    guard let error = error as? LifecycleMessageError else {
-                        return XCTFail("\(vector.name): foreign error")
-                    }
-                    XCTAssertEqual(
-                        vectorErrorName(error), vector.error,
-                        vector.name
-                    )
+                assertVectorReject(
+                    LifecycleMessageError.self, vector.error, vector.name
+                ) {
+                    try SessionTeardown.decode(message)
                 }
             }
         }

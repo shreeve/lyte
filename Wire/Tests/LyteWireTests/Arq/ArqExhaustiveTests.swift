@@ -62,7 +62,7 @@ final class ArqExhaustiveTests: XCTestCase {
     ) throws -> (payloads: [[UInt8]], streamIndices: [Set<Int>], oneShotIndices: Set<Int>) {
         var sender = try makeSender(initialSeq: initialSeq)
         let (datagrams, _) = sender.poll(now: HostTimestamp(microseconds: 0))
-        let frames = try datagrams.flatMap { try ArqFrame.decodeAll($0) }
+        let frames = try datagrams.arqFrames()
         var payloads: [[UInt8]] = []
         var streamIdx: [Int] = []
         var oneShotIdx: Set<Int> = []

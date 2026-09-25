@@ -71,7 +71,7 @@ public struct VideoPacketizer: Sendable {
         regime: FecRegime,
         shardBudgetByteCount: Int = WireBudget.maxPlaintextShardByteCount
     ) throws -> [VideoShardPayload] {
-        let classification = classify(annexB)
+        let classification = AnnexBCheck.classifyFrame(annexB)
         guard classification.isFrameShaped else {
             throw VideoError.frameNotFrameShaped
         }
@@ -101,20 +101,6 @@ public struct VideoPacketizer: Sendable {
         try shardPayloads(
             frame: annexB[...], isIDR: isIDR, regime: regime,
             shardBudgetByteCount: shardBudgetByteCount
-        )
-    }
-
-    /// `AnnexBCheck.classifyFrame` through LyteCore's concrete
-    /// ArraySlice entry point: its generic form runs unspecialized from
-    /// another module, ~28× slower per byte on the frame hot path.
-    private static func classify(
-        _ annexB: ArraySlice<UInt8>
-    ) -> AnnexBFrameClassification {
-        let units = AnnexBCheck.nalUnits(in: annexB)
-        return AnnexBFrameClassification(
-            isFrameShaped: AnnexBCheck.leadingStartCodeLength(annexB) != nil
-                && units.contains { HevcNalType.isVcl($0.type) },
-            containsIrap: units.contains { HevcNalType.isIrap($0.type) }
         )
     }
 

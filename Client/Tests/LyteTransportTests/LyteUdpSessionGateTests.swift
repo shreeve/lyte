@@ -372,7 +372,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
                 hostAddress: "10.0.0.249", hostPort: 41_009,
                 hostStaticPublicKey: host.staticKeys.publicKey,
                 staticKeys: clientStatic,
-                attempts: 3, attemptTimeoutMilliseconds: 200)
+                retry: .init(attempts: 3, intervalMicroseconds: 200_000))
             try crypto.performHandshake(io: host)
             self.crypto = crypto
             self.demux = ReceiveDemux(crypto: crypto)

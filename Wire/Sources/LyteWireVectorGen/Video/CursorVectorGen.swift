@@ -158,10 +158,5 @@ public func makeCursorVectorFile() throws -> CursorVectorFile {
         .wireDefault.declaringClipboardText().declaringCursorShape()
     )
 
-    return CursorVectorFile(
-        format: CursorVectorFile.expectedFormat,
-        formatVersion: 1,
-        wireVersion: 1,
-        vectors: vectors
-    )
+    return CursorVectorFile(vectors: vectors)
 }

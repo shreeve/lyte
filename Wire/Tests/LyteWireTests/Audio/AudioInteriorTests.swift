@@ -1,14 +1,11 @@
 import XCTest
 import LyteWire
 
-// The promoted audio interior (HS-15's AudioFramer + CL-11's
-// AudioDepacketizer, canonical here since the second codec-promotion
-// slice). The layout is FROZEN DATA pinned as hand-built envelope
-// bytes — the same arrays the Host gate pinned host-side and the root
-// gate cross-pinned client-side — and the pair must survive ANY two
-// losses of a 4+2 group byte-exact through the frozen FEC machinery.
-// No vector file of its own: the interior COMPOSES the envelope/fec
-// formats those files already freeze (the Noise-carriage precedent).
+// The audio interior: AudioFramer and AudioDepacketizer. The layout is
+// frozen data pinned as hand-built envelope bytes, and the pair must
+// survive ANY two losses of a 4+2 group byte-exact through the frozen FEC
+// machinery. No vector file of its own: the interior composes the
+// envelope and FEC formats those files already freeze.
 
 final class AudioInteriorTests: XCTestCase {
 
@@ -18,19 +15,39 @@ final class AudioInteriorTests: XCTestCase {
         (0..<byteCount).map { UInt8(truncatingIfNeeded: n &* 31 &+ $0) }
     }
 
+    /// A fresh framer's datagrams for `packets`, captured 5 ms apart
+    /// from `start`.
+    private func framed(
+        _ packets: [[UInt8]], start: UInt64 = 0
+    ) throws -> [(envelope: Envelope, payload: [UInt8])] {
+        var framer = AudioFramer(config: AudioFramerConfig())
+        var datagrams: [(envelope: Envelope, payload: [UInt8])] = []
+        for (n, packet) in packets.enumerated() {
+            datagrams += try framer.ingest(
+                packet: packet,
+                captureTimestampMicroseconds: start + UInt64(n) * 5_000
+            )
+        }
+        return datagrams
+    }
+
+    /// A bare audio shard envelope for `group` at `index` of `geometry`.
+    private func audioShard(
+        group: UInt32, index: Int, of geometry: FecGeometry
+    ) throws -> Envelope {
+        let field = try FecField.reedSolomonShard(index, of: geometry)
+        return Envelope(
+            channel: .audio, seq: ChannelSeq(rawValue: 0),
+            frame: FrameNumber(rawValue: group),
+            timestamp: UInt64(group) * 5_000, fec: field.encoded
+        )
+    }
+
     // MARK: Leg 1 — the layout, pinned as hand-built bytes
 
     func testFramerLayoutPinnedAgainstHandBuiltBytes() throws {
-        var framer = AudioFramer(config: AudioFramerConfig())
         let packets = (0..<4).map { opusPacket($0, byteCount: 12) }
-
-        var emitted: [(envelope: Envelope, payload: [UInt8])] = []
-        for (n, packet) in packets.enumerated() {
-            emitted += try framer.ingest(
-                packet: packet,
-                captureTimestampMicroseconds: 1_000 + UInt64(n) * 5_000
-            )
-        }
+        let emitted = try framed(packets, start: 1_000)
         XCTAssertEqual(emitted.count, 6, "4 data + 2 parity")
 
         // Hand-assembled wire image of data shard `i`: the layout IS
@@ -99,14 +116,7 @@ final class AudioInteriorTests: XCTestCase {
         XCTAssertEqual(patterns.count, 15)
 
         for lost in patterns {
-            var framer = AudioFramer(config: AudioFramerConfig())
-            var datagrams: [(envelope: Envelope, payload: [UInt8])] = []
-            for (n, packet) in packets.enumerated() {
-                datagrams += try framer.ingest(
-                    packet: packet,
-                    captureTimestampMicroseconds: UInt64(n) * 5_000
-                )
-            }
+            let datagrams = try framed(packets)
             var depacketizer = AudioDepacketizer()
             var received: [UInt32: AudioPacket] = [:]
             for (index, datagram) in datagrams.enumerated()
@@ -119,7 +129,8 @@ final class AudioInteriorTests: XCTestCase {
             }
             for n in 0..<4 {
                 guard let out = received[UInt32(n)] else {
-                    return XCTFail("pattern \(lost): packet \(n) missing")
+                    XCTFail("pattern \(lost): packet \(n) missing")
+                    continue
                 }
                 XCTAssertEqual(out.bytes, packets[n],
                                "pattern \(lost): packet \(n) not byte-exact")
@@ -129,13 +140,7 @@ final class AudioInteriorTests: XCTestCase {
         }
 
         // Three losses refuse honestly: only the arrived packet emits.
-        var framer = AudioFramer(config: AudioFramerConfig())
-        var datagrams: [(envelope: Envelope, payload: [UInt8])] = []
-        for (n, packet) in packets.enumerated() {
-            datagrams += try framer.ingest(
-                packet: packet, captureTimestampMicroseconds: UInt64(n) * 5_000
-            )
-        }
+        let datagrams = try framed(packets)
         var depacketizer = AudioDepacketizer()
         var emitted = 0
         for index in [0, 4, 5] {
@@ -246,13 +251,7 @@ final class AudioInteriorTests: XCTestCase {
         // Group 0 via the real framer: 3 of 4 data shards arrive, so the
         // group waits on parity for its recovery.
         let packets = (0..<4).map { opusPacket($0) }
-        var framer = AudioFramer(config: AudioFramerConfig())
-        var datagrams: [(envelope: Envelope, payload: [UInt8])] = []
-        for (n, packet) in packets.enumerated() {
-            datagrams += try framer.ingest(
-                packet: packet, captureTimestampMicroseconds: UInt64(n) * 5_000
-            )
-        }
+        let datagrams = try framed(packets)
         var depacketizer = AudioDepacketizer()
         for i in [0, 1, 2] {
             _ = depacketizer.ingest(
@@ -263,21 +262,10 @@ final class AudioInteriorTests: XCTestCase {
         let nominal = try FecGeometry(
             dataShards: 4, parityShards: 2, groupByteCount: 320
         )
-        func shard(
-            group: UInt32, index: Int, of geometry: FecGeometry
-        ) throws -> Envelope {
-            let field = try FecField.reedSolomonShard(index, of: geometry)
-            return Envelope(
-                channel: .audio, seq: ChannelSeq(rawValue: 0),
-                frame: FrameNumber(rawValue: group),
-                timestamp: UInt64(group) * 5_000, fec: field.encoded
-            )
-        }
-
         // Benign traffic advances the newest group to 24 — group 0 sits
         // 24 packets back, inside the 32-packet horizon.
         _ = depacketizer.ingest(
-            envelope: try shard(group: 24, index: 0, of: nominal),
+            envelope: try audioShard(group: 24, index: 0, of: nominal),
             payload: opusPacket(24)
         )
 
@@ -287,7 +275,7 @@ final class AudioInteriorTests: XCTestCase {
             dataShards: 1, parityShards: 1, groupByteCount: 80
         )
         _ = depacketizer.ingest(
-            envelope: try shard(group: 28, index: 0, of: tiny),
+            envelope: try audioShard(group: 28, index: 0, of: tiny),
             payload: opusPacket(28)
         )
         XCTAssertEqual(depacketizer.stats.groupsUnrecoverable, 0,
@@ -307,14 +295,14 @@ final class AudioInteriorTests: XCTestCase {
         // id under a declared k=254. Admission must follow the pinned
         // policy (40 > 32 → stale), not the declared 8·254.
         _ = depacketizer.ingest(
-            envelope: try shard(group: 48, index: 0, of: nominal),
+            envelope: try audioShard(group: 48, index: 0, of: nominal),
             payload: opusPacket(48)
         )
         let wide = try FecGeometry(
             dataShards: 254, parityShards: 1, groupByteCount: 254 * 80
         )
         XCTAssertTrue(depacketizer.ingest(
-            envelope: try shard(group: 8, index: 0, of: wide),
+            envelope: try audioShard(group: 8, index: 0, of: wide),
             payload: opusPacket(8)
         ).isEmpty)
         XCTAssertEqual(depacketizer.stats.staleShards, 1,
@@ -322,17 +310,6 @@ final class AudioInteriorTests: XCTestCase {
     }
 
     // MARK: Retention is bounded against hostile group ids
-
-    private func audioShard(
-        group: UInt32, index: Int, of geometry: FecGeometry
-    ) throws -> Envelope {
-        let field = try FecField.reedSolomonShard(index, of: geometry)
-        return Envelope(
-            channel: .audio, seq: ChannelSeq(rawValue: 0),
-            frame: FrameNumber(rawValue: group),
-            timestamp: UInt64(group) * 5_000, fec: field.encoded
-        )
-    }
 
     /// An id exactly 2³¹ from the newest is neither behind nor ahead in
     /// serial arithmetic. It must be stale: admitted, it could never be
@@ -402,14 +379,16 @@ final class AudioInteriorTests: XCTestCase {
     /// more than a plaintext shard holds.
     func testFramerRefusesEmptyAndOverBudgetPackets() {
         var framer = AudioFramer(config: AudioFramerConfig())
-        XCTAssertThrowsError(
+        assertThrows(AudioFramerError.emptyPacket) {
             try framer.ingest(packet: [], captureTimestampMicroseconds: 0)
-        ) { XCTAssertEqual($0 as? AudioFramerError, .emptyPacket) }
+        }
         let over = AudioFramerConfig().packetBudgetByteCount + 1
-        XCTAssertThrowsError(try framer.ingest(
-            packet: [UInt8](repeating: 1, count: over),
-            captureTimestampMicroseconds: 0
-        )) { XCTAssertEqual($0 as? AudioFramerError, .packetOverBudget(over)) }
+        assertThrows(AudioFramerError.packetOverBudget(over)) {
+            try framer.ingest(
+                packet: [UInt8](repeating: 1, count: over),
+                captureTimestampMicroseconds: 0
+            )
+        }
         XCTAssertEqual(framer.counters.groupsCompleted, 0)
     }
 }

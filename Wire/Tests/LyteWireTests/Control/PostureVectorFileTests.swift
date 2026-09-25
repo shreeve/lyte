@@ -2,6 +2,7 @@ import LyteCore
 import XCTest
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // Verifies the committed Vectors/postures-v1.json byte-exact: the quiet-
 // posture announcements AudioTrackState (0x25) and VideoPostureState
@@ -67,11 +68,10 @@ final class PostureVectorFileTests: XCTestCase {
                 XCTAssertEqual("\(decoded.state)", vector.state, vector.name)
                 XCTAssertEqual(decoded.encode(), message, vector.name)
             case (.audioTrackState, .decodeReject):
-                XCTAssertThrowsError(try AudioTrackState.decode(message), vector.name) {
-                    guard let error = $0 as? AudioTrackStateError else {
-                        return XCTFail("\(vector.name): \($0)")
-                    }
-                    XCTAssertEqual(vectorErrorName(error), vector.error, vector.name)
+                assertVectorReject(
+                    AudioTrackStateError.self, vector.error, vector.name
+                ) {
+                    try AudioTrackState.decode(message)
                 }
             case (.videoPostureState, .roundtrip):
                 let decoded = try VideoPostureState.decode(message)
@@ -81,11 +81,10 @@ final class PostureVectorFileTests: XCTestCase {
                 )
                 XCTAssertEqual(decoded.encode(), message, vector.name)
             case (.videoPostureState, .decodeReject):
-                XCTAssertThrowsError(try VideoPostureState.decode(message), vector.name) {
-                    guard let error = $0 as? VideoPostureStateError else {
-                        return XCTFail("\(vector.name): \($0)")
-                    }
-                    XCTAssertEqual(vectorErrorName(error), vector.error, vector.name)
+                assertVectorReject(
+                    VideoPostureStateError.self, vector.error, vector.name
+                ) {
+                    try VideoPostureState.decode(message)
                 }
             case (.capabilitySet, _):
                 let decoded = try Capabilities.decodeCbor(message)

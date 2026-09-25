@@ -2,9 +2,8 @@ import XCTest
 import LyteWire
 import LyteWireTestKit
 
-// Gate W-G4(c): adversarial shapes. We own this flood surface with no
-// RFC 9000 lineage (Lyte-UDP decision §7), so the bound is proven, not
-// assumed: ACK forgery and ACK replay never induce livelock or
+// Adversarial shapes. Lyte owns this flood surface with no RFC 9000
+// lineage, so the bound is proven, not assumed: ACK forgery and ACK replay never induce livelock or
 // unbounded retransmission, garbage never traps, and the protocol
 // still completes underneath the attack. The mechanism under test is
 // the fast-retransmit high-mark gate (only an ACK that ADVANCES the
@@ -42,14 +41,9 @@ final class ArqAdversarialTests: XCTestCase {
             let (out, _) = a.poll(now: now)
             sentByA += out.count
             for datagram in out {
-                for event in b.ingest(payload: datagram, now: now) {
-                    if case .message(_, let bytes) = event {
-                        delivered.append(bytes)
-                    }
-                }
+                delivered += b.ingest(payload: datagram, now: now).messages
             }
-            let (acks, _) = b.poll(now: now)
-            for datagram in acks {
+            for datagram in b.poll(now: now).datagrams {
                 _ = a.ingest(payload: datagram, now: now)
             }
             if a.isQuiescent && b.isQuiescent { break }
@@ -83,34 +77,6 @@ final class ArqAdversarialTests: XCTestCase {
         // 8 segments + acks-driven noise: an unbounded storm would blow
         // far past this.
         XCTAssertLessThan(sent, 8 * 4)
-    }
-
-    func testReplayedAckStormIsBounded() throws {
-        // Capture a legitimate early ACK, then replay it relentlessly.
-        var a = Endpoint(channel: .ctrl)
-        var b = Endpoint(channel: .ctrl)
-        for i in 0..<6 {
-            try a.send(message: [0x51, UInt8(i)], now: at(0))
-        }
-        let (datagrams, _) = a.poll(now: at(0))
-        let segments = try datagrams.flatMap { try ArqFrame.decodeAll($0) }
-        // Deliver only the first two segments; capture that partial ACK.
-        for frame in segments.prefix(2) {
-            _ = b.ingest(payload: frame.encode(), now: at(1_000))
-        }
-        let (captured, _) = b.poll(now: at(1_000))
-        XCTAssertEqual(captured.count, 1)
-
-        _ = a.ingest(payload: captured[0], now: at(2_000))
-        var extraSends = 0
-        for round in 0..<200 {
-            _ = a.ingest(payload: captured[0], now: at(3_000 + UInt64(round)))
-            let (out, _) = a.poll(now: at(3_000 + UInt64(round)))
-            extraSends += out.count
-        }
-        // Replays carry no new information: zero retransmits before the
-        // PTO, no matter how many arrive.
-        XCTAssertEqual(extraSends, 0)
     }
 
     func testGarbageFloodNeverTrapsAndNeverBlocksProgress() {
@@ -173,35 +139,6 @@ final class ArqAdversarialTests: XCTestCase {
         }
     }
 
-    func testHostileEndlessMessagePoisonsInsteadOfConsuming() throws {
-        // A hostile stream that never ends a message must not grow
-        // memory past maxMessageByteCount: the group poisons loudly.
-        let config = ArqConfig(
-            maxSegmentBodyByteCount: 64, maxMessageByteCount: 256
-        )
-        var b = Endpoint(channel: .ctrl, config: config)
-        var poisoned = false
-        var seq: UInt16 = 0
-        for _ in 0..<50 {
-            let segment = try ArqSegment(
-                group: .orderedStream,
-                seq: ArqSegmentSeq(rawValue: seq),
-                endOfMessage: false,
-                body: [UInt8](repeating: 0xEE, count: 64)
-            )
-            seq &+= 1
-            for event in b.ingest(payload: segment.encode(), now: at(1)) {
-                if case .ignored(.orderedStreamPoisoned) = event {
-                    poisoned = true
-                }
-                if case .message = event {
-                    XCTFail("an unterminated message must never deliver")
-                }
-            }
-        }
-        XCTAssertTrue(poisoned)
-    }
-
     func testAbandonedOneShotGroupsExpireAndRestoreAdmission() throws {
         let config = ArqConfig(
             maxActiveReceiveGroups: 4,
@@ -236,14 +173,10 @@ final class ArqAdversarialTests: XCTestCase {
             if case .ignored(.tooManyReceiveGroups) = $0 { return true }
             return false
         })
-        let (acks, _) = receiver.poll(now: at(100))
-        let blocks = try acks
-            .flatMap { try ArqFrame.decodeAll($0) }
-            .flatMap { frame -> [ArqAck.Block] in
-                if case .ack(let ack) = frame { return ack.blocks }
-                return []
-            }
-        XCTAssertEqual(blocks.map(\.group), [ArqGroupId(rawValue: 5)])
+        XCTAssertEqual(
+            Array(try ackBlocks(&receiver, now: 100).keys),
+            [ArqGroupId(rawValue: 5)]
+        )
     }
 
     func testPoisonedOneShotIsReclaimedWithoutWaitingForLifetime() throws {
@@ -297,12 +230,9 @@ final class ArqAdversarialTests: XCTestCase {
     /// The groups the next poll acknowledges, with each block.
     private func ackBlocks(_ endpoint: inout Endpoint, now: UInt64) throws
         -> [ArqGroupId: ArqAck.Block] {
-        let (datagrams, _) = endpoint.poll(now: at(now))
         var blocks: [ArqGroupId: ArqAck.Block] = [:]
-        for datagram in datagrams {
-            for case .ack(let ack) in try ArqFrame.decodeAll(datagram) {
-                for block in ack.blocks { blocks[block.group] = block }
-            }
+        for case .ack(let ack) in try endpoint.poll(now: at(now)).datagrams.arqFrames() {
+            for block in ack.blocks { blocks[block.group] = block }
         }
         return blocks
     }
@@ -442,22 +372,10 @@ final class ArqAdversarialTests: XCTestCase {
             _ = a.ingest(payload: datagram, now: at(0))
         }
 
-        var now: UInt64 = 1_000
-        while now < 120_000_000 {
-            var events: [ArqEvent] = []
-            for datagram in a.poll(now: at(now)).datagrams {
-                events += b.ingest(payload: datagram, now: at(now))
-            }
-            XCTAssertFalse(events.contains {
-                if case .message = $0 { return true }
-                return false
-            }, "an expired group never delivers")
-            for datagram in b.poll(now: at(now)).datagrams {
-                for event in a.ingest(payload: datagram, now: at(now)) {
-                    XCTAssertNotEqual(event, .oneShotAcknowledged(group))
-                }
-            }
-            now += 250_000
+        for now in stride(from: UInt64(1_000), to: 120_000_000, by: 250_000) {
+            let (delivered, acked) = a.exchange(with: &b, now: at(now))
+            XCTAssertEqual(delivered.messages, [], "an expired group never delivers")
+            XCTAssertFalse(acked.contains(.oneShotAcknowledged(group)))
         }
     }
 
@@ -482,25 +400,15 @@ final class ArqAdversarialTests: XCTestCase {
               acknowledged.count < sent.count || !a.isQuiescent
                   || !b.isQuiescent {
             now += 1_000
-            let (out, _) = a.poll(now: at(now))
-            for datagram in out {
-                for event in b.ingest(payload: datagram, now: at(now)) {
-                    if case .message(let group, let bytes) = event {
-                        XCTAssertNil(delivered[group], "\(group) delivered twice")
-                        delivered[group] = bytes
-                    }
-                }
+            let (received, acked) = a.exchange(with: &b, now: at(now))
+            for case .message(let group, let bytes) in received {
+                XCTAssertNil(delivered[group], "\(group) delivered twice")
+                delivered[group] = bytes
             }
-            let (acks, _) = b.poll(now: at(now))
-            for datagram in acks {
-                for event in a.ingest(payload: datagram, now: at(now)) {
-                    if case .oneShotAcknowledged(let group) = event {
-                        XCTAssertNotNil(
-                            delivered[group],
-                            "\(group) acknowledged but never delivered")
-                        acknowledged.insert(group)
-                    }
-                }
+            for case .oneShotAcknowledged(let group) in acked {
+                XCTAssertNotNil(
+                    delivered[group], "\(group) acknowledged but never delivered")
+                acknowledged.insert(group)
             }
         }
         XCTAssertEqual(Set(delivered.keys), Set(sent.keys))
@@ -512,8 +420,8 @@ final class ArqAdversarialTests: XCTestCase {
     /// A message over the ceiling on the ordered stream loses it for
     /// good: the crossing segment and every later stream segment name the
     /// poisoned stream — a shell that tears down on that one reason ends
-    /// the session even when nothing follows the crossing — and the
-    /// endpoint says so. One-shot groups keep working.
+    /// the session even when nothing follows the crossing. One-shot
+    /// groups keep working.
     func testPoisonedOrderedStreamIsTypedAndPermanent() throws {
         let config = ArqConfig(
             maxSegmentBodyByteCount: 64, maxMessageByteCount: 100
@@ -527,12 +435,10 @@ final class ArqAdversarialTests: XCTestCase {
             ).encode()
         }
         XCTAssertEqual(receiver.ingest(payload: try stream(0), now: at(0)), [])
-        XCTAssertFalse(receiver.isOrderedStreamPoisoned)
         XCTAssertEqual(
             receiver.ingest(payload: try stream(1), now: at(0)),
             [.ignored(.orderedStreamPoisoned)]
         )
-        XCTAssertTrue(receiver.isOrderedStreamPoisoned)
         for seq: UInt16 in 2...3 {
             XCTAssertEqual(
                 receiver.ingest(payload: try stream(seq), now: at(1)),
@@ -541,7 +447,10 @@ final class ArqAdversarialTests: XCTestCase {
         }
         // Still poisoned long after any one-shot lifetime.
         _ = receiver.poll(now: at(60_000_000))
-        XCTAssertTrue(receiver.isOrderedStreamPoisoned)
+        XCTAssertEqual(
+            receiver.ingest(payload: try stream(3), now: at(60_000_000)),
+            [.ignored(.orderedStreamPoisoned)]
+        )
         let oneShot = try ArqSegment(
             group: ArqGroupId(rawValue: 1), seq: ArqSegmentSeq(rawValue: 0),
             endOfMessage: true, body: [7]

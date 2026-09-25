@@ -43,7 +43,7 @@ public struct BulkTransferHarness {
         if let initialPossession {
             for index in 0..<offer.chunkCount
             where initialPossession.holds(index) {
-                store[index] = chunkData(index)
+                store[index] = offer.chunk(index, of: payload)
             }
             resumeBook = [BulkResumeState(
                 transferId: offer.transferId,
@@ -54,12 +54,6 @@ public struct BulkTransferHarness {
                 possession: initialPossession
             )]
         }
-    }
-
-    public func chunkData(_ index: UInt64) -> [UInt8] {
-        let size = offer.byteCount(ofChunk: index) ?? 0
-        let start = Int(index) * Int(offer.chunkByteCount)
-        return Array(payload[start..<start + size])
     }
 
     /// The digest of the assembled store — the payload's digest once
@@ -98,7 +92,7 @@ public struct BulkTransferHarness {
                     toReceiver.append(message)
                 case .readChunk(let index):
                     try pumpSender(sender.supplyChunk(
-                        index: index, data: chunkData(index)
+                        index: index, data: offer.chunk(index, of: payload)
                     ))
                 case .completed, .aborted, .violated:
                     break
@@ -162,5 +156,13 @@ public struct BulkTransferHarness {
             senderFinalState: sender.state,
             receiverFinalState: receiver.state
         )
+    }
+}
+
+extension BulkOffer {
+    /// Chunk `index` of `payload`, cut to this offer's geometry.
+    public func chunk(_ index: UInt64, of payload: [UInt8]) -> [UInt8] {
+        let start = Int(index) * Int(chunkByteCount)
+        return Array(payload[start..<start + (byteCount(ofChunk: index) ?? 0)])
     }
 }

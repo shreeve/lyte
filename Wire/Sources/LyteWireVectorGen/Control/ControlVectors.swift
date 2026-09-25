@@ -3,14 +3,14 @@
 // lastInputSeq TLV, the audio-routing pair, and capability key 9.
 
 import LyteCore
-import Foundation
 import LyteWire
+import LyteWireTestKit
 
 /// One vector file: `Wire/Vectors/control-v1.json`.
 public struct ControlVectorFile: FrozenVectorFile {
-    public var format: String
-    public var formatVersion: Int
-    public var wireVersion: Int
+    public var format = Self.expectedFormat
+    public var formatVersion = 1
+    public var wireVersion = 1
     public var vectors: [ControlVector]
 
     public static let expectedFormat = "lyte-wire-control-vectors"
@@ -19,19 +19,6 @@ public struct ControlVectorFile: FrozenVectorFile {
     public var vectorNameGroups: [[String]] {
         [vectors.map(\.name)]
     }
-
-    public init(
-        format: String,
-        formatVersion: Int,
-        wireVersion: Int,
-        vectors: [ControlVector]
-    ) {
-        self.format = format
-        self.formatVersion = formatVersion
-        self.wireVersion = wireVersion
-        self.vectors = vectors
-    }
-
 }
 
 /// One input-echo tuple as vector data (u64s ride as hex, the house
@@ -40,12 +27,6 @@ public struct ControlEchoTuple: Codable, Sendable {
     public var seq: UInt32
     public var receivedHex: String
     public var injectedHex: String
-
-    public init(seq: UInt32, receivedHex: String, injectedHex: String) {
-        self.seq = seq
-        self.receivedHex = receivedHex
-        self.injectedHex = injectedHex
-    }
 }
 
 /// One control-codec vector. `codec` names the codec under test; kinds
@@ -115,54 +96,6 @@ public struct ControlVector: Codable, Sendable {
         /// 0x04 — 0x03 is the tombstone the routing-mode-unknown
         /// vector pinned forever.
         case streamOff
-    }
-
-    public init(
-        name: String,
-        description: String,
-        kind: Kind,
-        codec: ControlCodec,
-        messageHex: String,
-        frame: UInt32? = nil,
-        timestampHex: String? = nil,
-        annexBHex: String? = nil,
-        seq: UInt32? = nil,
-        clientMicrosHex: String? = nil,
-        bodyKind: BodyKind? = nil,
-        keycode: UInt32? = nil,
-        button: UInt32? = nil,
-        pressed: Bool? = nil,
-        xBitsHex: String? = nil,
-        yBitsHex: String? = nil,
-        finish: Bool? = nil,
-        tuples: [ControlEchoTuple]? = nil,
-        lastInputSeq: UInt32? = nil,
-        mode: RoutingMode? = nil,
-        hostAudioRouting: Bool? = nil,
-        error: String? = nil
-    ) {
-        self.name = name
-        self.description = description
-        self.kind = kind
-        self.codec = codec
-        self.messageHex = messageHex
-        self.frame = frame
-        self.timestampHex = timestampHex
-        self.annexBHex = annexBHex
-        self.seq = seq
-        self.clientMicrosHex = clientMicrosHex
-        self.bodyKind = bodyKind
-        self.keycode = keycode
-        self.button = button
-        self.pressed = pressed
-        self.xBitsHex = xBitsHex
-        self.yBitsHex = yBitsHex
-        self.finish = finish
-        self.tuples = tuples
-        self.lastInputSeq = lastInputSeq
-        self.mode = mode
-        self.hostAudioRouting = hostAudioRouting
-        self.error = error
     }
 }
 

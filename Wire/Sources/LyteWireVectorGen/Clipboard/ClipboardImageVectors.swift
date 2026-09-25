@@ -2,14 +2,14 @@
 // `Wire/Vectors/clipboard-images-v1.json` — ClipboardImageCargo 0x22 and
 // the key-12 capability. u64 fields ride as hex.
 
-import Foundation
 import LyteWire
+import LyteWireTestKit
 
 /// One vector file: `Wire/Vectors/clipboard-images-v1.json`.
 public struct ClipboardImageVectorFile: FrozenVectorFile {
-    public var format: String
-    public var formatVersion: Int
-    public var wireVersion: Int
+    public var format = Self.expectedFormat
+    public var formatVersion = 1
+    public var wireVersion = 1
     public var vectors: [ClipboardImageVector]
 
     public static let expectedFormat = "lyte-wire-clipboard-image-vectors"
@@ -18,19 +18,6 @@ public struct ClipboardImageVectorFile: FrozenVectorFile {
     public var vectorNameGroups: [[String]] {
         [vectors.map(\.name)]
     }
-
-    public init(
-        format: String,
-        formatVersion: Int,
-        wireVersion: Int,
-        vectors: [ClipboardImageVector]
-    ) {
-        self.format = format
-        self.formatVersion = formatVersion
-        self.wireVersion = wireVersion
-        self.vectors = vectors
-    }
-
 }
 
 /// One clipboard-image vector. `codec` names the codec under test; kinds
@@ -61,27 +48,5 @@ public struct ClipboardImageVector: Codable, Sendable {
     public enum ClipboardImageCodec: String, Codable, Sendable {
         case imageCargo
         case capabilitySet
-    }
-
-    public init(
-        name: String,
-        description: String,
-        kind: Kind,
-        codec: ClipboardImageCodec,
-        messageHex: String? = nil,
-        transferIdHex: String? = nil,
-        mimeUtf8Hex: String? = nil,
-        clipboardImages: Bool? = nil,
-        error: String? = nil
-    ) {
-        self.name = name
-        self.description = description
-        self.kind = kind
-        self.codec = codec
-        self.messageHex = messageHex
-        self.transferIdHex = transferIdHex
-        self.mimeUtf8Hex = mimeUtf8Hex
-        self.clipboardImages = clipboardImages
-        self.error = error
     }
 }

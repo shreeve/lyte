@@ -3,9 +3,9 @@ import XCTest
 import LyteWire
 import LyteWireTestKit
 
-// The W4b lifecycle codecs against hand-computed bytes — the anchor
-// that keeps lifecycle-v1.json honest — plus reject coverage and a
-// never-traps fuzz.
+// The lifecycle codecs against hand-computed bytes — the anchor that
+// keeps lifecycle-v1.json honest. Decode rejects live in the vectors and
+// the never-trap sweep in CtrlDecoderFuzzTests.
 
 final class SessionLifecycleCodecTests: XCTestCase {
 
@@ -59,75 +59,5 @@ final class SessionLifecycleCodecTests: XCTestCase {
         XCTAssertNotEqual(
             CtrlMessageType.sessionTeardown, CtrlMessageType.arqAck
         )
-    }
-
-    // MARK: Rejects
-
-    func testModeTransitionRejects() {
-        XCTAssertThrowsError(try ModeTransition.decode([0x09])) {
-            XCTAssertEqual(
-                $0 as? LifecycleMessageError, .truncatedMessage
-            )
-        }
-        XCTAssertThrowsError(
-            try ModeTransition.decode([0x09, 0x01, 0x00])
-        ) {
-            XCTAssertEqual($0 as? LifecycleMessageError, .trailingBytes)
-        }
-        XCTAssertThrowsError(try ModeTransition.decode([0x0A, 0x01])) {
-            XCTAssertEqual(
-                $0 as? LifecycleMessageError, .unexpectedType(0x0A)
-            )
-        }
-        // 0x00 is the zero-fill bug; 0x03+ would be FROZEN/RECOVERY
-        // leaking onto the wire — both must stay loud.
-        XCTAssertThrowsError(try ModeTransition.decode([0x09, 0x00])) {
-            XCTAssertEqual($0 as? LifecycleMessageError, .unknownMode(0))
-        }
-        XCTAssertThrowsError(try ModeTransition.decode([0x09, 0x03])) {
-            XCTAssertEqual($0 as? LifecycleMessageError, .unknownMode(3))
-        }
-    }
-
-    func testTeardownRejects() {
-        XCTAssertThrowsError(try SessionTeardown.decode([0x0A])) {
-            XCTAssertEqual(
-                $0 as? LifecycleMessageError, .truncatedMessage
-            )
-        }
-        XCTAssertThrowsError(
-            try SessionTeardown.decode([0x0A, 0x02, 0x00])
-        ) {
-            XCTAssertEqual($0 as? LifecycleMessageError, .trailingBytes)
-        }
-        XCTAssertThrowsError(try SessionTeardown.decode([0x09, 0x01])) {
-            XCTAssertEqual(
-                $0 as? LifecycleMessageError, .unexpectedType(0x09)
-            )
-        }
-        XCTAssertThrowsError(try SessionTeardown.decode([0x0A, 0x00])) {
-            XCTAssertEqual(
-                $0 as? LifecycleMessageError, .unknownReason(0)
-            )
-        }
-        XCTAssertThrowsError(try SessionTeardown.decode([0x0A, 0x7F])) {
-            XCTAssertEqual(
-                $0 as? LifecycleMessageError, .unknownReason(0x7F)
-            )
-        }
-    }
-
-    // MARK: Fuzz — hostile bytes throw, never trap
-
-    func testDecodersNeverTrapOnHostileBytes() {
-        var rng = SplitMix64(seed: 0x4B_57_34_62)
-        for _ in 0..<20_000 {
-            let count = rng.int(in: 0...8)
-            let bytes = (0..<count).map { _ in
-                UInt8.random(in: .min ... .max, using: &rng)
-            }
-            _ = try? ModeTransition.decode(bytes)
-            _ = try? SessionTeardown.decode(bytes)
-        }
     }
 }

@@ -2,12 +2,12 @@ import XCTest
 import LyteCore
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // Verifies the committed Vectors/video-v1.json and the corpus it pins —
-// the packetized golden corpus of gate W-G3. The datagram hashes being
-// identical on macOS and Linux is what makes the packetizer's output
-// (envelope bytes, balanced split, nanors parity) a cross-platform wire
-// contract that client CL-2 can code against before the host exists.
+// the packetized golden corpus. The datagram hashes being identical on
+// every platform is what makes the packetizer's output (envelope bytes,
+// balanced split, nanors parity) a cross-platform wire contract.
 
 final class VideoVectorFileTests: XCTestCase {
 

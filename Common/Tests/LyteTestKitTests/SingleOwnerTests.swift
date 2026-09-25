@@ -82,6 +82,33 @@ final class SingleOwnerTests: XCTestCase {
         // session's plaintext test mode.
         ConfinedUse(tokens: ["testPassthrough"],
                     owner: .directory("Host/Sources/HostWire/")),
+        // No client grows a plaintext option, and the passthrough crypto
+        // stays in the client test kit, which this scan never reads.
+        ConfinedUse(tokens: ["insecure"],
+                    owner: .directory("Client/Sources/LyteClientTestKit/"),
+                    scope: "Client/Sources/"),
+        ConfinedUse(tokens: ["PassthroughTransportCrypto"],
+                    owner: .directory("Client/Sources/LyteClientTestKit/")),
+    ] + SingleOwnerTests.clientControlOwners.map {
+        ConfinedUse(tokens: $0.tokens, owner: .declarer(of: $0.owner),
+                    scope: "Client/Sources/")
+    }
+
+    /// Each client control-word decoder or policy engine is reached from
+    /// one IO-free LyteClientSession owner; the transport shell executes
+    /// decisions and never decodes those words or runs those machines.
+    private static let clientControlOwners: [(tokens: [String], owner: String)] = [
+        (["ModeTransition", ".", "decode"], "ClientSessionLifecycle"),
+        (["SessionTeardown", ".", "decode"], "ClientSessionLifecycle"),
+        (["SessionStateMachine"], "ClientSessionLifecycle"),
+        (["CapabilityNegotiator"], "ClientCapabilitySession"),
+        (["AudioRoutingStatus", ".", "decode"], "ClientAudioRoutingSession"),
+        (["ClipboardAnnounce", ".", "decode"], "ClientClipboardSession"),
+        (["ClipboardSyncBook"], "ClientClipboardSession"),
+        (["ClipboardImageChannel", "("], "ClientClipboardSession"),
+        (["CursorShape", ".", "decode"], "ClientCursorSession"),
+        (["AudioTrackState", ".", "decode"], "ClientMediaPostureSession"),
+        (["VideoPostureState", ".", "decode"], "ClientMediaPostureSession"),
     ]
 
     /// Files declaring these types never name these tokens: the session
