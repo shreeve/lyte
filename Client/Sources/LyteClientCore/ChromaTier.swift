@@ -5,7 +5,6 @@
 // empty intersection is the typed `noCommonChromaMode` failure, which
 // `ChromaFallbackPolicy` turns into a re-dial at Good.
 
-import LyteCore
 import LyteWire
 
 /// The three-tier Chroma control's vocabulary. Raw values are the
@@ -22,8 +21,7 @@ public enum ChromaTier: String, CaseIterable, Hashable, Sendable {
         switch self {
         case .good: return [CapabilityChroma.yuv420]
         case .better: return nil
-        case .best:
-            return ChromaPairing.bestSingleton(CapabilityChroma.yuv444)
+        case .best: return [CapabilityChroma.yuv444]
         }
     }
 

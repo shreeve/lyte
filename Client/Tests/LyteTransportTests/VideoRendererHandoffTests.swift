@@ -49,10 +49,10 @@ final class VideoRendererHandoffTests: XCTestCase {
         rig.barrier()
 
         XCTAssertEqual(rig.renderer.enqueuedFrames(), [12])
-        XCTAssertFalse(core.idrRequester.snapshotStats().recoveryOutstanding)
-        core.idrRequester.flushIfDue(
+        XCTAssertFalse(core.idrStats.recoveryOutstanding)
+        core.feedback.tick(
             now: Rig.coreNow.advanced(byMicroseconds: 500_000))
-        XCTAssertEqual(core.idrRequester.snapshotStats().requestsSent, 1)
+        XCTAssertEqual(core.idrStats.requestsSent, 1)
     }
 
     /// The core's demand reaches the handoff by a queue hop. An IRAP
@@ -76,16 +76,16 @@ final class VideoRendererHandoffTests: XCTestCase {
 
         XCTAssertEqual(rig.renderer.enqueuedFrames(), [12])
         XCTAssertEqual(rig.peer.gateClosingIraps, [])
-        XCTAssertTrue(core.idrRequester.snapshotStats().recoveryOutstanding,
+        XCTAssertTrue(core.idrStats.recoveryOutstanding,
                       "an IRAP outside the gate closed the core's episode")
-        core.idrRequester.flushIfDue(
+        core.feedback.tick(
             now: Rig.coreNow.advanced(byMicroseconds: 500_000))
-        XCTAssertEqual(core.idrRequester.snapshotStats().retryRequests, 1)
+        XCTAssertEqual(core.idrStats.retryRequests, 1)
 
         try rig.submit(frame: 30, idr: true, bytes: corpus[0])
         rig.barrier()
         XCTAssertEqual(rig.peer.gateClosingIraps, [30])
-        XCTAssertFalse(core.idrRequester.snapshotStats().recoveryOutstanding)
+        XCTAssertFalse(core.idrStats.recoveryOutstanding)
     }
 
     /// Damage that joins an open episode while its IRAP is pending: the
@@ -111,7 +111,7 @@ final class VideoRendererHandoffTests: XCTestCase {
         rig.barrier()
 
         XCTAssertEqual(rig.peer.gateClosingIraps, [12])
-        let stats = core.idrRequester.snapshotStats()
+        let stats = core.idrStats
         XCTAssertTrue(stats.recoveryOutstanding,
                       "the handoff awaits an IRAP the core stopped asking for")
         XCTAssertEqual(stats.episodesStarted, 2)
@@ -132,7 +132,7 @@ final class VideoRendererHandoffTests: XCTestCase {
         XCTAssertEqual(rig.renderer.recoveryFlushes, 1)
         XCTAssertEqual(rig.renderer.enqueuedFrames(), [1, 2])
         XCTAssertEqual(rig.peer.gateClosingIraps, [2])
-        let stats = core.idrRequester.snapshotStats()
+        let stats = core.idrStats
         XCTAssertEqual(stats.requestsSent, 0)
         XCTAssertFalse(stats.recoveryOutstanding)
     }
@@ -153,7 +153,7 @@ final class VideoRendererHandoffTests: XCTestCase {
         XCTAssertEqual(rig.renderer.recoveryFlushes, 1)
         XCTAssertEqual(rig.renderer.enqueuedFrames(), [1, 3])
         XCTAssertEqual(rig.peer.recoveryRequests.map(\.frame), [2])
-        let stats = core.idrRequester.snapshotStats()
+        let stats = core.idrStats
         XCTAssertEqual(stats.requestsSent, 1)
         XCTAssertFalse(stats.recoveryOutstanding)
     }

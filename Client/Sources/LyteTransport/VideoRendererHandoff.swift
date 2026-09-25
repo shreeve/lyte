@@ -76,12 +76,12 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
 
     private let renderer: any VideoRendererPort
     private let queue: DispatchQueue
-    private let clockModel: HostClockModel
+    let clockModel: HostClockModel
     /// The Conductor is scheduled on the submitting thread and told of
     /// IRAPs on the delivery queue.
     private let playout: Mutex<VideoBeatConductor>
     private let books: VideoDeliveryBooks
-    private let recorder: VideoFlightRecorder
+    let recorder: VideoFlightRecorder
     private let onDimensionsChanged: @Sendable (Int32, Int32) -> Void
     private let dimensions = Mutex<(width: Int32, height: Int32)>((0, 0))
     private let peer = Mutex(WeakPeer())
@@ -99,12 +99,14 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
     private var recoveryEpisode: UInt64 = 0
     private var activeRecoveryEpisode: UInt64?
     private var forcedMetricsProbes = 0
-    private var flushBarrier = RendererRecoveryFlushBarrier()
+    /// No compressed sample dequeues while the renderer's asynchronous
+    /// recovery flush is in progress.
+    private var flushInProgress = false
 
     public init(
         renderer: any VideoRendererPort,
         queue: DispatchQueue,
-        clockModel: HostClockModel,
+        clockModel: HostClockModel = HostClockModel(),
         books: VideoDeliveryBooks,
         recorder: VideoFlightRecorder,
         onDimensionsChanged: @escaping @Sendable (Int32, Int32) -> Void = { _, _ in },
@@ -233,7 +235,7 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
     public func stop(flushingRenderer: Bool = false) {
         guard !stopped.exchange(true, ordering: .relaxed) else { return }
         queue.async { [self] in
-            flushBarrier.complete()
+            flushInProgress = false
             expiryTimer?.cancel()
             expiryTimer = nil
             renderer.stopRequestingMediaData()
@@ -305,7 +307,7 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
     }
 
     private func armRenderer() {
-        guard flushBarrier.mayEnqueue, !requesting, policy.count > 0 else { return }
+        guard !flushInProgress, !requesting, policy.count > 0 else { return }
         requesting = true
         renderer.requestMediaDataWhenReady(on: queue) { [weak self] in
             self?.drainReady()
@@ -353,7 +355,7 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
     }
 
     private func drainReady() {
-        guard isLive, flushBarrier.mayEnqueue else { return }
+        guard isLive, !flushInProgress else { return }
         if renderer.status == .failed {
             process(
                 policy.failEpisode(),
@@ -457,7 +459,8 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
             activeRecoveryEpisode = recoveryEpisode
             renderer.stopRequestingMediaData()
             requesting = false
-            let startedFlush = flushBarrier.begin()
+            let startedFlush = !flushInProgress
+            flushInProgress = true
             recorder.recordRecoveryCause(cause)
             trace(startedFlush
                     ? "rendererRecoveryFlushStarted"
@@ -493,7 +496,7 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
 
     private func completeRecoveryFlush(frame: FrameNumber, cause: VideoRecoveryCause) {
         guard isLive else { return }
-        flushBarrier.complete()
+        flushInProgress = false
         trace("rendererRecoveryFlushCompleted", frame: frame.rawValue,
               cause: cause)
         armRenderer()

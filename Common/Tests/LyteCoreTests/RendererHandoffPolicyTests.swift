@@ -132,16 +132,6 @@ final class RendererHandoffPolicyTests: XCTestCase {
         XCTAssertTrue(afterEnqueue.accepted)
     }
 
-    func testRendererFlushBarrierBlocksEnqueueUntilCompletion() {
-        var barrier = RendererRecoveryFlushBarrier()
-        XCTAssertTrue(barrier.mayEnqueue)
-        XCTAssertTrue(barrier.begin())
-        XCTAssertFalse(barrier.mayEnqueue)
-        XCTAssertFalse(barrier.begin(), "overlap must not start a second flush")
-        barrier.complete()
-        XCTAssertTrue(barrier.mayEnqueue)
-    }
-
     func testDeadlineStartsSameSingleRecoveryEpisode() {
         var handoff = BoundedRendererHandoff<Int>(
             config: .init(capacity: 4, deadlineMicroseconds: 10_000))

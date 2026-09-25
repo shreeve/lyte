@@ -1,24 +1,22 @@
 import XCTest
 import Foundation
 import HostWire
+import LyteClientSession
 import LyteClientTestKit
 import LyteCore
 import LyteTransport
 import LyteWire
 import LyteWireTestKit
 
-// THE JOINT GATE (build plans CL-12 + HS-17): targeted repair —
-// NACK emission per resiliency §1.1 (past-parity trigger, rule-3
-// staleness mirror, once-ever dedupe, rule-4 IDR backstop) driven end to
-// end in virtual time through the REAL production parts: ReceiveDemux
-// unseal → LyteVideoPipeline → VideoAssembler presumption →
-// NackPolicy → FeedbackSender's NACK section on the wire → the real
-// HostWire Session judgement → its VideoChannel responder (fresh-seq,
-// fresh-seal repair datagrams carrying the ORIGINAL frame number + fec field,
-// one attempt per shard) → the repaired frame emerging byte-exact from
-// the same receive path. UDP IO and clocks are replaced by an in-memory sink
-// and one guarded virtual clock; Noise, packetization, retention, judgement,
-// and repair policy are the two shipping roles' implementations.
+// Targeted repair end to end in virtual time, through the real parts of
+// both roles: ReceiveDemux unseal → LyteVideoPipeline → VideoAssembler
+// presumption → the core's NACK policy (past-parity trigger, staleness
+// mirror, once-ever dedupe, IDR backstop) → FeedbackSender's NACK section
+// on the wire → the HostWire Session's judgement → its VideoChannel
+// responder (fresh-seq, fresh-seal repairs carrying the original frame
+// number and fec field, one attempt per shard) → the repaired frame out of
+// the same receive path, byte-exact. UDP IO and clocks are replaced by an
+// in-memory pipe and one guarded virtual clock.
 
 final class NackRepairClientGateTests: XCTestCase {
 
@@ -54,74 +52,82 @@ final class NackRepairClientGateTests: XCTestCase {
         return geometry
     }
 
-    private func split(
-        _ datagrams: [[UInt8]], dropping: Set<Int>
-    ) -> (sent: [[UInt8]], held: [[UInt8]]) {
-        var sent: [[UInt8]] = []
-        var held: [[UInt8]] = []
-        for (index, datagram) in datagrams.enumerated() {
-            if dropping.contains(index) {
-                held.append(datagram)
-            } else {
-                sent.append(datagram)
-            }
-        }
-        return (sent, held)
+    /// A frame past parity: frame 1 (5 ms after `t`) loses its first
+    /// parity+2 data shards, so FEC alone can never complete it.
+    private struct Hole {
+        let frame: [[UInt8]]
+        let geometry: FecGeometry
+        let dropped: Set<Int>
+        /// The dropped shards, in order, for a leg that delivers them late.
+        let held: [[UInt8]]
     }
 
-    // MARK: - Leg A: past-parity loss → NACK → repair → byte-exact
+    /// Startup, frame 0 whole (with `reportingFrame0`, its clean report
+    /// reaches the host and ends the opening-IDR exemption), then frame 1
+    /// holed past parity with only its survivors delivered.
+    private func openHole(
+        corpus: [[UInt8]], host: SystemHostSession, harness: SystemClient,
+        t: inout UInt64, forwarded: inout Int, reportingFrame0: Bool = false
+    ) throws -> Hole {
+        try harness.settleStartup(forwarded: &forwarded, at: t)
+        try harness.deliverFrame(corpus[0], number: 0, at: t)
+        if reportingFrame0 {
+            harness.core.feedback.tick(now: ClientTimestamp(microseconds: t))
+            try harness.pumpOutboundToHost(forwarded: &forwarded)
+        }
+        t += 5_000
+        let frame = try host.videoDatagrams(
+            annexB: corpus[1], frameNumber: 1, hostMicros: t)
+        let geometry = try self.geometry(of: frame)
+        let dropped = Set(0..<(geometry.parityShards + 2))
+        XCTAssertLessThan(dropped.count, geometry.dataShards,
+                          "corpus frame must survive the drop plan")
+        for (index, datagram) in frame.enumerated()
+        where !dropped.contains(index) {
+            harness.deliver(datagram, at: t)
+        }
+        return Hole(
+            frame: frame, geometry: geometry, dropped: dropped,
+            held: dropped.sorted().map { frame[$0] })
+    }
+
+    /// Frames `numbers` (from the corpus at the same index), 5 ms apart,
+    /// each followed by a core beat.
+    private func deliverFollowOns(
+        _ numbers: ClosedRange<Int>, corpus: [[UInt8]],
+        harness: SystemClient, t: inout UInt64
+    ) throws {
+        for number in numbers {
+            t += 5_000
+            try harness.deliverFrame(
+                corpus[number], number: UInt32(number), at: t)
+            harness.core.tick(now: ClientTimestamp(microseconds: t))
+        }
+    }
+
+    // MARK: - Past-parity loss → NACK → repair → byte-exact
 
     func testNackDrawsRepairAndFrameCompletesByteExact() throws {
         let corpus = try loadCorpus(4)
         let host = SystemHostSession()
         let harness = try SystemClient(host: host)
-
         var t: UInt64 = 1_000
         var forwarded = 0
-        try harness.settleStartup(forwarded: &forwarded, at: t)
-
-        // Frame 0 (IDR) arrives whole — the render bootstrap. Its clean
-        // report also ends the host's opening-IDR exemption, so frame 1
-        // must pass the normal SRTT + freeze-budget judgement.
-        for datagram in try host.videoDatagrams(
-            annexB: corpus[0], frameNumber: 0, hostMicros: t
-        ) {
-            harness.absorb(datagram, tMicros: t)
-        }
-        harness.core.feedback.tick(now: ClientTimestamp(microseconds: t))
-        try harness.pumpOutboundToHost(forwarded: &forwarded)
+        // Frame 0's clean report ends the opening-IDR exemption, so frame
+        // 1 must pass the normal SRTT + freeze-budget judgement.
+        let hole = try openHole(
+            corpus: corpus, host: host, harness: harness,
+            t: &t, forwarded: &forwarded, reportingFrame0: true)
         XCTAssertGreaterThanOrEqual(
-            host.session.counters.feedbackReportsParsed, 1
-        )
-
-        // Frame 1 loses parity+2 DATA shards — past parity, FEC alone
-        // can never complete it.
-        t += 5_000; harness.clock.advance(to: t)
-        let frame1 = try host.videoDatagrams(
-            annexB: corpus[1], frameNumber: 1, hostMicros: t
-        )
-        let geometry1 = try geometry(of: frame1)
-        let dropCount = geometry1.parityShards + 2
-        XCTAssertLessThan(dropCount, geometry1.dataShards,
-                          "corpus frame must survive the drop plan")
-        let dropped = Set(0..<dropCount)
-        for datagram in split(frame1, dropping: dropped).sent {
-            harness.absorb(datagram, tMicros: t)
-        }
+            host.session.counters.feedbackReportsParsed, 1)
+        let (frame1, geometry1, dropped) =
+            (hole.frame, hole.geometry, hole.dropped)
+        let dropCount = dropped.count
 
         // Follow-on frames advance the channel's highest seq: the
         // presumption crosses packet-threshold 3, the verdict goes past
         // parity, and the ask leaves in an out-of-cadence report.
-        for number in 2...3 {
-            t += 5_000; harness.clock.advance(to: t)
-            for datagram in try host.videoDatagrams(
-                annexB: corpus[number], frameNumber: UInt32(number),
-                hostMicros: t
-            ) {
-                harness.absorb(datagram, tMicros: t)
-            }
-            harness.core.tick(now: ClientTimestamp(microseconds: t))
-        }
+        try deliverFollowOns(2...3, corpus: corpus, harness: harness, t: &t)
 
         // The untouched sealed chan-3 report enters the shipping Session,
         // which parses and judges it before its own VideoChannel answers.
@@ -167,9 +173,7 @@ final class NackRepairClientGateTests: XCTestCase {
             XCTAssertEqual(envelope.timestamp, original.timestamp)
             XCTAssertGreaterThan(envelope.seq.rawValue, maxOriginalSeq)
         }
-        for datagram in repairs {
-            harness.absorb(datagram, tMicros: t)
-        }
+        for datagram in repairs { harness.deliver(datagram, at: t) }
         harness.core.tick(now: ClientTimestamp(microseconds: t))
 
         // The frame healed byte-exact through the real receive path,
@@ -182,7 +186,7 @@ final class NackRepairClientGateTests: XCTestCase {
         XCTAssertEqual(host.session.counters.idrRequests, 0,
                        "repair healed the frame — no IDR")
 
-        let stats = harness.core.nackPolicy.snapshotStats()
+        let stats = harness.core.nackStats
         XCTAssertEqual(stats.pastParityFrames, 1)
         XCTAssertGreaterThanOrEqual(stats.shardsAsked, UInt64(dropCount))
         XCTAssertEqual(host.session.counters.repairDatagramsEnqueued, dropCount,
@@ -213,7 +217,7 @@ final class NackRepairClientGateTests: XCTestCase {
         XCTAssertEqual(pipeline.repairShardsAccepted, needed)
     }
 
-    // MARK: - Leg B: stale frame → no NACK, IDR instead (rule 3 + 4)
+    // MARK: - Stale frame → no NACK, IDR instead
 
     func testStaleFrameDrawsNoNackAndFallsBackToIdr() throws {
         let corpus = try loadCorpus(4)
@@ -221,38 +225,29 @@ final class NackRepairClientGateTests: XCTestCase {
         // A tightened budget stands in for a slow path: with the frame
         // 150 ms old at verdict time, the 100 ms budget refuses the ask.
         var config = LyteUdpSessionCoreConfig()
-        config.nackPolicy = NackPolicyConfig(
+        config.nackPolicy = ClientNackPolicy.Config(
             staleBudgetMicroseconds: 100_000)
         let harness = try SystemClient(host: host, coreConfig: config)
 
         var t: UInt64 = 1_000
-        harness.clock.advance(to: t)
-        for datagram in try host.videoDatagrams(
-            annexB: corpus[0], frameNumber: 0, hostMicros: t
-        ) {
-            harness.absorb(datagram, tMicros: t)
-        }
+        try harness.deliverFrame(corpus[0], number: 0, at: t)
 
         // Frame 1 arrives holed (one survivor short of the geometry),
         // then the wire goes quiet: the frame AGES past the budget
         // before any follow-on traffic renders the verdict.
-        t += 5_000; harness.clock.advance(to: t)
+        t += 5_000
         let probe = try host.videoDatagrams(
             annexB: corpus[1], frameNumber: 1, hostMicros: t)
         // Deliver ONLY the first shard: the group opens, everything
         // else is in flight as far as presumption knows.
-        harness.absorb(probe[0], tMicros: t)
+        harness.deliver(probe[0], at: t)
 
         // 150 ms of silence — under the assembler's 250 ms eviction,
         // over the policy's 100 ms budget.
-        t += 150_000; harness.clock.advance(to: t)
+        t += 150_000
         for number in 2...3 {
-            for datagram in try host.videoDatagrams(
-                annexB: corpus[number], frameNumber: UInt32(number),
-                hostMicros: t
-            ) {
-                harness.absorb(datagram, tMicros: t)
-            }
+            try harness.deliverFrame(
+                corpus[number], number: UInt32(number), at: t)
         }
         harness.core.tick(now: ClientTimestamp(microseconds: t))
         // The cadence beat flushes the coalesced IDR request.
@@ -264,7 +259,7 @@ final class NackRepairClientGateTests: XCTestCase {
                        "a stale frame must not be asked for")
         XCTAssertGreaterThanOrEqual(host.session.counters.idrRequests, 1,
                                     "staleness is answered with the IDR")
-        let stats = harness.core.nackPolicy.snapshotStats()
+        let stats = harness.core.nackStats
         XCTAssertEqual(stats.asksSuppressedStale, 1)
         XCTAssertEqual(stats.shardsAsked, 0)
         XCTAssertEqual(stats.fecImpossibleDeferred, 0,
@@ -282,11 +277,7 @@ final class NackRepairClientGateTests: XCTestCase {
         let base: UInt64 = 1_000
 
         // Establish the decoder before damage.
-        for datagram in try host.videoDatagrams(
-            annexB: corpus[0], frameNumber: 0, hostMicros: base
-        ) {
-            harness.absorb(datagram, tMicros: base)
-        }
+        try harness.deliverFrame(corpus[0], number: 0, at: base)
         XCTAssertEqual(harness.samples.count, 1)
 
         // Multiple independent damage exits converge on one request.
@@ -298,17 +289,11 @@ final class NackRepairClientGateTests: XCTestCase {
             after: FrameNumber(rawValue: 11), cause: .fecAssemblerDamage)
         try harness.pumpOutboundToHost(forwarded: &forwarded)
         XCTAssertEqual(host.session.counters.idrRequests, 1)
-        XCTAssertTrue(
-            harness.core.idrRequester.snapshotStats().recoveryOutstanding)
+        XCTAssertTrue(harness.core.idrStats.recoveryOutstanding)
 
         // An already-built dependent P frame cannot cross the core's render
         // seam while that episode is outstanding.
-        let pAt = base + 150_000
-        for datagram in try host.videoDatagrams(
-            annexB: corpus[1], frameNumber: 1, hostMicros: pAt
-        ) {
-            harness.absorb(datagram, tMicros: pAt)
-        }
+        try harness.deliverFrame(corpus[1], number: 1, at: base + 150_000)
         XCTAssertEqual(harness.samples.count, 1)
         XCTAssertTrue(harness.recoveryTrace.contains {
             $0.kind == "coreRejectedNonIrap"
@@ -316,25 +301,17 @@ final class NackRepairClientGateTests: XCTestCase {
         })
 
         // Assembly alone cannot close the episode.
-        let irapAt = base + 200_000
-        harness.clock.advance(to: irapAt)
-        for datagram in try host.videoDatagrams(
-            annexB: corpus[0], frameNumber: 2, hostMicros: irapAt
-        ) {
-            harness.absorb(datagram, tMicros: irapAt)
-        }
+        try harness.deliverFrame(corpus[0], number: 2, at: base + 200_000)
         XCTAssertEqual(harness.samples.count, 2)
         XCTAssertTrue(harness.samples[1].isIDR)
         XCTAssertTrue(harness.recoveryTrace.contains {
             $0.kind == "coreForwardedIrap"
                 && $0.frame.rawValue == 2
         })
-        XCTAssertTrue(
-            harness.core.idrRequester.snapshotStats().recoveryOutstanding)
+        XCTAssertTrue(harness.core.idrStats.recoveryOutstanding)
         harness.core.noteVideoIrapEnqueued(
             frame: FrameNumber(rawValue: 2))
-        XCTAssertFalse(
-            harness.core.idrRequester.snapshotStats().recoveryOutstanding)
+        XCTAssertFalse(harness.core.idrStats.recoveryOutstanding)
         XCTAssertTrue(harness.recoveryTrace.contains {
             $0.kind == "coreRecoveryClosedAfterIrapEnqueue"
                 && $0.frame.rawValue == 2
@@ -348,14 +325,13 @@ final class NackRepairClientGateTests: XCTestCase {
         try harness.pumpOutboundToHost(forwarded: &forwarded)
         XCTAssertEqual(host.session.counters.idrRequests, 1)
         harness.clock.advance(to: base + 800_001)
-        harness.core.idrRequester.recordRecoveryDemand(
-            frame: FrameNumber(rawValue: 12),
-            now: ClientTimestamp(microseconds: base + 800_001))
+        harness.core.requestVideoRecovery(
+            after: FrameNumber(rawValue: 12), cause: .fecAssemblerDamage)
         try harness.pumpOutboundToHost(forwarded: &forwarded)
         XCTAssertEqual(host.session.counters.idrRequests, 2)
     }
 
-    // MARK: - Leg C: a seeded SimNet storm heals through the ask loop
+    // MARK: - A seeded SimNet storm heals through the ask loop
 
     func testStormLossHealsThroughNackRepairLoop() throws {
         let corpus = try loadCorpus(5)
@@ -397,7 +373,7 @@ final class NackRepairClientGateTests: XCTestCase {
 
             for delivery in net.deliveries(upTo: t)
             where delivery.destination == 0 {
-                harness.absorb(delivery.bytes, tMicros: t)
+                harness.deliver(delivery.bytes, at: t)
             }
 
             // Feedback cadence (30 ms) + the policy's own flushes.
@@ -420,8 +396,8 @@ final class NackRepairClientGateTests: XCTestCase {
             t += 2_000
         }
 
-        // Every DELIVERED frame is byte-identical to its source — the
-        // W-G3 integrity property held through loss + repair.
+        // Every DELIVERED frame is byte-identical to its source: integrity
+        // held through loss and repair.
         XCTAssertGreaterThan(harness.samples.count, 10)
         for unit in harness.samples {
             XCTAssertEqual(unit.annexB, frameBytes[unit.frameNumber.rawValue],
@@ -429,7 +405,7 @@ final class NackRepairClientGateTests: XCTestCase {
         }
         // The storm produced past-parity frames and the loop healed at
         // least one of them via repair (seed-pinned).
-        let stats = harness.core.nackPolicy.snapshotStats()
+        let stats = harness.core.nackStats
         XCTAssertGreaterThan(stats.pastParityFrames, 0,
                              "12% loss must push frames past parity")
         XCTAssertGreaterThan(stats.repairShardsReceived, 0)
@@ -444,7 +420,7 @@ final class NackRepairClientGateTests: XCTestCase {
                                  stats.pastParityFrames)
     }
 
-    // MARK: - Leg D: answers after stragglers already fixed the frame
+    // MARK: - Answers after stragglers already fixed the frame
 
     /// The task the books exist for: the presumption goes past parity
     /// and the ask leaves, but the "lost" originals were merely
@@ -459,67 +435,40 @@ final class NackRepairClientGateTests: XCTestCase {
 
         var t: UInt64 = 1_000
         var forwarded = 0
-        try harness.settleStartup(forwarded: &forwarded, at: t)
-        for datagram in try host.videoDatagrams(
-            annexB: corpus[0], frameNumber: 0, hostMicros: t
-        ) {
-            harness.absorb(datagram, tMicros: t)
-        }
-
-        // Frame 1: parity+2 shards "lost" — actually held for later.
-        t += 5_000; harness.clock.advance(to: t)
-        let frame1 = try host.videoDatagrams(
-            annexB: corpus[1], frameNumber: 1, hostMicros: t
-        )
-        let geometry1 = try geometry(of: frame1)
-        let dropCount = geometry1.parityShards + 2
-        XCTAssertLessThan(dropCount, geometry1.dataShards)
-        let frame1Split = split(
-            frame1, dropping: Set(0..<dropCount)
-        )
-        for datagram in frame1Split.sent {
-            harness.absorb(datagram, tMicros: t)
-        }
+        // Frame 1's parity+2 "lost" shards are only held for later.
+        let hole = try openHole(
+            corpus: corpus, host: host, harness: harness,
+            t: &t, forwarded: &forwarded)
 
         // ONE follow-on frame renders the past-parity verdict; the ask
         // leaves. (Just one, deliberately: the ~23-shard corpus frames
         // mean a second would push the stragglers past the 64-seq
         // replay window and the demux — correctly — would eat them
-        // before this leg's seam is ever exercised.)
-        t += 5_000; harness.clock.advance(to: t)
-        for datagram in try host.videoDatagrams(
-            annexB: corpus[2], frameNumber: 2, hostMicros: t
-        ) {
-            harness.absorb(datagram, tMicros: t)
-        }
-        harness.core.tick(now: ClientTimestamp(microseconds: t))
+        // before this test's seam is ever exercised.)
+        try deliverFollowOns(2...2, corpus: corpus, harness: harness, t: &t)
         try harness.pumpOutboundToHost(forwarded: &forwarded)
         let repairs = host.takeRepairDatagrams()
         XCTAssertFalse(repairs.isEmpty)
 
         // TWO stragglers arrive — exactly enough for RS to complete —
         // and the frame emits byte-exact before any repair shows up.
-        t += 3_000; harness.clock.advance(to: t)
-        for datagram in frame1Split.held.prefix(2) {
-            harness.absorb(datagram, tMicros: t)
-        }
+        t += 3_000
+        for datagram in hole.held.prefix(2) { harness.deliver(datagram, at: t) }
         XCTAssertEqual(harness.samples.map(\.frameNumber.rawValue),
                        [0, 1, 2])
         XCTAssertEqual(harness.samples[1].annexB, corpus[1])
 
         // The host honors the full ask anyway; every answer lands after
         // the frame's turn has passed.
-        t += 5_000; harness.clock.advance(to: t)
-        for datagram in repairs {
-            harness.absorb(datagram, tMicros: t)
-        }
+        t += 5_000
+        for datagram in repairs { harness.deliver(datagram, at: t) }
         harness.core.tick(now: ClientTimestamp(microseconds: t))
 
         // No re-delivery, no corruption — and the books call every
         // answer late.
         XCTAssertEqual(harness.samples.map(\.frameNumber.rawValue),
                        [0, 1, 2], "a late answer must never re-deliver")
-        let stats = harness.core.nackPolicy.snapshotStats()
+        let stats = harness.core.nackStats
         XCTAssertEqual(stats.pastParityFrames, 1)
         XCTAssertEqual(stats.repairsLate, UInt64(repairs.count))
         XCTAssertEqual(stats.repairsDuplicate, 0)
@@ -535,7 +484,7 @@ final class NackRepairClientGateTests: XCTestCase {
         XCTAssertEqual(host.session.counters.idrRequests, 0)
     }
 
-    // MARK: - Leg E: answers for an abandoned frame count superseded
+    // MARK: - Answers for an abandoned frame count superseded
 
     /// The give-up story: an asked frame gets skipped by the holdback
     /// (newer decoded frames pile up behind it), rule 4 escalates it to
@@ -548,42 +497,17 @@ final class NackRepairClientGateTests: XCTestCase {
 
         var t: UInt64 = 1_000
         var forwarded = 0
-        try harness.settleStartup(forwarded: &forwarded, at: t)
-        for datagram in try host.videoDatagrams(
-            annexB: corpus[0], frameNumber: 0, hostMicros: t
-        ) {
-            harness.absorb(datagram, tMicros: t)
-        }
-
         // Frame 1 holed past parity; the ask leaves on the follow-on
         // traffic.
-        t += 5_000; harness.clock.advance(to: t)
-        let frame1 = try host.videoDatagrams(
-            annexB: corpus[1], frameNumber: 1, hostMicros: t
-        )
-        let geometry1 = try geometry(of: frame1)
-        let dropCount = geometry1.parityShards + 2
-        XCTAssertLessThan(dropCount, geometry1.dataShards)
-        for datagram in split(
-            frame1, dropping: Set(0..<dropCount)
-        ).sent {
-            harness.absorb(datagram, tMicros: t)
-        }
+        _ = try openHole(
+            corpus: corpus, host: host, harness: harness,
+            t: &t, forwarded: &forwarded)
 
         // Three decoded frames pile up behind the hole — the holdback
         // (3) skips frame 1 the moment frame 4 decodes, and the skip
         // escalates the asked frame to the IDR requester (rule 4 via
         // the frame's death, not the deadline).
-        for number in 2...4 {
-            t += 5_000; harness.clock.advance(to: t)
-            for datagram in try host.videoDatagrams(
-                annexB: corpus[number], frameNumber: UInt32(number),
-                hostMicros: t
-            ) {
-                harness.absorb(datagram, tMicros: t)
-            }
-            harness.core.tick(now: ClientTimestamp(microseconds: t))
-        }
+        try deliverFollowOns(2...4, corpus: corpus, harness: harness, t: &t)
         harness.core.feedback.tick(now: ClientTimestamp(microseconds: t))
         try harness.pumpOutboundToHost(forwarded: &forwarded)
         let repairs = host.takeRepairDatagrams()
@@ -597,16 +521,14 @@ final class NackRepairClientGateTests: XCTestCase {
 
         // The host's answers arrive anyway — for a frame that no
         // longer exists anywhere in the client.
-        t += 5_000; harness.clock.advance(to: t)
-        for datagram in repairs {
-            harness.absorb(datagram, tMicros: t)
-        }
+        t += 5_000
+        for datagram in repairs { harness.deliver(datagram, at: t) }
         harness.core.tick(now: ClientTimestamp(microseconds: t))
 
         XCTAssertEqual(harness.samples.map(\.frameNumber.rawValue),
                        [0],
                        "an answer for a dead frame must change nothing")
-        let stats = harness.core.nackPolicy.snapshotStats()
+        let stats = harness.core.nackStats
         XCTAssertEqual(stats.repairsSuperseded,
                        UInt64(repairs.count))
         XCTAssertGreaterThan(stats.repairsSuperseded, 0)
@@ -626,7 +548,7 @@ final class NackRepairClientGateTests: XCTestCase {
         )
     }
 
-    // MARK: - Leg F (HS-32): an explicit refusal ends the wait NOW
+    // MARK: - An explicit refusal ends the wait now
 
     func testHostRefusalEndsRepairWaitImmediately() throws {
         let corpus = try loadCorpus(4)
@@ -637,36 +559,12 @@ final class NackRepairClientGateTests: XCTestCase {
 
         var t: UInt64 = 1_000
         var forwarded = 0
-        try harness.settleStartup(forwarded: &forwarded, at: t)
-        for datagram in try host.videoDatagrams(
-            annexB: corpus[0], frameNumber: 0, hostMicros: t
-        ) {
-            harness.absorb(datagram, tMicros: t)
-        }
-        harness.core.feedback.tick(now: ClientTimestamp(microseconds: t))
-        try harness.pumpOutboundToHost(forwarded: &forwarded)
-
-        // Frame 1 goes past parity; follow-ons render the verdict and
-        // the ask leaves in an out-of-cadence report (leg A's shape).
-        t += 5_000; harness.clock.advance(to: t)
-        let frame1 = try host.videoDatagrams(
-            annexB: corpus[1], frameNumber: 1, hostMicros: t
-        )
-        let geometry1 = try geometry(of: frame1)
-        let dropped = Set(0..<(geometry1.parityShards + 2))
-        for datagram in split(frame1, dropping: dropped).sent {
-            harness.absorb(datagram, tMicros: t)
-        }
-        for number in 2...3 {
-            t += 5_000; harness.clock.advance(to: t)
-            for datagram in try host.videoDatagrams(
-                annexB: corpus[number], frameNumber: UInt32(number),
-                hostMicros: t
-            ) {
-                harness.absorb(datagram, tMicros: t)
-            }
-            harness.core.tick(now: ClientTimestamp(microseconds: t))
-        }
+        // Frame 1 goes past parity; follow-ons render the verdict and the
+        // ask leaves in an out-of-cadence report.
+        _ = try openHole(
+            corpus: corpus, host: host, harness: harness,
+            t: &t, forwarded: &forwarded, reportingFrame0: true)
+        try deliverFollowOns(2...3, corpus: corpus, harness: harness, t: &t)
         try harness.pumpOutboundToHost(forwarded: &forwarded)
         XCTAssertTrue(host.events.contains {
             guard case .nackJudgedStale(let frame, let reason) = $0 else {
@@ -691,15 +589,13 @@ final class NackRepairClientGateTests: XCTestCase {
             maxAdvanceNS: 1_000_000
         )
         XCTAssertGreaterThanOrEqual(controlFlight.count, refusalCount)
-        for datagram in controlFlight {
-            harness.absorb(datagram, tMicros: t)
-        }
+        for datagram in controlFlight { harness.deliver(datagram, at: t) }
         harness.core.feedback.tick(now: ClientTimestamp(microseconds: t))
         try harness.pumpOutboundToHost(forwarded: &forwarded)
         XCTAssertGreaterThanOrEqual(
             host.session.counters.idrRequests, 1,
             "the refusal goes straight to the IDR path — no deadline burned")
-        let stats = harness.core.nackPolicy.snapshotStats()
+        let stats = harness.core.nackStats
         XCTAssertEqual(stats.refusalsReceived, UInt64(refusalCount))
         XCTAssertEqual(stats.refusalsActedOn, 1)
         XCTAssertEqual(

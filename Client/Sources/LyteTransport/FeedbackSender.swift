@@ -29,7 +29,7 @@ public final class FeedbackSender: Sendable {
     private let sender: TransportSender
     private let intervalMilliseconds: Int
     private let now: @Sendable () -> ClientTimestamp
-    /// Fires after each cadence report (the IdrRequester's flush hook).
+    /// Fires after each cadence report (the IDR retry and NACK deadlines).
     private let onTick: (@Sendable (ClientTimestamp) -> Void)?
 
     private let books = Mutex(Books())

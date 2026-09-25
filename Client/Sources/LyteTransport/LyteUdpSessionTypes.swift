@@ -178,7 +178,7 @@ public struct LyteUdpSessionCoreConfig: Sendable {
     /// disables tightening.
     public var tightenedBlackoutSilenceMicroseconds: Int64?
     public var audioJitter: AudioJitterConfig
-    public var nackPolicy: NackPolicyConfig
+    public var nackPolicy: ClientNackPolicy.Config
     /// The session-start host-speaker posture: with key 9 agreed, one
     /// 0x18 leaves if the host's first 0x19 differs (once per session).
     /// Nil takes the host's default.
@@ -202,7 +202,7 @@ public struct LyteUdpSessionCoreConfig: Sendable {
         tightenedBlackoutSilenceMicroseconds: Int64? =
             ClientControlSession.tightenedBlackoutSilenceMicroseconds,
         audioJitter: AudioJitterConfig = AudioJitterConfig(),
-        nackPolicy: NackPolicyConfig = NackPolicyConfig(),
+        nackPolicy: ClientNackPolicy.Config = ClientNackPolicy.Config(),
         desiredHostAudioRouting: HostAudioRoutingMode? = .hostMuted,
         shareClipboard: Bool = false,
         shareClipboardImages: Bool = false

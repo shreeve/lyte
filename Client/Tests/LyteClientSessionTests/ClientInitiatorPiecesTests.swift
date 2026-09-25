@@ -151,10 +151,16 @@ final class ClientInitiatorPiecesTests: XCTestCase {
         XCTAssertFalse(recovery.isOutstanding)
         XCTAssertNil(recovery.requestDue(
             now: ClientTimestamp(microseconds: 9_000_000)))
-        XCTAssertEqual(recovery.stats.episodesStarted, 1)
+        // Damage after the heal opens a fresh episode, due at once.
+        recovery.recordDemand(frame: FrameNumber(rawValue: 20))
+        let fresh = recovery.requestDue(
+            now: ClientTimestamp(microseconds: 9_000_001))
+        XCTAssertEqual(fresh?.frame.rawValue, 20)
+        XCTAssertEqual(fresh?.requestSeq, 2)
+        XCTAssertEqual(recovery.stats.episodesStarted, 2)
         XCTAssertEqual(recovery.stats.episodesCompleted, 1)
         XCTAssertEqual(recovery.stats.retryRequests, 1)
-        XCTAssertEqual(recovery.stats.requestsSent, 2)
+        XCTAssertEqual(recovery.stats.requestsSent, 3)
     }
 
     /// The open episode gates rendering: dependent frames wait for the

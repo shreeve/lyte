@@ -142,7 +142,7 @@ final class AudioDetectorGateTests: XCTestCase {
             after: FrameNumber(rawValue: 40), cause: .rendererFailure)
         core.requestVideoRecovery(
             after: FrameNumber(rawValue: 41), cause: .rendererBackpressure)
-        let stats = core.idrRequester.snapshotStats()
+        let stats = core.idrStats
         XCTAssertEqual(stats.verdicts, 2)
         XCTAssertEqual(stats.episodesStarted, 1)
         XCTAssertEqual(stats.requestsSent, 1)
@@ -153,7 +153,7 @@ final class AudioDetectorGateTests: XCTestCase {
         // Assembly cannot close recovery. Only the handoff's post-enqueue
         // callback does.
         core.noteVideoIrapEnqueued()
-        XCTAssertFalse(core.idrRequester.snapshotStats().recoveryOutstanding)
+        XCTAssertFalse(core.idrStats.recoveryOutstanding)
     }
 
     func testTighteningPreservesTheWireMode() throws {
