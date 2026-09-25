@@ -277,10 +277,11 @@ final class LyteInputCapture {
         return down
     }
 
-    /// True when a menu item (the app's own commands, which own every
-    /// window-management chord: ⌘W, ⌘Q, ⌘H, ⌘M, the Actions menu)
-    /// answers this ⌘ key equivalent. System chords (⌘Tab, ⌘Space)
-    /// never reach the app at all.
+    /// True when an enabled, visible menu item (the app's own commands,
+    /// which own every window-management chord: ⌘W, ⌘Q, ⌘H, ⌘M, the
+    /// Actions menu) answers this ⌘ key equivalent. The standard Edit
+    /// items never do: in the stream window ⌘C, ⌘V, ⌘Z… are the host's.
+    /// System chords (⌘Tab, ⌘Space) never reach the app at all.
     private static func isLocalShortcut(_ event: NSEvent) -> Bool {
         guard let menu = NSApp.mainMenu,
               let characters = event.charactersIgnoringModifiers?.lowercased(),
@@ -291,10 +292,12 @@ final class LyteInputCapture {
         return menuAnswers(menu, characters: characters, modifiers: modifiers)
     }
 
-    private static func menuAnswers(
+    static func menuAnswers(
         _ menu: NSMenu, characters: String, modifiers: NSEvent.ModifierFlags
     ) -> Bool {
-        for item in menu.items {
+        for item in menu.items where item.isEnabled && !item.isHidden {
+            if let action = item.action,
+               editActions.contains(NSStringFromSelector(action)) { continue }
             if let submenu = item.submenu,
                menuAnswers(submenu, characters: characters, modifiers: modifiers) {
                 return true
@@ -311,4 +314,11 @@ final class LyteInputCapture {
         }
         return false
     }
+
+    /// The standard Edit menu's actions, which text fields elsewhere in
+    /// the app still answer through the menu.
+    private static let editActions: Set<String> = [
+        "undo:", "redo:", "cut:", "copy:", "paste:", "pasteAsPlainText:",
+        "pasteAndMatchStyle:", "selectAll:", "delete:",
+    ]
 }

@@ -229,6 +229,121 @@ final class InputForwardingPolicyTests: XCTestCase {
         XCTAssertEqual(policy.modifier(leftShift, pressed: false).sends, [up(leftShift)])
     }
 
+    // MARK: - ⌘ with a letter is Control
+
+    private let keyC: UInt32 = 46
+    private let keyZ: UInt32 = 44
+    private let leftCtrl: UInt32 = 29
+
+    func testCommandLetterReachesTheHostAsControlNeverSuper() {
+        var policy = InputForwardingPolicy()
+        XCTAssertEqual(policy.modifier(leftMeta, pressed: true), .swallow)
+        let chord = policy.keyDown(keyC, isRepeat: false, commandHeld: true,
+                                   isLocalShortcut: false, modifiersDown: [])
+        XCTAssertEqual(chord.sends, [down(leftCtrl), down(keyC)])
+        XCTAssertTrue(chord.consumed)
+        XCTAssertEqual(policy.keyDown(keyC, isRepeat: true, commandHeld: true,
+                                      isLocalShortcut: false), .swallow)
+        XCTAssertEqual(policy.keyUp(keyC, commandHeld: true).sends,
+                       [up(keyC), up(leftCtrl)])
+        XCTAssertEqual(policy.modifier(leftMeta, pressed: false).sends, [])
+        XCTAssertTrue(policy.heldKeys.isEmpty)
+    }
+
+    func testOtherModifiersRideTheControlChord() {
+        var policy = InputForwardingPolicy()
+        _ = policy.modifier(leftMeta, pressed: true)
+        _ = policy.modifier(leftShift, pressed: true)
+        XCTAssertEqual(
+            policy.keyDown(keyZ, isRepeat: false, commandHeld: true,
+                           isLocalShortcut: false, modifiersDown: [leftShift]).sends,
+            [down(leftCtrl), down(keyZ)])
+        XCTAssertEqual(policy.heldKeys, [leftShift, keyZ])
+    }
+
+    func testAHeldControlKeyNeedsNoSecondControl() {
+        var policy = InputForwardingPolicy()
+        _ = policy.modifier(leftMeta, pressed: true)
+        XCTAssertEqual(
+            policy.keyDown(keyC, isRepeat: false, commandHeld: true,
+                           isLocalShortcut: false, modifiersDown: [leftCtrl]).sends,
+            [down(leftCtrl), down(keyC)])
+        XCTAssertEqual(policy.keyUp(keyC, commandHeld: true).sends, [up(keyC)])
+        XCTAssertEqual(policy.heldKeys, [leftCtrl])
+    }
+
+    func testControlIsReleasedWithTheLastLetterWhateverCommandDid() {
+        var policy = InputForwardingPolicy()
+        _ = policy.modifier(leftMeta, pressed: true)
+        _ = policy.keyDown(keyC, isRepeat: false, commandHeld: true,
+                           isLocalShortcut: false)
+        XCTAssertEqual(policy.keyDown(keyZ, isRepeat: false, commandHeld: true,
+                                      isLocalShortcut: false).sends, [down(keyZ)])
+        XCTAssertEqual(policy.modifier(leftMeta, pressed: false).sends, [])
+        XCTAssertEqual(policy.keyUp(keyC, commandHeld: false).sends, [up(keyC)])
+        XCTAssertEqual(policy.keyUp(keyZ, commandHeld: false).sends,
+                       [up(keyZ), up(leftCtrl)])
+        XCTAssertTrue(policy.heldKeys.isEmpty)
+    }
+
+    func testFocusLossMidControlChordReleasesControl() {
+        var policy = InputForwardingPolicy()
+        _ = policy.modifier(leftMeta, pressed: true)
+        _ = policy.keyDown(keyC, isRepeat: false, commandHeld: true,
+                           isLocalShortcut: false)
+        XCTAssertEqual(policy.releaseAll(), [up(keyC), up(leftCtrl)])
+        XCTAssertTrue(policy.controlChordKeys.isEmpty)
+    }
+
+    /// ⌘→ forwarded Super; ⌘C in the same hold takes it back first.
+    func testASuperAlreadyForwardedIsTakenBackForAControlChord() {
+        var policy = InputForwardingPolicy()
+        _ = policy.modifier(leftMeta, pressed: true)
+        _ = policy.keyDown(keyRight, isRepeat: false, commandHeld: true,
+                           isLocalShortcut: false)
+        _ = policy.keyUp(keyRight, commandHeld: true)
+        XCTAssertEqual(
+            policy.keyDown(keyC, isRepeat: false, commandHeld: true,
+                           isLocalShortcut: false).sends,
+            [up(leftMeta), down(leftCtrl), down(keyC)])
+        XCTAssertEqual(policy.pendingCommandKeys, [leftMeta])
+    }
+
+    func testAnAppOwnedLetterChordStaysLocal() {
+        var policy = InputForwardingPolicy()
+        _ = policy.modifier(leftMeta, pressed: true)
+        XCTAssertEqual(policy.keyDown(keyC, isRepeat: false, commandHeld: true,
+                                      isLocalShortcut: true), .passThrough)
+        XCTAssertTrue(policy.heldKeys.isEmpty)
+    }
+
+    /// Only enabled, visible, non-Edit menu items keep a ⌘ chord local.
+    @MainActor
+    func testOnlyLiveAppCommandsClaimAChord() {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        func item(_ key: String, _ action: String? = nil) -> NSMenuItem {
+            let item = NSMenuItem(
+                title: key, action: action.map(NSSelectorFromString),
+                keyEquivalent: key)
+            menu.addItem(item)
+            return item
+        }
+        _ = item("w")
+        item("d").isEnabled = false
+        item("r").isHidden = true
+        _ = item("c", "copy:")
+        _ = item("z", "undo:")
+        func answers(_ key: String) -> Bool {
+            LyteInputCapture.menuAnswers(menu, characters: key, modifiers: .command)
+        }
+        XCTAssertTrue(answers("w"))
+        XCTAssertFalse(answers("d"), "a disabled item answers nothing")
+        XCTAssertFalse(answers("r"), "a hidden item answers nothing")
+        XCTAssertFalse(answers("c"), "Edit's copy is the host's in a stream")
+        XCTAssertFalse(answers("z"))
+    }
+
     // MARK: - A ⌘ release AppKit never delivered
 
     // Menu tracking and title-bar drags consume events before the local
