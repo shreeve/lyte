@@ -698,7 +698,6 @@ final class SessionGateTests: XCTestCase {
         let pendingBytes = outbox
             .filter {
                 $0.pacerClass == .freshVideo || $0.pacerClass == .videoTail
-                    || $0.pacerClass == .refinement
             }
             .reduce(0) { $0 + $1.bytes.count }
         XCTAssertGreaterThan(pendingBytes, 0)

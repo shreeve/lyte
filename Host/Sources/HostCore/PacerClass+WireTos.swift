@@ -12,10 +12,8 @@ public extension WireTos {
         switch pacerClass {
         case .control, .audio, .videoTail:
             return WireTos.protected
-        case .freshVideo, .refinement:
+        case .freshVideo:
             return WireTos.video
-        case .telemetry:
-            return WireTos.unmarked
         case .bulk:
             return WireTos.bulk
         }

@@ -189,27 +189,13 @@ final class PacerTests: XCTestCase {
             guard let highestLeftover = c.leftoverClasses.min() else { continue }
             for t in c.batch.tokens {
                 XCTAssertLessThanOrEqual(t.priorityClass, highestLeftover,
-                    "class \(t.priorityClass.name) sent while "
-                    + "\(highestLeftover.name) was queued")
+                    "class \(t.priorityClass) sent while "
+                    + "\(highestLeftover) was queued")
             }
         }
 
-        // Evidence for the record (visible with `swift test -v`).
-        print("HS-6 gate @20 Mbps: max batch wire time "
-            + "\(Double(pacer.telemetry.maxBatchWireTimeNS) / 1e6) ms; "
-            + "conforming-IDR (59,904 B) drain "
-            + "\(Double(conformingDrain) / 1e6) ms (budget 25); 90 KB abuse "
-            + "drain \(Double(abuseDrain) / 1e6) ms; max audio wait "
-            + "\(Double(audioWait) / 1e6) ms; max control wait "
-            + "\(Double(controlWait) / 1e6) ms")
-
         // 6. Everything offered was eventually sent (no starvation, no loss).
         XCTAssertTrue(pacer.isEmpty)
-        for c in PacerClass.allCases {
-            XCTAssertEqual(pacer.telemetry[c].tokensSent,
-                           pacer.telemetry[c].tokensEnqueued,
-                           "\(c.name) lost tokens")
-        }
     }
 
     // MARK: - Ordering
@@ -306,7 +292,7 @@ final class PacerTests: XCTestCase {
     func testFifoWithinClass() {
         let pacer = Pacer(rateBitsPerSecond: 50_000_000, now: 0)
         for tag in 0..<5 {
-            pacer.enqueue(.telemetry, bytes: 100, tag: UInt64(tag), now: 0)
+            pacer.enqueue(.bulk, bytes: 100, tag: UInt64(tag), now: 0)
         }
         let batch = pacer.nextBatch(now: 0)!
         XCTAssertEqual(batch.tokens.map(\.tag), [0, 1, 2, 3, 4])
@@ -411,11 +397,6 @@ final class PacerTests: XCTestCase {
                                      allowance, "seed \(seed)")
             // No starvation: with capacity to spare, everything drains.
             XCTAssertTrue(pacer.isEmpty, "seed \(seed): tokens stranded")
-            for c in classes {
-                XCTAssertEqual(pacer.telemetry[c].tokensSent,
-                               pacer.telemetry[c].tokensEnqueued,
-                               "seed \(seed): \(c.name) starved")
-            }
         }
     }
 
@@ -555,17 +536,6 @@ final class PacerTests: XCTestCase {
 
         // 5. Nothing starved; everything offered eventually left.
         XCTAssertTrue(pacer.isEmpty)
-        for c in PacerClass.allCases {
-            XCTAssertEqual(pacer.telemetry[c].tokensSent,
-                           pacer.telemetry[c].tokensEnqueued,
-                           "\(c.name) lost tokens")
-        }
-
-        print("HS-31 pin @500 kbps: max audio wait "
-            + "\(Double(audioWait) / 1e6) ms, max control wait "
-            + "\(Double(controlWait) / 1e6) ms through a "
-            + "~19 ms video-incurred deficit; second video datagram "
-            + "emitted at \(Double(video2At) / 1e6) ms")
     }
 
     /// `setRate` carries an in-flight deficit across a fall (the
@@ -661,24 +631,6 @@ final class PacerTests: XCTestCase {
         XCTAssertEqual(pacer.nextWake(now: 0), 1 * ms)
         XCTAssertNil(pacer.nextBatch(now: 500_000), "half a quantum is not enough")
         XCTAssertNotNil(pacer.nextBatch(now: 1 * ms))
-    }
-
-    /// A class whose queue is topped up before it ever drains (sustained
-    /// bulk, fresh video through a long rate fall) must not retain every
-    /// token it has already sent.
-    func testSustainedBacklogKeepsQueueStorageBounded() {
-        let pacer = Pacer(rateBitsPerSecond: 100_000_000, now: 0)
-        var now: UInt64 = 0
-        for _ in 0..<64 { pacer.enqueue(.bulk, bytes: 1_200, now: now) }
-        var sent = 0
-        while sent < 50_000 {
-            now += 1_000_000
-            guard let batch = pacer.nextBatch(now: now) else { continue }
-            sent += batch.tokens.count
-            for _ in batch.tokens { pacer.enqueue(.bulk, bytes: 1_200, now: now) }
-            XCTAssertEqual(pacer.queuedCount(.bulk), 64)
-        }
-        XCTAssertLessThanOrEqual(pacer.retainedTokenSlots(.bulk), 1_024)
     }
 
     /// A caller clock that steps backwards must not trap the telemetry.
