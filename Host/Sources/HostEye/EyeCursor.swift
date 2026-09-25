@@ -9,28 +9,6 @@
 import CDRM
 import Glibc
 
-/// A named property's current value on a plane. Values are raw UInt64;
-/// CRTC_X/CRTC_Y carry signed positions, bit-cast by the caller.
-func planePropValue(
-    fd: Int32, planeId: UInt32, name: String
-) -> UInt64? {
-    guard let props = drmModeObjectGetProperties(
-        fd, planeId, UInt32(DRM_MODE_OBJECT_PLANE))
-    else { return nil }
-    defer { drmModeFreeObjectProperties(props) }
-    for i in 0..<Int(props.pointee.count_props) {
-        guard let prop = drmModeGetProperty(fd, props.pointee.props[i])
-        else { continue }
-        defer { drmModeFreeProperty(prop) }
-        let propName = withUnsafeBytes(of: prop.pointee.name) { raw in
-            String(cString: raw.baseAddress!.assumingMemoryBound(
-                to: CChar.self))
-        }
-        if propName == name { return props.pointee.prop_values[i] }
-    }
-    return nil
-}
-
 /// One read cursor image: the content-cropped BGRA pixels plus where
 /// the crop sits — in the buffer (cropX/Y, the hotspot's shift) and
 /// on screen (planeCrtc at grab time, the hotspot's anchor).
@@ -109,7 +87,7 @@ public final class EyeCursorWatcher {
             else { continue }
             defer { drmModeFreePlane(plane) }
             let p = plane.pointee
-            guard planeType(fd: fd, planeId: p.plane_id)
+            guard planePropValue(fd: fd, planeId: p.plane_id, name: "type")
                 == UInt64(DRM_PLANE_TYPE_CURSOR) else { continue }
             let live = p.crtc_id != 0
             if found == nil || (live && found?.live == false) {

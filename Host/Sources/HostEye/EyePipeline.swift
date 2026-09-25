@@ -135,7 +135,7 @@ public final class EyePipeline {
         let blitStart = SystemMonotonicClock.nowMicroseconds
         if chroma444 {
             if ayuvTargets[surface] == nil {
-                let plane = try encoder.exportSurfacePacked(surface)
+                let plane = try encoder.exportLayers(surface, count: 1)[0]
                 defer { close(plane.fd) }
                 ayuvTargets[surface] = try gl.makeAyuvTarget(
                     width: width, height: height,
@@ -147,23 +147,15 @@ public final class EyePipeline {
                 into: ayuvTargets[surface]!)
         } else {
             if nv12Targets[surface] == nil {
-                let exported = try encoder.exportSurface(surface)
-                defer {
-                    close(exported.y.fd)
-                    if exported.uv.fd != exported.y.fd {
-                        close(exported.uv.fd)
-                    }
-                }
+                let layers = try encoder.exportLayers(surface, count: 2)
+                defer { Set(layers.map(\.fd)).forEach { close($0) } }
+                let (y, uv) = (layers[0], layers[1])
                 nv12Targets[surface] = try gl.makeNV12Target(
                     width: width, height: height,
-                    yFourcc: exported.y.fourcc,
-                    yModifier: exported.y.modifier,
-                    yPlane: (exported.y.fd, exported.y.offset,
-                             exported.y.pitch),
-                    uvFourcc: exported.uv.fourcc,
-                    uvModifier: exported.uv.modifier,
-                    uvPlane: (exported.uv.fd, exported.uv.offset,
-                              exported.uv.pitch))
+                    yFourcc: y.fourcc, yModifier: y.modifier,
+                    yPlane: (y.fd, y.offset, y.pitch),
+                    uvFourcc: uv.fourcc, uvModifier: uv.modifier,
+                    uvPlane: (uv.fd, uv.offset, uv.pitch))
             }
             gl.blit(
                 source: scanout, srcWidth: width, srcHeight: height,
