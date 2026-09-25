@@ -127,8 +127,10 @@ public final class AudioJitterBuffer {
     private var pending: [UInt32: (packet: AudioPacket, arrivalMicroseconds: UInt64)] = [:]
     private var started = false
     private var nextNumber: UInt32 = 0
+    /// The last packet handed out to play; nil before the first.
+    private var lastPlayedNumber: UInt32?
     private var consecutiveConcealments = 0
-    /// Set by an announced quiet, cleared by the next packet.
+    /// Set by an announced quiet, cleared by the packet that wakes it.
     private var announcedQuiet = false
     /// The latest arrival of the wake burst that ends a quiet: the host
     /// ships its pre-roll at once, which describes its ring, not the path.
@@ -168,11 +170,13 @@ public final class AudioJitterBuffer {
         self.deviationWindow.reserveCapacity(config.deviationWindowPackets)
     }
 
-    /// An announced audio quiet is contract, not path evidence: until the
-    /// next packet arrives an empty buffer is not concealed, and that
-    /// packet re-primes playout at itself (the host numbers on from the
-    /// last packet it sent). The adaptation windows reset so the wake
-    /// burst re-bases the epoch; the target survives. Idempotent.
+    /// An announced audio quiet is contract, not path evidence: until a
+    /// wire-carried packet ahead of the last one played arrives, an empty
+    /// buffer is not concealed, and that packet re-primes playout at
+    /// itself (the host numbers on from the last packet it sent). A
+    /// recovered or replayed packet neither wakes the quiet nor rewinds
+    /// playout. The adaptation windows reset so the wake burst re-bases
+    /// the epoch; the target survives. Idempotent.
     public func noteAnnouncedQuiet() {
         announcedQuiet = true
         resetAdaptationWindows()
@@ -192,7 +196,9 @@ public final class AudioJitterBuffer {
     public func insert(_ packet: AudioPacket, arrivalMicroseconds: UInt64) {
         stats.packetsInserted += 1
 
-        if announcedQuiet {
+        if announcedQuiet, !packet.recovered,
+           lastPlayedNumber.map({ Int32(bitPattern: packet.number &- $0) > 0 })
+               ?? true {
             announcedQuiet = false
             wakeBurstArrival = arrivalMicroseconds
             if pending.isEmpty { nextNumber = packet.number }
@@ -260,6 +266,7 @@ public final class AudioJitterBuffer {
         stats.depthPackets.record(UInt64(pending.count))
 
         if let entry = pending.removeValue(forKey: nextNumber) {
+            lastPlayedNumber = nextNumber
             nextNumber &+= 1
             consecutiveConcealments = 0
             stats.packetsPlayed += 1
@@ -324,6 +331,7 @@ public final class AudioJitterBuffer {
         stats.recenterEvents += 1
         consecutiveConcealments = 0
         let entry = pending.removeValue(forKey: number)!
+        lastPlayedNumber = number
         nextNumber = number &+ 1
         stats.packetsPlayed += 1
         return .packet(entry.packet)
