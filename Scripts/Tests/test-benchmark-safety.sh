@@ -706,4 +706,21 @@ fi
 grep -Fq 'restart changed protected host state' \
     "$test_root/legacy-rewrite.stderr"
 
+# A protected file that exists but cannot be read, even through sudo, fails
+# the fingerprint rather than dropping out of it.
+mkdir -p "$test_root/no-sudo"
+printf '#!/bin/sh\nexit 1\n' > "$test_root/no-sudo/sudo"
+chmod +x "$test_root/no-sudo/sudo"
+chmod 000 "$pup_home/.config/lyte-host/paired_clients"
+if HOME="$pup_home" PATH="$test_root/no-sudo:$fake_pup:$PATH" "$BASH" -c \
+    'source "$1"; lyte_protected_state_fingerprint' _ \
+    "$repo_root/Scripts/lib/pup-side.sh" \
+    >/dev/null 2>"$test_root/unreadable.stderr"
+then
+    fail "the fingerprint left out an unreadable protected file"
+fi
+chmod 600 "$pup_home/.config/lyte-host/paired_clients"
+grep -Fq 'cannot read' "$test_root/unreadable.stderr" \
+    || fail "the unreadable-file refusal did not name the file"
+
 echo "benchmark safety tests PASSED"

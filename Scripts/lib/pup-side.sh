@@ -1,7 +1,7 @@
 #!/bin/bash
 # Functions that run on pup, sent ahead of the command that uses them
-# (pup_run in lib/pup.sh; the pup gate sends this file inline). Each check
-# is an explicit return, so they hold without `set -e`.
+# (pup_run in lib/pup.sh; the pup gate sends this file inline). Every
+# failure is an explicit return, so they hold without `set -e`.
 
 # lyte_protected_state_fingerprint: one digest of everything a run that
 # approaches host identity must leave byte-identical: the identity and the
@@ -15,28 +15,35 @@ lyte_protected_state_fingerprint() {
             return 1
         fi
     done
-    {
-        for file in \
-            "$config/noise_static.key" \
-            "$config/paired_clients" \
-            "$config/host.conf" \
-            "$HOME/.config/lyte-host/noise_static.key" \
-            "$HOME/.config/lyte-host/paired_clients" \
-            /etc/lyte/lyte-host.conf \
-            /etc/systemd/system/lyte-host.service
-        do
-            if [[ ! -e "$file" ]]; then
-                echo "absent $file"
-            elif [[ -r "$file" ]]; then
-                sha256sum "$file"
-                stat -c '%n %a %U %G %s' "$file"
-            else
-                sudo -n sha256sum "$file"
-                sudo -n stat -c '%n %a %U %G %s' "$file"
-            fi
-        done
-        echo "link $(readlink -- "$HOME/.local/bin/lyte-host" || echo absent)"
-    } | sha256sum | awk '{print $1}'
+    local listing="" line
+    for file in \
+        "$config/noise_static.key" \
+        "$config/paired_clients" \
+        "$config/host.conf" \
+        "$HOME/.config/lyte-host/noise_static.key" \
+        "$HOME/.config/lyte-host/paired_clients" \
+        /etc/lyte/lyte-host.conf \
+        /etc/systemd/system/lyte-host.service
+    do
+        if [[ ! -e "$file" ]]; then
+            line="absent $file"
+        elif [[ -r "$file" ]]; then
+            line="$(sha256sum "$file" && stat -c '%n %a %U %G %s' "$file")" \
+                || line=""
+        else
+            line="$(sudo -n sha256sum "$file" \
+                && sudo -n stat -c '%n %a %U %G %s' "$file")" || line=""
+        fi
+        # A file that exists but cannot be read is a fingerprint that
+        # cannot prove it unchanged: refuse rather than leave it out.
+        if [[ -z "$line" ]]; then
+            echo "protected state: cannot read $file" >&2
+            return 1
+        fi
+        listing+="$line"$'\n'
+    done
+    listing+="link $(readlink -- "$HOME/.local/bin/lyte-host" || echo absent)"
+    printf '%s\n' "$listing" | sha256sum | awk '{print $1}'
 }
 
 # lyte_host_main_pid: the MainPID of an active lyte-host.service.
