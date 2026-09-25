@@ -273,18 +273,51 @@ final class CapabilitiesTests: XCTestCase {
             .declaringBulkTransfer()
         XCTAssertEqual(a.intersecting(c), c.intersecting(a))
         XCTAssertEqual(try Capabilities.decodeCbor(a.encodeCbor()), a)
+    }
 
-        // Declaring over a foreign `false` replaces it rather than
-        // producing a duplicate key the encoder would refuse.
-        var refused = Capabilities.wireDefault
-        refused.unknownEntries = [CborMapEntry(
-            key: .unsigned(CapabilityKey.cursorShape), value: .bool(false)
-        )]
-        XCTAssertFalse(refused.cursorShape)
-        let declared = refused.declaringCursorShape()
-        XCTAssertTrue(declared.cursorShape)
-        XCTAssertEqual(declared.unknownEntries.count, 1)
-        XCTAssertNoThrow(try declared.encodeCbor())
+    /// Keys 9–16 each ride `unknownEntries` as one canonical `key F5`
+    /// entry: the frozen v1 bytes plus exactly that entry, read back by
+    /// the v1 decoder, declared idempotently, surviving intersection only
+    /// on mutual declaration, and replacing a peer's `false` (which reads
+    /// as absent) rather than duplicating the key.
+    func testFlagKeysRideTheSpineWithoutMovingFrozenBytes() throws {
+        typealias Flag = (
+            key: UInt8, declare: (Capabilities) -> Capabilities,
+            read: (Capabilities) -> Bool
+        )
+        let flags: [Flag] = [
+            (9, { $0.declaringHostAudioRouting() }, \.hostAudioRouting),
+            (10, { $0.declaringClipboardText() }, \.clipboardText),
+            (11, { $0.declaringBulkTransfer() }, \.bulkTransfer),
+            (12, { $0.declaringClipboardImages() }, \.clipboardImages),
+            (13, { $0.declaringCursorShape() }, \.cursorShape),
+            (14, { $0.declaringAudioStreamOff() }, \.audioStreamOff),
+            (15, { $0.declaringAudioQuietPosture() }, \.audioQuietPosture),
+            (16, { $0.declaringVideoQuietPosture() }, \.videoQuietPosture),
+        ]
+        let base = hex(Self.wireDefaultHex)
+        for (key, declare, read) in flags {
+            let label = "key \(key)"
+            let declared = declare(.wireDefault)
+            let expected: [UInt8] = [0xA9] + base.dropFirst() + [key, 0xF5]
+            XCTAssertEqual(try declared.encodeCbor(), expected, label)
+            XCTAssertEqual(try Capabilities.decodeCbor(expected), declared, label)
+            XCTAssertTrue(read(declared), label)
+            XCTAssertFalse(read(.wireDefault), label)
+            XCTAssertEqual(declare(declared), declared, label)
+
+            XCTAssertTrue(read(declared.intersecting(declared)), label)
+            XCTAssertFalse(read(declared.intersecting(.wireDefault)), label)
+            XCTAssertFalse(read(Capabilities.wireDefault.intersecting(declared)), label)
+
+            var refusing = Capabilities.wireDefault
+            refusing.unknownEntries = [CborMapEntry(
+                key: .unsigned(UInt64(key)), value: .bool(false)
+            )]
+            XCTAssertFalse(read(refusing), label)
+            XCTAssertFalse(read(declared.intersecting(refusing)), label)
+            XCTAssertEqual(try declare(refusing).encodeCbor(), expected, label)
+        }
     }
 
     func testIntersectAlgebraProperties() {

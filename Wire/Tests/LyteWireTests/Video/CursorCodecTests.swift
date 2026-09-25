@@ -1,11 +1,10 @@
 import XCTest
 import LyteWire
 
-// The E3 cursor-shape vocabulary's anchors (direct-eye plan §5,
-// docs/history/20260801-105800-direct-eye-plan.md): hand-computed bytes for 0x24
-// (the vector file never grades its own homework), the key-13
-// capability spine, the registry numbers, and the validation laws —
-// including the one clipboard doesn't have: EMPTY IS A STATE.
+// The cursor-shape vocabulary's anchors: hand-computed bytes for 0x24
+// (the vector file never grades its own homework), the registry numbers,
+// and the validation laws — including the one clipboard doesn't have:
+// EMPTY IS A STATE.
 
 final class CursorCodecTests: XCTestCase {
 
@@ -141,42 +140,10 @@ final class CursorCodecTests: XCTestCase {
         }
     }
 
-    // MARK: Key 13 on the forward-compat spine, zero frozen bytes
-
-    func testKey13RidesTheSpine() throws {
-        let base = Capabilities.wireDefault
-        XCTAssertFalse(base.cursorShape)
-        let declared = base.declaringCursorShape()
-        XCTAssertTrue(declared.cursorShape)
-        // Idempotent.
-        XCTAssertEqual(
-            try declared.declaringCursorShape().encodeCbor(),
-            try declared.encodeCbor()
-        )
-        // No frozen bytes moved: the declared encoding is the base
-        // encoding with the map head bumped and `0D F5` appended.
-        let baseBytes = try base.encodeCbor()
-        let declaredBytes = try declared.encodeCbor()
-        XCTAssertEqual(declaredBytes.first, baseBytes.first.map { $0 + 1 })
-        XCTAssertEqual(
-            Array(declaredBytes.dropFirst()),
-            Array(baseBytes.dropFirst()) + [0x0D, 0xF5]
-        )
-        // Roundtrip through decode preserves the key.
-        let redecoded = try Capabilities.decodeCbor(declaredBytes)
-        XCTAssertTrue(redecoded.cursorShape)
-        XCTAssertEqual(try redecoded.encodeCbor(), declaredBytes)
-        // Survives intersection only on mutual declaration.
-        XCTAssertTrue(declared.intersecting(declared).cursorShape)
-        XCTAssertFalse(declared.intersecting(base).cursorShape)
-        XCTAssertFalse(base.intersecting(declared).cursorShape)
-    }
-
     // MARK: The registry numbers
 
     func testRegistryNumbersArePinned() {
         XCTAssertEqual(CtrlMessageType.cursorShape, 0x24)
-        XCTAssertEqual(CapabilityKey.cursorShape, 13)
         XCTAssertEqual(CursorWire.maxSide, 256)
         XCTAssertEqual(CursorWire.maxImageByteCount, 65_536)
         XCTAssertEqual(CursorWire.headerByteCount, 9)

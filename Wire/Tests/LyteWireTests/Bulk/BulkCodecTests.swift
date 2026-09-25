@@ -322,7 +322,7 @@ final class BulkCodecTests: XCTestCase {
         }
     }
 
-    // MARK: - The registry and the capability spine
+    // MARK: - The registry
 
     func testRegistryPins() {
         XCTAssertEqual(CtrlMessageType.bulkOffer, 0x1C)
@@ -331,32 +331,7 @@ final class BulkCodecTests: XCTestCase {
         XCTAssertEqual(CtrlMessageType.bulkAck, 0x1F)
         XCTAssertEqual(CtrlMessageType.bulkComplete, 0x20)
         XCTAssertEqual(CtrlMessageType.bulkAbort, 0x21)
-        XCTAssertEqual(CapabilityKey.bulkTransfer, 11)
         XCTAssertEqual(ChannelId.bulkTransfer.rawValue, 8)
-    }
-
-    func testCapabilityKey11Spine() throws {
-        // The frozen wireDefault bytes plus exactly `0B F5` — the
-        // key-9/key-10 proof repeated for key 11.
-        let base = try Capabilities.wireDefault.encodeCbor()
-        let declared = try Capabilities.wireDefault
-            .declaringBulkTransfer().encodeCbor()
-        XCTAssertEqual(declared.first, 0xA9, "map head 0xA8 → 0xA9")
-        XCTAssertEqual(
-            Array(declared.dropFirst()),
-            Array(base.dropFirst()) + [0x0B, 0xF5]
-        )
-        let set = try Capabilities.decodeCbor(declared)
-        XCTAssertTrue(set.bulkTransfer)
-        XCTAssertFalse(Capabilities.wireDefault.bulkTransfer)
-        // Idempotent, and intersection follows the byte-equal rule.
-        XCTAssertEqual(
-            set.declaringBulkTransfer(), set
-        )
-        XCTAssertTrue(set.intersecting(set).bulkTransfer)
-        XCTAssertFalse(
-            set.intersecting(Capabilities.wireDefault).bulkTransfer
-        )
     }
 
     // MARK: - Chunk map + possession arithmetic

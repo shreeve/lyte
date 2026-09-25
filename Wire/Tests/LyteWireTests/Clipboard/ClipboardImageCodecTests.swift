@@ -1,11 +1,11 @@
 import XCTest
 import LyteWire
 
-// The P-1 clipboard-image vocabulary's anchors: hand-computed bytes
-// for the 0x22 cargo marker (the vector file never grades its own
-// homework), the key-12 capability spine and the triple gate, the
-// registry numbers, mime policy, and the sync book's byte-key laws —
-// one book serving text AND images without collision.
+// The clipboard-image vocabulary's anchors: hand-computed bytes for the
+// 0x22 cargo marker (the vector file never grades its own homework), the
+// keys 10 ∧ 12 image gate, the registry numbers, mime policy, and the
+// sync book's byte-key laws — one book serving text AND images without
+// collision.
 
 final class ClipboardImageCodecTests: XCTestCase {
 
@@ -100,55 +100,7 @@ final class ClipboardImageCodecTests: XCTestCase {
         ))
     }
 
-    // MARK: Key 12 on the forward-compat spine, zero frozen bytes
-
-    func testCapabilityKeyRidesTheSpineWithoutMovingFrozenBytes() throws {
-        let base = try Capabilities.wireDefault.encodeCbor()
-        // wireDefault is an 8-entry map — the frozen v1 shape.
-        XCTAssertEqual(base.first, 0xA8)
-
-        // The declaration is EXACTLY the frozen bytes plus one
-        // appended entry: map(9) head + trailing `0C F5` (key 12
-        // sorts last among keys 1–12 in RFC 8949 bytewise order).
-        var expected = base
-        expected[0] = 0xA9
-        expected += [0x0C, 0xF5]
-        let declared = Capabilities.wireDefault.declaringClipboardImages()
-        XCTAssertEqual(try declared.encodeCbor(), expected)
-
-        // Reads back as itself through the v1 decoder: key 12 lands
-        // in unknownEntries and the typed accessor sees it.
-        let decoded = try Capabilities.decodeCbor(declared.encodeCbor())
-        XCTAssertTrue(decoded.clipboardImages)
-        XCTAssertEqual(decoded, declared)
-        XCTAssertFalse(Capabilities.wireDefault.clipboardImages)
-
-        // Idempotent declaration.
-        XCTAssertEqual(declared.declaringClipboardImages(), declared)
-
-        // Keys 10, 11, and 12 compose into ONE canonical byte image:
-        // map head 0xAB, `0A F5 0B F5 0C F5` trailing — regardless
-        // of construction order.
-        var trio = base
-        trio[0] = 0xAB
-        trio += [0x0A, 0xF5, 0x0B, 0xF5, 0x0C, 0xF5]
-        XCTAssertEqual(
-            try Capabilities.wireDefault
-                .declaringClipboardText()
-                .declaringBulkTransfer()
-                .declaringClipboardImages()
-                .encodeCbor(),
-            trio
-        )
-        XCTAssertEqual(
-            try Capabilities.wireDefault
-                .declaringClipboardImages()
-                .declaringBulkTransfer()
-                .declaringClipboardText()
-                .encodeCbor(),
-            trio
-        )
-    }
+    // MARK: The image gate: keys 10 ∧ 12, never key 11
 
     func testImageGateRequiresFeatureAndDialectButNeverFileConsent() {
         let images = Capabilities.wireDefault
@@ -199,7 +151,6 @@ final class ClipboardImageCodecTests: XCTestCase {
         // A registry typo here would be a silent wire break on both
         // ends at once (the control-codec pin's rule).
         XCTAssertEqual(CtrlMessageType.clipboardImageCargo, 0x22)
-        XCTAssertEqual(CapabilityKey.clipboardImages, 12)
         XCTAssertEqual(ClipboardImageWire.maxImageByteCount, 33_554_432)
         XCTAssertEqual(ClipboardImageWire.chunkByteCount, 65_536)
         XCTAssertEqual(ClipboardImageWire.pngMime, "image/png")

@@ -277,120 +277,7 @@ final class ControlCodecTests: XCTestCase {
         XCTAssertThrowsError(try AudioRoutingStatus.decode([0x19, 0x02, 0]))
     }
 
-    // MARK: Capability key 9 on the forward-compat spine
-
-    func testCapabilityKeyRidesTheSpineWithoutMovingFrozenBytes() throws {
-        let base = try Capabilities.wireDefault.encodeCbor()
-        // wireDefault is an 8-entry map — the frozen v1 shape.
-        XCTAssertEqual(base.first, 0xA8)
-
-        // The declaration is EXACTLY the frozen bytes plus one appended
-        // entry: map(9) head + trailing `09 F5` (key 9 sorts last in
-        // RFC 8949 bytewise order among keys 1–9). Nothing between
-        // moves — the "no frozen bytes" claim as data.
-        var expected = base
-        expected[0] = 0xA9
-        expected += [0x09, 0xF5]
-        let declared = Capabilities.wireDefault.declaringHostAudioRouting()
-        XCTAssertEqual(try declared.encodeCbor(), expected)
-
-        // Reads back as itself through the v1 decoder: key 9 lands in
-        // unknownEntries (a v1 build "ignores and preserves"), and the
-        // typed accessor sees it.
-        let decoded = try Capabilities.decodeCbor(declared.encodeCbor())
-        XCTAssertTrue(decoded.hostAudioRouting)
-        XCTAssertEqual(decoded, declared)
-        XCTAssertEqual(decoded.unknownEntries.count, 1)
-        XCTAssertFalse(Capabilities.wireDefault.hostAudioRouting)
-
-        // Idempotent declaration; encode stays canonical through the
-        // full 0x0F message codec.
-        XCTAssertEqual(declared.declaringHostAudioRouting(), declared)
-        let message = try CapabilityDeclaration(capabilities: declared).encode()
-        XCTAssertEqual(
-            try CapabilityDeclaration.decode(message).capabilities, declared
-        )
-    }
-
-    func testIntersectionEnablesOnlyOnMutualDeclaration() throws {
-        let declared = Capabilities.wireDefault.declaringHostAudioRouting()
-
-        // Both declare → survives (both argument orders — the W-G8
-        // algebra's commutativity applied to key 9).
-        XCTAssertTrue(declared.intersecting(declared).hostAudioRouting)
-
-        // One-sided → dropped, both orders.
-        XCTAssertFalse(
-            declared.intersecting(.wireDefault).hostAudioRouting
-        )
-        XCTAssertFalse(
-            Capabilities.wireDefault.intersecting(declared).hostAudioRouting
-        )
-
-        // A peer declaring key 9 FALSE is not byte-equal to true:
-        // absence and refusal are the same posture (the accessor's
-        // documented rule) and the intersection drops the entry.
-        var refusing = Capabilities.wireDefault
-        refusing.unknownEntries.append(CborMapEntry(
-            key: .unsigned(CapabilityKey.hostAudioRouting),
-            value: .bool(false)
-        ))
-        XCTAssertFalse(refusing.hostAudioRouting)
-        XCTAssertFalse(declared.intersecting(refusing).hostAudioRouting)
-    }
-
-    func testAudioStreamOffRidesTheSpineLikeKeyNine() throws {
-        // Key 14 (mute-at-source): declaration appends exactly one
-        // canonical entry, reads back through the v1 decoder, and
-        // survives intersection only on mutual declaration — the
-        // key-9 laws, fourteenth verse.
-        let declared = Capabilities.wireDefault.declaringAudioStreamOff()
-        XCTAssertTrue(declared.audioStreamOff)
-        XCTAssertFalse(Capabilities.wireDefault.audioStreamOff)
-        XCTAssertEqual(declared.declaringAudioStreamOff(), declared)
-
-        let decoded = try Capabilities.decodeCbor(declared.encodeCbor())
-        XCTAssertTrue(decoded.audioStreamOff)
-        XCTAssertEqual(decoded, declared)
-
-        XCTAssertTrue(declared.intersecting(declared).audioStreamOff)
-        XCTAssertFalse(declared.intersecting(.wireDefault).audioStreamOff)
-        XCTAssertFalse(
-            Capabilities.wireDefault.intersecting(declared).audioStreamOff
-        )
-
-        // The wire byte: streamOff is 0x04 — 0x03 is the tombstone
-        // the frozen routing-mode-unknown vector pinned.
-        XCTAssertEqual(HostAudioRoutingMode.streamOff.rawValue, 0x04)
-        XCTAssertEqual(
-            AudioRoutingRequest(mode: .streamOff).encode(), [0x18, 0x04]
-        )
-        XCTAssertEqual(
-            try AudioRoutingStatus.decode([0x19, 0x04]).mode, .streamOff
-        )
-    }
-
-    // MARK: Capability key 15 + the 0x25 track-state codec (tripwire)
-
-    func testAudioQuietPostureRidesTheSpineLikeKeyNine() throws {
-        // Key 15 (the tripwire's gate): the key-9 laws, fifteenth
-        // verse — one appended canonical entry, v1-decoder readback,
-        // intersection only on mutual declaration.
-        let declared = Capabilities.wireDefault.declaringAudioQuietPosture()
-        XCTAssertTrue(declared.audioQuietPosture)
-        XCTAssertFalse(Capabilities.wireDefault.audioQuietPosture)
-        XCTAssertEqual(declared.declaringAudioQuietPosture(), declared)
-
-        let decoded = try Capabilities.decodeCbor(declared.encodeCbor())
-        XCTAssertTrue(decoded.audioQuietPosture)
-        XCTAssertEqual(decoded, declared)
-
-        XCTAssertTrue(declared.intersecting(declared).audioQuietPosture)
-        XCTAssertFalse(declared.intersecting(.wireDefault).audioQuietPosture)
-        XCTAssertFalse(
-            Capabilities.wireDefault.intersecting(declared).audioQuietPosture
-        )
-    }
+    // MARK: AudioTrackState (0x25) / VideoPostureState (0x26)
 
     func testAudioTrackStateCodecPinsBytesAndRejectsHostiles() throws {
         // The pinned images.
@@ -416,25 +303,6 @@ final class ControlCodecTests: XCTestCase {
             XCTAssertThrowsError(try AudioTrackState.decode([0x25, state]))
         }
         XCTAssertThrowsError(try AudioTrackState.decode([0x25, 0x01, 0]))
-    }
-
-    // MARK: Capability key 16 + the 0x26 video-posture codec
-
-    func testVideoQuietPostureRidesTheSpineLikeKeyNine() throws {
-        let declared = Capabilities.wireDefault.declaringVideoQuietPosture()
-        XCTAssertTrue(declared.videoQuietPosture)
-        XCTAssertFalse(Capabilities.wireDefault.videoQuietPosture)
-        XCTAssertEqual(declared.declaringVideoQuietPosture(), declared)
-
-        let decoded = try Capabilities.decodeCbor(declared.encodeCbor())
-        XCTAssertTrue(decoded.videoQuietPosture)
-        XCTAssertEqual(decoded, declared)
-
-        XCTAssertTrue(declared.intersecting(declared).videoQuietPosture)
-        XCTAssertFalse(declared.intersecting(.wireDefault).videoQuietPosture)
-        XCTAssertFalse(
-            Capabilities.wireDefault.intersecting(declared).videoQuietPosture
-        )
     }
 
     func testVideoPostureCodecPinsBytesAndRejectsHostiles() throws {
@@ -486,10 +354,7 @@ final class ControlCodecTests: XCTestCase {
         XCTAssertEqual(CtrlMessageType.audioRoutingRequest, 0x18)
         XCTAssertEqual(CtrlMessageType.audioRoutingStatus, 0x19)
         XCTAssertEqual(WireExtension.ReservedType.lastInputSeq, 0x03)
-        XCTAssertEqual(CapabilityKey.hostAudioRouting, 9)
         XCTAssertEqual(CtrlMessageType.audioTrackState, 0x25)
-        XCTAssertEqual(CapabilityKey.audioQuietPosture, 15)
         XCTAssertEqual(CtrlMessageType.videoPostureState, 0x26)
-        XCTAssertEqual(CapabilityKey.videoQuietPosture, 16)
     }
 }
