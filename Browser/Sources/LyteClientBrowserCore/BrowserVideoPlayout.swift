@@ -20,16 +20,11 @@ import LyteWire
 public struct BrowserVideoPlayout {
     public struct ScheduledFrame: Sendable, Equatable {
         public var frameNumber: UInt32
-        public var sourceCaptureMicroseconds: UInt64
-        public var arrivalMicroseconds: UInt64
         public var presentationMicroseconds: UInt64
-        public var cueMicroseconds: UInt64
         public var pathDelayMicroseconds: UInt64
-        public var reserveMicroseconds: UInt64
         public var latenessMicroseconds: UInt64
         public var isRandomAccess: Bool
         public var shouldPresent: Bool
-        public var annexBByteCount: Int
     }
 
     public struct Counters: Sendable, Equatable {
@@ -380,16 +375,11 @@ public struct BrowserVideoPlayout {
         let admitted = recovery.admits(isRandomAccess: unit.isIDR)
         var frame = ScheduledFrame(
             frameNumber: unit.frameNumber.rawValue,
-            sourceCaptureMicroseconds: capture,
-            arrivalMicroseconds: arrival,
             presentationMicroseconds: decision.presentationMicroseconds,
-            cueMicroseconds: decision.cueMicroseconds,
             pathDelayMicroseconds: decision.pathDelayMicroseconds,
-            reserveMicroseconds: decision.reserveMicroseconds,
             latenessMicroseconds: decision.latenessMicroseconds,
             isRandomAccess: unit.isIDR,
-            shouldPresent: admitted && decision.latenessMicroseconds == 0,
-            annexBByteCount: unit.annexB.count
+            shouldPresent: admitted && decision.latenessMicroseconds == 0
         )
         if admitted {
             storeForDecode(unit)

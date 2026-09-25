@@ -324,14 +324,14 @@ final class BrowserPlayoutTests: XCTestCase {
         }
 
         XCTAssertEqual(client.audioPacketsAssembled, UInt64(sent))
-        XCTAssertEqual(client.audioPending, BrowserAudioPlayout.defaultCapacity)
+        XCTAssertEqual(client.audioPending, BrowserAudioPlayout.capacity)
         XCTAssertEqual(
             client.audioPacketsDroppedStale,
-            UInt64(sent - BrowserAudioPlayout.defaultCapacity)
+            UInt64(sent - BrowserAudioPlayout.capacity)
         )
         var numbers: [UInt32] = []
         while let packet = client.popAudioPacket() { numbers.append(packet.number) }
-        XCTAssertEqual(numbers.count, BrowserAudioPlayout.defaultCapacity)
+        XCTAssertEqual(numbers.count, BrowserAudioPlayout.capacity)
         XCTAssertEqual(numbers, numbers.sorted(), "oldest first")
         XCTAssertEqual(numbers.last.map { Int($0) }, sent - 1, "newest kept")
     }
