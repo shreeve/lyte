@@ -58,7 +58,6 @@ shapes live traffic produces at both regimes.
   reassembles as one byte-exact stream through a single channel with
   interleaving and loss.
 - `VideoVectorFileTests`: the sha256 pins in `../video-v1.json`.
-- Decode evidence (W-G3): `swift run lyte-wire-vectorgen video-roundtrip`
-  on the reassembled prefix, then `ffmpeg -f null -` on the host — clean
-  decode, zero errors. The same harness round-trips the full 301-frame
-  source capture byte-exact under ~21% injected loss.
+- Decode evidence: the reassembled prefix decoded clean under
+  `ffmpeg -f null -` on the host, zero errors, and the full 301-frame
+  source capture round-tripped byte-exact under ~21% injected loss.

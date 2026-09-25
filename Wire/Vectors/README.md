@@ -35,14 +35,9 @@ writes one NEW file and refuses to replace an existing path unless given
 ```sh
 swift run --package-path Wire lyte-wire-vectorgen <kind> <output-path>
 # kind: a registry entry's kind; the usage line lists them all
-swift run --package-path Wire lyte-wire-vectorgen video-roundtrip <in.hevc> <out.hevc>
 ```
 
-`video` always reads the committed corpus, `video-corpus-v1/`.
-`video-roundtrip` is not an authoring tool: it packetizes an Annex-B file,
-shuffles and drops shards up to the parity limit, reassembles, verifies
-byte-exactness, and writes the stream for an external `ffmpeg -f null -`
-decode check. Builder output is anchored against hand-computed bytes in
+`video` always reads the committed corpus, `video-corpus-v1/`. Builder output is anchored against hand-computed bytes in
 `EnvelopeTests`/`FecFieldTests` (and the k=1,m=1 parity-identity case in
 `FecCoderTests`, the hand-walked datagram in `VideoPacketizerTests`) so the
 codec never grades its own homework.
