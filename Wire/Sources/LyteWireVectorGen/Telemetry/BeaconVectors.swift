@@ -2,15 +2,15 @@
 // `Wire/Vectors/beacon-v1.json`.
 
 import LyteCore
-import Foundation
 import LyteWire
+import LyteWireTestKit
 
 /// One vector file: `Wire/Vectors/beacon-v1.json`, the beacon pair, the
 /// feedback report, and the clock worked example.
 public struct BeaconVectorFile: FrozenVectorFile {
-    public var format: String
-    public var formatVersion: Int
-    public var wireVersion: Int
+    public var format = Self.expectedFormat
+    public var formatVersion = 1
+    public var wireVersion = 1
     public var beaconVectors: [BeaconVector]
     public var feedbackVectors: [FeedbackVector]
     /// The README's offset/RTT computation, as checkable data.
@@ -22,23 +22,6 @@ public struct BeaconVectorFile: FrozenVectorFile {
     public var vectorNameGroups: [[String]] {
         [beaconVectors.map(\.name), feedbackVectors.map(\.name)]
     }
-
-    public init(
-        format: String,
-        formatVersion: Int,
-        wireVersion: Int,
-        beaconVectors: [BeaconVector],
-        feedbackVectors: [FeedbackVector],
-        clockWorkedExample: ClockWorkedExample
-    ) {
-        self.format = format
-        self.formatVersion = formatVersion
-        self.wireVersion = wireVersion
-        self.beaconVectors = beaconVectors
-        self.feedbackVectors = feedbackVectors
-        self.clockWorkedExample = clockWorkedExample
-    }
-
 }
 
 /// One CTRL beacon-pair vector. `decoder` names the codec under test.
@@ -64,26 +47,6 @@ public struct BeaconVector: Codable, Sendable {
         case beacon
         case echo
     }
-
-    public init(
-        name: String,
-        description: String,
-        kind: Kind,
-        decoder: Decoder,
-        beacon: BeaconFields? = nil,
-        echo: EchoFields? = nil,
-        messageHex: String? = nil,
-        error: String? = nil
-    ) {
-        self.name = name
-        self.description = description
-        self.kind = kind
-        self.decoder = decoder
-        self.beacon = beacon
-        self.echo = echo
-        self.messageHex = messageHex
-        self.error = error
-    }
 }
 
 /// ClockBeacon in vector-file form; timestamps are hex strings (u64 does
@@ -97,12 +60,6 @@ public struct BeaconFields: Codable, Sendable {
         public var beaconSeq: UInt32
         public var clientSendHex: String
         public var hostReceiveHex: String
-
-        public init(beaconSeq: UInt32, clientSendHex: String, hostReceiveHex: String) {
-            self.beaconSeq = beaconSeq
-            self.clientSendHex = clientSendHex
-            self.hostReceiveHex = hostReceiveHex
-        }
     }
 
     public init(from beacon: ClockBeacon) {
@@ -188,22 +145,6 @@ public struct FeedbackVector: Codable, Sendable {
         case decodeLenient
         case encodeReject
         case decodeReject
-    }
-
-    public init(
-        name: String,
-        description: String,
-        kind: Kind,
-        report: FeedbackFields? = nil,
-        reportHex: String? = nil,
-        error: String? = nil
-    ) {
-        self.name = name
-        self.description = description
-        self.kind = kind
-        self.report = report
-        self.reportHex = reportHex
-        self.error = error
     }
 }
 
@@ -343,18 +284,4 @@ public struct ClockWorkedExample: Codable, Sendable {
     public var hostReceiveHex: String
     public var offsetMicroseconds: Int64
     public var rttMicroseconds: Int64
-
-    public init(
-        description: String,
-        echoHex: String,
-        hostReceiveHex: String,
-        offsetMicroseconds: Int64,
-        rttMicroseconds: Int64
-    ) {
-        self.description = description
-        self.echoHex = echoHex
-        self.hostReceiveHex = hostReceiveHex
-        self.offsetMicroseconds = offsetMicroseconds
-        self.rttMicroseconds = rttMicroseconds
-    }
 }

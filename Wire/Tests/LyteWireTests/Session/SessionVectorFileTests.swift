@@ -2,6 +2,7 @@ import LyteCore
 import XCTest
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // Verifies the committed Vectors/session-v1.json byte-exact — the
 // promoted end-side codecs (conn-id TLV value, path challenge/response,

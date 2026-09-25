@@ -108,10 +108,5 @@ public func makeLifecycleVectorFile() throws -> LifecycleVectorFile {
         messageHex: "0a7f", error: "unknownReason"
     ))
 
-    return LifecycleVectorFile(
-        format: LifecycleVectorFile.expectedFormat,
-        formatVersion: 1,
-        wireVersion: 1,
-        vectors: vectors
-    )
+    return LifecycleVectorFile(vectors: vectors)
 }

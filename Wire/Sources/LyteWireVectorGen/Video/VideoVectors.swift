@@ -4,13 +4,14 @@
 import Foundation
 import LyteCore
 import LyteWire
+import LyteWireTestKit
 
 /// One vector file: `Wire/Vectors/video-v1.json`.
 public struct VideoVectorFile: FrozenVectorFile {
     /// Always "lyte-wire-video-vectors".
-    public var format: String
-    public var formatVersion: Int
-    public var wireVersion: Int
+    public var format = Self.expectedFormat
+    public var formatVersion = 1
+    public var wireVersion = 1
     /// Packetize vectors: frame in, frozen shard datagrams out.
     public var frames: [VideoFrameVector]
     /// Assembly scenarios: scripted delivery over the frames above.
@@ -22,21 +23,6 @@ public struct VideoVectorFile: FrozenVectorFile {
     public var vectorNameGroups: [[String]] {
         [frames.map(\.name), scenarios.map(\.name)]
     }
-
-    public init(
-        format: String,
-        formatVersion: Int,
-        wireVersion: Int,
-        frames: [VideoFrameVector],
-        scenarios: [VideoScenario]
-    ) {
-        self.format = format
-        self.formatVersion = formatVersion
-        self.wireVersion = wireVersion
-        self.frames = frames
-        self.scenarios = scenarios
-    }
-
 }
 
 /// Where a frame vector's Annex-B bytes live. Inline hex for the small
@@ -173,32 +159,11 @@ public struct VideoScenario: Codable, Sendable {
     public var steps: [VideoDeliveryStep]
     public var finalTickMicroseconds: Int64?
     public var expectDecoded: [String]
-    public var expectFecImpossible: [String]
-
-    public init(
-        name: String,
-        description: String,
-        steps: [VideoDeliveryStep],
-        finalTickMicroseconds: Int64? = nil,
-        expectDecoded: [String],
-        expectFecImpossible: [String] = []
-    ) {
-        self.name = name
-        self.description = description
-        self.steps = steps
-        self.finalTickMicroseconds = finalTickMicroseconds
-        self.expectDecoded = expectDecoded
-        self.expectFecImpossible = expectFecImpossible
-    }
+    public var expectFecImpossible: [String] = []
 }
 
 public struct VideoDeliveryStep: Codable, Sendable {
     /// A `VideoFrameVector.name`.
     public var frame: String
     public var shardIndex: Int
-
-    public init(frame: String, shardIndex: Int) {
-        self.frame = frame
-        self.shardIndex = shardIndex
-    }
 }

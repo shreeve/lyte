@@ -2,6 +2,7 @@ import LyteCore
 import XCTest
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // Verifies the committed Vectors/cursor-v1.json byte-exact — the E3
 // cursor-shape codec (CursorShape 0x24) and the key-13 capability

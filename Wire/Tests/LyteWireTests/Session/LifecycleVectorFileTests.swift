@@ -2,6 +2,7 @@ import LyteCore
 import XCTest
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // Verifies the committed Vectors/lifecycle-v1.json byte-exact — the
 // W4b lifecycle messages (mode transition 0x09, session teardown 0x0A)

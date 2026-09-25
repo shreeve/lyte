@@ -2,6 +2,7 @@ import LyteCore
 import XCTest
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // Verifies the committed Vectors/clipboard-images-v1.json byte-exact —
 // the P-1 cargo marker (ClipboardImageCargo 0x22) and the key-12

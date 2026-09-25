@@ -5,15 +5,15 @@
 // verdicts, NACK candidates, repairs, evictions and drops — not only the
 // decodes video-v1.json pins.
 
-import Foundation
 import LyteCore
 import LyteWire
+import LyteWireTestKit
 
 /// One vector file: `Wire/Vectors/video-decisions-v1.json`.
 public struct VideoDecisionVectorFile: FrozenVectorFile {
-    public var format: String
-    public var formatVersion: Int
-    public var wireVersion: Int
+    public var format = Self.expectedFormat
+    public var formatVersion = 1
+    public var wireVersion = 1
     /// The file whose frames and scenarios these decisions replay.
     public var scenarioFile: String
     /// "pinned-self-consistent": the assembler's own recorded output,
@@ -27,22 +27,6 @@ public struct VideoDecisionVectorFile: FrozenVectorFile {
     public var vectorNameGroups: [[String]] {
         [scenarios.map(\.name)]
     }
-
-    public init(
-        format: String,
-        formatVersion: Int,
-        wireVersion: Int,
-        scenarioFile: String,
-        provenance: String,
-        scenarios: [VideoDecisionScenario]
-    ) {
-        self.format = format
-        self.formatVersion = formatVersion
-        self.wireVersion = wireVersion
-        self.scenarioFile = scenarioFile
-        self.provenance = provenance
-        self.scenarios = scenarios
-    }
 }
 
 /// One scenario's frozen decision stream, one line per assembler event
@@ -51,11 +35,6 @@ public struct VideoDecisionScenario: Codable, Sendable {
     /// A `VideoScenario.name` in the scenario file.
     public var name: String
     public var events: [String]
-
-    public init(name: String, events: [String]) {
-        self.name = name
-        self.events = events
-    }
 }
 
 /// Replays every scenario of a video vector file through a default

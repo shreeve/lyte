@@ -200,10 +200,5 @@ public func makeClipboardImageVectorFile() throws -> ClipboardImageVectorFile {
         clipboardImages: true
     ))
 
-    return ClipboardImageVectorFile(
-        format: ClipboardImageVectorFile.expectedFormat,
-        formatVersion: 1,
-        wireVersion: 1,
-        vectors: vectors
-    )
+    return ClipboardImageVectorFile(vectors: vectors)
 }

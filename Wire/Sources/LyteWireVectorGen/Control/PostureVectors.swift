@@ -2,14 +2,14 @@
 // two quiet-posture announcements (AudioTrackState 0x25, VideoPosture-
 // State 0x26) and their capability spine keys (15, 16).
 
-import Foundation
 import LyteWire
+import LyteWireTestKit
 
 /// One vector file: `Wire/Vectors/postures-v1.json`.
 public struct PostureVectorFile: FrozenVectorFile {
-    public var format: String
-    public var formatVersion: Int
-    public var wireVersion: Int
+    public var format = Self.expectedFormat
+    public var formatVersion = 1
+    public var wireVersion = 1
     public var vectors: [PostureVector]
 
     public static let expectedFormat = "lyte-wire-posture-vectors"
@@ -17,18 +17,6 @@ public struct PostureVectorFile: FrozenVectorFile {
 
     public var vectorNameGroups: [[String]] {
         [vectors.map(\.name)]
-    }
-
-    public init(
-        format: String,
-        formatVersion: Int,
-        wireVersion: Int,
-        vectors: [PostureVector]
-    ) {
-        self.format = format
-        self.formatVersion = formatVersion
-        self.wireVersion = wireVersion
-        self.vectors = vectors
     }
 }
 
@@ -58,31 +46,5 @@ public struct PostureVector: Codable, Sendable {
         case audioTrackState
         case videoPostureState
         case capabilitySet
-    }
-
-    public init(
-        name: String,
-        description: String,
-        kind: Kind,
-        codec: Codec,
-        messageHex: String,
-        state: String? = nil,
-        posture: String? = nil,
-        keepaliveSeconds: Int? = nil,
-        audioQuietPosture: Bool? = nil,
-        videoQuietPosture: Bool? = nil,
-        error: String? = nil
-    ) {
-        self.name = name
-        self.description = description
-        self.kind = kind
-        self.codec = codec
-        self.messageHex = messageHex
-        self.state = state
-        self.posture = posture
-        self.keepaliveSeconds = keepaliveSeconds
-        self.audioQuietPosture = audioQuietPosture
-        self.videoQuietPosture = videoQuietPosture
-        self.error = error
     }
 }

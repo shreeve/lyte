@@ -2,6 +2,7 @@ import LyteCore
 import XCTest
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // Verifies the committed Vectors/arq-v1.json byte-exact — the W3 frame
 // formats (data segment 0x07, ACK 0x08, and the frame-sequence payload

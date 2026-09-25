@@ -2,6 +2,7 @@ import LyteCore
 import XCTest
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // Gate W-G6's crux: the committed Vectors/noise-v1.json, byte-for-byte.
 //

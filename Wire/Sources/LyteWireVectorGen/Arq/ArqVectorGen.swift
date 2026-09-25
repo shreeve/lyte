@@ -273,10 +273,5 @@ public func makeArqVectorFile() throws -> ArqVectorFile {
         error: "truncatedFrame"
     ))
 
-    return ArqVectorFile(
-        format: ArqVectorFile.expectedFormat,
-        formatVersion: 1,
-        wireVersion: 1,
-        vectors: vectors
-    )
+    return ArqVectorFile(vectors: vectors)
 }

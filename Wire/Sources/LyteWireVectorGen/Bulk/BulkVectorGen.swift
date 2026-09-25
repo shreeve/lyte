@@ -9,9 +9,6 @@ import LyteWireTestKit
 
 public func makeBulkVectorFile() throws -> BulkVectorFile {
     BulkVectorFile(
-        format: BulkVectorFile.expectedFormat,
-        formatVersion: 1,
-        wireVersion: 1,
         messageVectors: try makeBulkMessageVectors(),
         capabilityVectors: try makeBulkCapabilityVectors(),
         transferVectors: try makeBulkTransferVectors()

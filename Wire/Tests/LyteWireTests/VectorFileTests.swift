@@ -2,6 +2,7 @@ import LyteCore
 import XCTest
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // Verifies the committed Vectors/ artifacts byte-exact. This suite passing
 // on macOS and Linux is what makes the files a contract: the client's CL-1

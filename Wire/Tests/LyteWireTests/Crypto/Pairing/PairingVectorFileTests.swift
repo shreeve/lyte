@@ -2,6 +2,7 @@ import LyteCore
 import XCTest
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // Verifies the committed Vectors/pairing-v1.json byte-exact — the W6
 // pairing layer's frozen artifact (gate W-G7), on both platforms: the

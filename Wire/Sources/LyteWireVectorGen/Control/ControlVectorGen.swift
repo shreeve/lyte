@@ -405,10 +405,5 @@ public func makeControlVectorFile() throws -> ControlVectorFile {
         hostAudioRouting: false
     ))
 
-    return ControlVectorFile(
-        format: ControlVectorFile.expectedFormat,
-        formatVersion: 1,
-        wireVersion: 1,
-        vectors: vectors
-    )
+    return ControlVectorFile(vectors: vectors)
 }

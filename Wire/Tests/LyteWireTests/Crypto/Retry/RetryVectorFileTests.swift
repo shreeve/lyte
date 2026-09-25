@@ -2,6 +2,7 @@ import LyteCore
 import XCTest
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // Verifies the committed Vectors/retry-v1.json byte-exact — the
 // stateless retry-cookie transcript MAC and the CTRL 0x13/0x14 codecs

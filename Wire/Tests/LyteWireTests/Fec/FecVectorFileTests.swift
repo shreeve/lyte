@@ -2,6 +2,7 @@ import LyteCore
 import XCTest
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // Verifies the committed Vectors/fec-v1.json byte-exact — field codec,
 // parity ladder, and RS matrices. The matrices passing on macOS and

@@ -14,9 +14,6 @@ private let draftSha256 =
 
 public func makePairingVectorFile() throws -> PairingVectorFile {
     PairingVectorFile(
-        format: PairingVectorFile.expectedFormat,
-        formatVersion: 1,
-        wireVersion: 1,
         draftVectors: makeDraftVectors(),
         exchangeVectors: try makeExchangeVectors(),
         messageVectors: try makeMessageVectors()

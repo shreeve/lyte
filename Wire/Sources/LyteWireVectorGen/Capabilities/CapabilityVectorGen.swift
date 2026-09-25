@@ -9,9 +9,6 @@ import LyteWireTestKit
 
 public func makeCapabilityVectorFile() throws -> CapabilityVectorFile {
     CapabilityVectorFile(
-        format: CapabilityVectorFile.expectedFormat,
-        formatVersion: 1,
-        wireVersion: 1,
         cborVectors: try makeCborVectors(),
         setVectors: try makeSetVectors(),
         intersectVectors: try makeIntersectVectors(),

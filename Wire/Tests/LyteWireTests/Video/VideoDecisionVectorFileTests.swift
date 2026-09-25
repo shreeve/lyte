@@ -1,6 +1,7 @@
 import XCTest
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // Verifies the committed Vectors/video-decisions-v1.json: replaying every
 // video-v1.json scenario must reproduce the assembler's frozen decision

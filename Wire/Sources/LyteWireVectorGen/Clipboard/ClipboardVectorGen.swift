@@ -178,10 +178,5 @@ public func makeClipboardVectorFile() throws -> ClipboardVectorFile {
         clipboardText: true
     ))
 
-    return ClipboardVectorFile(
-        format: ClipboardVectorFile.expectedFormat,
-        formatVersion: 1,
-        wireVersion: 1,
-        vectors: vectors
-    )
+    return ClipboardVectorFile(vectors: vectors)
 }

@@ -4,13 +4,13 @@
 // - `messageVectors`: the CTRL 0x13/0x14 codec layouts, anchored against
 //   the hand-built bytes in RetryCodecTests.
 
-import Foundation
 import LyteWire
+import LyteWireTestKit
 
 public struct RetryVectorFile: FrozenVectorFile {
-    public var format: String
-    public var formatVersion: Int
-    public var wireVersion: Int
+    public var format = Self.expectedFormat
+    public var formatVersion = 1
+    public var wireVersion = 1
     public var cookieVectors: [RetryCookieVector]
     public var messageVectors: [RetryMessageVector]
 
@@ -20,21 +20,6 @@ public struct RetryVectorFile: FrozenVectorFile {
     public var vectorNameGroups: [[String]] {
         [cookieVectors.map(\.name), messageVectors.map(\.name)]
     }
-
-    public init(
-        format: String,
-        formatVersion: Int,
-        wireVersion: Int,
-        cookieVectors: [RetryCookieVector],
-        messageVectors: [RetryMessageVector]
-    ) {
-        self.format = format
-        self.formatVersion = formatVersion
-        self.wireVersion = wireVersion
-        self.cookieVectors = cookieVectors
-        self.messageVectors = messageVectors
-    }
-
 }
 
 /// One cookie vector. `mint`: minting with (tupleHex, message1Hex,
@@ -62,36 +47,6 @@ public struct RetryCookieVector: Codable, Sendable {
         case mint
         case verify
     }
-
-    public init(
-        name: String,
-        description: String,
-        provenance: String,
-        kind: Kind,
-        tupleHex: String,
-        message1Hex: String,
-        mintNowHex: String? = nil,
-        secretHex: String? = nil,
-        cookieHex: String,
-        verifyNowHex: String,
-        secretsHex: [String],
-        lifetimeHex: String? = nil,
-        valid: Bool
-    ) {
-        self.name = name
-        self.description = description
-        self.provenance = provenance
-        self.kind = kind
-        self.tupleHex = tupleHex
-        self.message1Hex = message1Hex
-        self.mintNowHex = mintNowHex
-        self.secretHex = secretHex
-        self.cookieHex = cookieHex
-        self.verifyNowHex = verifyNowHex
-        self.secretsHex = secretsHex
-        self.lifetimeHex = lifetimeHex
-        self.valid = valid
-    }
 }
 
 /// One codec vector for the 0x13/0x14 layouts, the lifecycle file's
@@ -117,25 +72,5 @@ public struct RetryMessageVector: Codable, Sendable {
     public enum Codec: String, Codable, Sendable {
         case challenge
         case handshake1
-    }
-
-    public init(
-        name: String,
-        description: String,
-        kind: Kind,
-        codec: Codec,
-        messageHex: String,
-        cookieHex: String? = nil,
-        message1Hex: String? = nil,
-        error: String? = nil
-    ) {
-        self.name = name
-        self.description = description
-        self.kind = kind
-        self.codec = codec
-        self.messageHex = messageHex
-        self.cookieHex = cookieHex
-        self.message1Hex = message1Hex
-        self.error = error
     }
 }

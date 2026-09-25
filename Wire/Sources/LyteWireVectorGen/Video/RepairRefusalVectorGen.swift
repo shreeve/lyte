@@ -93,10 +93,5 @@ public func makeRepairRefusalVectorFile() throws -> RepairRefusalVectorFile {
         messageHex: "23020100007f",
         error: "unknownReason"
     ))
-    return RepairRefusalVectorFile(
-        format: RepairRefusalVectorFile.expectedFormat,
-        formatVersion: 1,
-        wireVersion: 1,
-        vectors: vectors
-    )
+    return RepairRefusalVectorFile(vectors: vectors)
 }

@@ -2,6 +2,7 @@ import LyteCore
 import XCTest
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // Verifies the committed Vectors/repair-refusal-v1.json byte-exact —
 // the HS-32 repair-refusal CTRL message (0x23) both ends code against,

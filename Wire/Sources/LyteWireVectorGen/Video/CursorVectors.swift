@@ -2,14 +2,14 @@
 // `Wire/Vectors/cursor-v1.json` — CursorShape 0x24 and the key-13
 // capability.
 
-import Foundation
 import LyteWire
+import LyteWireTestKit
 
 /// One vector file: `Wire/Vectors/cursor-v1.json`.
 public struct CursorVectorFile: FrozenVectorFile {
-    public var format: String
-    public var formatVersion: Int
-    public var wireVersion: Int
+    public var format = Self.expectedFormat
+    public var formatVersion = 1
+    public var wireVersion = 1
     public var vectors: [CursorVector]
 
     public static let expectedFormat = "lyte-wire-cursor-vectors"
@@ -18,19 +18,6 @@ public struct CursorVectorFile: FrozenVectorFile {
     public var vectorNameGroups: [[String]] {
         [vectors.map(\.name)]
     }
-
-    public init(
-        format: String,
-        formatVersion: Int,
-        wireVersion: Int,
-        vectors: [CursorVector]
-    ) {
-        self.format = format
-        self.formatVersion = formatVersion
-        self.wireVersion = wireVersion
-        self.vectors = vectors
-    }
-
 }
 
 /// One cursor vector. `codec` names the codec under test; kinds match the
@@ -63,33 +50,5 @@ public struct CursorVector: Codable, Sendable {
     public enum CursorCodec: String, Codable, Sendable {
         case cursorShape
         case capabilitySet
-    }
-
-    public init(
-        name: String,
-        description: String,
-        kind: Kind,
-        codec: CursorCodec,
-        messageHex: String,
-        width: Int? = nil,
-        height: Int? = nil,
-        hotspotX: Int? = nil,
-        hotspotY: Int? = nil,
-        pixelsHex: String? = nil,
-        cursorShape: Bool? = nil,
-        error: String? = nil
-    ) {
-        self.name = name
-        self.description = description
-        self.kind = kind
-        self.codec = codec
-        self.messageHex = messageHex
-        self.width = width
-        self.height = height
-        self.hotspotX = hotspotX
-        self.hotspotY = hotspotY
-        self.pixelsHex = pixelsHex
-        self.cursorShape = cursorShape
-        self.error = error
     }
 }

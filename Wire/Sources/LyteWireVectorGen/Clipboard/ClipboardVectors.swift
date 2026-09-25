@@ -2,14 +2,14 @@
 // `Wire/Vectors/clipboard-v1.json` — ClipboardSet 0x1A, ClipboardAnnounce
 // 0x1B, and the key-10 capability.
 
-import Foundation
 import LyteWire
+import LyteWireTestKit
 
 /// One vector file: `Wire/Vectors/clipboard-v1.json`.
 public struct ClipboardVectorFile: FrozenVectorFile {
-    public var format: String
-    public var formatVersion: Int
-    public var wireVersion: Int
+    public var format = Self.expectedFormat
+    public var formatVersion = 1
+    public var wireVersion = 1
     public var vectors: [ClipboardVector]
 
     public static let expectedFormat = "lyte-wire-clipboard-vectors"
@@ -18,19 +18,6 @@ public struct ClipboardVectorFile: FrozenVectorFile {
     public var vectorNameGroups: [[String]] {
         [vectors.map(\.name)]
     }
-
-    public init(
-        format: String,
-        formatVersion: Int,
-        wireVersion: Int,
-        vectors: [ClipboardVector]
-    ) {
-        self.format = format
-        self.formatVersion = formatVersion
-        self.wireVersion = wireVersion
-        self.vectors = vectors
-    }
-
 }
 
 /// One clipboard vector. `codec` names the codec under test; kinds match
@@ -60,25 +47,5 @@ public struct ClipboardVector: Codable, Sendable {
         case clipboardSet
         case clipboardAnnounce
         case capabilitySet
-    }
-
-    public init(
-        name: String,
-        description: String,
-        kind: Kind,
-        codec: ClipboardCodec,
-        messageHex: String,
-        textUtf8Hex: String? = nil,
-        clipboardText: Bool? = nil,
-        error: String? = nil
-    ) {
-        self.name = name
-        self.description = description
-        self.kind = kind
-        self.codec = codec
-        self.messageHex = messageHex
-        self.textUtf8Hex = textUtf8Hex
-        self.clipboardText = clipboardText
-        self.error = error
     }
 }

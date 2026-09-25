@@ -2,6 +2,7 @@ import LyteCore
 import XCTest
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // Verifies the committed Vectors/control-v1.json byte-exact — the
 // codecs promoted by the second codec-promotion slice (IdleFrame 0x15,

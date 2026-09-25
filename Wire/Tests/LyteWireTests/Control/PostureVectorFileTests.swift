@@ -2,6 +2,7 @@ import LyteCore
 import XCTest
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // Verifies the committed Vectors/postures-v1.json byte-exact: the quiet-
 // posture announcements AudioTrackState (0x25) and VideoPostureState

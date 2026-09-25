@@ -2,6 +2,7 @@ import XCTest
 import LyteCore
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // Verifies the committed Vectors/bulk-v1.json byte-exact — the W10
 // bulk-channel sextet (0x1C–0x21), the key-11 capability spine, and

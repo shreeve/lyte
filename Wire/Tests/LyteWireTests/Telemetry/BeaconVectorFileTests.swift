@@ -2,6 +2,7 @@ import LyteCore
 import XCTest
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // Verifies the committed Vectors/beacon-v1.json byte-exact — the W4a
 // contract CL-3's beacon echo and feedback sender code against before the

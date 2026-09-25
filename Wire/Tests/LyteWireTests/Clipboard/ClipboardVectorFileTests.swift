@@ -2,6 +2,7 @@ import LyteCore
 import XCTest
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // Verifies the committed Vectors/clipboard-v1.json byte-exact — the
 // CL-15 clipboard-text codecs (ClipboardSet 0x1A, ClipboardAnnounce

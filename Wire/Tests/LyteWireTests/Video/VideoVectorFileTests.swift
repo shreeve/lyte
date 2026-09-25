@@ -2,6 +2,7 @@ import XCTest
 import LyteCore
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // Verifies the committed Vectors/video-v1.json and the corpus it pins —
 // the packetized golden corpus of gate W-G3. The datagram hashes being

@@ -6,13 +6,13 @@
 //   pinned self-consistent from this implementation, a regression pin.
 
 import LyteCore
-import Foundation
 import LyteWire
+import LyteWireTestKit
 
 public struct NoiseVectorFile: FrozenVectorFile {
-    public var format: String
-    public var formatVersion: Int
-    public var wireVersion: Int
+    public var format = Self.expectedFormat
+    public var formatVersion = 1
+    public var wireVersion = 1
     public var handshakeVectors: [NoiseHandshakeVector]
     public var transportVectors: [NoiseTransportVector]
 
@@ -22,21 +22,6 @@ public struct NoiseVectorFile: FrozenVectorFile {
     public var vectorNameGroups: [[String]] {
         [handshakeVectors.map(\.name), transportVectors.map(\.name)]
     }
-
-    public init(
-        format: String,
-        formatVersion: Int,
-        wireVersion: Int,
-        handshakeVectors: [NoiseHandshakeVector],
-        transportVectors: [NoiseTransportVector]
-    ) {
-        self.format = format
-        self.formatVersion = formatVersion
-        self.wireVersion = wireVersion
-        self.handshakeVectors = handshakeVectors
-        self.transportVectors = transportVectors
-    }
-
 }
 
 /// One external handshake vector, the standard noise-c/snow/cacophony
@@ -64,41 +49,6 @@ public struct NoiseHandshakeVector: Codable, Sendable {
     public struct Message: Codable, Sendable {
         public var payloadHex: String
         public var ciphertextHex: String
-
-        public init(payloadHex: String, ciphertextHex: String) {
-            self.payloadHex = payloadHex
-            self.ciphertextHex = ciphertextHex
-        }
-    }
-
-    public init(
-        name: String,
-        source: String,
-        sourceSha256: String,
-        protocolName: String,
-        initPrologueHex: String,
-        initStaticHex: String,
-        initEphemeralHex: String,
-        initRemoteStaticHex: String,
-        respPrologueHex: String,
-        respStaticHex: String,
-        respEphemeralHex: String,
-        handshakeHashHex: String? = nil,
-        messages: [Message]
-    ) {
-        self.name = name
-        self.source = source
-        self.sourceSha256 = sourceSha256
-        self.protocolName = protocolName
-        self.initPrologueHex = initPrologueHex
-        self.initStaticHex = initStaticHex
-        self.initEphemeralHex = initEphemeralHex
-        self.initRemoteStaticHex = initRemoteStaticHex
-        self.respPrologueHex = respPrologueHex
-        self.respStaticHex = respStaticHex
-        self.respEphemeralHex = respEphemeralHex
-        self.handshakeHashHex = handshakeHashHex
-        self.messages = messages
     }
 }
 
@@ -148,28 +98,6 @@ public struct NoiseTransportVector: Codable, Sendable {
             case hostToClient
         }
 
-        public init(
-            kind: Kind,
-            direction: Direction,
-            channel: UInt8? = nil,
-            seq: UInt16? = nil,
-            frame: UInt32? = nil,
-            timestampHex: String? = nil,
-            fecHex: String? = nil,
-            plaintextHex: String? = nil,
-            wirePayloadHex: String? = nil
-        ) {
-            self.kind = kind
-            self.direction = direction
-            self.channel = channel
-            self.seq = seq
-            self.frame = frame
-            self.timestampHex = timestampHex
-            self.fecHex = fecHex
-            self.plaintextHex = plaintextHex
-            self.wirePayloadHex = wirePayloadHex
-        }
-
         /// The envelope for a seal step; its encoded header is the AAD.
         public func makeEnvelope() throws -> Envelope {
             guard
@@ -188,33 +116,5 @@ public struct NoiseTransportVector: Codable, Sendable {
                 fec: fec
             )
         }
-    }
-
-    public init(
-        name: String,
-        description: String,
-        provenance: String,
-        initStaticHex: String,
-        initEphemeralHex: String,
-        respStaticHex: String,
-        respEphemeralHex: String,
-        prologueHex: String,
-        message1Hex: String,
-        message2Hex: String,
-        handshakeHashHex: String,
-        steps: [Step]
-    ) {
-        self.name = name
-        self.description = description
-        self.provenance = provenance
-        self.initStaticHex = initStaticHex
-        self.initEphemeralHex = initEphemeralHex
-        self.respStaticHex = respStaticHex
-        self.respEphemeralHex = respEphemeralHex
-        self.prologueHex = prologueHex
-        self.message1Hex = message1Hex
-        self.message2Hex = message2Hex
-        self.handshakeHashHex = handshakeHashHex
-        self.steps = steps
     }
 }

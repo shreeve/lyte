@@ -361,9 +361,6 @@ public func makeRetryVectorFile() throws -> RetryVectorFile {
     ))
 
     return RetryVectorFile(
-        format: RetryVectorFile.expectedFormat,
-        formatVersion: 1,
-        wireVersion: 1,
         cookieVectors: cookieVectors,
         messageVectors: messageVectors
     )

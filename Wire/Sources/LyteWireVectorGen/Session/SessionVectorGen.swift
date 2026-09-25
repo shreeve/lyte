@@ -146,10 +146,5 @@ public func makeSessionVectorFile() throws -> SessionVectorFile {
         error: "duplicateTlv"
     ))
 
-    return SessionVectorFile(
-        format: SessionVectorFile.expectedFormat,
-        formatVersion: 1,
-        wireVersion: 1,
-        vectors: vectors
-    )
+    return SessionVectorFile(vectors: vectors)
 }

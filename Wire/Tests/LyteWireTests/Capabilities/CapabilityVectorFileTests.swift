@@ -2,6 +2,7 @@ import LyteCore
 import XCTest
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // Verifies the committed Vectors/capabilities-v1.json byte-exact —
 // the W7 layer both ends code against, on both platforms: the CBOR
