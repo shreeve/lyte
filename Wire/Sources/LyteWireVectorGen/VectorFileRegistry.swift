@@ -1,7 +1,9 @@
 // The one registry of vector-file builders. The authoring tool and the
 // regeneration test both read it, and the test requires it to name every
 // committed `Vectors/*.json` file exactly once, so a file without a
-// builder (or a builder without a file) fails the suite.
+// builder (or a builder without a file) fails the suite. Builders list
+// enum values literally, never `allCases`: a frozen file must not grow
+// when an enum does.
 
 import LyteWireTestKit
 

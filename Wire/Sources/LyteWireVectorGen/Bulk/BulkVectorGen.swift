@@ -249,12 +249,15 @@ private func makeBulkMessageVectors() throws -> [BulkMessageVector] {
         ),
         transferIdHex: Hex.uint64String(id)
     ))
-    for reason in BulkAbortReason.allCases {
+    for reason in [
+        BulkAbortReason.declined, .cancelled, .resumeMismatch, .shaMismatch,
+        .storageFailure, .busy, .protocolViolation,
+    ] {
         vectors.append(BulkMessageVector(
             name: "abort-\(bulkAbortReasonName(reason))",
             description: "The abort reason space pinned whole: "
                 + "\(bulkAbortReasonName(reason)) "
-                + "(0x0\(reason.rawValue)).",
+                + "(0x\(Hex.string([reason.rawValue]))).",
             kind: .roundtrip, codec: .abort,
             messageHex: Hex.string(
                 try BulkAbort(transferId: id, reason: reason).encode()

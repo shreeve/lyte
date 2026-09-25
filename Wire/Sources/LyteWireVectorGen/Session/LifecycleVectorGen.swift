@@ -10,7 +10,7 @@ public func makeLifecycleVectorFile() throws -> LifecycleVectorFile {
 
     // MARK: Round trips — every legal value of both codecs.
 
-    for mode in SessionWireMode.allCases {
+    for mode in [SessionWireMode.active, .idle] {
         let message = ModeTransition(mode: mode)
         vectors.append(LifecycleVector(
             name: "mode-\(mode == .active ? "active" : "idle")",
@@ -26,7 +26,7 @@ public func makeLifecycleVectorFile() throws -> LifecycleVectorFile {
         ))
     }
 
-    for reason in SessionTeardownReason.allCases {
+    for reason in [SessionTeardownReason.takenOver, .shuttingDown] {
         let message = SessionTeardown(reason: reason)
         vectors.append(LifecycleVector(
             name: "teardown-\(reason == .takenOver ? "taken-over" : "shutting-down")",

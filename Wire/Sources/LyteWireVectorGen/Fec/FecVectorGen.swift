@@ -189,7 +189,7 @@ public func makeFecVectorFile() throws -> FecVectorFile {
 
     var geometryRows: [FecGeometryRow] = []
     let ladderProbes = [1, 2, 3, 4, 5, 8, 9, 20, 32, 33, 100, 204, 205, 231, 232, 255]
-    for regime in FecRegime.allCases {
+    for regime in [FecRegime.clean, .lossy] {
         for k in ladderProbes {
             geometryRows.append(
                 FecGeometryRow(

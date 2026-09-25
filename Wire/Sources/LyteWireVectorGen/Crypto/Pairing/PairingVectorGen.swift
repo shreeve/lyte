@@ -268,7 +268,7 @@ private func makeMessageVectors() throws -> [PairingMessageVector] {
         ),
         tagHex: Hex.string(tag)
     ))
-    for reason in PairingRejectReason.allCases {
+    for reason in [PairingRejectReason.confirmationFailed, .invalidShare] {
         let slug = reason == .confirmationFailed
             ? "confirmation-failed" : "invalid-share"
         vectors.append(PairingMessageVector(
