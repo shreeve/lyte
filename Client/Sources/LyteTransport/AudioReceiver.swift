@@ -73,12 +73,9 @@ public final class AudioReceiver: @unchecked Sendable {
         }
     }
 
-    /// The host announced audio-quiet (0x25): rest adaptation without
-    /// touching the earned target.
+    /// The host announced audio-quiet (0x25).
     public func noteAnnouncedQuiet() {
-        lock.lock()
-        defer { lock.unlock() }
-        buffer.noteIntentionalGap()
+        lock.withLock { buffer.noteAnnouncedQuiet() }
     }
 
     /// One playout decision for the pump. `renderPipelineMicroseconds` is

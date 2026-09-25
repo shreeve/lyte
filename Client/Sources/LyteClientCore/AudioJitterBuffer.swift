@@ -128,6 +128,11 @@ public final class AudioJitterBuffer {
     private var started = false
     private var nextNumber: UInt32 = 0
     private var consecutiveConcealments = 0
+    /// Set by an announced quiet, cleared by the next packet.
+    private var announcedQuiet = false
+    /// The latest arrival of the wake burst that ends a quiet: the host
+    /// ships its pre-roll at once, which describes its ring, not the path.
+    private var wakeBurstArrival: UInt64?
 
     // Adaptation state: each fresh arrival's skew off the 5 ms arrival
     // lattice — (arrival_n − anchorArrival) − (n − anchorNumber) × 5 ms —
@@ -162,11 +167,17 @@ public final class AudioJitterBuffer {
         self.deviationWindow.reserveCapacity(config.deviationWindowPackets)
     }
 
-    /// An announced audio-quiet gap is contract, not path evidence: reset
-    /// the arrival lattice and windows so the wake burst re-bases the
-    /// epoch instead of slamming the spread target to max. The target
-    /// itself survives. Idempotent.
-    public func noteIntentionalGap() {
+    /// An announced audio quiet is contract, not path evidence: until the
+    /// next packet arrives an empty buffer is not concealed, and that
+    /// packet re-primes playout at itself (the host numbers on from the
+    /// last packet it sent). The adaptation windows reset so the wake
+    /// burst re-bases the epoch; the target survives. Idempotent.
+    public func noteAnnouncedQuiet() {
+        announcedQuiet = true
+        resetAdaptationWindows()
+    }
+
+    private func resetAdaptationWindows() {
         skewAnchor = nil
         lastArrival = nil
         skewWindow.removeAll(keepingCapacity: true)
@@ -180,6 +191,11 @@ public final class AudioJitterBuffer {
     public func insert(_ packet: AudioPacket, arrivalMicroseconds: UInt64) {
         stats.packetsInserted += 1
 
+        if announcedQuiet {
+            announcedQuiet = false
+            wakeBurstArrival = arrivalMicroseconds
+            if pending.isEmpty { nextNumber = packet.number }
+        }
         if started {
             let distance = Int32(bitPattern: packet.number &- nextNumber)
             if distance < 0 {
@@ -214,7 +230,7 @@ public final class AudioJitterBuffer {
                > UInt32(config.hardCapPackets) {
             stats.packetsDroppedInRecenter += UInt64(pending.count)
             pending.removeAll()
-            noteIntentionalGap()
+            resetAdaptationWindows()
         }
         // Only packets admitted to the playout epoch describe the path.
         // Late/replayed packets carry stale or retransmit timing and must
@@ -251,8 +267,9 @@ public final class AudioJitterBuffer {
 
         guard let oldest = oldestPendingNumber() else {
             // Empty buffer: the stream stalled. PLC bridges a short
-            // stall; a long one goes quiet until arrivals re-prime.
-            guard urgent else {
+            // stall; a long one goes quiet until arrivals re-prime. An
+            // announced quiet is silence by contract.
+            guard urgent, !announcedQuiet else {
                 stats.starvedVerdicts += 1
                 return .starved
             }
@@ -360,6 +377,15 @@ public final class AudioJitterBuffer {
         _ packet: AudioPacket, arrivalMicroseconds: UInt64
     ) {
         guard !packet.recovered else { return }
+        if let burst = wakeBurstArrival {
+            guard arrivalMicroseconds &- burst
+                >= UInt64(config.packetDurationMicroseconds)
+            else {
+                wakeBurstArrival = arrivalMicroseconds
+                return
+            }
+            wakeBurstArrival = nil
+        }
 
         // Diagnostics: pairwise inter-arrival deviation (σ, histogram).
         if let last = lastArrival {

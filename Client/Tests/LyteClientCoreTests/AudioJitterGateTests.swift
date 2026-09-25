@@ -335,6 +335,46 @@ final class AudioJitterGateTests: XCTestCase {
         XCTAssertEqual(buffer.snapshotStats().packetsDroppedInRecenter, 0)
     }
 
+    /// An announced quiet is not a blackout: no PLC runs while it lasts,
+    /// and the host's wake burst (numbered on from the last packet sent)
+    /// re-primes playout, so none of it is late and none of it raises the
+    /// target. PLC that ran before the notice arrived does not push the
+    /// resume behind the playhead.
+    func testAnnouncedQuietConcealsNothingAndTheWakeBurstPlays() {
+        let buffer = AudioJitterBuffer()
+        for n in UInt32(0)..<10 {
+            buffer.insert(packet(n), arrivalMicroseconds: UInt64(n) * 5_000)
+        }
+        for n in UInt32(0)..<10 {
+            XCTAssertEqual(buffer.pull(nowMicroseconds: 50_000, urgent: true),
+                           .packet(packet(n)))
+        }
+        for _ in 0..<3 {
+            guard case .conceal = buffer.pull(nowMicroseconds: 60_000, urgent: true)
+            else { return XCTFail("before the notice a gap conceals") }
+        }
+        buffer.noteAnnouncedQuiet()
+        for _ in 0..<25 {
+            XCTAssertEqual(buffer.pull(nowMicroseconds: 100_000, urgent: true), .starved)
+        }
+        // The pre-roll's quiet head goes to the hard-cap recenter; its
+        // newest packets (the sound that tripped the wire) survive.
+        for n in UInt32(10)..<50 {
+            buffer.insert(packet(n), arrivalMicroseconds: 3_000_000)
+        }
+        XCTAssertEqual(buffer.pull(nowMicroseconds: 3_000_000, urgent: true),
+                       .packet(packet(30)))
+        for n in UInt32(50)..<150 {
+            let at = 3_000_000 + UInt64(n - 49) * 5_000
+            buffer.insert(packet(n), arrivalMicroseconds: at)
+            _ = buffer.pull(nowMicroseconds: at, urgent: true)
+        }
+        let stats = buffer.snapshotStats()
+        XCTAssertEqual(stats.plcInvocations, 3)
+        XCTAssertEqual(stats.latePacketsDropped, 0)
+        XCTAssertEqual(stats.targetPackets, 5)
+    }
+
     /// Before playout starts nothing orders the pending packets by
     /// distance, and serial order is ambiguous across 2^31. A packet far
     /// from those already pending re-primes from itself, so playout never
