@@ -212,13 +212,13 @@ final class NoiseClientTests: XCTestCase {
 
     func testSealAndUnsealCriticalSectionsOverlap() throws {
         let host = InProcessHost()
-        let probe = NoiseTransportOperationProbe(rendezvousDirections: true)
+        let probe = DirectionProbe(rendezvous: true)
         let crypto = try NoiseTransportCrypto(
             hostAddress: "10.0.0.249", hostPort: 41_000,
             hostStaticPublicKey: host.hostStatic.publicKey,
-            attempts: 3, attemptTimeoutMilliseconds: 200,
-            operationProbe: probe)
+            attempts: 3, attemptTimeoutMilliseconds: 200)
         try crypto.performHandshake(io: host)
+        crypto.testingInsideDirection = { probe.inside(seal: $0) }
 
         let inboundDatagram = try hostSeal(
             host, plaintext: [0xA1, 0xA2],
@@ -273,13 +273,13 @@ final class NoiseClientTests: XCTestCase {
 
     func testSameDirectionOperationsRemainSerialized() throws {
         let host = InProcessHost()
-        let probe = NoiseTransportOperationProbe(holdMilliseconds: 20)
+        let probe = DirectionProbe(holdMilliseconds: 20)
         let crypto = try NoiseTransportCrypto(
             hostAddress: "10.0.0.249", hostPort: 41_000,
             hostStaticPublicKey: host.hostStatic.publicKey,
-            attempts: 3, attemptTimeoutMilliseconds: 200,
-            operationProbe: probe)
+            attempts: 3, attemptTimeoutMilliseconds: 200)
         try crypto.performHandshake(io: host)
+        crypto.testingInsideDirection = { probe.inside(seal: $0) }
 
         let envelopes = [
             Envelope(
@@ -404,6 +404,52 @@ final class NoiseClientTests: XCTestCase {
             datagram: datagram[...], arrivalMicroseconds: 2)
         else {
             return XCTFail("the byte-identical resend must reject as replay")
+        }
+    }
+
+    /// Counts seals and unseals inside their critical sections. A
+    /// rendezvous holds each direction until the other has entered; a hold
+    /// keeps each operation inside long enough for a same-direction peer
+    /// to collide if the lock let it.
+    private final class DirectionProbe: @unchecked Sendable {
+        private let condition = NSCondition()
+        private let rendezvous: Bool
+        private let hold: TimeInterval
+        private var active = (seals: 0, unseals: 0)
+        private(set) var maximumConcurrentSeals = 0
+        private(set) var maximumConcurrentUnseals = 0
+        private(set) var directionalOverlap = false
+
+        init(rendezvous: Bool = false, holdMilliseconds: Int = 0) {
+            self.rendezvous = rendezvous
+            self.hold = TimeInterval(holdMilliseconds) / 1_000
+        }
+
+        func inside(seal: Bool) {
+            condition.lock()
+            defer { condition.unlock() }
+            if seal { active.seals += 1 } else { active.unseals += 1 }
+            maximumConcurrentSeals = max(maximumConcurrentSeals, active.seals)
+            maximumConcurrentUnseals = max(maximumConcurrentUnseals, active.unseals)
+            if active.seals > 0, active.unseals > 0 {
+                directionalOverlap = true
+                condition.broadcast()
+            }
+            if rendezvous {
+                let deadline = Date(timeIntervalSinceNow: 1)
+                while !directionalOverlap, condition.wait(until: deadline) {}
+            } else if hold > 0 {
+                _ = condition.wait(until: Date(timeIntervalSinceNow: hold))
+            }
+            if seal { active.seals -= 1 } else { active.unseals -= 1 }
+        }
+
+        var snapshot: (directionalOverlap: Bool, maximumConcurrentSeals: Int,
+                       maximumConcurrentUnseals: Int) {
+            condition.lock()
+            defer { condition.unlock() }
+            return (directionalOverlap, maximumConcurrentSeals,
+                    maximumConcurrentUnseals)
         }
     }
 
