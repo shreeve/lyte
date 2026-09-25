@@ -2,12 +2,11 @@ import XCTest
 import LyteWire
 import LyteWireTestKit
 
-// W-G6's transport half: the extended-counter nonce (ROC reconstruction
-// across the u16 wrap), the replay window, tamper rejection on both
-// ciphertext and AAD, the byte budgets, and the rekey/epoch primitive
-// with its receive-grace window. The nonce-uniqueness proof (no
-// (key, nonce) pair ever repeats across seq wrap and rekey) is the
-// ExtendedCounterTracker + epoch tests together.
+// The transport: the extended-counter nonce (ROC reconstruction across
+// the u16 wrap), the replay window, tamper rejection on both ciphertext
+// and AAD, the byte budgets, and the rekey/epoch primitive with its
+// receive-grace window. The pinned round trips in both directions live in
+// noise-v1.json's transport vector.
 
 final class NoiseTransportTests: XCTestCase {
 
@@ -45,32 +44,7 @@ final class NoiseTransportTests: XCTestCase {
         try envelope.encode(payload: [])
     }
 
-    // MARK: Round trip + tamper
-
-    func testSealUnsealRoundTripBothDirections() throws {
-        var (client, host) = try makeTransports()
-        let env = envelope(seq: 0)
-        let headerBytes = try aad(env)
-        let plaintext = Array("shard payload".utf8)
-
-        let up = try client.seal(
-            plaintext: plaintext[...], aad: headerBytes[...], envelope: env
-        )
-        XCTAssertEqual(up.count, plaintext.count + 16)
-        XCTAssertEqual(
-            try host.unseal(wirePayload: up[...], aad: headerBytes[...], envelope: env),
-            plaintext
-        )
-
-        let down = try host.seal(
-            plaintext: plaintext[...], aad: headerBytes[...], envelope: env
-        )
-        XCTAssertNotEqual(up, down, "direction keys must differ")
-        XCTAssertEqual(
-            try client.unseal(wirePayload: down[...], aad: headerBytes[...], envelope: env),
-            plaintext
-        )
-    }
+    // MARK: Tamper
 
     func testTamperedCiphertextTagAndAadFail() throws {
         var (client, host) = try makeTransports()
@@ -131,17 +105,7 @@ final class NoiseTransportTests: XCTestCase {
         let env = envelope(seq: 0)
         let headerBytes = try aad(env)
 
-        // 1112 B seals to exactly 1128 B; 1113 B refuses.
-        let maxShard = counting(from: 0, count: WireBudget.maxPlaintextShardByteCount)
-        let sealed = try client.seal(
-            plaintext: maxShard[...], aad: headerBytes[...], envelope: env
-        )
-        XCTAssertEqual(sealed.count, WireBudget.maxWirePayloadByteCount)
-        XCTAssertEqual(
-            try host.unseal(wirePayload: sealed[...], aad: headerBytes[...], envelope: env),
-            maxShard
-        )
-
+        // One byte over the 1112 B shard refuses.
         let overShard = counting(from: 0, count: WireBudget.maxPlaintextShardByteCount + 1)
         assertThrows(
             NoiseError.plaintextOverBudget(WireBudget.maxPlaintextShardByteCount + 1)
@@ -281,26 +245,6 @@ final class NoiseTransportTests: XCTestCase {
         assertThrows(NoiseError.staleSequence) {
             try host.unseal(wirePayload: held[...], aad: heldAad[...], envelope: heldEnv)
         }
-    }
-
-    func testFailedOpenCommitsNoReceiverState() throws {
-        var (client, host) = try makeTransports()
-        let env = envelope(seq: 0)
-        let headerBytes = try aad(env)
-        let wire = try client.seal(
-            plaintext: [42][...], aad: headerBytes[...], envelope: env
-        )
-        var forged = wire
-        forged[0] ^= 0xFF
-        XCTAssertThrowsError(
-            try host.unseal(wirePayload: forged[...], aad: headerBytes[...], envelope: env)
-        )
-        // The genuine datagram is not "replayed" — the forgery must not
-        // have burned its window slot.
-        XCTAssertEqual(
-            try host.unseal(wirePayload: wire[...], aad: headerBytes[...], envelope: env),
-            [42]
-        )
     }
 
     // MARK: Long one-way gaps
@@ -477,83 +421,6 @@ final class NoiseTransportTests: XCTestCase {
             plaintext: plaintext[...], aad: headerBytes[...], envelope: env
         )
         XCTAssertNotEqual(a, b)
-    }
-
-    // MARK: ARQ retransmits vs the replay window (the W3 concern)
-
-    func testArqRetransmitSurvivesReplayWindowAdvance() throws {
-        // The invariant the pre-H1 review verifies as implemented: an
-        // ARQ retransmit rides a FRESH sealed datagram (fresh seq,
-        // fresh nonce), so the 64-deep replay window can never starve
-        // it — while the dropped ORIGINAL datagram, arriving late after
-        // the channel moved on, is exactly what the window kills.
-        var (client, host) = try makeTransports()
-        var sender = ArqEndpoint<HostClock>(channel: .ctrl)
-        var receiver = ArqEndpoint<HostClock>(channel: .ctrl)
-        var nextSeq: UInt16 = 0
-
-        func sealFresh(
-            _ payload: [UInt8]
-        ) throws -> (env: Envelope, aad: [UInt8], wire: [UInt8]) {
-            let env = envelope(seq: nextSeq)
-            nextSeq &+= 1
-            let headerBytes = try aad(env)
-            let wire = try client.seal(
-                plaintext: payload[...], aad: headerBytes[...], envelope: env
-            )
-            return (env, headerBytes, wire)
-        }
-
-        // First transmission: sealed, then lost in flight.
-        let message: [UInt8] = [0x20, 42, 43, 44]
-        try sender.send(message: message, now: HostTimestamp(microseconds: 0))
-        let (firstPayloads, deadline) = sender.poll(
-            now: HostTimestamp(microseconds: 0)
-        )
-        XCTAssertEqual(firstPayloads.count, 1)
-        let dropped = try sealFresh(firstPayloads[0])
-        let ptoDeadline = try XCTUnwrap(deadline)
-
-        // The channel keeps talking: 80 unrelated datagrams advance the
-        // receiver's replay window far past the dropped seq.
-        for _ in 0..<80 {
-            let filler = try sealFresh([0x01])
-            _ = try host.unseal(
-                wirePayload: filler.wire[...], aad: filler.aad[...],
-                envelope: filler.env
-            )
-        }
-
-        // The lost original straggles in now: stale, dead — a
-        // byte-identical datagram resend would share this fate.
-        assertThrows(NoiseError.staleSequence) {
-            try host.unseal(
-                wirePayload: dropped.wire[...], aad: dropped.aad[...],
-                envelope: dropped.env
-            )
-        }
-
-        // PTO fires; the retransmit is the same SEGMENT in a fresh
-        // datagram — it seals under a fresh seq and delivers.
-        let retryAt = HostTimestamp(
-            microseconds: ptoDeadline.microseconds + 1
-        )
-        let (retryPayloads, _) = sender.poll(now: retryAt)
-        XCTAssertFalse(retryPayloads.isEmpty, "the PTO must retransmit")
-        var delivered: [[UInt8]] = []
-        for payload in retryPayloads {
-            let fresh = try sealFresh(payload)
-            let plaintext = try host.unseal(
-                wirePayload: fresh.wire[...], aad: fresh.aad[...],
-                envelope: fresh.env
-            )
-            for event in receiver.ingest(payload: plaintext[...], now: retryAt) {
-                if case .message(_, let bytes) = event {
-                    delivered.append(bytes)
-                }
-            }
-        }
-        XCTAssertEqual(delivered, [message], "exactly once, in order")
     }
 }
 

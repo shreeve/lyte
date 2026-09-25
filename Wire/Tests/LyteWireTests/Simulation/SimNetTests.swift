@@ -47,6 +47,8 @@ final class SimNetTests: XCTestCase {
         )
     }
 
+    /// A seed replays the whole phased schedule byte- and time-exactly,
+    /// and the fractional-loss phase drops some of its datagrams, not all.
     func testPhasedScheduleReplayIsByteAndTimeExact() {
         let first = replay(seed: 0xB077_E2)
         let second = replay(seed: 0xB077_E2)
@@ -54,8 +56,9 @@ final class SimNetTests: XCTestCase {
         XCTAssertEqual(first.1, second.1)
         XCTAssertEqual(first.2, second.2)
         XCTAssertEqual(first.3, second.3)
-        XCTAssertGreaterThan(first.2, 0)
-        XCTAssertFalse(first.0.isEmpty)
+        let lossyPhase = first.1.filter { (50..<60).contains($0[0]) }.count
+        XCTAssertGreaterThan(lossyPhase, 0)
+        XCTAssertLessThan(lossyPhase, 10)
     }
 
     func testBandwidthSerializesEachDirectionIndependently() {
@@ -119,7 +122,7 @@ final class SimNetTests: XCTestCase {
         XCTAssertEqual(net.deliveries(upTo: 1_000).map(\.bytes.count), [100, 50, 50])
     }
 
-    func testG3JitterShapeIsBoundedAndActuallyReorders() {
+    func testJitterShapeIsBoundedAndActuallyReorders() {
         let config = SimNetConfig(
             baseDelayMicroseconds: 2_000,
             jitterMicroseconds: 20_000
@@ -171,22 +174,6 @@ final class SimNetTests: XCTestCase {
         XCTAssertEqual(
             net.deliveries(upTo: 100).map { $0.bytes[0] }, [3, 4, 5]
         )
-    }
-
-    func testSeededRandomLossReplaysTheSameSparseSet() {
-        func delivered(seed: UInt64) -> [UInt8] {
-            var net = SimNet(
-                config: SimNetConfig(lossRate: 0.30), seed: seed
-            )
-            for index in 0..<100 {
-                net.send(from: 0, bytes: [UInt8(index)], now: UInt64(index))
-            }
-            return net.deliveries(upTo: 1_000).map { $0.bytes[0] }
-        }
-        let first = delivered(seed: 0x1055)
-        XCTAssertEqual(first, delivered(seed: 0x1055))
-        XCTAssertGreaterThan(first.count, 50)
-        XCTAssertLessThan(first.count, 100)
     }
 
     func testCapacityCliffAndRecoveryHaveExpectedSerialization() {

@@ -3,11 +3,11 @@ import XCTest
 import LyteWire
 import LyteWireTestKit
 
-// The W-G7 gate legs for PairingPake: a full pairing run derives one
-// ISK on both ends; wrong PIN aborts cleanly with nothing pinnable and
-// nothing offline-testable; the transcript binding (tampered Noise
-// handshake hash, swapped statics) fails the same way; low-order
-// shares abort before any tag math; the state machines refuse misuse.
+// PairingPake: a full pairing run derives one ISK on both ends; a wrong
+// PIN aborts cleanly with nothing pinnable and nothing offline-testable;
+// the transcript binding (tampered Noise handshake hash, swapped statics)
+// fails the same way; low-order shares abort before any tag math; the
+// state machines refuse misuse.
 
 final class PairingPakeTests: XCTestCase {
 
@@ -107,8 +107,8 @@ final class PairingPakeTests: XCTestCase {
 
     func testFullPairingRunAgreesOnIskAndPins() throws {
         var (initiator, responder) = try makePair()
-        // Byte round trips through the codecs, the way HS-9/CL-6 will
-        // actually carry the messages.
+        // Byte round trips through the codecs, the way the ends carry
+        // the messages.
         let shareA = try PairingShareA.decode(
             try initiator.makeShareA().encode()
         )
@@ -172,97 +172,54 @@ final class PairingPakeTests: XCTestCase {
         XCTAssertNotEqual(try run(hash: hashOne), try run(hash: hashTwo))
     }
 
-    // MARK: Wrong PIN — the offline-attack gate leg
+    // MARK: Wrong PIN and transcript binding
 
-    func testWrongPinFailsAtTheInitiator() throws {
-        var (initiator, responder) = try makePair(
-            responderPin: Array("482914".utf8)
-        )
-        let shareB = try responder.receiveShareA(
-            initiator.makeShareA()
-        )
-        assertThrows(PairingPakeError.confirmationFailed) {
-            try initiator.receiveShareB(shareB)
-        }
-        XCTAssertNil(initiator.result, "a failed run must expose no key")
-        // The machine is dead after failure — no retry with the same
-        // scalars, which would let an attacker test PINs one by one
-        // against a single transcript.
-        assertThrows(PairingPakeError.invalidState) {
-            try initiator.receiveShareB(shareB)
-        }
-        // EVERY entry point is dead, not just the one that failed: a
-        // failed initiator cannot even re-emit its share A (which would
-        // let a shell accidentally restart the run with burned scalars).
-        assertThrows(PairingPakeError.invalidState) {
-            try initiator.makeShareA()
-        }
-    }
-
-    func testWrongPinFailsAtTheResponder() throws {
-        var (initiator, responder) = try makePair(
-            responderPin: Array("000000".utf8)
-        )
-        let shareB = try responder.receiveShareA(
-            initiator.makeShareA()
-        )
-        // The initiator refuses first (Tb is wrong for it)…
-        XCTAssertThrowsError(try initiator.receiveShareB(shareB))
-        // …and a forged confirm cannot rescue the responder side: only
-        // the true Ta (derived from the PIN it doesn't share) verifies.
-        let forged = PairingConfirm(
-            confirmationTag: [UInt8](
-                repeating: 0xAB, count: CPace.tagByteCount
-            )
-        )
-        assertThrows(PairingPakeError.confirmationFailed) {
-            try responder.receiveConfirm(forged)
-        }
-        XCTAssertNil(responder.result)
-        assertThrows(PairingPakeError.invalidState) {
-            try responder.receiveConfirm(forged)
-        }
-        // And a failed responder is dead to a fresh share A too — no
-        // revival path from any state.
-        assertThrows(PairingPakeError.invalidState) {
-            try responder.receiveShareA(
-                PairingShareA(share: [UInt8](repeating: 1, count: 32))
-            )
-        }
-    }
-
-    // MARK: Transcript binding — the §8.2 negative tests
-
-    func testTamperedHandshakeHashFails() throws {
-        // Same PIN both ends, but the two ends saw different Noise
-        // sessions — the MITM shape. Must fail exactly like wrong PIN.
+    /// A wrong PIN, a different Noise session (the MITM shape) and a
+    /// mismatched client static all fail the same way: the initiator
+    /// refuses Tb, a forged confirm cannot rescue the responder, and
+    /// every entry point of both machines is dead afterwards — no retry
+    /// with burned scalars, so no PIN can be tested against one
+    /// transcript.
+    func testEveryDivergenceFailsAndKillsBothRoles() throws {
         var tamperedHash = Self.handshakeHash
         tamperedHash[0] ^= 0x01
-        var (initiator, responder) = try makePair(
-            responderHash: tamperedHash
-        )
-        let shareB = try responder.receiveShareA(
-            initiator.makeShareA()
-        )
-        assertThrows(PairingPakeError.confirmationFailed) {
-            try initiator.receiveShareB(shareB)
-        }
-        XCTAssertNil(initiator.result)
-    }
-
-    func testMismatchedStaticsFail() throws {
-        // The host believes a different client static than the client
-        // holds — CI diverges, the generator diverges, pairing fails.
         var otherClientStatic = Self.clientStatic
         otherClientStatic[31] ^= 0xFF
-        var (initiator, responder) = try makePair(
-            responderClientStatic: otherClientStatic
+        let divergent = [
+            ("wrong PIN", try makePair(responderPin: Array("482914".utf8))),
+            ("other session", try makePair(responderHash: tamperedHash)),
+            ("other static", try makePair(
+                responderClientStatic: otherClientStatic)),
+        ]
+        let forged = PairingConfirm(
+            confirmationTag: [UInt8](repeating: 0xAB, count: CPace.tagByteCount)
         )
-        let shareB = try responder.receiveShareA(
-            initiator.makeShareA()
-        )
-        assertThrows(PairingPakeError.confirmationFailed) {
-            try initiator.receiveShareB(shareB)
+        for (name, pair) in divergent {
+            var (initiator, responder) = pair
+            let shareB = try responder.receiveShareA(initiator.makeShareA())
+            assertThrows(PairingPakeError.confirmationFailed, name) {
+                try initiator.receiveShareB(shareB)
+            }
+            XCTAssertNil(initiator.result, name)
+            assertThrows(PairingPakeError.invalidState, name) {
+                try initiator.receiveShareB(shareB)
+            }
+            assertThrows(PairingPakeError.invalidState, name) {
+                try initiator.makeShareA()
+            }
+
+            assertThrows(PairingPakeError.confirmationFailed, name) {
+                try responder.receiveConfirm(forged)
+            }
+            XCTAssertNil(responder.result, name)
+            assertThrows(PairingPakeError.invalidState, name) {
+                try responder.receiveConfirm(forged)
+            }
+            assertThrows(PairingPakeError.invalidState, name) {
+                try responder.receiveShareA(
+                    PairingShareA(share: [UInt8](repeating: 1, count: 32))
+                )
+            }
         }
     }
 
@@ -373,7 +330,7 @@ final class PairingPakeTests: XCTestCase {
     // MARK: Composition with the real Noise handshake
 
     func testPairingBoundToARealNoiseSession() throws {
-        // The full W6 story in one test: a real IK handshake (TOFU
+        // The whole story in one test: a real IK handshake (TOFU
         // statics), then pairing bound to its handshake hash; both ends
         // pin the statics the session actually used.
         let clientStatic = NoiseKeyPair.generate()

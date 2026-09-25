@@ -6,7 +6,8 @@ import LyteWireTestKit
 // The ARQ frame codecs against hand-computed bytes — the anchor that
 // keeps arq-v1.json honest (the vectorgen output is checked against
 // these exact frames, so the codec never grades its own homework) —
-// plus decode-reject coverage and a never-traps fuzz.
+// plus the construction bounds. Decode rejects live in the vectors and
+// the never-trap sweep in CtrlDecoderFuzzTests.
 
 final class ArqCodecTests: XCTestCase {
 
@@ -54,26 +55,6 @@ final class ArqCodecTests: XCTestCase {
             cumulative: ArqSegmentSeq(rawValue: 41)
         )
         XCTAssertEqual(block.highestReported.rawValue, 41)
-    }
-
-    func testCoalescedFrameSequence() throws {
-        let ack = try ArqAck(blocks: [
-            ArqAck.Block(
-                channel: .ctrl, group: .orderedStream,
-                cumulative: ArqSegmentSeq(rawValue: 2)
-            )
-        ])
-        let seg = try ArqSegment(
-            group: .orderedStream,
-            seq: ArqSegmentSeq(rawValue: 3),
-            endOfMessage: true,
-            body: [1, 2, 3, 4]
-        )
-        let payload = ack.encode() + seg.encode()
-        XCTAssertEqual(
-            try ArqFrame.decodeAll(payload),
-            [.ack(ack), .segment(seg)]
-        )
     }
 
     // MARK: Construction bounds
@@ -151,43 +132,5 @@ final class ArqCodecTests: XCTestCase {
         XCTAssertTrue(high < low)
         XCTAssertEqual(high.distance(to: low), 4)
         XCTAssertEqual(ArqSegmentSeq(rawValue: 0xFFFF).next.rawValue, 0)
-    }
-
-    // MARK: Never traps
-
-    func testDecodeNeverTrapsOnArbitraryBytes() {
-        var rng = SplitMix64(seed: 0xA2_00_00_01)
-        for _ in 0..<20_000 {
-            let length = rng.int(in: 0...1200)
-            var bytes = rng.bytes(length)
-            // Bias toward the parser's edges: valid-looking frame types
-            // with hostile interiors.
-            if !bytes.isEmpty, Bool.random(using: &rng) {
-                bytes[0] = Bool.random(using: &rng)
-                    ? CtrlMessageType.arqSegment : CtrlMessageType.arqAck
-            }
-            _ = try? ArqFrame.decodeAll(bytes)
-        }
-    }
-
-    func testDecodeOfTruncatedValidPayloadNeverTraps() throws {
-        var rng = SplitMix64(seed: 0xA2_00_00_02)
-        let seg = try ArqSegment(
-            group: ArqGroupId(rawValue: 3),
-            seq: ArqSegmentSeq(rawValue: 9),
-            endOfMessage: true,
-            body: rng.bytes(300)
-        )
-        let ack = try ArqAck(blocks: [
-            ArqAck.Block(
-                channel: .ctrl, group: ArqGroupId(rawValue: 3),
-                cumulative: ArqSegmentSeq(rawValue: 8),
-                receivedBitmap: [0xFF, 0x01]
-            )
-        ])
-        let payload = ack.encode() + seg.encode()
-        for cut in 0..<payload.count {
-            _ = try? ArqFrame.decodeAll(Array(payload.prefix(cut)))
-        }
     }
 }

@@ -4,8 +4,8 @@ import LyteWire
 import LyteWireTestKit
 
 // The lifecycle codecs against hand-computed bytes — the anchor that
-// keeps lifecycle-v1.json honest — plus a never-traps fuzz. Decode
-// rejects live in the vectors.
+// keeps lifecycle-v1.json honest. Decode rejects live in the vectors and
+// the never-trap sweep in CtrlDecoderFuzzTests.
 
 final class SessionLifecycleCodecTests: XCTestCase {
 
@@ -59,19 +59,5 @@ final class SessionLifecycleCodecTests: XCTestCase {
         XCTAssertNotEqual(
             CtrlMessageType.sessionTeardown, CtrlMessageType.arqAck
         )
-    }
-
-    // MARK: Fuzz — hostile bytes throw, never trap
-
-    func testDecodersNeverTrapOnHostileBytes() {
-        var rng = SplitMix64(seed: 0x4B_57_34_62)
-        for _ in 0..<20_000 {
-            let count = rng.int(in: 0...8)
-            let bytes = (0..<count).map { _ in
-                UInt8.random(in: .min ... .max, using: &rng)
-            }
-            _ = try? ModeTransition.decode(bytes)
-            _ = try? SessionTeardown.decode(bytes)
-        }
     }
 }
