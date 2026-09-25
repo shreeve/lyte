@@ -326,13 +326,15 @@ grep -Fq "match ip dst 10.0.0.44/32" "$LYTE_FAKE_TC_LOG"
 expect_tc default
 "$netem" remove en-test0 >/dev/null
 
-"$netem" apply en-test0 10.0.0.44 41151 20 10 1 >/dev/null
-printf '%s\n' owned-changed > "$LYTE_FAKE_TC_STATE"
-if "$netem" remove en-test0 >/dev/null 2>&1; then
-    fail "changed owned topology was removed"
-fi
-printf '%s\n' owned > "$LYTE_FAKE_TC_STATE"
-"$netem" remove en-test0 >/dev/null
+for changed in owned-changed owned-without-netem; do
+    "$netem" apply en-test0 10.0.0.44 41151 20 10 1 >/dev/null
+    printf '%s\n' "$changed" > "$LYTE_FAKE_TC_STATE"
+    if "$netem" remove en-test0 >/dev/null 2>&1; then
+        fail "changed owned topology ($changed) was removed"
+    fi
+    printf '%s\n' owned > "$LYTE_FAKE_TC_STATE"
+    "$netem" remove en-test0 >/dev/null
+done
 
 printf '%s\n' foreign > "$LYTE_FAKE_TC_STATE"
 if "$netem" apply en-test0 10.0.0.44 41151 20 10 1 >/dev/null 2>&1; then

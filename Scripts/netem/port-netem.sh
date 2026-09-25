@@ -143,20 +143,17 @@ remove)
             qdiscs=$("$TC" qdisc show dev "$interface")
             filters=$("$TC" filter show dev "$interface" \
                 parent "$ROOT_HANDLE" 2>/dev/null || true)
-            case "$qdiscs" in
-                *"qdisc fq_codel $PLAIN_HANDLE"*"parent ${ROOT_HANDLE}1"*) ;;
-                *)
-                    echo "port-netem: refusing changed owned topology on $interface" >&2
-                    exit 1
-                    ;;
-            esac
-            case "$qdiscs" in
-                *"qdisc netem $NETEM_HANDLE"*"parent ${ROOT_HANDLE}3"*) ;;
-                *)
-                    echo "port-netem: refusing changed owned topology on $interface" >&2
-                    exit 1
-                    ;;
-            esac
+            for band in "fq_codel $PLAIN_HANDLE parent ${ROOT_HANDLE}1" \
+                "netem $NETEM_HANDLE parent ${ROOT_HANDLE}3"
+            do
+                case "$qdiscs" in
+                    *"qdisc ${band% parent *}"*"parent ${band#* parent }"*) ;;
+                    *)
+                        echo "port-netem: refusing changed owned topology on $interface" >&2
+                        exit 1
+                        ;;
+                esac
+            done
             [ -n "$filters" ] || {
                 echo "port-netem: refusing topology without its flow filter" >&2
                 exit 1
