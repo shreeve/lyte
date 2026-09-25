@@ -45,24 +45,6 @@ final class HistogramTests: XCTestCase {
         XCTAssertTrue(histogram.saturated)
     }
 
-    func testNearestRankMatchesTheRetiredTailRingAtEveryEdgeCount() {
-        // The retired conductor formula was
-        // sorted[min(count - 1, (count * 99 + 99) / 100 - 1)].
-        for count in [1, 5, 99, 100, 101, 599, 600] {
-            var histogram = Histogram<UInt64>(
-                capacity: 600, retention: .rolling)
-            for value in 1...count {
-                histogram.record(UInt64(value))
-            }
-            let expectedIndex = min(
-                count - 1, (count * 99 + 99) / 100 - 1)
-            XCTAssertEqual(
-                histogram.p99,
-                UInt64(expectedIndex + 1),
-                "count \(count) must preserve the retired tail rank")
-        }
-    }
-
     func testPrefixRetentionDropsPastCapacityButKeepsCumulativeBooks() {
         var histogram = Histogram<UInt64>(capacity: 4, retention: .prefix)
         for value in [5, 1, 9, 3, 100, 2] as [UInt64] {

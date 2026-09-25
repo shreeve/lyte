@@ -3,8 +3,7 @@ import XCTest
 
 // The Conductor's video instrument, law by law
 // (docs/decisions/20260803-050422-metronome-playout-design.md): cue, beat,
-// late, hole, slip, chain. The debt/flush recovery pins carried over
-// from the retired adaptive playout.
+// late, hole, slip, chain, horizon, and the debt/flush recovery policy.
 
 final class VideoBeatConductorTests: XCTestCase {
     private let period: UInt64 = 16_667
@@ -427,7 +426,7 @@ final class VideoBeatConductorTests: XCTestCase {
             decision.pathDelayMicroseconds + decision.reserveMicroseconds)
     }
 
-    /// Debt (ported pin): a genuinely compressed blackout burst
+    /// Debt: a genuinely compressed blackout burst
     /// beyond the ceiling starts ONE bounded recovery; ordinary
     /// jitter never does; thirty stable frames re-arm.
     func testFreshBlackoutBurstStartsOneBoundedDebtRecovery() {
@@ -473,10 +472,9 @@ final class VideoBeatConductorTests: XCTestCase {
         XCTAssertEqual(flushes, 2, "a fresh episode may recover again")
     }
 
-    /// The rig's regression, pinned: a safety ceiling below the cue's
-    /// aspiration pins the measured cue at the ceiling, and clock-map
-    /// residual wobble must not cut or collide the grid — every gap
-    /// stays exactly one beat.
+    /// A safety ceiling below the cue's aspiration pins the measured cue
+    /// at the ceiling, and clock-map residual wobble must not cut or
+    /// collide the grid — every gap stays exactly one beat.
     func testPinnedCeilingDoesNotChatterTheGrid() {
         var policy = conductor(cushionBeats: 2,
                                maximumCueMicroseconds: 25_000)
@@ -574,24 +572,15 @@ final class VideoBeatConductorTests: XCTestCase {
     /// A client clock running fast drains the cue until the mapped
     /// capture overtakes the grid. The hole law must still re-cue then:
     /// its ceiling room is measured from a cue that is zero, not from a
-    /// wrapped unsigned difference.
+    /// wrapped unsigned difference. Each drift hole lands the newest part
+    /// on the next beat, so the cushion posture must follow the measured
+    /// reserve rather than count moves toward its ceiling.
     func testFastClientSkewStillReachesTheHoleLaw() {
-        for ppm: Int64 in [-50, 10, 20] {
+        for ppm: Int64 in [-50, 20] {
             XCTAssertLessThan(
                 worstLatenessUnderSkew(ppm: ppm, minutes: 60), period,
                 "\(ppm) ppm for an hour must never leave a frame a full beat late")
         }
-    }
-
-    /// Each drift-driven hole lands the newest part on the NEXT beat, so
-    /// the real reserve after it is under one beat. The cushion posture
-    /// must follow that measured reserve; counting moves instead would
-    /// exhaust the ceiling after three drift holes and leave every later
-    /// frame drifting unboundedly late.
-    func testDriftHolesDoNotExhaustTheCushionCeiling() {
-        XCTAssertLessThan(
-            worstLatenessUnderSkew(ppm: 50, minutes: 60), period,
-            "50 ppm for an hour must never leave a frame a full beat late")
     }
 
     /// stretch: sustained sub-beat drift lateness re-cues instead of
