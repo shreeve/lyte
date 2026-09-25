@@ -52,14 +52,9 @@ public struct KernelPressureSample: Equatable, Sendable {
 
 public struct KernelPressureDecision: Equatable, Sendable {
     public var state: KernelPressureState
-    public var totalVideoBytes: Int
     public var totalVideoServiceDebtNS: UInt64
     public var admissionBudgetNS: UInt64
     public var allowVideoPump: Bool
-    public var eagainDelta: Int
-    public var enobufsDelta: Int
-    public var videoKernelHighWaterBytes: Int
-    public var recoveryLowWaterBytes: Int
 }
 
 /// Pure state machine for Linux socket/qdisc pressure. It consumes measured
@@ -97,20 +92,16 @@ public struct KernelPressureGovernor: Sendable {
             max(sendBuffer - frameReserve, 0), queueBudgetBytes)
         let lowWater = highWater / 2
 
-        let eagainDelta = max(
-            sample.videoWouldBlockCount + sample.latencyWouldBlockCount
-                - ((previous?.videoWouldBlockCount
-                    ?? sample.videoWouldBlockCount)
-                    + (previous?.latencyWouldBlockCount
-                        ?? sample.latencyWouldBlockCount)),
-            0)
-        let enobufsDelta = max(
-            sample.videoENOBUFSCount + sample.latencyENOBUFSCount
-                - ((previous?.videoENOBUFSCount
-                    ?? sample.videoENOBUFSCount)
-                    + (previous?.latencyENOBUFSCount
-                        ?? sample.latencyENOBUFSCount)),
-            0)
+        /// Growth of a cumulative error book since the previous sample.
+        func delta(_ book: (KernelPressureSample) -> Int) -> Int {
+            max(book(sample) - (previous.map(book) ?? book(sample)), 0)
+        }
+        let eagainDelta = delta {
+            $0.videoWouldBlockCount + $0.latencyWouldBlockCount
+        }
+        let enobufsDelta = delta {
+            $0.videoENOBUFSCount + $0.latencyENOBUFSCount
+        }
 
         if let prior = previous,
            sample.nowNS > prior.nowNS,
@@ -189,14 +180,9 @@ public struct KernelPressureGovernor: Sendable {
         }
         return KernelPressureDecision(
             state: state,
-            totalVideoBytes: totalBytes,
             totalVideoServiceDebtNS: debt,
             admissionBudgetNS: admissionBudget,
-            allowVideoPump: state != .latencyOnly,
-            eagainDelta: eagainDelta,
-            enobufsDelta: enobufsDelta,
-            videoKernelHighWaterBytes: highWater,
-            recoveryLowWaterBytes: lowWater)
+            allowVideoPump: state != .latencyOnly)
     }
 
     public static func shouldShedAtSocket(
