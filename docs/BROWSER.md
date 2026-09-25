@@ -94,16 +94,18 @@ Chrome with a GPU, Node 24 or 26, and `openssl`.
 
 ```sh
 Browser/Scripts/build.sh     # WASM + page + corpus staged in Browser/.serve/
-Browser/Scripts/serve.sh     # http://127.0.0.1:8765/ with control peer + sidecar
+node Browser/Scripts/smoke.mjs --serve  # http://127.0.0.1:8765/ with control peer + sidecar
 # open the URL in Chrome; Connect and Re-run work repeatedly
 
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   Browser/Scripts/smoke-chrome.sh   # headless proof; rebuilds first
 ```
 
-`serve.sh` builds `lyte-control-peer`, starts it on loopback UDP 41234
-(`LYTE_CONTROL_PEER_PORT`, never 41151), starts the sidecar with
-`--udp-peer`, and serves `.serve/`. Nothing is fetched at page run time:
+`smoke.mjs` builds `lyte-control-peer`, starts it on a fresh loopback UDP
+port (`LYTE_CONTROL_PEER_PORT`, never 41151), starts the sidecar with
+`--udp-peer`, and serves `.serve/`; with `--serve` the peer serves
+sessions until Ctrl-C, the page listens on `LYTE_BROWSER_PORT` (8765) and
+no Chrome starts. Nothing is fetched at page run time:
 `build.sh` stages the vendored WASI shim and the page's import map
 resolves it. The sidecar installs `rwebtransport` under `Browser/Harness/`
 with `npm ci` on first run. The module is about 77 MB without binaryen's
@@ -116,7 +118,7 @@ the manifest keeps only `LyteClientBrowserCore` and its suite, so Linux
 never resolves JavaScriptKit); the WASM build runs in the macOS gate when
 the toolchain is installed. Neither needs Chrome.
 
-The `serve.sh` harness always starts its own local peer. Pointing the page
+The harness always starts its own local peer. Pointing the page
 at a peer on pup (a fresh 41xxx port, never 41151) needs a serve mode that
 skips the local peer, which does not exist yet.
 

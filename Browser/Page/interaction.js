@@ -221,9 +221,6 @@ export async function createAudioRing({ offline = false, maxQueuedFrames } = {})
   let framesPushed = 0;
   return {
     mode: offline ? "offline" : "realtime",
-    get contextState() {
-      return offline ? "offline" : ctx.state;
-    },
     /** Takes ownership of an interleaved stereo Float32Array (transferred). */
     pushPcm(interleaved) {
       framesPushed += interleaved.length / 2;

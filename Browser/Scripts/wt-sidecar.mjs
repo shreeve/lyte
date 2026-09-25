@@ -6,8 +6,7 @@
 // socket. It listens on loopback unless --allow-remote. Datagrams are
 // unreliable end to end: the relay holds none longer than a beat or two
 // and drops, never retries, one its writer refuses. Writes JSON metadata
-// (url, cert hash, ports) to --meta-out for serverCertificateHashes
-// dialing.
+// (url, cert hash) to --meta-out for serverCertificateHashes dialing.
 
 import { createHash } from "node:crypto";
 import { createSocket } from "node:dgram";
@@ -75,24 +74,20 @@ function isLoopback(host) {
 function parseArgs(argv) {
   const out = {
     host: "127.0.0.1",
-    wtPort: 0,
     metaOut: null,
-    path: "/lyte-datagram",
     udpPeer: null,
     allowRemote: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--host") out.host = argv[++i];
-    else if (a === "--wt-port") out.wtPort = Number(argv[++i]);
     else if (a === "--meta-out") out.metaOut = argv[++i];
-    else if (a === "--path") out.path = argv[++i];
     else if (a === "--udp-peer") out.udpPeer = parsePeer(argv[++i]);
     else if (a === "--allow-remote") out.allowRemote = true;
     else if (a === "--help" || a === "-h") {
       console.log(
-        "usage: wt-sidecar.mjs [--host 127.0.0.1] [--allow-remote] [--wt-port 0] " +
-          "[--meta-out path] [--path /lyte-datagram] --udp-peer host:port"
+        "usage: wt-sidecar.mjs [--host 127.0.0.1] [--allow-remote] " +
+          "[--meta-out path] --udp-peer host:port"
       );
       process.exit(0);
     }
@@ -290,25 +285,17 @@ const peer = {
 
 const server = new WebTransportServer({
   host: args.host,
-  port: args.wtPort,
+  port: 0,
   cert: certPath,
   key: keyPath,
 });
 await server.ready;
-const wtPort = server.port;
 
+// Every session is relayed whatever its path.
 const meta = {
   adapter: "lyte-wt-sidecar",
-  url: `https://${args.host}:${wtPort}${args.path}`,
-  host: args.host,
-  wtPort,
-  udpPeerHost: peer.host,
-  udpPeerPort: peer.port,
-  path: args.path,
+  url: `https://${args.host}:${server.port}/lyte-datagram`,
   hashHex: Buffer.from(hash).toString("hex"),
-  hashAlgorithm: "sha-256",
-  note:
-    "Opaque bytes only. Pairing/Noise stay end-to-end in WASM↔host; this sidecar never unseals.",
 };
 
 if (args.metaOut) {
