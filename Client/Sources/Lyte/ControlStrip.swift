@@ -188,7 +188,7 @@ struct StreamContainer: View {
                         distanceFromTop: point.y,
                         isFullscreen: false))
                 case .ended:
-                    reveal.policy.pointerExitedWindow(now: SystemMonotonicClock.nowNanoseconds)
+                    reveal.policy.pointerExitedWindow()
                     syncAndSchedule()
                 }
             }

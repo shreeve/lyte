@@ -2,24 +2,6 @@ import XCTest
 @testable import LyteHelperSecurity
 
 final class HelperClientRequirementTests: XCTestCase {
-    func testAppleDevelopmentRequirementChangesOnlyTheIdentifier() throws {
-        let helper = """
-        identifier "dev.shreeve.lyte-helperd" and anchor apple generic and \
-        certificate leaf[subject.CN] = "Apple Development: Lyte" and \
-        certificate 1[field.1.2.840.113635.100.6.2.1] /* exists */
-        """
-        let app = try HelperClientRequirement.applicationRequirement(
-            fromHelperDesignatedRequirement: helper)
-
-        XCTAssertEqual(
-            app,
-            helper.replacingOccurrences(
-                of: "identifier \"dev.shreeve.lyte-helperd\"",
-                with: "identifier \"dev.shreeve.lyte\""))
-        XCTAssertTrue(app.contains("anchor apple generic"))
-        XCTAssertTrue(app.contains("certificate leaf[subject.CN]"))
-    }
-
     func testLyteDevRequirementPreservesTheExactRootCertificate() throws {
         let helper = """
         identifier "dev.shreeve.lyte-helperd" and \

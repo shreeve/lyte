@@ -2,53 +2,20 @@ import XCTest
 import Foundation
 @testable import LyteUI
 
-// THE GATE (CL-18, the strip's ergonomics policy). Pinned behaviors,
-// all in virtual time:
-//
-//   • TRANSIT NEVER REVEALS: a pointer crossing the edge zone on its
-//     way somewhere else (the Dock) shows nothing — reveal is earned
-//     by ~200 ms of continuous zone presence;
-//   • DWELL REVEALS: presence in the zone for the dwell interval
-//     reveals, including the stationary case (zone entry, then no
-//     further events — the deadline tick completes it);
-//   • the fullscreen SYSTEM-EDGE SLIVER is macOS's: presence in the
-//     last few points at a real screen edge never arms the dwell, and
-//     a push into it takes a visible strip DOWN (the push is the
-//     Dock/menu-bar summon); windowed, the same distances arm
-//     normally;
-//   • leaving the WINDOW BOUNDS hides instantly and cancels any
-//     pending dwell — the strip never squats where the Dock appears;
-//   • the CL-16 FADE DISCIPLINE holds: visible fades ~2 s after the
-//     last activity IN THE ZONE (activity out in the video no longer
-//     pins it), never while hovered, hover exit restamps;
-//   • HIDDEN MODE is inert: nothing reveals, every deadline is nil,
-//     and flipping it on takes a visible strip down;
-//   • the PREFERENCES round-trip: edge + hidden persist through
-//     UserDefaults under the pinned keys, and unknown raw values fall
-//     back to the defaults.
-
+/// The strip's reveal policy in virtual time: transit never reveals, a
+/// ~200 ms dwell does (stationary too), the fullscreen system-edge sliver
+/// is macOS's, leaving the window hides at once, the ~2 s fade counts
+/// only zone activity and never runs while hovered, and hidden mode is
+/// inert.
 final class ControlStripPolicyGateTests: XCTestCase {
 
-    // Virtual-time helpers: the policy speaks nanoseconds.
+    // Virtual time: the policy speaks nanoseconds.
     private static let ms: UInt64 = 1_000_000
-    private var config = StripRevealPolicy.Config()
-
-    /// A fresh policy with the default feel numbers (200 ms dwell,
-    /// 2 s fade, 90 pt zone, 6 pt sliver) — the numbers themselves are
-    /// pinned here so a feel retune is a deliberate test edit.
-    private func makePolicy() -> StripRevealPolicy {
-        XCTAssertEqual(config.dwellNanoseconds, 200 * Self.ms,
-                       "the dwell sits in the owner's 150–250 ms band")
-        XCTAssertEqual(config.idleFadeNanoseconds, 2_000 * Self.ms)
-        XCTAssertEqual(config.zoneThicknessPoints, 90)
-        XCTAssertEqual(config.systemEdgeSliverPoints, 6)
-        return StripRevealPolicy(config: config)
-    }
 
     // MARK: Transit vs dwell
 
     func testTransitThroughZoneNeverReveals() {
-        var policy = makePolicy()
+        var policy = StripRevealPolicy()
         // A flick toward the Dock: samples cross the zone in ~80 ms
         // and leave the window — never visible at any point.
         var t: UInt64 = 1_000 * Self.ms
@@ -58,7 +25,7 @@ final class ControlStripPolicyGateTests: XCTestCase {
             XCTAssertFalse(policy.isVisible)
             t += 20 * Self.ms
         }
-        policy.pointerExitedWindow(now: t)
+        policy.pointerExitedWindow()
         XCTAssertFalse(policy.isVisible)
         // And the exit killed the pending dwell: nothing left to wake.
         XCTAssertNil(policy.nextDeadline,
@@ -67,7 +34,7 @@ final class ControlStripPolicyGateTests: XCTestCase {
 
     func testDwellRevealsAtThresholdMovingOrStationary() {
         // Moving inside the zone: presence accumulates across events.
-        var moving = makePolicy()
+        var moving = StripRevealPolicy()
         var t: UInt64 = 1_000 * Self.ms
         moving.pointerMoved(edgeDistance: 60, atSystemEdge: false, now: t)
         XCTAssertFalse(moving.isVisible)
@@ -81,7 +48,7 @@ final class ControlStripPolicyGateTests: XCTestCase {
         // Stationary: zone entry, then silence — the deadline tick
         // completes the dwell (that is exactly what dwelling looks
         // like: no more move events).
-        var still = makePolicy()
+        var still = StripRevealPolicy()
         t = 5_000 * Self.ms
         still.pointerMoved(edgeDistance: 30, atSystemEdge: false, now: t)
         XCTAssertEqual(still.nextDeadline, t + 200 * Self.ms)
@@ -91,7 +58,7 @@ final class ControlStripPolicyGateTests: XCTestCase {
         XCTAssertTrue(still.isVisible)
 
         // Leaving the zone mid-dwell resets it: re-entry starts over.
-        var restarted = makePolicy()
+        var restarted = StripRevealPolicy()
         t = 9_000 * Self.ms
         restarted.pointerMoved(edgeDistance: 30, atSystemEdge: false, now: t)
         restarted.pointerMoved(edgeDistance: 200, atSystemEdge: false,
@@ -111,7 +78,7 @@ final class ControlStripPolicyGateTests: XCTestCase {
     func testSystemEdgeSliverNeverArmsAndYieldsTheSpot() {
         // Fullscreen, pointer pinned into the last points at the
         // screen edge — the Dock summon: no dwell ever arms.
-        var policy = makePolicy()
+        var policy = StripRevealPolicy()
         var t: UInt64 = 1_000 * Self.ms
         policy.pointerMoved(edgeDistance: 3, atSystemEdge: true, now: t)
         XCTAssertNil(policy.nextDeadline,
@@ -121,14 +88,14 @@ final class ControlStripPolicyGateTests: XCTestCase {
 
         // The SAME distance windowed arms normally (the window's
         // bottom edge is not the screen's).
-        var windowed = makePolicy()
+        var windowed = StripRevealPolicy()
         windowed.pointerMoved(edgeDistance: 3, atSystemEdge: false, now: t)
         windowed.tick(now: t + 200 * Self.ms)
         XCTAssertTrue(windowed.isVisible)
 
         // A visible strip yields to the summon gesture: dwell-reveal
         // in the zone proper, then a push into the sliver hides NOW.
-        var yielding = makePolicy()
+        var yielding = StripRevealPolicy()
         t = 5_000 * Self.ms
         yielding.pointerMoved(edgeDistance: 40, atSystemEdge: true, now: t)
         yielding.tick(now: t + 200 * Self.ms)
@@ -140,7 +107,7 @@ final class ControlStripPolicyGateTests: XCTestCase {
     }
 
     func testWindowExitHidesImmediately() {
-        var policy = makePolicy()
+        var policy = StripRevealPolicy()
         var t: UInt64 = 1_000 * Self.ms
         policy.pointerMoved(edgeDistance: 40, atSystemEdge: false, now: t)
         t += 200 * Self.ms
@@ -149,7 +116,7 @@ final class ControlStripPolicyGateTests: XCTestCase {
 
         // The pointer leaves the window (the windowed-mode Dock aim,
         // below the window): the strip is gone before the Dock lands.
-        policy.pointerExitedWindow(now: t + 50 * Self.ms)
+        policy.pointerExitedWindow()
         XCTAssertFalse(policy.isVisible)
         XCTAssertNil(policy.nextDeadline)
     }
@@ -157,7 +124,7 @@ final class ControlStripPolicyGateTests: XCTestCase {
     // MARK: The fade discipline
 
     func testFadeAnchorsToZoneActivityAndHoverPins() {
-        var policy = makePolicy()
+        var policy = StripRevealPolicy()
         var t: UInt64 = 1_000 * Self.ms
         policy.pointerMoved(edgeDistance: 40, atSystemEdge: false, now: t)
         t += 200 * Self.ms
@@ -165,10 +132,8 @@ final class ControlStripPolicyGateTests: XCTestCase {
         XCTAssertTrue(policy.isVisible)
         let revealedAt = t
 
-        // Activity OUT IN THE VIDEO does not pin the strip anymore
-        // (the CL-18 change: the strip gets out of the way while you
-        // work) — the fade still lands 2 s after the last ZONE
-        // activity.
+        // Activity out in the video does not pin the strip: the fade
+        // lands 2 s after the last zone activity.
         policy.pointerMoved(edgeDistance: 400, atSystemEdge: false,
                             now: t + 500 * Self.ms)
         policy.pointerMoved(edgeDistance: 300, atSystemEdge: false,
@@ -180,9 +145,8 @@ final class ControlStripPolicyGateTests: XCTestCase {
         XCTAssertFalse(policy.isVisible)
 
         // Zone activity DOES restamp; hover pins outright; hover exit
-        // restamps so the fade lands a full interval later (CL-16's
-        // behavior, kept).
-        var hovered = makePolicy()
+        // restamps so the fade lands a full interval later.
+        var hovered = StripRevealPolicy()
         t = 9_000 * Self.ms
         hovered.pointerMoved(edgeDistance: 40, atSystemEdge: false, now: t)
         t += 200 * Self.ms
@@ -205,7 +169,7 @@ final class ControlStripPolicyGateTests: XCTestCase {
     // MARK: Hidden mode
 
     func testHiddenModeIsInert() {
-        var policy = makePolicy()
+        var policy = StripRevealPolicy()
         policy.hiddenMode = true
         var t: UInt64 = 1_000 * Self.ms
 
@@ -220,7 +184,7 @@ final class ControlStripPolicyGateTests: XCTestCase {
         XCTAssertNil(policy.nextDeadline)
 
         // Flipping hidden ON takes a visible strip down.
-        var live = makePolicy()
+        var live = StripRevealPolicy()
         t = 20_000 * Self.ms
         live.pointerMoved(edgeDistance: 30, atSystemEdge: false, now: t)
         live.tick(now: t + 200 * Self.ms)

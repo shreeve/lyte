@@ -35,28 +35,22 @@ public enum StripPreferences {
 /// events, asks `nextDeadline` for when to wake, and calls `tick` on
 /// waking; `isVisible` is the one output.
 public struct StripRevealPolicy: Sendable {
-    public struct Config: Sendable {
-        /// Continuous zone presence required before the strip reveals.
-        public var dwellNanoseconds: UInt64 = 200_000_000
-        /// Idle time after the last zone activity before the fade.
-        public var idleFadeNanoseconds: UInt64 = 2_000_000_000
-        /// The reveal zone's depth from the configured edge — covers
-        /// the strip itself plus a comfortable approach.
-        public var zoneThicknessPoints: Double = 90
-        /// The system's sliver at a SCREEN edge (fullscreen only):
-        /// pointer presence here is a Dock/menu-bar summon, never a
-        /// strip dwell.
-        public var systemEdgeSliverPoints: Double = 6
-        public init() {}
-    }
-
-    public let config: Config
+    /// Continuous zone presence required before the strip reveals.
+    static let dwellNanoseconds: UInt64 = 200_000_000
+    /// Idle time after the last zone activity before the fade.
+    static let idleFadeNanoseconds: UInt64 = 2_000_000_000
+    /// The reveal zone's depth from the configured edge — covers the
+    /// strip itself plus a comfortable approach.
+    static let zoneThicknessPoints = 90.0
+    /// The system's sliver at a SCREEN edge (fullscreen only): pointer
+    /// presence here is a Dock/menu-bar summon, never a strip dwell.
+    static let systemEdgeSliverPoints = 6.0
 
     /// The one output: whether the strip is on screen.
     public private(set) var isVisible = false
     /// Hidden mode (the preference): the policy goes inert — nothing
     /// reveals, and flipping it on takes a visible strip down.
-    public var hiddenMode: Bool {
+    public var hiddenMode = false {
         didSet { if hiddenMode { forceHide() } }
     }
 
@@ -68,10 +62,7 @@ public struct StripRevealPolicy: Sendable {
     private var lastZoneActivity: UInt64 = 0
     private var hovered = false
 
-    public init(config: Config = Config(), hiddenMode: Bool = false) {
-        self.config = config
-        self.hiddenMode = hiddenMode
-    }
+    public init() {}
 
     /// A pointer event inside the window. `edgeDistance` is measured
     /// from the CONFIGURED edge; `atSystemEdge` says that edge is a
@@ -80,14 +71,14 @@ public struct StripRevealPolicy: Sendable {
         edgeDistance: Double, atSystemEdge: Bool, now: UInt64
     ) {
         guard !hiddenMode else { return }
-        if atSystemEdge, edgeDistance < config.systemEdgeSliverPoints {
+        if atSystemEdge, edgeDistance < Self.systemEdgeSliverPoints {
             // The system's pixels: a push here summons the Dock or the
             // menu bar. Never a dwell — and the strip yields the spot.
             dwellStart = nil
             forceHide()
             return
         }
-        guard edgeDistance < config.zoneThicknessPoints else {
+        guard edgeDistance < Self.zoneThicknessPoints else {
             dwellStart = nil    // transit ended outside — dwell over
             return
         }
@@ -97,13 +88,13 @@ public struct StripRevealPolicy: Sendable {
         }
         let started = dwellStart ?? now
         dwellStart = started
-        if now &- started >= config.dwellNanoseconds {
+        if now &- started >= Self.dwellNanoseconds {
             reveal(now: now)
         }
     }
 
     /// The pointer left the window bounds: the strip hides now.
-    public mutating func pointerExitedWindow(now: UInt64) {
+    public mutating func pointerExitedWindow() {
         dwellStart = nil
         hovered = false
         forceHide()
@@ -129,12 +120,12 @@ public struct StripRevealPolicy: Sendable {
     public mutating func tick(now: UInt64) {
         guard !hiddenMode else { return }
         if !isVisible, let started = dwellStart,
-           now &- started >= config.dwellNanoseconds {
+           now &- started >= Self.dwellNanoseconds {
             reveal(now: now)
             return
         }
         if isVisible, !hovered,
-           now &- lastZoneActivity >= config.idleFadeNanoseconds {
+           now &- lastZoneActivity >= Self.idleFadeNanoseconds {
             forceHide()
         }
     }
@@ -145,10 +136,10 @@ public struct StripRevealPolicy: Sendable {
     public var nextDeadline: UInt64? {
         guard !hiddenMode else { return nil }
         if !isVisible {
-            return dwellStart.map { $0 &+ config.dwellNanoseconds }
+            return dwellStart.map { $0 &+ Self.dwellNanoseconds }
         }
         guard !hovered else { return nil }
-        return lastZoneActivity &+ config.idleFadeNanoseconds
+        return lastZoneActivity &+ Self.idleFadeNanoseconds
     }
 
     private mutating func reveal(now: UInt64) {
