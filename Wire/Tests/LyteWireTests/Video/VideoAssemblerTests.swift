@@ -80,7 +80,7 @@ final class VideoAssemblerTests: XCTestCase {
         XCTAssertEqual(units[0].frameNumber.rawValue, 0)
         XCTAssertEqual(units[0].timestamp.microseconds, 777)
         XCTAssertTrue(units[0].isIDR)
-        XCTAssertNil(assembler.status(of: FrameNumber(rawValue: 0)), "emitted = untracked")
+        XCTAssertEqual(assembler.trackedGroupCount, 0, "emitted = untracked")
     }
 
     func testDecodesFromDataShardsOnlyBeforeParityArrives() throws {
@@ -91,10 +91,7 @@ final class VideoAssemblerTests: XCTestCase {
             envelope: shards[0].envelope, payload: shards[0].payload, now: t0
         ))
         XCTAssertTrue(units.isEmpty)
-        XCTAssertEqual(
-            assembler.status(of: FrameNumber(rawValue: 0)),
-            .recoverablePending(receivedShards: 1, dataShards: 2, parityShards: 1)
-        )
+        XCTAssertEqual(assembler.trackedGroupCount, 1)
         units += decodedUnits(assembler.ingest(
             envelope: shards[1].envelope, payload: shards[1].payload, now: t0
         ))
@@ -243,10 +240,6 @@ final class VideoAssemblerTests: XCTestCase {
         )))
         // Not fec-impossible yet: seq 2 (the parity) could still arrive.
         XCTAssertFalse(events.contains { if case .fecImpossible = $0 { true } else { false } })
-        XCTAssertEqual(
-            assembler.status(of: FrameNumber(rawValue: 0)),
-            .recoverablePending(receivedShards: 1, dataShards: 2, parityShards: 1)
-        )
 
         // Frame 2 pushes highest to 6: seq 2 is presumed lost too — now
         // one data shard is gone with no parity plausibly in flight.
@@ -269,9 +262,6 @@ final class VideoAssemblerTests: XCTestCase {
             FrameNumber(rawValue: 0),
             presumedLostDataShards: 1, bestCaseParityShards: 0
         )))
-        XCTAssertEqual(
-            assembler.status(of: FrameNumber(rawValue: 0)), .fecImpossible
-        )
         // Frames 1 and 2 decoded but held behind frame 0.
         XCTAssertTrue(decodedUnits(events).isEmpty)
 
@@ -351,7 +341,7 @@ final class VideoAssemblerTests: XCTestCase {
             now: t0.advanced(byMicroseconds: 250_000)
         )
         XCTAssertEqual(events, [.evicted(FrameNumber(rawValue: 0), reason: .stale)])
-        XCTAssertNil(assembler.status(of: FrameNumber(rawValue: 0)))
+        XCTAssertEqual(assembler.trackedGroupCount, 0)
     }
 
     func testCapacityEvictionPrefersTheOldestFrame() throws {
@@ -480,9 +470,9 @@ final class VideoAssemblerTests: XCTestCase {
                 )
             }
         }
-        XCTAssertEqual(
-            assembler.status(of: FrameNumber(rawValue: 0)), .fecImpossible
-        )
+        XCTAssertTrue(events.contains {
+            if case .fecImpossible(FrameNumber(rawValue: 0), _, _) = $0 { true } else { false }
+        })
 
         let heal = assembler.ingest(
             envelope: repairShard(of: shards0[1], freshSeq: 500).envelope,
@@ -600,7 +590,6 @@ final class VideoAssemblerTests: XCTestCase {
         // emitted; closing the hole completes the frame byte-exact.
         let frame = pFrame(3000, fill: 0x91)
         let shards = try packetize(frame, number: 0, firstSeq: 0)
-        let number = FrameNumber(rawValue: 0)
         var assembler = VideoAssembler()
         for index in [0, 2] {
             XCTAssertTrue(decodedUnits(assembler.ingest(
@@ -608,14 +597,12 @@ final class VideoAssemblerTests: XCTestCase {
                 payload: shards[index].payload, now: t0
             )).isEmpty)
         }
-        XCTAssertEqual(assembler.status(of: number), .recoverablePending(
-            receivedShards: 2, dataShards: 3, parityShards: 2
-        ))
+        XCTAssertEqual(assembler.trackedGroupCount, 1)
         let units = decodedUnits(assembler.ingest(
             envelope: shards[1].envelope, payload: shards[1].payload, now: t0
         ))
         XCTAssertEqual(units.map(\.annexB), [frame])
-        XCTAssertNil(assembler.status(of: number), "decoded group leaves the tracker")
+        XCTAssertEqual(assembler.trackedGroupCount, 0, "decoded group leaves the tracker")
     }
 
     func testSweepSettlesOnceAbsentSeqsAreWrittenOff() throws {
@@ -626,16 +613,17 @@ final class VideoAssemblerTests: XCTestCase {
         var assembler = VideoAssembler(config: VideoAssemblerConfig(
             fecImpossibleThresholdPackets: 4
         ))
-        _ = assembler.ingest(
+        var written: [VideoAssemblerEvent] = assembler.ingest(
             envelope: shards0[0].envelope, payload: shards0[0].payload, now: t0
         )
         for shard in shards1 + shards2 {
-            _ = assembler.ingest(
+            written += assembler.ingest(
                 envelope: shard.envelope, payload: shard.payload, now: t0
             )
         }
-        XCTAssertEqual(
-            assembler.status(of: FrameNumber(rawValue: 0)), .fecImpossible)
+        XCTAssertTrue(written.contains {
+            if case .fecImpossible(FrameNumber(rawValue: 0), _, _) = $0 { true } else { false }
+        })
 
         // Further channel advance must not re-mint NACK/fec events for
         // a settled group — the latch is the early-out.

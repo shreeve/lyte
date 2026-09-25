@@ -89,10 +89,10 @@ final class PairingVectorFileTests: XCTestCase {
         let ybShare = try bytes(exchange.ybShareHex, "Yb")
         let k = try bytes(exchange.kHex, "K")
         XCTAssertEqual(
-            CPace.scalarMult(scalar: ya, element: generator), yaShare
+            CPace.scalarMultVfy(scalar: ya, element: generator), yaShare
         )
         XCTAssertEqual(
-            CPace.scalarMult(scalar: yb, element: generator), ybShare
+            CPace.scalarMultVfy(scalar: yb, element: generator), ybShare
         )
         XCTAssertEqual(
             CPace.scalarMultVfy(scalar: ya, element: ybShare), k

@@ -100,44 +100,12 @@ final class ChannelIdTests: XCTestCase {
         XCTAssertEqual(ChannelId.videoActive.rawValue, 2)
         XCTAssertEqual(ChannelId.feedback.rawValue, 3)
         XCTAssertEqual(ChannelId.videoIdle.rawValue, 4)
-    }
-
-    func testDeliveryClasses() {
-        XCTAssertEqual(ChannelId.ctrl.deliveryClass, .reliableOrdered)
-        XCTAssertEqual(ChannelId.audio.deliveryClass, .unreliable)
-        XCTAssertEqual(ChannelId.videoActive.deliveryClass, .unreliable)
-        XCTAssertEqual(ChannelId.feedback.deliveryClass, .unreliable)
-        XCTAssertEqual(ChannelId.videoIdle.deliveryClass, .reliableOneShotGroups)
-        XCTAssertEqual(
-            ChannelId(rawValue: 8).deliveryClass, .reliableOrdered
-        )
-    }
-
-    func testPriorityOrderIsTheUnifiedRuling() {
-        // CTRL > audio > fresh video > tail > refinement > feature >
-        // telemetry > bulk (the W10 rung: a file is infinitely
-        // patient; a stale congestion report is not).
-        let order: [WirePriority] = [
-            .control, .audio, .freshVideo, .videoTail, .refinement,
-            .feature, .telemetry, .bulk,
-        ]
-        XCTAssertEqual(order, order.sorted())
-        XCTAssertEqual(ChannelId.ctrl.priority, .control)
-        XCTAssertEqual(ChannelId.audio.priority, .audio)
-        XCTAssertEqual(ChannelId.videoActive.priority, .freshVideo)
-        XCTAssertEqual(ChannelId.videoIdle.priority, .videoTail)
-        XCTAssertEqual(ChannelId(rawValue: 9).priority, .feature)
-        XCTAssertEqual(ChannelId.feedback.priority, .telemetry)
-        XCTAssertEqual(ChannelId.bulkTransfer.priority, .bulk)
         XCTAssertEqual(ChannelId.bulkTransfer.rawValue, 8)
     }
 
-    func testReservedRangeHasNoPolicy() {
+    func testReservedRange() {
         for raw: UInt8 in 5...7 {
-            let channel = ChannelId(rawValue: raw)
-            XCTAssertTrue(channel.isReserved)
-            XCTAssertNil(channel.deliveryClass)
-            XCTAssertNil(channel.priority)
+            XCTAssertTrue(ChannelId(rawValue: raw).isReserved)
         }
         XCTAssertFalse(ChannelId.videoIdle.isReserved)
         XCTAssertFalse(ChannelId(rawValue: 8).isReserved)
@@ -152,17 +120,9 @@ final class ChannelIdTests: XCTestCase {
         XCTAssertEqual("\(ChannelId(rawValue: 255))", "feature")
     }
 
-    func testFeatureChannels() {
-        XCTAssertNil(ChannelId.feature(7))
-        XCTAssertEqual(ChannelId.feature(8)?.rawValue, 8)
-        XCTAssertEqual(ChannelId.feature(255)?.rawValue, 255)
-        XCTAssertTrue(ChannelId(rawValue: 8).isFeature)
-        XCTAssertFalse(ChannelId.videoIdle.isFeature)
-    }
-
     func testWireVersion() {
         XCTAssertEqual(WireVersion.major, 1)
-        // The reserved TLV slots the handshake (W5) will fill.
+        // The reserved TLV slots.
         XCTAssertEqual(WireExtension.ReservedType.connectionId, 0x01)
         XCTAssertEqual(WireExtension.ReservedType.wireVersion, 0x02)
     }

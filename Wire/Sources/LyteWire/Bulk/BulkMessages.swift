@@ -59,21 +59,6 @@ public enum BulkTransferId {
     }
 }
 
-// MARK: - The capability spine helpers (key 11)
-
-extension Capabilities {
-    /// True when this set carries `bulkTransfer: true` (key 11) — see
-    /// `declaresFlag(_:)`.
-    public var bulkTransfer: Bool {
-        declaresFlag(CapabilityKey.bulkTransfer)
-    }
-
-    /// A copy of this set declaring `bulkTransfer`.
-    public func declaringBulkTransfer() -> Capabilities {
-        declaringFlag(CapabilityKey.bulkTransfer)
-    }
-}
-
 // MARK: - The chunk map
 
 /// Chunk possession, compressed: chunks `0…contiguousCount−1` are
@@ -135,26 +120,16 @@ public struct BulkChunkMap: Hashable, Sendable {
         normalized contiguous: UInt64, extras: Set<UInt64>
     ) -> BulkChunkMap {
         let windowBits = BulkWire.maxBitmapByteCount * 8
-        var bytes = [UInt8](repeating: 0, count: BulkWire.maxBitmapByteCount)
-        var highestBit = -1
-        func mark(_ bit: Int) {
-            bytes[bit / 8] |= 1 << (bit % 8)
-            highestBit = max(highestBit, bit)
-        }
-        if extras.count <= windowBits {
-            for index in extras {
-                let offset = index - contiguous - 1
-                // Under-claim past the window.
-                if offset < UInt64(windowBits) { mark(Int(offset)) }
-            }
+        let marked: [Int] = if extras.count <= windowBits {
+            // Under-claim past the window.
+            extras.map { $0 - contiguous - 1 }
+                .filter { $0 < UInt64(windowBits) }.map { Int($0) }
         } else {
-            for bit in 0..<windowBits
-            where extras.contains(contiguous &+ 1 &+ UInt64(bit)) {
-                mark(bit)
+            (0..<windowBits).filter {
+                extras.contains(contiguous &+ 1 &+ UInt64($0))
             }
         }
-        let bitmap = highestBit >= 0
-            ? Array(bytes[0...(highestBit / 8)]) : []
+        let bitmap = wireCanonicalBitmap(marked)
         // Both inputs were validated by construction; the throwing
         // init cannot actually fail on them.
         return (try? BulkChunkMap(
@@ -175,16 +150,12 @@ public struct BulkChunkMap: Hashable, Sendable {
     /// decoded map may place bits past `UInt64.max`; no chunk lives
     /// there, so those bits name nothing.
     public var bitmapChunkIndices: [UInt64] {
-        var indices: [UInt64] = []
-        for (byteOffset, byte) in bitmap.enumerated() {
-            for bit in 0..<8 where byte & (1 << bit) != 0 {
-                let (index, overflow) = contiguousCount.addingReportingOverflow(
-                    1 + UInt64(byteOffset * 8 + bit)
-                )
-                if !overflow { indices.append(index) }
-            }
+        wireBitmapOffsets(bitmap).compactMap {
+            let (index, overflow) = contiguousCount.addingReportingOverflow(
+                1 + UInt64($0)
+            )
+            return overflow ? nil : index
         }
-        return indices
     }
 
     var encodedByteCount: Int {

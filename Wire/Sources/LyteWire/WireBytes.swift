@@ -44,6 +44,49 @@ func wireReadLE<T: FixedWidthInteger & UnsignedInteger>(
     return value
 }
 
+/// The refusals every fixed-size message codec shares; its error enum's
+/// cases witness them.
+protocol FixedFrameError: Error {
+    static var truncatedMessage: Self { get }
+    static var trailingBytes: Self { get }
+    static func unexpectedType(_ type: UInt8) -> Self
+}
+
+/// Checks a fixed-size message in order: truncation, trailing bytes, then
+/// the type byte. Returns the type byte's index.
+func checkFixedFrame<E: FixedFrameError>(
+    _ payload: ArraySlice<UInt8>, type: UInt8, byteCount: Int, _: E.Type
+) throws -> Int {
+    guard payload.count >= byteCount else { throw E.truncatedMessage }
+    guard payload.count == byteCount else { throw E.trailingBytes }
+    let base = payload.startIndex
+    guard payload[base] == type else { throw E.unexpectedType(payload[base]) }
+    return base
+}
+
+/// The set bits of a little-endian bitmap (bit n is byte n / 8, bit
+/// n % 8), ascending.
+func wireBitmapOffsets(_ bitmap: some Collection<UInt8>) -> [Int] {
+    var offsets: [Int] = []
+    for (byteOffset, byte) in bitmap.enumerated() where byte != 0 {
+        for bit in 0..<8 where byte & (1 << bit) != 0 {
+            offsets.append(byteOffset * 8 + bit)
+        }
+    }
+    return offsets
+}
+
+/// The canonical bitmap marking `offsets`: sized by the highest one, so
+/// its final byte is never zero; empty when there are none.
+func wireCanonicalBitmap(_ offsets: some Collection<Int>) -> [UInt8] {
+    guard let highest = offsets.max() else { return [] }
+    var bytes = [UInt8](repeating: 0, count: highest / 8 + 1)
+    for offset in offsets {
+        bytes[offset / 8] |= 1 << (offset % 8)
+    }
+    return bytes
+}
+
 /// A forward cursor over received bytes in which every read is bounds-
 /// checked: it returns the field or throws the codec's own truncation
 /// error, so a decoder built on it cannot index past its input.

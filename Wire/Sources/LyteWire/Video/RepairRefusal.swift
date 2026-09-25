@@ -66,16 +66,10 @@ public struct RepairRefusal: Hashable, Sendable, SliceDecodable {
     public static func decode(
         _ payload: ArraySlice<UInt8>
     ) throws -> RepairRefusal {
-        guard payload.count >= encodedByteCount else {
-            throw RepairRefusalError.truncatedMessage
-        }
-        guard payload.count == encodedByteCount else {
-            throw RepairRefusalError.trailingBytes
-        }
-        let base = payload.startIndex
-        guard payload[base] == CtrlMessageType.repairRefused else {
-            throw RepairRefusalError.unexpectedType(payload[base])
-        }
+        let base = try checkFixedFrame(
+            payload, type: CtrlMessageType.repairRefused,
+            byteCount: encodedByteCount, RepairRefusalError.self
+        )
         guard let reason = RepairRefusalReason(
             rawValue: payload[base + 5]
         ) else {
@@ -90,7 +84,7 @@ public struct RepairRefusal: Hashable, Sendable, SliceDecodable {
 
 /// Everything the repair-refusal codec can refuse. Hostile bytes throw,
 /// never trap.
-public enum RepairRefusalError: Error, Hashable, Sendable {
+public enum RepairRefusalError: FixedFrameError, Hashable, Sendable {
     case truncatedMessage
     case trailingBytes
     case unexpectedType(UInt8)

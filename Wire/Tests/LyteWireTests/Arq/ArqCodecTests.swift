@@ -43,12 +43,7 @@ final class ArqCodecTests: XCTestCase {
         XCTAssertEqual(Hex.string(ack.encode()), "08000100050003020105")
         let decoded = try ArqFrame.decodeAll(ack.encode())
         XCTAssertEqual(decoded, [.ack(ack)])
-        // Bitmap bits 0 and 2 name the seqs one and three past the
-        // cumulative.
-        XCTAssertEqual(
-            ack.blocks[0].bitmapSeqs.map(\.rawValue),
-            [0x0204, 0x0206]
-        )
+        // Bitmap bit 2 names the seq three past the cumulative.
         XCTAssertEqual(ack.blocks[0].highestReported.rawValue, 0x0206)
     }
 
@@ -59,7 +54,6 @@ final class ArqCodecTests: XCTestCase {
             cumulative: ArqSegmentSeq(rawValue: 41)
         )
         XCTAssertEqual(block.highestReported.rawValue, 41)
-        XCTAssertEqual(block.bitmapSeqs, [])
     }
 
     func testCoalescedFrameSequence() throws {
@@ -75,7 +69,7 @@ final class ArqCodecTests: XCTestCase {
             endOfMessage: true,
             body: [1, 2, 3, 4]
         )
-        let payload = try ArqFrame.encodeAll([.ack(ack), .segment(seg)])
+        let payload = ack.encode() + seg.encode()
         XCTAssertEqual(
             try ArqFrame.decodeAll(payload),
             [.ack(ack), .segment(seg)]
@@ -198,7 +192,7 @@ final class ArqCodecTests: XCTestCase {
                 receivedBitmap: [0xFF, 0x01]
             )
         ])
-        let payload = try ArqFrame.encodeAll([.ack(ack), .segment(seg)])
+        let payload = ack.encode() + seg.encode()
         for cut in 0..<payload.count {
             _ = try? ArqFrame.decodeAll(Array(payload.prefix(cut)))
         }

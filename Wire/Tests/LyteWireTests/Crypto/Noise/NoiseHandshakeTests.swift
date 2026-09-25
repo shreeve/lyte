@@ -38,8 +38,6 @@ final class NoiseHandshakeTests: XCTestCase {
 
         XCTAssertTrue(client.isComplete)
         XCTAssertTrue(host.isComplete)
-        XCTAssertEqual(client.negotiatedVersion, WireVersion.major)
-        XCTAssertEqual(host.negotiatedVersion, WireVersion.major)
 
         // Mutual authentication artifacts: each end holds the other's
         // static, ready to check against the paired set.
@@ -111,7 +109,6 @@ final class NoiseHandshakeTests: XCTestCase {
                 )
             )
         }
-        XCTAssertNil(host.negotiatedVersion)
         // The rejected message left no trace: the responder cannot
         // answer it or derive keys from it, and a genuine message 1
         // still completes.
@@ -147,7 +144,6 @@ final class NoiseHandshakeTests: XCTestCase {
         }
         // Keys never exist for a mismatched answer.
         XCTAssertFalse(client.isComplete)
-        XCTAssertNil(client.negotiatedVersion)
         XCTAssertThrowsError(try client.makeTransport())
     }
 

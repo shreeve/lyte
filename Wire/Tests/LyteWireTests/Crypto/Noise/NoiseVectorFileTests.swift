@@ -205,8 +205,6 @@ final class NoiseVectorFileTests: XCTestCase {
         let message2 = try host.writeMessage2()
         XCTAssertEqual(Hex.string(message2), vector.message2Hex, vector.name)
         XCTAssertEqual(try client.readMessage2(message2[...]), [], vector.name)
-        XCTAssertEqual(client.negotiatedVersion, WireVersion.major)
-        XCTAssertEqual(host.negotiatedVersion, WireVersion.major)
         XCTAssertEqual(
             Hex.string(client.handshakeHash), vector.handshakeHashHex, vector.name
         )

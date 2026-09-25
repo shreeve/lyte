@@ -21,21 +21,6 @@
 // Unknown states, trailing bytes and truncation all throw; never traps on
 // hostile bytes.
 
-// MARK: - The capability spine helpers
-
-extension Capabilities {
-    /// True when this set carries `audioQuietPosture: true` (key 15) — see
-    /// `declaresFlag(_:)`.
-    public var audioQuietPosture: Bool {
-        declaresFlag(CapabilityKey.audioQuietPosture)
-    }
-
-    /// A copy of this set declaring `audioQuietPosture`.
-    public func declaringAudioQuietPosture() -> Capabilities {
-        declaringFlag(CapabilityKey.audioQuietPosture)
-    }
-}
-
 // MARK: - The CTRL codec
 
 /// The host's audio track-state announcement (type 0x25).

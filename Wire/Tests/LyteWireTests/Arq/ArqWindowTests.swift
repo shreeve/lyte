@@ -62,10 +62,12 @@ final class ArqWindowTests: XCTestCase {
                 block.highestReported.rawValue, UInt16(buffered),
                 "\(buffered) buffered segments"
             )
-            XCTAssertEqual(
-                block.bitmapSeqs.map(\.rawValue),
-                (1...buffered).map { UInt16($0) }
-            )
+            // Seqs 1…buffered sit at offsets 1…buffered past 0xFFFF.
+            var expected = [UInt8](repeating: 0, count: buffered / 8 + 1)
+            for offset in 1...buffered {
+                expected[offset / 8] |= 1 << (offset % 8)
+            }
+            XCTAssertEqual(block.receivedBitmap, expected)
         }
     }
 

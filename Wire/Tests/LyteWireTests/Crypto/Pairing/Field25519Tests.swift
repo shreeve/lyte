@@ -74,8 +74,6 @@ final class Field25519Tests: XCTestCase {
         XCTAssertEqual(Fe25519.fromBytes(Self.pBytes).isZeroMask, UInt64.max)
         XCTAssertEqual(Fe25519.one.isZeroMask, 0)
         XCTAssertEqual(Fe25519.fromBytes(pPlus(1)).isZeroMask, 0)
-        XCTAssertTrue(Fe25519.zero.isZero)
-        XCTAssertFalse(Fe25519.one.isZero)
     }
 
     func testSelectPicksByMask() {
@@ -96,8 +94,8 @@ final class Field25519Tests: XCTestCase {
             (0..<32).map { UInt8(truncatingIfNeeded: 0x61 &+ $0) }
         )
         // x − x = 0, x + (−x) = 0, x · 1 = x.
-        XCTAssertTrue(Fe25519.sub(x, x).isZero)
-        XCTAssertTrue(Fe25519.add(x, Fe25519.neg(x)).isZero)
+        XCTAssertTrue(Fe25519.sub(x, x).isZeroMask == .max)
+        XCTAssertTrue(Fe25519.add(x, Fe25519.neg(x)).isZeroMask == .max)
         XCTAssertEqual(Fe25519.mul(x, .one).toBytes(), x.toBytes())
         // (p − 1) + 2 = 1: the wrap through the modulus.
         var pMinusOne = Self.pBytes
@@ -110,7 +108,7 @@ final class Field25519Tests: XCTestCase {
         let inverse = Fe25519.pow(x, exponent: Fe25519.inversionExponent)
         XCTAssertEqual(Fe25519.mul(x, inverse).toBytes(), littleEndian(1))
         XCTAssertTrue(
-            Fe25519.pow(.zero, exponent: Fe25519.inversionExponent).isZero
+            Fe25519.pow(.zero, exponent: Fe25519.inversionExponent).isZeroMask == .max
         )
         // Legendre: a square (4) → 1; a known non-square (2) → p − 1.
         XCTAssertEqual(

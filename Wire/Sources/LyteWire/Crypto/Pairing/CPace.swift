@@ -123,14 +123,6 @@ public enum CPace {
             ?? neutralElement
     }
 
-    /// G.scalar_mult — same function for G_X25519 (§8.2); the alias
-    /// keeps call sites reading against the draft.
-    public static func scalarMult(
-        scalar: [UInt8], element: [UInt8]
-    ) -> [UInt8] {
-        scalarMultVfy(scalar: scalar, element: element)
-    }
-
     // MARK: Key derivation (draft §7.2, §10.4)
 
     /// ISK = H(lv_cat(G.DSI ‖ b"_ISK", sid, K) ‖ transcript) — the full

@@ -120,11 +120,11 @@ final class CPaceCoreTests: XCTestCase {
             prs: Self.prs, ci: Self.ci, sid: Self.sid
         )
         XCTAssertEqual(
-            CPace.scalarMult(scalar: Self.ya, element: generator),
+            CPace.scalarMultVfy(scalar: Self.ya, element: generator),
             Self.yaShare
         )
         XCTAssertEqual(
-            CPace.scalarMult(scalar: Self.yb, element: generator),
+            CPace.scalarMultVfy(scalar: Self.yb, element: generator),
             Self.ybShare
         )
     }

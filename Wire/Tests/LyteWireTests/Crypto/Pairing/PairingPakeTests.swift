@@ -40,9 +40,12 @@ final class PairingPakeTests: XCTestCase {
 
     // MARK: Secret hygiene
 
-    /// Byte arrays anywhere in a value's stored state (one level deep).
+    /// Byte arrays anywhere in a value's stored state, at any depth.
     private func storedByteArrays(_ value: Any) -> [[UInt8]] {
-        Mirror(reflecting: value).children.compactMap { $0.value as? [UInt8] }
+        Mirror(reflecting: value).children.flatMap { child in
+            (child.value as? [UInt8]).map { [$0] }
+                ?? storedByteArrays(child.value)
+        }
     }
 
     /// Once the scalar has been used against the peer share, neither
@@ -67,12 +70,17 @@ final class PairingPakeTests: XCTestCase {
         try responder.receiveConfirm(try initiator.receiveShareB(shareB))
         XCTAssertFalse(storedByteArrays(initiator).contains(scalarA))
         XCTAssertNotNil(initiator.result)
-        // The responder keeps only public 32-byte values — the session
-        // id, the client static to pin, its own share — never the
-        // PIN-derived generator.
-        XCTAssertEqual(
-            storedByteArrays(responder).filter { $0.count == 32 }.count, 3
+        // Neither role keeps the PIN-derived generator.
+        let generator = CPace.calculateGenerator(
+            prs: Self.pin,
+            ci: CPace.lvCat(
+                Array("lyte-pairing-v1".utf8), Self.clientStatic,
+                Self.hostStatic
+            ),
+            sid: Self.handshakeHash
         )
+        XCTAssertFalse(storedByteArrays(initiator).contains(generator))
+        XCTAssertFalse(storedByteArrays(responder).contains(generator))
     }
 
     /// Printing a pairing result or a key pair never prints the secret.

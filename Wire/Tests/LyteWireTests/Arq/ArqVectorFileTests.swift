@@ -26,7 +26,7 @@ final class ArqVectorFileTests: XCTestCase {
                 let decoded = try ArqFrame.decodeAll(payload)
                 XCTAssertEqual(decoded, expected, vector.name)
                 XCTAssertEqual(
-                    try ArqFrame.encodeAll(decoded), payload,
+                    decoded.flatMap { $0.encode() }, payload,
                     "\(vector.name): re-encode is not byte-exact"
                 )
             case .decodeLenient:
@@ -34,7 +34,7 @@ final class ArqVectorFileTests: XCTestCase {
                 let decoded = try ArqFrame.decodeAll(payload)
                 XCTAssertEqual(decoded, expected, vector.name)
                 XCTAssertNotEqual(
-                    try ArqFrame.encodeAll(decoded), payload,
+                    decoded.flatMap { $0.encode() }, payload,
                     "\(vector.name): lenient decode re-encoded identically"
                 )
             case .decodeReject:

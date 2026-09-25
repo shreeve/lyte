@@ -47,16 +47,10 @@ public struct IdrRequest: Hashable, Sendable, SliceDecodable {
     /// Decodes a whole CTRL payload (type byte first). Throws on the wrong
     /// type, truncation, and trailing bytes; never traps on hostile bytes.
     public static func decode(_ payload: ArraySlice<UInt8>) throws -> IdrRequest {
-        guard payload.count >= encodedByteCount else {
-            throw IdrRequestError.truncatedMessage
-        }
-        guard payload.count == encodedByteCount else {
-            throw IdrRequestError.trailingBytes
-        }
-        let base = payload.startIndex
-        guard payload[base] == CtrlMessageType.idrRequest else {
-            throw IdrRequestError.unexpectedType(payload[base])
-        }
+        let base = try checkFixedFrame(
+            payload, type: CtrlMessageType.idrRequest,
+            byteCount: encodedByteCount, IdrRequestError.self
+        )
         return IdrRequest(
             requestSeq: wireReadLE(payload, at: base + 1),
             frame: FrameNumber(rawValue: wireReadLE(payload, at: base + 5)),
@@ -65,7 +59,7 @@ public struct IdrRequest: Hashable, Sendable, SliceDecodable {
     }
 }
 
-public enum IdrRequestError: Error, Equatable, Sendable {
+public enum IdrRequestError: FixedFrameError, Equatable, Sendable {
     case truncatedMessage
     case trailingBytes
     case unexpectedType(UInt8)

@@ -392,10 +392,6 @@ final class BulkCodecTests: XCTestCase {
         XCTAssertEqual(CtrlMessageType.bulkAbort, 0x21)
         XCTAssertEqual(CapabilityKey.bulkTransfer, 11)
         XCTAssertEqual(ChannelId.bulkTransfer.rawValue, 8)
-        XCTAssertEqual(
-            ChannelId.bulkTransfer.deliveryClass, .reliableOrdered
-        )
-        XCTAssertEqual(ChannelId.bulkTransfer.priority, .bulk)
     }
 
     func testCapabilityKey11Spine() throws {

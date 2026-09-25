@@ -12,10 +12,10 @@
 // the first payload lives in NoiseSession, so published test vectors
 // (arbitrary payloads) drive this layer byte-for-byte.
 
-/// An X25519 key pair in raw 32-byte form. Static keys live in platform
-/// keystores (shell territory); this type only carries bytes.
 import LyteCore
 
+/// An X25519 key pair in raw 32-byte form. Static keys live in platform
+/// keystores (shell territory); this type only carries bytes.
 public struct NoiseKeyPair: Sendable {
     public let privateKey: [UInt8]
     public let publicKey: [UInt8]
