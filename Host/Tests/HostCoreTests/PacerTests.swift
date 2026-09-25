@@ -1,5 +1,6 @@
 import XCTest
 @testable import HostCore
+import LyteWireTestKit
 
 // Deterministic pacer tests on a simulated monotonic clock. All times are
 // nanoseconds; the sim advances to exactly the pacer's `nextWake` or the
@@ -340,23 +341,12 @@ final class PacerTests: XCTestCase {
 
     // MARK: - Property tests (seeded random arrivals)
 
-    private struct SplitMix64 {
-        var state: UInt64
-        mutating func next() -> UInt64 {
-            state &+= 0x9E3779B97F4A7C15
-            var z = state
-            z = (z ^ (z >> 30)) &* 0xBF58476D1CE4E5B9
-            z = (z ^ (z >> 27)) &* 0x94D049BB133111EB
-            return z ^ (z >> 31)
-        }
-        mutating func below(_ n: Int) -> Int { Int(next() % UInt64(n)) }
-    }
-
     func testPropertiesUnderSeededRandomArrivals() {
         let rate = 12_000_000 // burst = 1,500 B per quantum
         let classes = PacerClass.allCases
         for seed: UInt64 in [1, 7, 42, 20260720, 0xDEADBEEF] {
-            var rng = SplitMix64(state: seed)
+            var rng = SplitMix64(seed: seed)
+            func below(_ n: Int) -> Int { Int(rng.next() % UInt64(n)) }
             let pacer = Pacer(rateBitsPerSecond: rate, now: 0)
 
             // ~55% offered load over 400 ms so the lowest class must not
@@ -364,13 +354,13 @@ final class PacerTests: XCTestCase {
             var arrivals: [Arrival] = []
             var offered = 0
             while offered < 320_000 {
-                let bytes = 1 + rng.below(1400)
+                let bytes = 1 + below(1400)
                 arrivals.append(Arrival(
-                    at: UInt64(rng.below(400)) * ms + UInt64(rng.below(1_000_000)),
-                    cls: classes[rng.below(classes.count)],
+                    at: UInt64(below(400)) * ms + UInt64(below(1_000_000)),
+                    cls: classes[below(classes.count)],
                     bytes: bytes,
-                    frameID: UInt32(rng.below(100)),
-                    urgent: rng.below(10) == 0))
+                    frameID: UInt32(below(100)),
+                    urgent: below(10) == 0))
                 offered += bytes
             }
 

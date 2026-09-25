@@ -28,6 +28,7 @@ var targets: [Target] = [
         dependencies: [
             "HostCore",
             .product(name: "LyteCore", package: "Common"),
+            .product(name: "LyteWireTestKit", package: "Wire"),
         ]
     ),
     .target(
@@ -76,6 +77,13 @@ var targets: [Target] = [
         dependencies: [
             "HostWire",
             .product(name: "LyteCore", package: "Common"),
+            .product(name: "LyteWire", package: "Wire"),
+        ]
+    ),
+    .testTarget(
+        name: "HostIOTests",
+        dependencies: [
+            "HostIO",
             .product(name: "LyteWire", package: "Wire"),
         ]
     ),
