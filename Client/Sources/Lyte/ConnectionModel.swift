@@ -185,11 +185,23 @@ final class ConnectionModel {
     /// The host's stream dimensions, from the first delivered sample —
     /// the input capture's coordinate space (absolute moves drop until
     /// it is known).
-    private(set) var lyteVideoSize: CGSize = .zero
+    var lyteVideoSize: CGSize = .zero {
+        didSet { wearHostCursor() }
+    }
     var lyteInputCapture: LyteInputCapture?
     /// The stream surface, held weakly so the model can dress it with
     /// the host's announced cursor (StreamView installs it).
-    weak var lyteVideoView: VideoLayerView?
+    weak var lyteVideoView: VideoLayerView? {
+        didSet {
+            lyteVideoView?.onResize = { [weak self] in self?.wearHostCursor() }
+            wearHostCursor()
+        }
+    }
+    /// The host's last announced cursor shape (0x24); nil wears AppKit's
+    /// own arrow.
+    @ObservationIgnored private var hostCursorShape: CursorShape? {
+        didSet { wearHostCursor() }
+    }
 
     // MARK: - Derived
 
@@ -560,7 +572,7 @@ final class ConnectionModel {
         lyteInputCapture = nil
         // Back to AppKit's own arrow — a dead session must not leave the
         // host's shape (or its hidden state) stuck on.
-        lyteVideoView?.hostCursor = nil
+        hostCursorShape = nil
         if lyteSession != nil {
             detachWireSession(.goodbye)
         } else {
@@ -645,7 +657,7 @@ final class ConnectionModel {
             // Already through the core's gates; the glue just applies.
             pasteboardSync?.apply(text)
         case .hostCursorShapeChanged(let shape):
-            applyHostCursor(shape)
+            hostCursorShape = shape
         case .hostClipboardImageChanged(let data, _):
             // Sha-verified PNG through the core's gates; the glue applies.
             pasteboardSync?.apply(imageData: data)
@@ -765,8 +777,12 @@ final class ConnectionModel {
     /// Wears the host's announced cursor, scaled from host device pixels
     /// to the video's on-glass points through the aspect-fit rect; 0.75
     /// approximates the host's 1.333 logical scale before the first sample.
-    private func applyHostCursor(_ shape: CursorShape) {
+    private func wearHostCursor() {
         guard let view = lyteVideoView else { return }
+        guard let shape = hostCursorShape else {
+            view.hostCursor = nil
+            return
+        }
         var scale: CGFloat = 0.75
         if lyteVideoSize.width > 0, view.bounds.width > 0 {
             let fit = AVMakeRect(aspectRatio: lyteVideoSize, insideRect: view.bounds)

@@ -108,7 +108,11 @@ BUNDLE_VERSION="$(
   Scripts/next-bundle-version.sh \
     "$PREVIOUS_BUNDLE_VERSION" "$SOURCE_VERSION_FLOOR"
 )"
-SHORT_VERSION=0.5.0
+# A development bundle reports the release it follows.
+SHORT_VERSION="$(git describe --tags --abbrev=0 \
+  --match 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null | sed 's/^v//')"
+printf '%s\n' "$SHORT_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
+  || SHORT_VERSION=0.0.0
 # A release (Scripts/release.sh) sets LYTE_RELEASE_VERSION=X.Y.Z: it becomes
 # the version people see, and only a release bundle carries the update feed
 # and key, so a development build never checks for updates. Sparkle orders
@@ -156,9 +160,10 @@ mkdir -p "$STAGED_APP/Contents/MacOS" \
   "$STAGED_APP/Contents/Frameworks" \
   "$STAGED_APP/Contents/Library/LaunchDaemons"
 cp ".build/$CONFIG/Lyte" "$STAGED_APP/Contents/MacOS/Lyte"
-# Sparkle is a binary framework the app links from @rpath. Lyte is not
-# sandboxed, so Sparkle's XPC services never run (SUEnableInstallerLauncherService
-# is off); they are dropped rather than signed and shipped.
+# Sparkle is a binary framework the app links from @rpath, thinned to the
+# app's one architecture. Lyte is not sandboxed, so Sparkle's XPC services
+# never run (SUEnableInstallerLauncherService is off); they are dropped
+# rather than signed and shipped.
 SPARKLE_FRAMEWORK="$(find .build/artifacts/sparkle -type d -name Sparkle.framework \
   -path '*macos-arm64*' 2>/dev/null | head -1)"
 if [ -z "$SPARKLE_FRAMEWORK" ]; then
@@ -166,6 +171,11 @@ if [ -z "$SPARKLE_FRAMEWORK" ]; then
   exit 1
 fi
 ditto "$SPARKLE_FRAMEWORK" "$STAGED_APP/Contents/Frameworks/Sparkle.framework"
+for binary in Sparkle Autoupdate Updater.app/Contents/MacOS/Updater; do
+  lipo -thin arm64 \
+    "$STAGED_APP/Contents/Frameworks/Sparkle.framework/Versions/B/$binary" \
+    -output "$STAGED_APP/Contents/Frameworks/Sparkle.framework/Versions/B/$binary"
+done
 rm -rf "$STAGED_APP/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices" \
   "$STAGED_APP/Contents/Frameworks/Sparkle.framework/XPCServices"
 install_name_tool -add_rpath "@executable_path/../Frameworks" \

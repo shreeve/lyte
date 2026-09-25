@@ -12,8 +12,8 @@ this; it deploys with `Host/Scripts/deploy-host.sh`
 | --- | --- | --- |
 | Install | `shreeve/homebrew-tap` → `Casks/lyte.rb` | `brew install --cask shreeve/tap/lyte` downloads the release's `Lyte-X.Y.Z.zip` into `/Applications`. `auto_updates true` leaves updating to Sparkle; `livecheck` reads the same feed. |
 | Updater | `Client/Sources/Lyte/AppUpdater.swift` | Starts Sparkle only in a bundle whose Info.plist has `SUFeedURL` and `SUPublicEDKey` and is not a diagnostic build; adds **Lyte → Check for Updates…**. Sparkle owns the rest: the first-run "check automatically?" prompt, the update window, install on quit, relaunch. |
-| Bundle | `Scripts/make-app.sh` | Embeds `Sparkle.framework` (without its XPC services: Lyte is not sandboxed) and signs it with the app's identity. Only `LYTE_RELEASE_VERSION=X.Y.Z` adds the feed URL and the public key, so a development build never checks. |
-| Signing | `Scripts/sign-dev.sh` | Development: the Apple Development identity. Releases: `LYTE_SIGNING_IDENTITY="Developer ID Application: …"`, with a secure timestamp and a team-anchored requirement. |
+| Bundle | `Scripts/make-app.sh` | Embeds `Sparkle.framework`, thinned to arm64 and without its XPC services (Lyte is not sandboxed), and signs it with the app's identity. Only `LYTE_RELEASE_VERSION=X.Y.Z` adds the feed URL and the public key, so a development build never checks. |
+| Signing | `Scripts/sign-dev.sh` | Development: the Apple Development identity, else the self-signed Lyte Dev, whose app alone carries `disable-library-validation` so it can load Sparkle ([MACOS-SIGNING.md](MACOS-SIGNING.md#hardened-runtime)). Releases: `LYTE_SIGNING_IDENTITY="Developer ID Application: …"`, with a secure timestamp and a team-anchored requirement. |
 | Release | `Scripts/release.sh` | Builds with the Developer ID, notarizes and staples, zips, writes and signs `appcast.xml`, and publishes the tagged GitHub release. |
 | Feed | `appcast.xml` on the latest release | `SUFeedURL` is `https://github.com/shreeve/lyte/releases/latest/download/appcast.xml`. |
 | Key | `Client/Updates/sparkle-public-key.txt` | The public half of the update-signing key; the private half is in the login keychain under the account `lyte`. |
@@ -32,7 +32,8 @@ per-build hash, so the Local Network permission and the helper's approval
 carry across updates, and `HelperRegistration` re-registers the embedded
 helper when an update replaced it.
 
-Versions: `CFBundleShortVersionString` is the release's `X.Y.Z`;
+Versions: `CFBundleShortVersionString` is the release's `X.Y.Z`, and a
+development build's is the newest `vX.Y.Z` tag it descends from;
 `CFBundleVersion` stays `make-app.sh`'s increasing build number, which is
 what Sparkle orders updates by.
 

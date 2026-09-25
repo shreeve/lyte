@@ -15,11 +15,12 @@ for binary in "$@"; do
         Darwin)
             dependencies="$(otool -L "$binary")"
             while IFS= read -r dependency; do
-                # Sparkle is the one embedded framework: the app ships its
-                # own signed copy in Contents/Frameworks (make-app.sh).
-                case "$dependency" in
-                    /usr/lib/*|/System/Library/*) ;;
-                    @rpath/Sparkle.framework/Versions/B/Sparkle) ;;
+                # Sparkle is the one embedded framework and only the app
+                # links it, from its own signed copy in Contents/Frameworks
+                # (make-app.sh).
+                case "$(basename "$binary"):$dependency" in
+                    *:/usr/lib/*|*:/System/Library/*) ;;
+                    Lyte:@rpath/Sparkle.framework/Versions/B/Sparkle) ;;
                     *)
                         echo "hermetic linkage FAILED: ambient dependency in $binary" >&2
                         printf '%s\n' "$dependencies" >&2

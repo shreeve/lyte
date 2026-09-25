@@ -56,13 +56,9 @@ let package = Package(
                 .product(name: "LyteWire", package: "Wire"),
             ]
         ),
-        // The corpus/diagnostic harness: authored corpus
-        // frames, gate math (PSNR/SSIM/patch/grating), PNG IO, the
-        // VTDecompressionSession readback tap, and the quality-readback
-        // scorer. Diagnostic surfaces only — lyte-cli's corpus commands,
-        // the app's diagnostic-build benchmark, and the gate tests. Kept out of
-        // LyteTransport so the production streaming stack carries no
-        // harness code.
+        // The diagnostic benchmark's quality readback, PSNR/SSIM and
+        // synthetic motion reference. Kept out of LyteTransport so the
+        // production streaming stack carries no harness code.
         .target(name: "LyteCorpus"),
         .target(name: "LyteUI"),
         .target(name: "LyteHelperProtocol"),
@@ -91,7 +87,6 @@ let package = Package(
                 "LyteClientCore",
                 "LyteClientSession",
                 "LyteTransport",
-                "LyteCorpus",
                 .product(name: "LyteCore", package: "Common"),
                 .product(name: "LyteIO", package: "Common"),
                 .product(name: "LyteWire", package: "Wire"),
@@ -133,7 +128,7 @@ let package = Package(
             name: "LyteCLITests",
             dependencies: [
                 "lyte-cli",
-                "LyteCorpus",
+                .product(name: "LyteCore", package: "Common"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
@@ -153,18 +148,12 @@ let package = Package(
                 .product(name: "LyteWire", package: "Wire"),
             ]
         ),
-        // The corpus harness, quality scorer and synthetic motion
-        // reference — the slow diagnostic legs, apart from the transport's.
         .testTarget(
             name: "LyteCorpusTests",
             dependencies: [
                 "LyteCorpus",
-                "LyteTransport",
-                "LyteClientTestKit",
                 .product(name: "LyteCore", package: "Common"),
-                .product(name: "LyteWire", package: "Wire"),
-            ],
-            exclude: ["Fixtures"]
+            ]
         ),
         .testTarget(
             name: "LyteTransportTests",

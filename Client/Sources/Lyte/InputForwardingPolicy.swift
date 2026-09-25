@@ -14,6 +14,9 @@ import LyteWire
 ///   back until a forwarded key or button joins it, then sent first; a ⌘
 ///   used only for local (AppKit) shortcuts is never seen by the host, so
 ///   no lone Super tap (GNOME's Activities toggle) leaks out.
+/// - ⌘ with a letter is the Mac's Control chord: the host gets Ctrl with
+///   the letter and whatever else is held (⌘⇧Z is Ctrl+Shift+Z), never
+///   Super. The Ctrl it adds is released with the last such letter.
 /// - Local shortcuts stay local; auto-repeats never cross (the wire has
 ///   no repeat value — a down without its up wedges a key), and a key the
 ///   host holds never becomes a local shortcut by repeating under ⌘.
@@ -44,6 +47,10 @@ struct InputForwardingPolicy {
     /// Left and right Shift, Control and Option — the modifiers that ride
     /// to the host as themselves.
     static let plainModifierKeycodes: Set<UInt32> = [42, 54, 29, 97, 56, 100]
+    /// KEY_LEFTCTRL and KEY_RIGHTCTRL.
+    static let controlKeycodes: Set<UInt32> = [29, 97]
+    /// The evdev positions of the letters A–Z.
+    static let letterKeycodes = Set<UInt32>(16...25).union(30...38).union(44...50)
 
     /// evdev key codes the host believes are down.
     private(set) var heldKeys: Set<UInt32> = []
@@ -53,6 +60,9 @@ struct InputForwardingPolicy {
     private(set) var pendingCommandKeys: Set<UInt32> = []
     /// The evdev code each forwarded press went out as, by Mac key code.
     private(set) var pressedAs: [UInt16: UInt32] = [:]
+    /// Letters held in a ⌘ chord that pressed KEY_LEFTCTRL on the host
+    /// for them; that Ctrl is down exactly while this is non-empty.
+    private(set) var controlChordKeys: Set<UInt32> = []
     /// The host's Caps Lock as this capture has driven it.
     private(set) var hostCapsLock = false
 
@@ -80,7 +90,19 @@ struct InputForwardingPolicy {
         var sends: [InputEvent.Body] = []
         if let capsLockOn { sends += syncCapsLock(capsLockOn) }
         sends += resyncModifiers(modifiersDown)
-        sends += resyncCommand(held: commandHeld)
+        if commandHeld, Self.letterKeycodes.contains(code) {
+            sends += holdBackCommand()
+            // A physically held Ctrl already makes the chord.
+            if !controlChordKeys.isEmpty
+                || heldKeys.isDisjoint(with: Self.controlKeycodes) {
+                if controlChordKeys.isEmpty {
+                    sends.append(.keyKeycode(keycode: 29, pressed: true))
+                }
+                controlChordKeys.insert(code)
+            }
+        } else {
+            sends += resyncCommand(held: commandHeld)
+        }
         sends.append(.keyKeycode(keycode: code, pressed: true))
         heldKeys.insert(code)
         if let macKeyCode { pressedAs[macKeyCode] = code }
@@ -93,9 +115,11 @@ struct InputForwardingPolicy {
         let pressed = macKeyCode.flatMap { pressedAs.removeValue(forKey: $0) }
         guard let code = pressed ?? mapped else { return .passThrough }
         if heldKeys.remove(code) != nil {
-            return Verdict(
-                sends: [.keyKeycode(keycode: code, pressed: false)],
-                consumed: true)
+            var sends: [InputEvent.Body] = [.keyKeycode(keycode: code, pressed: false)]
+            if controlChordKeys.remove(code) != nil, controlChordKeys.isEmpty {
+                sends.append(.keyKeycode(keycode: 29, pressed: false))
+            }
+            return Verdict(sends: sends, consumed: true)
         }
         // Never forwarded: a local chord's release belongs to AppKit;
         // anything else has no host state to balance.
@@ -159,12 +183,14 @@ struct InputForwardingPolicy {
     /// Focus loss or teardown: release everything the host holds. A ⌘
     /// that was never forwarded is simply forgotten.
     mutating func releaseAll() -> [InputEvent.Body] {
-        let sends = heldKeys.sorted().map {
+        let keys = heldKeys.sorted() + (controlChordKeys.isEmpty ? [] : [29])
+        let sends = keys.map {
             InputEvent.Body.keyKeycode(keycode: $0, pressed: false)
         } + heldButtons.sorted().map {
             InputEvent.Body.pointerButton(button: $0, pressed: false)
         }
         heldKeys.removeAll()
+        controlChordKeys.removeAll()
         heldButtons.removeAll()
         pendingCommandKeys.removeAll()
         pressedAs.removeAll()
@@ -196,6 +222,15 @@ struct InputForwardingPolicy {
         heldKeys.formUnion(missing)
         return stale.map { .keyKeycode(keycode: $0, pressed: false) }
             + missing.map { .keyKeycode(keycode: $0, pressed: true) }
+    }
+
+    /// Ahead of a Control chord: a ⌘ already forwarded as Super is
+    /// released on the host and held back again, as if never sent.
+    private mutating func holdBackCommand() -> [InputEvent.Body] {
+        let forwarded = heldKeys.intersection(Self.commandKeycodes).sorted()
+        heldKeys.subtract(forwarded)
+        pendingCommandKeys.formUnion(forwarded)
+        return forwarded.map { .keyKeycode(keycode: $0, pressed: false) }
     }
 
     /// The ⌘ edges to send ahead of a forwarded press: with ⌘ down, the

@@ -112,35 +112,14 @@ extension ConnectionModel {
 
     // MARK: - Per-host preferences
 
-    /// Start sessions with the host's speakers muted. Unset means muted
-    /// (sound follows the viewer), so this reads `!= false` and writes
-    /// both directions explicitly — unchecking is the "start audible"
-    /// opt-out. Applied at the next connect; the live toggle overrides.
-    var startHostMutedPreference: Bool {
-        get { pinnedHost?.startHostAudioMuted != false }
-        set {
-            updatePin { $0.setStartHostAudioMuted(publicKeyHash: $1, muted: newValue) }
-        }
+    /// The streaming host's default, applied at the next connect; the
+    /// live toggles override it for this session.
+    func hostPreference(_ preference: HostPreference) -> Bool {
+        preference.value(in: pinnedHost)
     }
 
-    /// Share the clipboard with this host by default (default off).
-    var shareClipboardPreference: Bool {
-        get { pinnedHost?.shareClipboard == true }
-        set {
-            updatePin {
-                $0.setShareClipboard(publicKeyHash: $1, share: newValue ? true : nil)
-            }
-        }
-    }
-
-    /// Share clipboard images with this host by default.
-    var shareClipboardImagesPreference: Bool {
-        get { pinnedHost?.shareClipboardImages == true }
-        set {
-            updatePin {
-                $0.setShareClipboardImages(publicKeyHash: $1, share: newValue ? true : nil)
-            }
-        }
+    func setHostPreference(_ preference: HostPreference, _ on: Bool) {
+        updatePin { preference.set(on, in: &$0, publicKeyHash: $1) }
     }
 
     /// Load–mutate–save against the pinned store for the streaming host,
@@ -332,6 +311,41 @@ final class CoalescedMainActorHop: Sendable {
             await sleep(interval)
             pending.withLock { $0 = false }
             body()
+        }
+    }
+}
+
+/// The per-host session-start defaults, edited from the picker's context
+/// menu and the Actions menu alike.
+enum HostPreference: CaseIterable {
+    /// Unset means muted (sound follows the viewer), so only an explicit
+    /// false starts the host audible.
+    case startHostMuted
+    /// Off unless set: clipboards carry passwords.
+    case shareClipboard
+    /// The images rung, meaningful only with text sharing on.
+    case shareClipboardImages
+
+    func value(in host: PinnedHost?) -> Bool {
+        switch self {
+        case .startHostMuted: host?.startHostAudioMuted != false
+        case .shareClipboard: host?.shareClipboard == true
+        case .shareClipboardImages: host?.shareClipboardImages == true
+        }
+    }
+
+    /// False when nothing changed (the host is not pinned).
+    func set(
+        _ on: Bool, in store: inout PinnedHostStore, publicKeyHash: String
+    ) -> Bool {
+        switch self {
+        case .startHostMuted:
+            store.setStartHostAudioMuted(publicKeyHash: publicKeyHash, muted: on)
+        case .shareClipboard:
+            store.setShareClipboard(publicKeyHash: publicKeyHash, share: on ? true : nil)
+        case .shareClipboardImages:
+            store.setShareClipboardImages(
+                publicKeyHash: publicKeyHash, share: on ? true : nil)
         }
     }
 }
