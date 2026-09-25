@@ -99,7 +99,9 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
     private var recoveryEpisode: UInt64 = 0
     private var activeRecoveryEpisode: UInt64?
     private var forcedMetricsProbes = 0
-    private var flushBarrier = RendererRecoveryFlushBarrier()
+    /// No compressed sample dequeues while the renderer's asynchronous
+    /// recovery flush is in progress.
+    private var flushInProgress = false
 
     public init(
         renderer: any VideoRendererPort,
@@ -233,7 +235,7 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
     public func stop(flushingRenderer: Bool = false) {
         guard !stopped.exchange(true, ordering: .relaxed) else { return }
         queue.async { [self] in
-            flushBarrier.complete()
+            flushInProgress = false
             expiryTimer?.cancel()
             expiryTimer = nil
             renderer.stopRequestingMediaData()
@@ -305,7 +307,7 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
     }
 
     private func armRenderer() {
-        guard flushBarrier.mayEnqueue, !requesting, policy.count > 0 else { return }
+        guard !flushInProgress, !requesting, policy.count > 0 else { return }
         requesting = true
         renderer.requestMediaDataWhenReady(on: queue) { [weak self] in
             self?.drainReady()
@@ -353,7 +355,7 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
     }
 
     private func drainReady() {
-        guard isLive, flushBarrier.mayEnqueue else { return }
+        guard isLive, !flushInProgress else { return }
         if renderer.status == .failed {
             process(
                 policy.failEpisode(),
@@ -457,7 +459,8 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
             activeRecoveryEpisode = recoveryEpisode
             renderer.stopRequestingMediaData()
             requesting = false
-            let startedFlush = flushBarrier.begin()
+            let startedFlush = !flushInProgress
+            flushInProgress = true
             recorder.recordRecoveryCause(cause)
             trace(startedFlush
                     ? "rendererRecoveryFlushStarted"
@@ -493,7 +496,7 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
 
     private func completeRecoveryFlush(frame: FrameNumber, cause: VideoRecoveryCause) {
         guard isLive else { return }
-        flushBarrier.complete()
+        flushInProgress = false
         trace("rendererRecoveryFlushCompleted", frame: frame.rawValue,
               cause: cause)
         armRenderer()
