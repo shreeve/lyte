@@ -163,7 +163,13 @@ export class VideoSink {
     this.decoder.configure(picked.config);
   }
 
-  /** Metadata for frames the Conductor scheduled (from a session step). */
+  /**
+   * Metadata for frames the Conductor scheduled (from a session step).
+   * Past the cap, everything before the newest queued keyframe goes. With no
+   * keyframe queued the queue keeps growing until one arrives; the core's own
+   * backlog bound asks the host for that IDR, so the cap holds only as long
+   * as the host answers.
+   */
   enqueue(scheduled) {
     for (const meta of scheduled) this.queue.push(meta);
     if (this.queue.length <= MAX_QUEUED_FRAMES) return;
