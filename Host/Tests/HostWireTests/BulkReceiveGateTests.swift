@@ -299,6 +299,14 @@ final class BulkReceiveGateTests: XCTestCase {
             ("a\u{2066}b\u{2069}\u{200F}c\u{061C}.txt", "abc.txt"),
             ("csi\u{9B}31m\u{85}.log", "csi31m.log"),
             ("two\u{2028}lines\u{2029}.md", "twolines.md"),
+            // Zero-width and invisible format characters vanish, so none
+            // can hide a leading dot.
+            ("\u{FEFF}.bashrc", "bashrc"),
+            ("zero\u{200B}wi\u{2060}d\u{200D}th\u{2064}.txt", "zerowidth.txt"),
+            // Truncation that consumes the whole stem never exposes the
+            // extension as a dotfile.
+            ("a" + String(repeating: "\u{301}", count: 125) + ".txt",
+             BulkFileNaming.fallbackName + ".txt"),
             // Trailing dots trim (Windows-hostile, dedupe-hostile).
             ("archive.tar.gz...", "archive.tar.gz"),
             // Nothing left → the fallback.
