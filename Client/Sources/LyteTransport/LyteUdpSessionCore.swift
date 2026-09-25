@@ -657,18 +657,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     }
 
     private func notePosture(_ posture: ClientDetectorPosture?) {
-        switch posture {
-        case .tightened(let bound):
-            onEvent(.protocolNote(
-                "audio evidence — blackout detector tightened to "
-                + "\(bound / 1_000) ms"))
-        case .relaxed(let bound):
-            onEvent(.protocolNote(
-                "audio quiet announced — blackout detector relaxed "
-                + "to \(bound / 1_000) ms"))
-        case nil:
-            break
-        }
+        if let posture { onEvent(.protocolNote(posture.note)) }
     }
 
     /// Audits one IDR's in-band SPS chroma; no parseable SPS says nothing.

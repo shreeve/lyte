@@ -51,10 +51,6 @@ public struct DemuxTotals: Sendable {
 public typealias ArrivalSample = ClientFeedbackReporter.Arrival
 
 public final class ReceiveDemux: @unchecked Sendable {
-    /// Arrival samples retained between feedback drains; sized for several
-    /// windows of worst-case traffic.
-    public static let maxRetainedArrivalSamples = 512
-
     private let crypto: TransportCrypto
     private let lock = NSLock()
     private var channels: [UInt8: ChannelStats] = [:]
@@ -118,7 +114,7 @@ public final class ReceiveDemux: @unchecked Sendable {
         totals.accepted += 1
         channels[envelope.channel.rawValue, default: ChannelStats()]
             .record(envelope.seq, payloadByteCount: plaintext.count)
-        if arrivals.count < Self.maxRetainedArrivalSamples {
+        if arrivals.count < ClientFeedbackReporter.maxRetainedArrivals {
             arrivals.append(ArrivalSample(
                 channel: envelope.channel,
                 seq: envelope.seq,

@@ -18,6 +18,17 @@ public enum ClientDetectorPosture: Hashable, Sendable {
     case tightened(blackoutSilenceMicroseconds: Int64)
     /// The host announced audio quiet: back to the baseline bound.
     case relaxed(blackoutSilenceMicroseconds: Int64)
+
+    /// The operator line every shell prints.
+    public var note: String {
+        switch self {
+        case .tightened(let bound):
+            "audio evidence — blackout detector tightened to \(bound / 1_000) ms"
+        case .relaxed(let bound):
+            "audio quiet announced — blackout detector relaxed to "
+                + "\(bound / 1_000) ms"
+        }
+    }
 }
 
 /// One composed client-control decision. The shell sends the returned bytes,
