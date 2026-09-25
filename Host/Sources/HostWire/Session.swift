@@ -18,7 +18,7 @@
 //   • path validation: the session mints its ConnectionId (TLV on every
 //     outbound datagram), inbound datagrams feed the PathValidator,
 //     challenges ride CTRL to the exact unvalidated tuple, and
-//     `takeFreshKeyframeRequest()` merges promotion IDRs with client
+//     `takeFreshKeyframeDemand()` merges promotion IDRs with client
 //     0x10 requests into one encoder-loop poll.
 //   • one Pacer schedule for every traffic class (VideoChannel owns it;
 //     control enters via `enqueueControl`).
@@ -199,7 +199,7 @@ public enum SessionEvent: Equatable, Sendable {
         offsetMicroseconds: Int64,
         rttMicroseconds: Int64
     )
-    /// A client 0x10 arrived; `takeFreshKeyframeRequest()` is now true.
+    /// A client 0x10 arrived; `takeFreshKeyframeDemand()` now owes one.
     case idrRequested(IdrRequest)
     /// The ARQ delivered one reliable CTRL message — exactly once, in
     /// order within its group. The bytes start with its CTRL type byte.
@@ -460,7 +460,6 @@ public struct SessionVideoFramePreparationContext: Sendable {
 }
 
 public struct SessionCounters: Equatable, Sendable {
-    public var datagramsReceived = 0
     public var dropped = 0
     public var unsealFailures = 0
     /// Reliable sends refused with `ArqSendError.queueFull` on the CTRL
@@ -879,7 +878,6 @@ public final class Session {
         now: UInt64,
         hostMicroseconds: UInt64
     ) -> [SessionEvent] {
-        counters.datagramsReceived += 1
         if phase == .awaitingHandshake {
             return receiveBeforeHandshake(
                 datagram, from: tuple,
@@ -1501,12 +1499,6 @@ public final class Session {
         }
     }
 
-    /// Audio datagrams still waiting in the shared pacer — the audio
-    /// thread's bounded "make sure it left" loop reads this.
-    public var queuedAudioDatagramCount: Int {
-        channel.queuedCount(.audio)
-    }
-
     /// Video-class bytes (fresh + repair tail) still queued in the pacer
     /// or the shell's socket outbox — what pre-encode admission weighs
     /// against the queue budget.
@@ -1532,15 +1524,10 @@ public final class Session {
             : config.cleanVideoQueueBudgetNS
     }
 
-    /// The encoder-loop poll: true when a fresh IDR is owed (path
-    /// promotion, client 0x10, or a lifecycle demand). Clears every
-    /// source; fires once per demand.
-    public func takeFreshKeyframeRequest() -> Bool {
-        !takeFreshKeyframeDemand().isEmpty
-    }
-
-    /// The same poll with its causes attached (a demand may carry several
-    /// coalesced causes). Clears every source.
+    /// The encoder-loop poll: the causes of a fresh IDR now owed (path
+    /// promotion, client 0x10, a lifecycle demand; a demand may carry
+    /// several coalesced causes), empty when none is. Clears every source;
+    /// fires once per demand.
     public func takeFreshKeyframeDemand() -> FreshKeyframeDemand {
         if validator.takeFreshKeyframeRequest() {
             freshKeyframes.arm(.pathPromotion)
@@ -1767,17 +1754,6 @@ public final class Session {
             .bulk, now: now, hostMicroseconds: hostMicroseconds
         )
         return events
-    }
-
-    /// The one-lock form: hashes `data` itself, and only once the
-    /// digest-free gates pass.
-    public func noteHostClipboardImageChanged(
-        _ data: [UInt8], now: UInt64, hostMicroseconds: UInt64
-    ) -> [SessionEvent] {
-        noteHostClipboardImageChanged(
-            data, sha256: { Sha256.digest(data) },
-            now: now, hostMicroseconds: hostMicroseconds
-        )
     }
 
     /// An orderly local close: the typed SessionTeardown leaves on the
@@ -2722,16 +2698,8 @@ public final class Session {
     /// video byte-identically. Relative order within every channel remains
     /// unchanged; video classes are deliberately not reordered among
     /// themselves because they share channel 2.
-    public static func prioritizeLatency(
-        _ datagrams: [VideoChannelDatagram]
-    ) -> [VideoChannelDatagram] {
-        var ordered = datagrams
-        prioritizeLatency(&ordered)
-        return ordered
-    }
-
-    /// In-place form. The pacer already releases in class order, so the
-    /// common case is a single ordered scan with no allocation.
+    /// The pacer already releases in class order, so the common case is a
+    /// single ordered scan with no allocation.
     public static func prioritizeLatency(
         _ datagrams: inout [VideoChannelDatagram]
     ) {
@@ -3094,7 +3062,7 @@ public final class Session {
                 estimator.notePathChanged(now: now)
             }
             // .freshKeyframeNeeded needs no execution here: the encoder
-            // loop polls takeFreshKeyframeRequest(), which reads the
+            // loop polls takeFreshKeyframeDemand(), which reads the
             // validator's latch directly.
             events.append(.path(event))
         }

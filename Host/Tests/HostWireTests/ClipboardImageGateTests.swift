@@ -539,3 +539,15 @@ final class ClipboardImageGateTests: XCTestCase {
             """)
     }
 }
+
+private extension Session {
+    /// The host-clipboard report with the digest computed in place.
+    func noteHostClipboardImageChanged(
+        _ data: [UInt8], now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        noteHostClipboardImageChanged(
+            data, sha256: { Sha256.digest(data) },
+            now: now, hostMicroseconds: hostMicroseconds
+        )
+    }
+}

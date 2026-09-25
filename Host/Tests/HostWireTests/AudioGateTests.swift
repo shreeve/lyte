@@ -352,7 +352,6 @@ final class AudioGateTests: XCTestCase {
         _ = try session.ingestAudioPacket(
             opusPacket(0), captureTimestampMicroseconds: 1_000, now: 1 * ms
         )
-        XCTAssertGreaterThan(session.queuedAudioDatagramCount, 0)
         let wake = session.nextWake(now: 1 * ms)
         XCTAssertNotNil(wake)
         XCTAssertLessThanOrEqual(wake ?? .max, 1 * ms,
@@ -364,7 +363,6 @@ final class AudioGateTests: XCTestCase {
         session.pump(now: 1 * ms)
         XCTAssertEqual(sent.count { $0.pacerClass == .audio }, 1,
             "audio must emit through the video-incurred deficit")
-        XCTAssertEqual(session.queuedAudioDatagramCount, 0)
         XCTAssertEqual(sent.count { $0.pacerClass == .freshVideo },
                        videoSentAtOpen,
                        "video must not borrow audio's exemption")

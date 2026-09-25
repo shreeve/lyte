@@ -495,14 +495,6 @@ public enum BulkFileNaming {
         }
     }
 
-    /// The first candidate `exists` does not claim; nil once every
-    /// number is taken.
-    public static func collisionFree(
-        _ name: String, exists: (String) -> Bool
-    ) -> String? {
-        candidates(name).first { !exists($0) }
-    }
-
     /// "archive.tar.gz" → ("archive.tar", ".gz"); a leading dot is
     /// never an extension (sanitized names cannot start with one
     /// anyway).

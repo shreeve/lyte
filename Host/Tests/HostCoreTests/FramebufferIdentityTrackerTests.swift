@@ -16,11 +16,4 @@ final class FramebufferIdentityTrackerTests: XCTestCase {
         XCTAssertEqual(tracker.observe(nil), .unavailable)
         XCTAssertEqual(tracker.observe(41), .held)
     }
-
-    func testResetMakesTheCurrentFramebufferFreshAgain() {
-        var tracker = FramebufferIdentityTracker()
-        XCTAssertEqual(tracker.observe(41), .changed(41))
-        tracker.reset()
-        XCTAssertEqual(tracker.observe(41), .changed(41))
-    }
 }

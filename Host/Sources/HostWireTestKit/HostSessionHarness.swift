@@ -216,3 +216,10 @@ extension PeerBackedClient {
 
     public var progressMark: Int { peer.received.count }
 }
+
+extension Session {
+    /// The encoder-loop poll as a Bool: whether a fresh IDR is owed.
+    public func takeFreshKeyframeRequest() -> Bool {
+        !takeFreshKeyframeDemand().isEmpty
+    }
+}

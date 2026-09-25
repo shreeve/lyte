@@ -242,8 +242,7 @@ final class SessionGateTests: XCTestCase {
         )])
         XCTAssertEqual(session.clock.samples, 1)
         XCTAssertEqual(session.clock.lastOffsetMicroseconds, offset)
-        XCTAssertEqual(session.clock.lastRttMicroseconds, 10_000)
-        XCTAssertEqual(session.clock.minRttOffsetMicroseconds, offset)
+        XCTAssertEqual(session.clock.minRttMicroseconds, 10_000)
 
         // ── Video: corpus → seal → unseal → assembler, byte-exact ──────
         var clock: UInt64 = 2_000_000
@@ -716,7 +715,8 @@ final class SessionGateTests: XCTestCase {
         let originalVideoOrder = outbox
             .filter { $0.pacerClass == .freshVideo }
             .map(\.seq)
-        let prioritized = Session.prioritizeLatency(outbox)
+        var prioritized = outbox
+        Session.prioritizeLatency(&prioritized)
         let audioIndex = try XCTUnwrap(
             prioritized.firstIndex { $0.pacerClass == .audio })
         let videoIndex = try XCTUnwrap(

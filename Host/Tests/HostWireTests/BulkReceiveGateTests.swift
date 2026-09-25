@@ -342,29 +342,19 @@ final class BulkReceiveGateTests: XCTestCase {
         )
         XCTAssertTrue(cyrillic.hasSuffix(".bin"))
 
-        // Collisions number around every incumbent.
-        let taken: Set<String> = ["photo.png", "photo (1).png", "plain"]
+        // Collisions number around the stem, keeping the extension, up
+        // to the last number.
         XCTAssertEqual(
-            BulkFileNaming.collisionFree("photo.png") { taken.contains($0) },
-            "photo (2).png"
+            Array(BulkFileNaming.candidates("photo.png").prefix(3)),
+            ["photo.png", "photo (1).png", "photo (2).png"]
         )
         XCTAssertEqual(
-            BulkFileNaming.collisionFree("plain") { taken.contains($0) },
-            "plain (1)"
+            Array(BulkFileNaming.candidates("plain").prefix(2)),
+            ["plain", "plain (1)"]
         )
         XCTAssertEqual(
-            BulkFileNaming.collisionFree("free.txt") { taken.contains($0) },
-            "free.txt"
-        )
-        XCTAssertEqual(
-            BulkFileNaming.collisionFree("full.txt") {
-                $0 != "full (9999).txt"
-            },
+            Array(BulkFileNaming.candidates("full.txt")).last,
             "full (9999).txt"
-        )
-        XCTAssertNil(
-            BulkFileNaming.collisionFree("full.txt") { _ in true },
-            "past the last number there is no name, never a taken one"
         )
 
         print("""

@@ -31,8 +31,4 @@ public struct ScreenSamplingCadence: Sendable, Equatable {
         nextBeatMicroseconds = next &+ (skipped &+ 1) &* periodMicroseconds
         return .sample(skippedBeats: skipped)
     }
-
-    public mutating func reset() {
-        nextBeatMicroseconds = nil
-    }
 }
