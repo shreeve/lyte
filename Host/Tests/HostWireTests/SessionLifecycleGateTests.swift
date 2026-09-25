@@ -250,12 +250,6 @@ final class SessionLifecycleGateTests: XCTestCase {
         XCTAssertEqual(loop.session.agreedCapabilities, agreed)
         XCTAssertEqual(loop.session.lifecycleState, .active,
                        "a workable agreement never disturbs the session")
-
-        print("""
-            HS-11/HS-8 gate (capabilities): declaration first-word, \
-            intersection agreed — codecs \(agreed.videoCodecs), \
-            ceiling \(agreed.maxDatagramBytes) B
-            """)
     }
 
     // MARK: Chroma negotiation → encoder posture (H4 V-4)
@@ -294,11 +288,6 @@ final class SessionLifecycleGateTests: XCTestCase {
             "the [444] singleton opens the Best-tier encoder"
         )
         XCTAssertEqual(loop.session.lifecycleState, .active)
-
-        print("""
-            V-4 gate (chroma): host [420, 444] ∩ client [444] → \
-            agreed [444] → Best posture
-            """)
     }
 
     /// The same 4:4:4-capable host against a Good-tier client ([420]
@@ -413,11 +402,6 @@ final class SessionLifecycleGateTests: XCTestCase {
         )
         XCTAssertEqual(suppressed, 0)
         XCTAssertEqual(loop.session.counters.videoFramesSuppressed, 1)
-
-        print("""
-            HS-11/HS-8 gate (refusal): empty codec intersection → \
-            typed teardown delivered, session closed, video suppressed
-            """)
     }
 
     // MARK: FROZEN / RECOVERY off the host's own silence detector
@@ -477,12 +461,6 @@ final class SessionLifecycleGateTests: XCTestCase {
         t += 30_000
         try loop.feedback(t: t)
         XCTAssertEqual(loop.session.lifecycleState, .active)
-
-        print("""
-            HS-11 gate (overlay): 350 ms silence → FROZEN (video \
-            suppressed) → evidence → RECOVERY (forced IDR) → two clean \
-            windows → ACTIVE
-            """)
     }
 
     // MARK: Input silence — held keys outlive a hitch, not a long silence
@@ -560,11 +538,6 @@ final class SessionLifecycleGateTests: XCTestCase {
             try teardowns.map { try SessionTeardown.decode($0).reason },
             [.shuttingDown]
         )
-
-        print("""
-            HS-11 gate (shutdown): 0x0A delivered exactly once, \
-            acknowledged, session closed
-            """)
     }
 
     func testGatePeerTeardownClosesTheSession() throws {
@@ -582,11 +555,6 @@ final class SessionLifecycleGateTests: XCTestCase {
         XCTAssertTrue(loop.hostEvents.contains(
             .sessionClosed(.peerTeardown(.shuttingDown))
         ))
-
-        print("""
-            HS-11 gate (peer teardown): client 0x0A → host closed \
-            cleanly — the graceful half of the ECONNREFUSED fix
-            """)
     }
 
     func testGateLivenessTimeoutClosesLocallyAndSendsNothing() throws {
@@ -616,10 +584,5 @@ final class SessionLifecycleGateTests: XCTestCase {
                 it is the one that died
                 """
         )
-
-        print("""
-            HS-11 gate (liveness): 30 s of silence → local close, \
-            zero datagrams emitted
-            """)
     }
 }

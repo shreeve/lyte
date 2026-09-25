@@ -1015,11 +1015,6 @@ final class NackRepairGateTests: XCTestCase {
                        "the lossy §5.2 column applies from the next frame")
         XCTAssertEqual(byIndex.count, 38)
         XCTAssertEqual(session.counters.fecRegimeSteps, 1)
-
-        print("""
-            HS-17 gate leg 5: post-FEC 5% stepped clean→lossy — \
-            frame 0 at 28+5, frame 2 at 28+10
-            """)
     }
 
     // MARK: Leg 6 — THE CADENCE GATE under a repair storm (R-G8 shape)
@@ -1158,17 +1153,5 @@ final class NackRepairGateTests: XCTestCase {
                 audio inter-send p99 deviation \(Double(p99) / 1e6) ms > \
                 2 ms through the repair storm
                 """)
-
-        let worstMS = Double(deviations.last!) / 1e6
-        let audioQueueMS =
-            Double(session.pacerTelemetry[.audio].maxQueueDelayNS) / 1e6
-        print("""
-            HS-17 gate (R-G8 + repair storm) @5 s virtual: \
-            \(session.counters.nacksHonored) NACKs honored → \
-            \(repairCount) repair datagrams on videoTail; \
-            \(dataSends.count) audio packets, inter-send deviation \
-            p99 \(Double(p99) / 1e6) ms, worst \(worstMS) ms; \
-            audio max queue delay \(audioQueueMS) ms
-            """)
     }
 }

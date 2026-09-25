@@ -200,13 +200,6 @@ final class PathMigrationGateTests: XCTestCase {
             resume, 400 * millisecond,
             "modeled resume \(resume / millisecond) ms blew the budget"
         )
-        print("""
-            HS-12 gate: modeled resume \
-            \(String(format: "%.1f", Double(resume) / 1e6)) ms ≤ 400 ms \
-            (rtt 30 + encoder tick 16.7 + IDR drain \
-            \(String(format: "%.1f", Double(drain) / 1e6)) + one-way 15 \
-            + decode 10); \(emitted.count) conn-id-tagged IDR datagrams
-            """)
 
         // Old path retention, then age-out.
         let beforeExpiry = tEcho + validator.config.fallbackRetentionNS - 1

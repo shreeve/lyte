@@ -384,17 +384,6 @@ final class ArqCtrlGateTests: XCTestCase {
             hostEvents.contains(.idrRequested(idrRequest)),
             "the exempt IDR request must land mid-storm"
         )
-
-        print("""
-            HS-8 gate: \(hostStream.count)+\(hostOneShots.count) host and \
-            \(clientStream.count)+\(clientOneShots.count) client messages \
-            exactly-once in-order through 5% loss / 2% dup / 4 ms jitter \
-            (\(net.lostCount) lost, \(net.duplicatedCount) duplicated of \
-            \(net.sentCount) datagrams; \(session.counters.arqDatagramsSent) \
-            host ARQ datagrams; converged at \(converged.map(String.init) ?? "-") µs \
-            virtual; \(client.beaconSeqsSeen.count)/\
-            \(session.counters.beaconsSent) beacons, none retransmitted)
-            """)
     }
 
     // MARK: PTO retransmit rides the session's wake machinery

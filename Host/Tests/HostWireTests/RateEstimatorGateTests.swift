@@ -569,14 +569,6 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertGreaterThan(lastRate, crashFloor)
         XCTAssertLessThanOrEqual(lastRate, Self.ceiling)
         XCTAssertGreaterThanOrEqual(estimator.stats.lossDownshifts, 2)
-
-        print("""
-            HS-16 gate (loss): 5% HELD at \(Self.ceiling / 1_000) kbps \
-            (FEC's band); 20% burst → \
-            \(downshiftRates.map { "\($0 / 1_000)" }.joined(separator: " → "))\
-             kbps; re-converged to \(lastRate / 1_000) kbps \
-            after \(estimator.stats.upshifts) evidence climbs
-            """)
     }
 
     /// The floor-deadlock the live gate caught: at 500 kbps the pacer
@@ -698,12 +690,6 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(
             estimator.queuingDelayMicroseconds ?? 0, 20_000
         )
-
-        print("""
-            HS-16 gate (overuse): 25 ms inflation over baseline → \
-            \(newRate! / 1_000) kbps (0.85 × the 10 Mbps the path \
-            measurably delivered)
-            """)
     }
 
     // MARK: The baseline witness rule (v1-final analysis finding 5):
@@ -743,12 +729,6 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertLessThanOrEqual(
             estimator.queuingDelayMicroseconds ?? 0, 1_000
         )
-
-        print("""
-            finding-5 gate (witness): one 25 ms-fast freak report → \
-            0 overuse verdicts, rate untouched (the raw-min \
-            baseline fell ~20 beats on this shape)
-            """)
     }
 
     /// The control: TWO fast reports are corroboration — the floor
@@ -861,13 +841,6 @@ final class RateEstimatorGateTests: XCTestCase {
                 """)
         XCTAssertEqual(Double(newRate!), 20e6 * 0.85, accuracy: 1.0e6,
             "the fall anchors to the 20 Mbps the median still measures")
-
-        print("""
-            HS-21 gate (garbage anchor): lone 2 Mbps sample at the \
-            overuse fire → \(newRate! / 1_000) kbps (median-anchored \
-            to 20 Mbps; the one-deep anchor would have cratered to \
-            ~1,700 kbps)
-            """)
     }
 
     /// The regression pin: a GENUINE sustained overuse — delivery truly
@@ -920,13 +893,6 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertLessThanOrEqual(estimator.rateBitsPerSecond,
             Int(5e6 * 0.85) + 500_000,
             "the rate tracks the measured delivery down under the squeeze")
-
-        print("""
-            HS-21 gate (genuine fall): sustained 5 Mbps squeeze → \
-            first fall \(first.newRateBitsPerSecond! / 1_000) kbps \
-            (0.85 × measured), \(falls) falls total, settled at \
-            \(estimator.rateBitsPerSecond / 1_000) kbps
-            """)
     }
 
     // MARK: Leg 3c — HS-22: only FULL trains vote on the anchor (the
@@ -1010,13 +976,6 @@ final class RateEstimatorGateTests: XCTestCase {
                 anchor votes are full trains only \
                 (got \(newRate! / 1_000) kbps)
                 """)
-
-        print("""
-            HS-22 gate (micro-train majority): two 4-packet ~1 Mbps \
-            audio-paced samples at the overuse fire → \
-            \(newRate! / 1_000) kbps (full-train-anchored to 20 Mbps; \
-            the HS-21 median alone would have cratered to ~850 kbps)
-            """)
     }
 
     // MARK: Leg 3d — HS-22c: the self-reference gate (finding (ii)).
@@ -1126,14 +1085,6 @@ final class RateEstimatorGateTests: XCTestCase {
             "the rate never moved — the 500 kbps spiral is dead")
         XCTAssertEqual(estimator.stats.downshifts, 0)
         XCTAssertGreaterThanOrEqual(estimator.stats.selfReferenceHolds, 1)
-
-        print("""
-            HS-22c gate (self-reference): \(overuseVerdicts) overuse \
-            verdicts over 1 s at anchor ≈ standing rate with backlog \
-            → 0 falls, \(estimator.stats.selfReferenceHolds) holds, \
-            rate pinned at \(estimator.rateBitsPerSecond / 1_000) kbps \
-            (the old law reached the floor in these beats)
-            """)
     }
 
     /// Real degradation whose capacity sits AT the standing rate: the
@@ -1272,13 +1223,6 @@ final class RateEstimatorGateTests: XCTestCase {
                 gate reads the evidence, it does not read the backlog
                 """)
         XCTAssertEqual(estimator.stats.selfReferenceHolds, 0)
-
-        print("""
-            HS-22c gate (honest dip under backlog): 20 → 5 Mbps path \
-            with standing backlog → fall to \
-            \(verdict.newRateBitsPerSecond! / 1_000) kbps \
-            (0.85 × measured), zero self-reference holds
-            """)
     }
 
     // MARK: Leg 3e — HS-23: the stall gate (the Wi-Fi study's receiver
@@ -1331,15 +1275,6 @@ final class RateEstimatorGateTests: XCTestCase {
             "the estimator rode through every stall cycle")
         XCTAssertEqual(estimator.stats.downshifts, 0)
         XCTAssertGreaterThanOrEqual(estimator.stats.stallHolds, 10)
-
-        print("""
-            HS-23 gate (stall ride-through): 10 gap-burst cycles \
-            (80 ms holes, 200 Mbps drains) → \(overuseVerdicts) \
-            overuse verdicts, \(estimator.stats.stallHolds) stall \
-            holds, 0 falls, rate pinned at \
-            \(estimator.rateBitsPerSecond / 1_000) kbps (the old law \
-            fell twice a second on this shape, forever)
-            """)
     }
 
     /// A dwell TRAIN with rising peaks (70 → 90 ms) mimics queue
@@ -1423,14 +1358,6 @@ final class RateEstimatorGateTests: XCTestCase {
                 the dwell cost ZERO rate moves — and therefore zero \
                 VBV-forced IDRs
                 """)
-
-        print("""
-            ramp-hunt gate (dwell deferral): mid-dwell verdict \
-            deferred, drain testified one report later → \
-            \(estimator.stats.fallDeferrals) deferral, \
-            \(estimator.stats.stallHolds) stall hold(s), 0 falls, \
-            rate pinned at \(estimator.rateBitsPerSecond / 1_000) kbps
-            """)
     }
 
     /// A hole past the 150 ms ceiling is sustained degradation, not a
@@ -1749,15 +1676,6 @@ final class RateEstimatorGateTests: XCTestCase {
             4e6, accuracy: 0.6e6,
             "the belief follows the path down on honest evidence"
         )
-
-        print("""
-            HS-28 gate (belief): RECOVERY re-anchored at 10 Mbps; \
-            1 s of censored trickle left it standing; honest 4 Mbps \
-            evidence demoted it to \
-            \((estimator.capacityBeliefBitsPerSecond ?? 0) / 1_000) kbps \
-            and the fall landed at \
-            \(verdict.newRateBitsPerSecond! / 1_000) kbps
-            """)
     }
 
     /// THE LEG-B REPLAY GATE (the truth-probe's shape, virtual time):
@@ -1875,16 +1793,6 @@ final class RateEstimatorGateTests: XCTestCase {
             Double(beforeRecovery) * 1.15,
             "clean air climbs toward the belief (10%/s), not a pin"
         )
-
-        print("""
-            HS-28 gate (leg-B replay): loss episode \
-            \(Self.ceiling / 1_000) → \(afterEpisode / 1_000) kbps; \
-            1.5 s censored limbo held \
-            \(beforeRecovery / 1_000) kbps (0 crater falls, belief \
-            \((estimator.capacityBeliefBitsPerSecond ?? 0) / 1_000) \
-            kbps); recovery reached \
-            \(estimator.rateBitsPerSecond / 1_000) kbps
-            """)
     }
 
     /// The persistence twin the brief demands beside the replay: a
@@ -1925,12 +1833,6 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(Double(fell!.newRateBitsPerSecond!), 6e6 * 0.85,
                        accuracy: 1.0e6,
             "anchored at measured delivery — the belief followed the path down")
-
-        print("""
-            HS-28 gate (persistence twin): 20 → 6 Mbps genuine drop \
-            fell in \(beats) beats (\(beats * 25) ms) to \
-            \(fell!.newRateBitsPerSecond! / 1_000) kbps
-            """)
     }
 
     /// Self-inflicted evidence recuses itself: NACKs against frames
@@ -2052,12 +1954,6 @@ final class RateEstimatorGateTests: XCTestCase {
                 surgical, not a muzzle
                 """)
         XCTAssertEqual(honest.fecRegime, .lossy)
-
-        print("""
-            HS-28 gate (recusal): 186 NACK shards against draining \
-            frames → 0 path evidence; the same storm against \
-            released frames → rung-3 fall + regime step
-            """)
     }
 
     /// The first live leg-B rerun's confession, pinned: a Wi-Fi hole
@@ -2129,14 +2025,6 @@ final class RateEstimatorGateTests: XCTestCase {
                 — HS-30's sustainable cap is dead
                 """
         )
-
-        print("""
-            HS-28 gate (drain purge): 30 mid-hole reports (3 Mbps \
-            stretch + 200 Mbps drain, held delay) → 0 falls, belief \
-            \((estimator.capacityBeliefBitsPerSecond ?? 0) / 1_000) \
-            kbps, rate pinned at \
-            \(estimator.rateBitsPerSecond / 1_000) kbps
-            """)
     }
 
     /// The other live confession: a 41 ms streak crashed to the floor
@@ -2214,13 +2102,6 @@ final class RateEstimatorGateTests: XCTestCase {
                 the persisted fall is bounded multiplicative — the echo \
                 never became an anchor
                 """)
-
-        print("""
-            HS-28 gate (echo persistence): 0.8% post-FEC echo + \
-            young streak → 0 instant falls; persisted pressure \
-            fell bounded to \
-            \(verdict.newRateBitsPerSecond! / 1_000) kbps
-            """)
     }
 
     /// Mild residual post-FEC (clean column < x ≤ rung 3) must not pin
@@ -2285,14 +2166,6 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertLessThan(
             estimator.stats.postFecDownshifts, 1,
             "residual below rung 3 must not mint rung-3 falls")
-
-        print("""
-            mild post-FEC climb: \(settlePoint / 1_000) → \
-            \(estimator.rateBitsPerSecond / 1_000) kbps after \
-            \(climbs) rises \
-            (\(estimator.stats.upshiftsUnderMildPostFec - mildBefore) \
-            mild-residual)
-            """)
     }
 
     /// Rung-3 post-FEC still falls and blocks climbs — the mild-residual
@@ -2355,12 +2228,6 @@ final class RateEstimatorGateTests: XCTestCase {
             estimator.rateBitsPerSecond, rateAfterFall,
             "sustained rung-3 evidence must not raise the rate")
         XCTAssertEqual(estimator.stats.upshiftsUnderMildPostFec, 0)
-
-        print("""
-            rung-3 climb block: fell to \
-            \(rateAfterFall / 1_000) kbps; 0 climbs under sustained \
-            post-FEC past the downshift bar
-            """)
     }
 
     /// Quiet-static / sparse keepalive under impairment must not
@@ -2435,13 +2302,6 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertTrue(fell,
             "paced multi-packet trains must still admit loss falls")
         XCTAssertLessThan(estimator.rateBitsPerSecond, beforeMotion)
-
-        print("""
-            sparse-hold: primed \(primed / 1_000) kbps held across \
-            \(estimator.stats.sparseEvidenceHolds - holdsBefore) \
-            stale-loss beats; motion reopened falls → \
-            \(estimator.rateBitsPerSecond / 1_000) kbps
-            """)
     }
 
     /// Stale overuse pressure on an empty path (netem delay on
@@ -2491,12 +2351,6 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(estimator.stats.downshifts, 0)
         XCTAssertGreaterThan(
             estimator.stats.sparseEvidenceHolds, holdsBefore)
-
-        print("""
-            sparse overuse hold: \(overuseBeats) verdicts, \
-            \(estimator.stats.sparseEvidenceHolds - holdsBefore) \
-            sparse holds, rate still \(primed / 1_000) kbps
-            """)
     }
 
     // MARK: Leg 4 — the machine's numbers
@@ -2794,12 +2648,6 @@ final class RateEstimatorGateTests: XCTestCase {
         t += 30_000
         _ = feedback(tMicros: t, newReceived: 100, newMissing: 0)
         XCTAssertEqual(session.lifecycleState, .active)
-
-        print("""
-            HS-16 gate (recovery): FROZEN → RECOVERY at \
-            \(Self.ceiling / 2_000) kbps (half-stale, on the pacer) → \
-            10 lossy windows HELD → 2 clean windows → ACTIVE
-            """)
     }
 
     // MARK: Leg 6 — malformed feedback is counted, never fed
@@ -3027,18 +2875,6 @@ final class RateEstimatorGateTests: XCTestCase {
                 audio inter-send p99 deviation \(Double(p99) / 1e6) ms > 2 ms \
                 through the rate crash
                 """)
-
-        print("""
-            HS-16 gate (R-G8 + crash) @6 s virtual: rate \
-            \(Self.ceiling / 1_000) → \(minRate / 1_000) kbps under the \
-            loss burst, back to \(session.pacerRateBitsPerSecond / 1_000) \
-            kbps on evidence (\(session.estimatorStats.downshifts) down / \
-            \(session.estimatorStats.upshifts) up); \
-            \(dataSends.count) audio packets, inter-send deviation \
-            p99 \(Double(p99) / 1e6) ms, worst \
-            \(Double(deviations.last!) / 1e6) ms; audio max queue delay \
-            \(Double(session.pacerTelemetry[.audio].maxQueueDelayNS) / 1e6) ms
-            """)
     }
 
     // MARK: HS-29 — cap-aware probe damping (row ³'s shared cause)
@@ -3080,13 +2916,6 @@ final class RateEstimatorGateTests: XCTestCase {
             "the damped-climb counter never fired")
         XCTAssertEqual(estimator.stats.downshifts, 0,
             "damping must come from the probe ceiling, not from falls")
-
-        print("""
-            HS-29 gate (damping): belief \
-            \(Int(belief) / 1_000) kbps, 50 Mbps cap — climb parked at \
-            \(Int(parked) / 1_000) kbps \
-            (\(estimator.stats.upshiftsDamped) damped rises, 0 falls)
-            """)
     }
 
     /// THE OSSIFICATION GUARD: the belief must still grow when the air
@@ -3123,13 +2952,6 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(
             estimator.capacityBeliefBitsPerSecond ?? 0, 36_000_000,
             "the belief did not follow the walk up")
-
-        print("""
-            HS-29 gate (capacity step): 20 → 45 Mbps air — rate \
-            reached \(estimator.rateBitsPerSecond / 1_000) kbps in \
-            \(beats) beats (\(Double(beats) * 0.025) s), belief \
-            \((estimator.capacityBeliefBitsPerSecond ?? 0) / 1_000) kbps
-            """)
     }
 
     // MARK: HS-30 — burst-vs-sustainable belief + probe cadence
@@ -3160,11 +2982,6 @@ final class RateEstimatorGateTests: XCTestCase {
                 """)
         XCTAssertGreaterThanOrEqual(after, before,
             "the drain may never LOWER the belief")
-
-        print("""
-            HS-30 gate (drain cap): belief \(before / 1_000) → \
-            \(after / 1_000) kbps through a 300 Mbps drain burst
-            """)
     }
 
     /// A fall inside the belief's headroom band arms the probe
@@ -3213,13 +3030,6 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertGreaterThan(
             Double(estimator.rateBitsPerSecond), bandFloor,
             "the probe never fired after the cadence expired")
-
-        print("""
-            HS-30 gate (cadence): fall at the wall parked the climb \
-            below \(Int(bandFloor) / 1_000) kbps for the cadence \
-            (\(estimator.stats.upshiftsCadenceHeld) held rises), \
-            then re-probed to \(estimator.rateBitsPerSecond / 1_000) kbps
-            """)
     }
 
     func testRecoveryClearsFailedProbeBandFromTheOldPath() {

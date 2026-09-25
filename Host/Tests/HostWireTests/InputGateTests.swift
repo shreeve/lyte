@@ -96,11 +96,6 @@ final class InputGateTests: XCTestCase {
             0x0D, 0, 0, 0, 0, 0, 0, 0,
         ])
         XCTAssertEqual(try InputEcho.decode(echo.encode()), echo)
-
-        print("""
-            HS-13 gate (codec): 0x16 all five kinds + 0x17 pinned \
-            byte-exact against hand-built layouts
-            """)
     }
 
     func testHostileInputBytesRejectAndNeverTrap() throws {
@@ -407,16 +402,6 @@ final class InputGateTests: XCTestCase {
                 39, "every shard carries the last injected seq"
             )
         }
-
-        print("""
-            HS-13 gate (storm): 40 events all kinds exactly-once \
-            IN ORDER through 5% loss / 5% dup / 4 ms jitter \
-            (\(net.lostCount) lost, \(net.duplicatedCount) duplicated of \
-            \(net.sentCount)); 40/40 echo tuples byte-faithful in \
-            \(client.echoMessageTupleCounts.count) messages; post-storm \
-            frame stamped lastInputSeq=39 on all \
-            \(client.videoShards.count) shards
-            """)
     }
 
     // MARK: lastInputSeq stamping + geometry under the extra TLV
@@ -516,11 +501,5 @@ final class InputGateTests: XCTestCase {
         }
         XCTAssertEqual(units.map(\.annexB), [stamped],
                        "the stamped frame must reassemble byte-exact")
-
-        print("""
-            HS-13 gate (stamp): pre-input frames bare; post-injection \
-            frames carry TLV 0x03 = 7 on every shard, geometry at the \
-            1095 B TLV-adjusted budget, byte-exact through VideoAssembler
-            """)
     }
 }

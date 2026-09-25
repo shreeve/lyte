@@ -71,10 +71,6 @@ final class ClipboardGateTests: XCTestCase {
             [0x1A] + [UInt8](repeating: 0x61,
                              count: ClipboardWire.maxTextByteCount + 1)
         ))
-        print("""
-            CL-15 gate (codec): 0x1A/0x1B pinned byte-exact against \
-            the Wire arrays
-            """)
     }
 
     // MARK: Leg 2 — key 10 on the spine, mutual-only intersection
@@ -93,10 +89,6 @@ final class ClipboardGateTests: XCTestCase {
         XCTAssertFalse(
             Capabilities.wireDefault.intersecting(declared).clipboardText
         )
-        print("""
-            CL-15 gate (spine): declaration = local bytes + `0A F5`, \
-            mutual-only survival
-            """)
     }
 
     // MARK: Leg 2b — the leaf's text-flavor policy (HS-19), pinned
@@ -128,10 +120,6 @@ final class ClipboardGateTests: XCTestCase {
             ClipboardTextMime.pickForRead(fromOffered: ["text/plain"]),
             "text/plain"
         )
-        print("""
-            HS-19 gate (mime): read preference \
-            utf-8 → UTF8_STRING → text/plain, case-insensitive
-            """)
     }
 
     func testTextMimeRefusesNonTextAndOffersFaithfulFirst() {
@@ -147,7 +135,6 @@ final class ClipboardGateTests: XCTestCase {
         XCTAssertEqual(ClipboardTextMime.offered,
                        [ClipboardTextMime.utf8, "text/plain",
                         "UTF8_STRING"])
-        print("HS-19 gate (mime): non-text refused, offer list faithful-first")
     }
 
     // MARK: The scripted leaf (the seam the portal leaf will drive)
@@ -303,11 +290,6 @@ final class ClipboardGateTests: XCTestCase {
         XCTAssertEqual(client.take(type: CtrlMessageType.clipboardAnnounce), [])
         XCTAssertEqual(suppressions, [.loopEcho, .duplicate])
         XCTAssertEqual(session.counters.clipboardAnnouncesSent, 1)
-
-        print("""
-            CL-15 gate (in vivo): 0x1A → apply → echo suppressed \
-            (no boomerang); genuine copy → byte-exact 0x1B; dedupe holds
-            """)
     }
 
     // MARK: Leg 4 — the rule-3 gate against the unnegotiated
@@ -367,11 +349,6 @@ final class ClipboardGateTests: XCTestCase {
             if case .dropped(.unexpectedCtrlType(0x1B)) = $0 { confused += 1 }
         }
         XCTAssertEqual(confused, 1)
-
-        print("""
-            CL-15 gate (rule 3): unnegotiated 0x1A refused loud, \
-            0x1B never volunteered, role confusion dropped
-            """)
     }
 
     // MARK: Leg 5 — the ceiling is weather, not an error
@@ -422,10 +399,5 @@ final class ClipboardGateTests: XCTestCase {
             client.take(type: CtrlMessageType.clipboardAnnounce),
             [try ClipboardAnnounce(text: atCeiling).encode()]
         )
-
-        print("""
-            CL-15 gate (ceiling): one-over suppressed as weather, \
-            the exact ceiling flows
-            """)
     }
 }

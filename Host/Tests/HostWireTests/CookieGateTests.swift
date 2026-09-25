@@ -152,13 +152,6 @@ final class CookieGateTests: XCTestCase {
             "a verifying cookie establishes the session")
         XCTAssertEqual(session.phase, .established)
         XCTAssertEqual(session.counters.handshakeCookiesVerified, 1)
-
-        print("""
-            HS-21 gate (session): 30-msg1 flood → dial ENGAGED, \
-            \(session.counters.handshakeChallengesMinted) 0x13 minted \
-            (no Noise), legit client established via 0x14 in one extra \
-            round trip
-            """)
     }
 
     /// A 0x14 whose cookie does not verify is dropped before any Noise.

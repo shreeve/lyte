@@ -809,7 +809,6 @@ final class AudioGateTests: XCTestCase {
         }
         deviations.sort()
         let p99 = deviations[Int(Double(deviations.count - 1) * 0.99)]
-        let worst = deviations.last!
         XCTAssertLessThanOrEqual(p99, 2 * ms,
             "audio inter-send p99 deviation \(Double(p99) / 1e6) ms > 2 ms")
 
@@ -826,14 +825,5 @@ final class AudioGateTests: XCTestCase {
         XCTAssertLessThanOrEqual(
             session.pacerTelemetry.maxBatchWireTimeNS, ms
         )
-
-        print("""
-            HS-15 gate @20 Mbps, 5 s virtual, IDR every 2 s: \
-            \(dataSends.count) audio packets; inter-send deviation \
-            p99 \(Double(p99) / 1e6) ms, worst \(Double(worst) / 1e6) ms; \
-            max audio queue delay \(Double(audioWait) / 1e6) ms; \
-            max batch wire time \
-            \(Double(session.pacerTelemetry.maxBatchWireTimeNS) / 1e6) ms
-            """)
     }
 }

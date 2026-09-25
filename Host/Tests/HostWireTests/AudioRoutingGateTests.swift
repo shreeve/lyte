@@ -63,7 +63,6 @@ final class AudioRoutingGateTests: XCTestCase {
                 ).mode, mode
             )
         }
-        print("HS-18 gate (codec): 0x18/0x19 pinned byte-exact")
     }
 
     func testHostileRoutingBytesRejectAndNeverTrap() {
@@ -118,10 +117,6 @@ final class AudioRoutingGateTests: XCTestCase {
         XCTAssertEqual(
             try CapabilityDeclaration.decode(message).capabilities, declared
         )
-        print("""
-            HS-18 gate (spine): declaration = frozen bytes + `09 F5`, \
-            nothing else moved
-            """)
     }
 
     func testIntersectionEnablesOnlyOnMutualDeclaration() throws {
@@ -237,11 +232,6 @@ final class AudioRoutingGateTests: XCTestCase {
         try host.settle(&client, t: &t)
         XCTAssertEqual(client.take(type: CtrlMessageType.audioRoutingStatus),
                        [[0x19, 0x01]])
-
-        print("""
-            HS-18 gate (in vivo): negotiated 0x18 → event → 0x19 \
-            byte-exact, both directions
-            """)
     }
 
     // MARK: Leg 4 — the rule-3 gate holds against the unnegotiated
@@ -302,10 +292,5 @@ final class AudioRoutingGateTests: XCTestCase {
             if case .dropped(.unexpectedCtrlType(0x19)) = $0 { confused += 1 }
         }
         XCTAssertEqual(confused, 1)
-
-        print("""
-            HS-18 gate (rule 3): unnegotiated 0x18 refused loud, \
-            0x19 never volunteered, role confusion dropped
-            """)
     }
 }

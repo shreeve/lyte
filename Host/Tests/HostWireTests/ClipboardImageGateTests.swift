@@ -249,11 +249,6 @@ final class ClipboardImageGateTests: XCTestCase {
             ), [],
             "an ungated session never narrates the host clipboard"
         )
-
-        print("""
-            P-1 gate (negotiation): images agreed 10∧12 with no \
-            key 11; text-only peer degrades to v1, host mouth silent
-            """)
     }
 
     // MARK: Leg 2 — both directions in vivo + the boomerang proofs
@@ -341,12 +336,6 @@ final class ClipboardImageGateTests: XCTestCase {
         // And both reliable sublayers drain to quiet.
         try host.settle(&client, t: &t)
         XCTAssertTrue(session.arqIsQuiescent)
-
-        print("""
-            P-1 gate (in vivo): client image → host byte-exact \
-            (\(clientImage.count) B, 3 chunks); host image → client \
-            byte-exact (\(hostImage.count) B); both echoes suppressed
-            """)
     }
 
     // MARK: Leg 2b — a refused host copy is never hashed
@@ -473,12 +462,6 @@ final class ClipboardImageGateTests: XCTestCase {
         XCTAssertEqual(fileRefusals, 1)
         XCTAssertEqual(surfaced, 0)
         XCTAssertEqual(session2.counters.bulkMessagesReceived, 0)
-
-        print("""
-            P-1 gate (rule 3): ungated 0x22 dropped loud; file \
-            offer on an images-only chan 8 dropped loud — the \
-            lanes' gates are independent
-            """)
     }
 
     // MARK: Leg 4 — a foreign mime is typed weather, and the
@@ -532,11 +515,6 @@ final class ClipboardImageGateTests: XCTestCase {
             [.declined]
         )
         XCTAssertEqual(session.clipboardImageCounters.receivesRefused, 1)
-
-        print("""
-            P-1 gate (mime): image/jxl → abort(declined), offer \
-            swallowed, nothing leaked
-            """)
     }
 }
 
