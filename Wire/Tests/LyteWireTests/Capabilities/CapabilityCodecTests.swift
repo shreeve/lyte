@@ -64,6 +64,33 @@ final class CapabilityCodecTests: XCTestCase {
         }
     }
 
+    /// {100: 1100-byte string} is a1 ‖ 18 64 ‖ 59 04 4c ‖ 1100 bytes =
+    /// 1106 B of map: past the 1024 B ceiling behind either type byte.
+    private let bloatedParameters = [CapabilityParameter(
+        key: 100, value: .bytes(Array(repeating: 0xAA, count: 1100))
+    )]
+
+    func testUpdateAndAckEncodeRefuseOverBudget() {
+        assertThrows(CapabilityMessageError.messageOverBudget(1107)) {
+            try CapabilityUpdate(parameters: bloatedParameters).encode()
+        }
+        assertThrows(CapabilityMessageError.messageOverBudget(1108)) {
+            try CapabilityUpdateAck(
+                status: .accepted, parameters: bloatedParameters
+            ).encode()
+        }
+        assertThrows(CapabilityMessageError.emptyUpdate) {
+            try CapabilityUpdateAck(status: .accepted, parameters: []).encode()
+        }
+    }
+
+    /// A proposal body must be a CBOR map.
+    func testUpdateBodyThatIsNotAMapRejects() {
+        assertThrows(CapabilityMessageError.malformedBody(.notAMap)) {
+            try CapabilityUpdate.decode(hex("11810a"))
+        }
+    }
+
     // MARK: - Update ack (0x12)
 
     func testUpdateAckHandComputedAnchor() throws {
@@ -83,6 +110,11 @@ final class CapabilityCodecTests: XCTestCase {
     /// The ack frames its own type and status, so its rejects are its
     /// own, not the shared declaration/update frame check's.
     func testUpdateAckRejects() {
+        assertThrows(CapabilityMessageError.messageOverBudget(1025)) {
+            try CapabilityUpdateAck.decode(
+                hex("1201") + Array(repeating: 0, count: 1023)
+            )
+        }
         assertThrows(CapabilityMessageError.emptyUpdate) {
             try CapabilityUpdateAck.decode(hex("1201a0"))
         }

@@ -75,6 +75,7 @@ final class CapabilitiesTests: XCTestCase {
             (CapabilityKey.videoCodecs, .array([.text("hevc")])),
             (CapabilityKey.idleSilence, .unsigned(1)),
             (CapabilityKey.maxDatagramBytes, .bool(true)),
+            (CapabilityKey.maxDatagramBytes, .unsigned(0x1_0000_0000)),
         ]
         for (key, value) in wrongTypes {
             var entries: [CborMapEntry] = [

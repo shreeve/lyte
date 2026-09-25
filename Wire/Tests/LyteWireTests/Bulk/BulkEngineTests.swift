@@ -618,6 +618,55 @@ final class BulkEngineTests: XCTestCase {
         )
     }
 
+    /// A message for another transfer, a completion before any chunk
+    /// could have moved, and an ack claiming chunks past the offer.
+    func testSenderViolationsForeignEarlyCompleteAndAckOverClaim() throws {
+        let (offer, _) = makeFixture() // 5 chunks
+        func offering() throws -> BulkSendEngine {
+            var sender = BulkSendEngine(offer: offer)
+            _ = try sender.begin()
+            return sender
+        }
+        var sender = try offering()
+        XCTAssertEqual(
+            sender.ingest(.complete(try BulkComplete(transferId: 0xDEAD))).first,
+            .violated(.foreignTransfer(0xDEAD))
+        )
+        sender = try offering()
+        XCTAssertEqual(
+            sender.ingest(.complete(try BulkComplete(
+                transferId: offer.transferId
+            ))).first,
+            .violated(.unexpectedMessage(type: CtrlMessageType.bulkComplete))
+        )
+        sender = try offering()
+        _ = sender.ingest(.accept(try BulkAccept(
+            transferId: offer.transferId, creditTotal: 2
+        )))
+        XCTAssertEqual(
+            sender.ingest(.ack(try BulkAck(
+                transferId: offer.transferId, creditTotal: 2,
+                possession: BulkChunkMap(contiguousCount: 6)
+            ))).first,
+            .violated(.possessionOverClaimed)
+        )
+    }
+
+    func testReceiverViolationAbortForAnotherTransfer() throws {
+        let (offer, _) = makeFixture()
+        var receiver = BulkReceiveEngine()
+        _ = receiver.ingest(.offer(offer))
+        XCTAssertEqual(
+            receiver.ingest(.abort(try BulkAbort(
+                transferId: 0xDEAD, reason: .cancelled
+            ))).first,
+            .violated(.foreignTransfer(0xDEAD))
+        )
+        XCTAssertEqual(
+            receiver.state, .aborted(.protocolViolation, byRemote: false)
+        )
+    }
+
     func testSenderViolationUnexpectedMessages() throws {
         let (offer, _) = makeFixture()
         var sender = BulkSendEngine(offer: offer)
