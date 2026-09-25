@@ -855,8 +855,8 @@ public final class RateEstimator {
         postFecWindow.removeAll {
             now &- $0.at > Self.lossWindowNS
         }
-        recentNackShards = recentNackShards.filter {
-            now &- $0.value <= Self.lossWindowNS
+        for (key, at) in recentNackShards where now &- at > Self.lossWindowNS {
+            recentNackShards.removeValue(forKey: key)
         }
         recentHonestDeliveries.removeAll {
             now &- $0.at > Self.honestVoteWindowNS
