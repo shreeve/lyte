@@ -18,8 +18,4 @@ public struct FramebufferIdentityTracker: Sendable, Equatable {
         lastFramebufferId = framebufferId
         return .changed(framebufferId)
     }
-
-    public mutating func reset() {
-        lastFramebufferId = 0
-    }
 }

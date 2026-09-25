@@ -6,11 +6,9 @@ import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (build plan HS-11 row + HS-8's deferred capabilities item):
-// the W4b SessionStateMachine (mediaSender) drives the session's real
-// lifecycle over the HS-8 reliable stream, and the W7 capability
-// exchange settles the session's agreed set. Pinned behaviors, each a
-// leg below:
+// The shared SessionStateMachine (mediaSender) drives the session's real
+// lifecycle over the reliable stream, and the capability exchange
+// settles the session's agreed set:
 //
 //   • the host's capability declaration (0x0F) is its FIRST reliable
 //     message post-establishment; the intersection with the client's
@@ -23,10 +21,8 @@ import LyteWireTestKit
 //   • an orderly shutdown delivers SessionTeardown 0x0A on the reliable
 //     stream; a liveness timeout closes locally and sends NOTHING.
 //
-// The far end is the ArqCtrlGateTests discipline: a LyteWire client
-// build-up (NoiseSession initiator + ArqEndpoint<ClientClock> +
-// CapabilityNegotiator in the client role) — exactly what CL-7/CL-8
-// assemble.
+// The far end is a LyteWire client build-up (NoiseSession initiator +
+// ArqEndpoint<ClientClock> + CapabilityNegotiator in the client role).
 
 final class SessionLifecycleGateTests: XCTestCase {
 
@@ -42,10 +38,6 @@ final class SessionLifecycleGateTests: XCTestCase {
     private struct LifecycleClient: PeerBackedClient {
         var peer: SealedCtrlPeer<ClientClock>
         var videoDatagrams = 0
-
-        init(hostStaticPublicKey: [UInt8]) throws {
-            peer = try SealedCtrlPeer(initiatorTo: hostStaticPublicKey)
-        }
 
         /// The 25–50 ms chan-3 report the client emits continuously —
         /// media-path evidence for the blackout detector AND the
@@ -81,44 +73,17 @@ final class SessionLifecycleGateTests: XCTestCase {
     // MARK: Harness
 
     private struct Loopback {
-        let session: Session
+        let host: HostSessionHarness
         var client: LifecycleClient
-        var sent: () -> [VideoChannelDatagram]
-        var forwarded: Int
         var hostEvents: [SessionEvent] = []
 
-        /// One direct (lossless, in-order) exchange pass at virtual µs
-        /// `t`: host timers → host outbox to the client → client ARQ
-        /// output back to the host.
-        mutating func exchange(t: UInt64) throws {
-            hostEvents += session.advance(now: t * 1_000, hostMicroseconds: t)
-            session.pump(now: t * 1_000)
-            while forwarded < sent().count {
-                try client.absorb(sent()[forwarded].bytes, nowMicros: t)
-                forwarded += 1
-            }
-            for datagram in try client.pollOut(nowMicros: t) {
-                hostEvents += session.receive(
-                    datagram, from: SessionLifecycleGateTests.tupleA,
-                    now: t * 1_000, hostMicroseconds: t
-                )
-                session.pump(now: t * 1_000)
-                while forwarded < sent().count {
-                    try client.absorb(sent()[forwarded].bytes, nowMicros: t)
-                    forwarded += 1
-                }
-            }
-        }
+        var session: Session { host.session }
 
-        /// Runs exchange passes 2 ms apart until both ends quiesce.
+        /// Exchange passes 2 ms apart until both ends quiesce.
         mutating func settle(t: inout UInt64) throws {
-            var idle = 0
-            while idle < 3 {
-                t += 2_000
-                let before = (forwarded, hostEvents.count)
-                try exchange(t: t)
-                idle = (forwarded, hostEvents.count) == before ? idle + 1 : 0
-            }
+            var events: [SessionEvent] = []
+            try host.settle(&client, t: &t) { events.append($0) }
+            hostEvents += events
         }
 
         mutating func feedback(t: UInt64) throws {
@@ -144,74 +109,41 @@ final class SessionLifecycleGateTests: XCTestCase {
     /// Handshake + capability-declaration baseline: by the time this
     /// returns, the host has declared (its first reliable word — the
     /// assertion lives in SessionGateTests) and the client has
-    /// acknowledged it; `sendClientDeclaration` optionally completes
-    /// the exchange with the given client set.
+    /// acknowledged it; a non-nil `clientCapabilities` completes the
+    /// exchange with that client set.
     private func establish(
         clientCapabilities: Capabilities? = .wireDefault,
         hostCapabilities: Capabilities = .wireDefault,
         lifecycle: SessionMachineConfig = SessionMachineConfig(),
         beaconIntervalNS: UInt64 = 1 << 62
-    ) throws -> (loop: Loopback, box: DatagramBox) {
-        let hostStatic = NoiseKeyPair.generate()
-        let box = DatagramBox()
-        let session = Session(
+    ) throws -> Loopback {
+        let host = HostSessionHarness(
             config: SessionConfig(
-                crypto: .noise(hostStatic: hostStatic),
+                crypto: .noise(hostStatic: NoiseKeyPair.generate()),
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: beaconIntervalNS,
                 capabilities: hostCapabilities,
                 lifecycle: lifecycle
             ),
-            clientTuple: Self.tupleA,
-            now: 0,
-            rng: SplitMix64(seed: 0x1108),
-            send: { box.datagrams.append($0) }
+            tuple: Self.tupleA,
+            rng: SplitMix64(seed: 0x1108)
         )
-        var client = try LifecycleClient(
-            hostStaticPublicKey: hostStatic.publicKey
-        )
-        let handshakeEvents = session.receive(
-            try client.message1Datagram(clientMicros: 500),
-            from: Self.tupleA, now: 0, hostMicroseconds: 0
-        )
-        XCTAssertEqual(session.phase, .established)
-        XCTAssertEqual(session.lifecycleState, .active,
-                       "the machine begins at establishment, in ACTIVE")
-        session.pump(now: 0)
-
         var loop = Loopback(
-            session: session, client: client,
-            sent: { box.datagrams }, forwarded: 0
+            host: host,
+            client: LifecycleClient(peer: try host.connectClient(
+                declaring: clientCapabilities, openChannels: nil
+            ))
         )
-        loop.hostEvents += handshakeEvents
+        XCTAssertEqual(host.session.phase, .established)
+        XCTAssertEqual(host.session.lifecycleState, .active,
+                       "the machine begins at establishment, in ACTIVE")
         var t: UInt64 = 1_000
-        if let clientCapabilities {
-            var negotiator = CapabilityNegotiator(
-                role: .client, local: clientCapabilities
-            )
-            try loop.client.arq.send(
-                message: try XCTUnwrap(negotiator.start()).encode(),
-                now: ClientTimestamp(microseconds: t)
-            )
-        }
         try loop.settle(t: &t)
         XCTAssertEqual(
             loop.client.take(type: CtrlMessageType.capabilityDeclaration).count,
             1, "the host's declaration must reach the client exactly once"
         )
-        return (loop, box)
-    }
-
-    private final class DatagramBox {
-        var datagrams: [VideoChannelDatagram] = []
-    }
-
-    /// A synthetic frame-shaped Annex-B blob (the SessionGateTests
-    /// pattern): start code + TRAIL_R VCL NAL + non-start-code padding.
-    private func syntheticFrame(byteCount: Int) -> [UInt8] {
-        precondition(byteCount >= 6)
-        return [0, 0, 0, 1, 0x02, 0x01]
-            + [UInt8](repeating: 0xAA, count: byteCount - 6)
+        return loop
     }
 
     // MARK: Capabilities — the agreement and the typed refusal
@@ -229,7 +161,7 @@ final class SessionLifecycleGateTests: XCTestCase {
             resume: true,
             maxDatagramBytes: 1_400
         )
-        let (loopValue, _) = try establish(clientCapabilities: clientSet)
+        let loopValue = try establish(clientCapabilities: clientSet)
         let loop = loopValue
 
         let agreements = loop.events { event -> Capabilities? in
@@ -250,15 +182,9 @@ final class SessionLifecycleGateTests: XCTestCase {
         XCTAssertEqual(loop.session.agreedCapabilities, agreed)
         XCTAssertEqual(loop.session.lifecycleState, .active,
                        "a workable agreement never disturbs the session")
-
-        print("""
-            HS-11/HS-8 gate (capabilities): declaration first-word, \
-            intersection agreed — codecs \(agreed.videoCodecs), \
-            ceiling \(agreed.maxDatagramBytes) B
-            """)
     }
 
-    // MARK: Chroma negotiation → encoder posture (H4 V-4)
+    // MARK: Chroma negotiation → encoder posture
 
     /// A 4:4:4-capable host (the startup Rext self-probe passed, so it
     /// declared [420, 444]) meets a Best-tier client declaring the
@@ -271,7 +197,7 @@ final class SessionLifecycleGateTests: XCTestCase {
                                CapabilityChroma.yuv444]
         var clientSet = Capabilities.wireDefault
         clientSet.chromaModes = [CapabilityChroma.yuv444]
-        let (loopValue, _) = try establish(
+        let loopValue = try establish(
             clientCapabilities: clientSet, hostCapabilities: hostSet
         )
         let loop = loopValue
@@ -294,11 +220,6 @@ final class SessionLifecycleGateTests: XCTestCase {
             "the [444] singleton opens the Best-tier encoder"
         )
         XCTAssertEqual(loop.session.lifecycleState, .active)
-
-        print("""
-            V-4 gate (chroma): host [420, 444] ∩ client [444] → \
-            agreed [444] → Best posture
-            """)
     }
 
     /// The same 4:4:4-capable host against a Good-tier client ([420]
@@ -308,7 +229,7 @@ final class SessionLifecycleGateTests: XCTestCase {
         var hostSet = Capabilities.wireDefault
         hostSet.chromaModes = [CapabilityChroma.yuv420,
                                CapabilityChroma.yuv444]
-        let (loopValue, _) = try establish(
+        let loopValue = try establish(
             clientCapabilities: .wireDefault, hostCapabilities: hostSet
         )
         let loop = loopValue
@@ -330,11 +251,11 @@ final class SessionLifecycleGateTests: XCTestCase {
     /// A [420]-only host (the self-probe failed — the truthful
     /// declaration) against a Best-declaring client: empty chroma
     /// intersection is the TYPED failure the client's auto-re-dial
-    /// banner keys on (the pillar's named degradation), never silence.
+    /// banner keys on, never silence.
     func testGateBestAgainst420OnlyHostIsATypedChromaFailure() throws {
         var clientSet = Capabilities.wireDefault
         clientSet.chromaModes = [CapabilityChroma.yuv444]
-        let (loopValue, _) = try establish(clientCapabilities: clientSet)
+        let loopValue = try establish(clientCapabilities: clientSet)
         let loop = loopValue
 
         XCTAssertTrue(loop.hostEvents.contains(
@@ -387,7 +308,7 @@ final class SessionLifecycleGateTests: XCTestCase {
             resume: false,
             maxDatagramBytes: 1_152
         )
-        let (loopValue, _) = try establish(clientCapabilities: alienSet)
+        let loopValue = try establish(clientCapabilities: alienSet)
         var loop = loopValue
 
         XCTAssertTrue(loop.hostEvents.contains(
@@ -413,17 +334,12 @@ final class SessionLifecycleGateTests: XCTestCase {
         )
         XCTAssertEqual(suppressed, 0)
         XCTAssertEqual(loop.session.counters.videoFramesSuppressed, 1)
-
-        print("""
-            HS-11/HS-8 gate (refusal): empty codec intersection → \
-            typed teardown delivered, session closed, video suppressed
-            """)
     }
 
     // MARK: FROZEN / RECOVERY off the host's own silence detector
 
     func testGateFrozenRecoveryFromTheSilenceDetector() throws {
-        let (loopValue, _) = try establish()
+        let loopValue = try establish()
         var loop = loopValue
 
         // A healthy feedback stream, then silence.
@@ -469,7 +385,7 @@ final class SessionLifecycleGateTests: XCTestCase {
         XCTAssertGreaterThan(flowing, 0, "RECOVERY: sends may flow again")
 
         // Two clean 25 ms feedback windows graduate back to ACTIVE —
-        // the verdicts are the HS-16 estimator's now (clean reports,
+        // the verdicts are the estimator's (clean reports,
         // no loss deltas, no delay inflation). The dirty-window leg
         // (loss holds RECOVERY) lives in RateEstimatorGateTests.
         t += 30_000
@@ -477,12 +393,6 @@ final class SessionLifecycleGateTests: XCTestCase {
         t += 30_000
         try loop.feedback(t: t)
         XCTAssertEqual(loop.session.lifecycleState, .active)
-
-        print("""
-            HS-11 gate (overlay): 350 ms silence → FROZEN (video \
-            suppressed) → evidence → RECOVERY (forced IDR) → two clean \
-            windows → ACTIVE
-            """)
     }
 
     // MARK: Input silence — held keys outlive a hitch, not a long silence
@@ -492,7 +402,7 @@ final class SessionLifecycleGateTests: XCTestCase {
     /// authenticated arrival does, once, at that instant (the wake names
     /// it); the next arrival re-arms it.
     func testGateInputSilenceElapsesOnlyAfterTheLongSilence() throws {
-        let (loopValue, _) = try establish()
+        let loopValue = try establish()
         var loop = loopValue
         func silenceEvents() -> Int {
             loop.hostEvents.filter { $0 == .inputSilenceElapsed }.count
@@ -536,7 +446,7 @@ final class SessionLifecycleGateTests: XCTestCase {
     // MARK: Teardown — orderly, peer-initiated, and liveness
 
     func testGateShutdownDeliversTypedTeardown() throws {
-        let (loopValue, _) = try establish()
+        let loopValue = try establish()
         var loop = loopValue
         var t: UInt64 = 500_000
 
@@ -560,15 +470,10 @@ final class SessionLifecycleGateTests: XCTestCase {
             try teardowns.map { try SessionTeardown.decode($0).reason },
             [.shuttingDown]
         )
-
-        print("""
-            HS-11 gate (shutdown): 0x0A delivered exactly once, \
-            acknowledged, session closed
-            """)
     }
 
     func testGatePeerTeardownClosesTheSession() throws {
-        let (loopValue, _) = try establish()
+        let loopValue = try establish()
         var loop = loopValue
         var t: UInt64 = 500_000
 
@@ -582,18 +487,13 @@ final class SessionLifecycleGateTests: XCTestCase {
         XCTAssertTrue(loop.hostEvents.contains(
             .sessionClosed(.peerTeardown(.shuttingDown))
         ))
-
-        print("""
-            HS-11 gate (peer teardown): client 0x0A → host closed \
-            cleanly — the graceful half of the ECONNREFUSED fix
-            """)
     }
 
     func testGateLivenessTimeoutClosesLocallyAndSendsNothing() throws {
-        let (loopValue, box) = try establish()
+        let loopValue = try establish()
         var loop = loopValue
 
-        let quietBaseline = box.datagrams.count
+        let quietBaseline = loop.host.sent.count
         // 30 s of absolutely nothing (beacons pushed past the horizon
         // by the harness): the machine closes locally.
         let t: UInt64 = 31_000_000
@@ -610,16 +510,11 @@ final class SessionLifecycleGateTests: XCTestCase {
         ))
         loop.session.pump(now: t * 1_000)
         XCTAssertEqual(
-            box.datagrams.count, quietBaseline,
+            loop.host.sent.count, quietBaseline,
             """
                 a liveness close sends NOTHING — the peer that would read \
                 it is the one that died
                 """
         )
-
-        print("""
-            HS-11 gate (liveness): 30 s of silence → local close, \
-            zero datagrams emitted
-            """)
     }
 }

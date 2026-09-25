@@ -6,14 +6,10 @@ import HostWire
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (HS-21, H3 Wave 0 rung D-3: "HandshakeGate cookie-mode
-// escalation under load — the host finally mints a live 0x13"). W8
-// landed the retry-cookie codec and the client's answer path is armed in
-// every dial (NoiseTransportCrypto), but the HOST never escalated, so no
-// dial ever drew a 0x13. These legs pin the host half, sans-IO:
+// HandshakeGate cookie-mode escalation under load, driven through
+// Session.receive:
 //
-//   • the dial is OFF without a cookie secret — the exact HS-9 token
-//     bucket, so every pre-HS-21 test is unchanged;
+//   • the dial is OFF without a cookie secret — the token bucket alone;
 //   • a msg1 flood flips require-cookie mode ON at the enter threshold
 //     and back OFF at the exit threshold (hysteresis, no flap);
 //   • under the flood an un-cookied msg1 is answered with a stateless
@@ -25,8 +21,8 @@ import LyteWireTestKit
 //     the dial, a legitimate client caught in it still establishes with
 //     one extra round trip, and the dial clears when pressure lifts.
 //
-// The HandshakeGate legs of the first four bullets live beside the type,
-// in HostSessionTests/HandshakeGateTests; this file drives Session.
+// The gate-level cases of the first four bullets are HostSessionTests'
+// HandshakeGateTests; this file drives Session.
 
 final class CookieGateTests: XCTestCase {
 
@@ -37,7 +33,7 @@ final class CookieGateTests: XCTestCase {
         remoteAddress: "10.0.0.23", remotePort: 61_000
     )
 
-    // MARK: Session level — the whole host half, driven live-shaped
+    // MARK: Session level
 
     private func rawMessage1(hostStatic: NoiseKeyPair) throws
         -> (client: NoiseSession, message1: [UInt8]) {
@@ -152,13 +148,6 @@ final class CookieGateTests: XCTestCase {
             "a verifying cookie establishes the session")
         XCTAssertEqual(session.phase, .established)
         XCTAssertEqual(session.counters.handshakeCookiesVerified, 1)
-
-        print("""
-            HS-21 gate (session): 30-msg1 flood → dial ENGAGED, \
-            \(session.counters.handshakeChallengesMinted) 0x13 minted \
-            (no Noise), legit client established via 0x14 in one extra \
-            round trip
-            """)
     }
 
     /// A 0x14 whose cookie does not verify is dropped before any Noise.

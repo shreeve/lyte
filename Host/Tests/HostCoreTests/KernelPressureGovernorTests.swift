@@ -33,7 +33,7 @@ final class KernelPressureGovernorTests: XCTestCase {
         _ = governor.observe(sample(now: 0))
         let decision = governor.observe(sample(
             now: ms, userspace: 100_000, videoKernel: 110_000))
-        XCTAssertEqual(decision.totalVideoBytes, 210_000)
+        // 210,000 B at 50 Mbps.
         XCTAssertEqual(decision.totalVideoServiceDebtNS, 33_600_000)
         XCTAssertEqual(decision.state, .constrained,
             "kernel high water tightens admission before SO_SNDBUF fills")
@@ -78,11 +78,18 @@ final class KernelPressureGovernorTests: XCTestCase {
             "the same debt must keep pre-encode admission closed")
     }
 
+    func testADrainAcrossDaysOfSilenceStaysInsideTheBudget() {
+        var governor = KernelPressureGovernor()
+        _ = governor.observe(sample(now: 0, videoKernel: 100_001))
+        let days: UInt64 = 3 * 86_400 * 1_000 * ms
+        XCTAssertEqual(governor.observe(sample(
+            now: days, videoKernel: 100_000)).state, .calm)
+    }
+
     func testENOBUFSEscalatesAndSheddingIsFreshOnlyAndStaleOnly() {
         var governor = KernelPressureGovernor()
         _ = governor.observe(sample(now: 0))
         let decision = governor.observe(sample(now: ms, enobufs: 1))
-        XCTAssertEqual(decision.enobufsDelta, 1)
         XCTAssertEqual(decision.state, .latencyOnly)
 
         let now = 200 * ms
@@ -97,8 +104,7 @@ final class KernelPressureGovernorTests: XCTestCase {
             nowNS: now,
             videoQueueBudgetNS: 100 * ms))
         for protectedClass in [
-            PacerClass.control, .audio, .videoTail, .refinement,
-            .telemetry, .bulk
+            PacerClass.control, .audio, .videoTail, .bulk
         ] {
             XCTAssertFalse(KernelPressureGovernor.shouldShedAtSocket(
                 priorityClass: protectedClass,

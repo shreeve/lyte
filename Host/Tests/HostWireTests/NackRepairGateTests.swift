@@ -2,16 +2,15 @@ import XCTest
 import HostCore
 import HostSession
 @_spi(Testing) import HostWire
+import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (build plan HS-17 row: "Congestion II: NACK responder
-// (≥4 s rings), per-frame adaptive FEC — client NACKs honored, closes
-// §4.7"). The full real-client → real-Session → repaired-client round
-// trip now belongs to SystemTests; this owner suite pins the Host-only
-// judgement, retention, estimator, and scheduling laws below:
+// The host's NACK responder and adaptive FEC. The real-client →
+// real-Session → repaired-client round trip is SystemTests'; this suite
+// pins the Host-only judgement, retention, estimator and scheduling laws:
 //
-//   • STALENESS VERDICTS (resiliency §1.1 rules 3–4): a frame older
+//   • STALENESS VERDICTS: a frame older
 //     than the last IDR is refused dead (no repair, no host IDR arm —
 //     the client owns coalesced 0x10 recovery) while the IDR itself
 //     stays repairable; a NACK whose SRTT + retransmit serialization no
@@ -23,19 +22,19 @@ import LyteWireTestKit
 //     retransmissions; a closed session suppresses repairs entirely;
 //   • THE ≥4 s RING: the repair store evicts by age and by byte cap,
 //     oldest first;
-//   • POST-FEC LOSS → THE ESTIMATOR (HS-16's named seam): NACK
+//   • POST-FEC LOSS → THE ESTIMATOR: NACK
 //     evidence over the rolling window past 2% (rung 3) downshifts
 //     the rate — NOT held like the pre-FEC 2–10% band, because this
 //     is precisely the loss FEC failed to absorb — and steps the
-//     §5.2 FEC regime clean → lossy at the packetizing seam
+//     FEC regime clean → lossy at the packetizing seam
 //     (per-frame: the next frame carries the lossy column's parity);
 //     a sustained quiet stretch steps it back; NACK evidence inside a
 //     RECOVERY feedback window honestly holds RECOVERY;
-//   • THE CADENCE GATE (R-G8's shape under a repair storm): 5 s of
-//     virtual time — 5 ms audio, 60 fps damage, a worst-case IDR
-//     every 2 s, and a NACK against every fresh frame with repairs
-//     flowing throughout — audio inter-send holds 5 ms ± 2 ms at p99,
-//     structurally (audio outranks videoTail) and now proven.
+//   • AUDIO CADENCE under a repair storm: 5 s of virtual time — 5 ms
+//     audio, 60 fps damage, a worst-case IDR every 2 s, and a NACK
+//     against every fresh frame with repairs flowing throughout —
+//     audio inter-send holds 5 ms ± 2 ms at p99 (audio outranks
+//     videoTail).
 
 final class NackRepairGateTests: XCTestCase {
 
@@ -145,17 +144,6 @@ final class NackRepairGateTests: XCTestCase {
                        "the synthetic echo must seed SRTT")
     }
 
-    /// A frame-shaped Annex-B blob with position-dependent bytes so a
-    /// shard swap can never pass the byte-equality checks.
-    private func syntheticFrame(
-        byteCount: Int, irap: Bool = false
-    ) -> [UInt8] {
-        [0, 0, 0, 1, irap ? 0x26 : 0x02, 0x01]
-            + (0..<(byteCount - 6)).map {
-                UInt8(truncatingIfNeeded: $0 &* 131 &+ 7)
-            }
-    }
-
     private var feedbackSeq: UInt16 = 0
 
     /// Wraps a report in a chan-3 envelope and feeds it in (insecure
@@ -214,7 +202,7 @@ final class NackRepairGateTests: XCTestCase {
         return (byIndex, geometry)
     }
 
-    // MARK: Leg 1 — staleness verdicts
+    // MARK: - Staleness verdicts
 
     func testNackOlderThanLastIdrRefusedDeadButIdrItselfRepairable() throws {
         let box = Box()
@@ -249,6 +237,9 @@ final class NackRepairGateTests: XCTestCase {
                        "the newer IDR is the heal — no fresh IDR owed")
         drain(session, box: box, until: now + 5 * Self.ms, now: &now)
         XCTAssertTrue(box.tail().isEmpty)
+        XCTAssertEqual(try refusalsOnWire(box), [RepairRefusal(
+            frame: FrameNumber(rawValue: 0), reason: .superseded
+        )], "older-than-IDR refuses dead but tells the client")
 
         // The IDR itself stays repairable (§5.2's burst-loss rationale).
         let idrRepair = try feed(
@@ -267,9 +258,8 @@ final class NackRepairGateTests: XCTestCase {
 
     func testNackPastFreezeBudgetDelegatesRecoveryToClientEpisode() throws {
         let box = Box()
-        // Pin the budget via the HS-32 override: this leg
-        // tests the refusal behavior, not the derivation (which has
-        // its own legs below).
+        // Pin the budget via the override: this is the refusal
+        // behavior, not the derivation (which has its own tests below).
         let session = makeSession(box: box) {
             $0.repairFreezeBudgetOverrideNS = 33_333_333
         }
@@ -369,6 +359,10 @@ final class NackRepairGateTests: XCTestCase {
         )))
         XCTAssertFalse(session.takeFreshKeyframeRequest())
         XCTAssertEqual(session.counters.repairRefusalsSent, 1)
+        drain(session, box: box, until: now + 5 * Self.ms, now: &now)
+        XCTAssertEqual(try refusalsOnWire(box), [RepairRefusal(
+            frame: FrameNumber(rawValue: 0), reason: .unknownFrame
+        )])
     }
 
     func testGarbageUnknownFrameNacksNeverBypassClientRecoveryOwner() throws {
@@ -399,19 +393,6 @@ final class NackRepairGateTests: XCTestCase {
         XCTAssertEqual(armed, 0,
             "wire-cadence garbage NACKs bypassed the client episode")
         XCTAssertEqual(session.counters.repairRefusalsSent, 40)
-
-        // A later unknown frame remains the same policy: refuse now; the
-        // client request (or its 250 ms deadline) re-anchors once.
-        now = 1_011 * Self.ms
-        _ = try feed(
-            session,
-            report: nackReport(
-                frame: 7, shards: [0], clientMicros: now / 1_000
-            ),
-            now: now
-        )
-        XCTAssertFalse(session.takeFreshKeyframeRequest())
-        XCTAssertEqual(session.counters.repairRefusalsSent, 41)
     }
 
     func testNackAfterCloseIsSuppressed() throws {
@@ -440,8 +421,8 @@ final class NackRepairGateTests: XCTestCase {
         XCTAssertFalse(session.takeFreshKeyframeRequest())
     }
 
-    // MARK: Leg 2 — HS-32: the derived budget, explicit refusals,
-    // and the opening-IDR exemption
+    // MARK: - The derived budget, explicit refusals, and the opening-IDR
+    // exemption
 
     /// One empty (parseable) report — cadence evidence only.
     private func feedCadenceReport(
@@ -496,10 +477,9 @@ final class NackRepairGateTests: XCTestCase {
     }
 
     func testAskOnTheCadenceIsNowHonoredAndReAskStaysSilent() throws {
-        // The HS-32 headline: an ask arriving 50 ms after the flight —
-        // dead on arrival under the retired HS-17 33 ms constant
-        // (the ask itself rides the 40 ms feedback cadence) — is
-        // inside the derived budget, and the repair actually flies.
+        // An ask arriving 50 ms after the flight (it rides the 40 ms
+        // feedback cadence) is inside the derived budget, and the
+        // repair actually flies.
         let box = Box()
         let session = makeSession(box: box)
         var now: UInt64 = 0
@@ -548,72 +528,6 @@ final class NackRepairGateTests: XCTestCase {
         drain(session, box: box, until: now + 5 * Self.ms, now: &now)
         XCTAssertTrue(try refusalsOnWire(box).isEmpty)
         XCTAssertEqual(session.counters.repairRefusalsSent, 0)
-    }
-
-    func testOlderThanIdrRefusalRidesSuperseded() throws {
-        let box = Box()
-        let session = makeSession(box: box)
-        var now: UInt64 = 0
-        try establishSrtt(session, box: box, now: &now)
-        box.sendInstant = now
-        _ = try session.ingestVideoFrame(
-            syntheticFrame(byteCount: 8_000),
-            captureTimestampMicroseconds: now / 1_000,
-            isKeyframe: false, now: now
-        )
-        _ = try session.ingestVideoFrame(
-            syntheticFrame(byteCount: 12_000, irap: true),
-            captureTimestampMicroseconds: now / 1_000,
-            isKeyframe: true, now: now
-        )
-        drain(session, box: box, until: now + 15 * Self.ms, now: &now)
-
-        _ = try feed(
-            session,
-            report: nackReport(frame: 0, shards: [0],
-                               clientMicros: now / 1_000),
-            now: now
-        )
-        drain(session, box: box, until: now + 5 * Self.ms, now: &now)
-        XCTAssertEqual(try refusalsOnWire(box), [RepairRefusal(
-            frame: FrameNumber(rawValue: 0), reason: .superseded
-        )], "older-than-IDR refuses dead but tells the client")
-    }
-
-    func testEvictedFrameRefusalRidesUnknownFrame() throws {
-        let box = Box()
-        let session = makeSession(box: box) {
-            $0.repairRetentionNS = 100 * Self.ms
-            $0.repairFreezeBudgetOverrideNS = 10_000 * Self.ms
-        }
-        var now: UInt64 = 0
-        try establishSrtt(session, box: box, now: &now)
-        box.sendInstant = now
-        _ = try session.ingestVideoFrame(
-            syntheticFrame(byteCount: 8_000),
-            captureTimestampMicroseconds: now / 1_000,
-            isKeyframe: false, now: now
-        )
-        drain(session, box: box, until: now + 10 * Self.ms, now: &now)
-        now += 200 * Self.ms
-        box.sendInstant = now
-        _ = try session.ingestVideoFrame(
-            syntheticFrame(byteCount: 8_000),
-            captureTimestampMicroseconds: now / 1_000,
-            isKeyframe: false, now: now
-        )
-        drain(session, box: box, until: now + 10 * Self.ms, now: &now)
-
-        _ = try feed(
-            session,
-            report: nackReport(frame: 0, shards: [0],
-                               clientMicros: now / 1_000),
-            now: now
-        )
-        drain(session, box: box, until: now + 5 * Self.ms, now: &now)
-        XCTAssertEqual(try refusalsOnWire(box), [RepairRefusal(
-            frame: FrameNumber(rawValue: 0), reason: .unknownFrame
-        )])
     }
 
     func testOpeningIdrExemptionRepairsBlackGlass() throws {
@@ -764,7 +678,7 @@ final class NackRepairGateTests: XCTestCase {
         )])
     }
 
-    // MARK: Leg 3 — the ≥4 s ring's eviction laws (channel level)
+    // MARK: - The repair store's eviction laws (channel level)
 
     func testRepairStoreEvictsByAgeAndByteCapOldestFirst() throws {
         var sent: [VideoChannelDatagram] = []
@@ -818,7 +732,7 @@ final class NackRepairGateTests: XCTestCase {
         XCTAssertEqual(channel.counters.repairShardsAlreadySent, 1)
     }
 
-    // MARK: Leg 4 — post-FEC loss feeds the estimator (rung 3)
+    // MARK: - Post-FEC loss feeds the estimator (rung 3)
 
     private func videoLedger(
         received: UInt32, missing: UInt32 = 0
@@ -831,11 +745,10 @@ final class NackRepairGateTests: XCTestCase {
     }
 
     func testEstimatorPostFecLossDownshiftsAndStepsRegime() throws {
-        var config = RateEstimatorConfig(
-            ceilingBitsPerSecond: Self.ceiling
+        let estimator = RateEstimator(
+            config: RateEstimatorConfig(ceilingBitsPerSecond: Self.ceiling),
+            now: 0
         )
-        config.regimeStepDownHoldNS = 1_000 * Self.ms
-        let estimator = RateEstimator(config: config, now: 0)
 
         func report(
             received: UInt32, nackFrame: UInt32? = nil,
@@ -896,7 +809,7 @@ final class NackRepairGateTests: XCTestCase {
         // the regime steps back down.
         var stepDown: FecRegime?
         var received: UInt32 = 300
-        for beat in 1...30 {
+        for beat in 1...70 {
             received += 100
             let v = estimator.ingest(
                 try report(received: received,
@@ -913,11 +826,10 @@ final class NackRepairGateTests: XCTestCase {
     }
 
     func testNackEvidenceHoldsRecoveryWindows() throws {
-        var config = RateEstimatorConfig(
-            ceilingBitsPerSecond: Self.ceiling
+        let estimator = RateEstimator(
+            config: RateEstimatorConfig(ceilingBitsPerSecond: Self.ceiling),
+            now: 0
         )
-        config.recoveryWindowNS = 25 * Self.ms
-        let estimator = RateEstimator(config: config, now: 0)
 
         func report(
             nacked: Bool, frame: UInt32, clientMicros: UInt64
@@ -951,7 +863,7 @@ final class NackRepairGateTests: XCTestCase {
         XCTAssertEqual(clean.recoveryWindows, [true])
     }
 
-    // MARK: Leg 5 — the regime step lands on the packetizing seam
+    // MARK: - The regime step lands on the packetizing seam
 
     func testGateFecRegimeStepChangesNextFrameGeometry() throws {
         let box = Box()
@@ -1017,21 +929,15 @@ final class NackRepairGateTests: XCTestCase {
                        "the lossy §5.2 column applies from the next frame")
         XCTAssertEqual(byIndex.count, 38)
         XCTAssertEqual(session.counters.fecRegimeSteps, 1)
-
-        print("""
-            HS-17 gate leg 5: post-FEC 5% stepped clean→lossy — \
-            frame 0 at 28+5, frame 2 at 28+10
-            """)
     }
 
-    // MARK: Leg 6 — THE CADENCE GATE under a repair storm (R-G8 shape)
+    // MARK: - Audio cadence under a repair storm
 
     /// 5 s of virtual time at 20 Mbps: 5 ms audio, 60 fps damage, a
     /// worst-case IDR every 2 s — and a NACK against EVERY fresh video
     /// frame on the 25 ms feedback cadence, so repairs flow the whole
     /// run. Audio inter-send must hold 5 ms ± 2 ms at p99: repairs
-    /// ride videoTail, structurally below audio, and this leg proves
-    /// the structure.
+    /// ride videoTail, structurally below audio.
     func testGateAudioCadenceHoldsThroughRepairStorm() throws {
         let box = Box()
         let session = makeSession(box: box, seed: 0x1706)
@@ -1160,17 +1066,5 @@ final class NackRepairGateTests: XCTestCase {
                 audio inter-send p99 deviation \(Double(p99) / 1e6) ms > \
                 2 ms through the repair storm
                 """)
-
-        let worstMS = Double(deviations.last!) / 1e6
-        let audioQueueMS =
-            Double(session.pacerTelemetry[.audio].maxQueueDelayNS) / 1e6
-        print("""
-            HS-17 gate (R-G8 + repair storm) @5 s virtual: \
-            \(session.counters.nacksHonored) NACKs honored → \
-            \(repairCount) repair datagrams on videoTail; \
-            \(dataSends.count) audio packets, inter-send deviation \
-            p99 \(Double(p99) / 1e6) ms, worst \(worstMS) ms; \
-            audio max queue delay \(audioQueueMS) ms
-            """)
     }
 }

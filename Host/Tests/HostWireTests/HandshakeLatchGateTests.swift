@@ -5,8 +5,8 @@ import LyteWire
 import LyteWireTestKit
 import XCTest
 
-/// B3's latch half, sans-IO: a listening host no longer pins its session
-/// to the first plausible message 1's source. Until a handshake completes
+/// A listening host never pins its session to the first plausible
+/// message 1's source. Until a handshake completes
 /// the session belongs to no tuple; the message 1 that authenticates
 /// names the client's path.
 final class HandshakeLatchGateTests: XCTestCase {

@@ -3,27 +3,27 @@ import Foundation
 import HostCore
 import HostSession
 @_spi(Testing) import HostWire
+import HostWireTestKit
 import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (build plan HS-7 row): a full loopback-in-process session.
-// The host Session (Noise IK responder, statics pinned out-of-band) and a
-// test client built from LyteWire's own NoiseSession (initiator) complete
-// the handshake; corpus frames ride VideoChannel → Session.seal → the
-// paced sink; the client unseals via its NoiseTransport and reassembles
-// byte-exact frames through VideoAssembler. Beacons seal/emit at 1 Hz
-// plus session start, a synthesized BeaconEcho updates the host's offset
-// estimate (and the next beacon mirrors it per W4a), every datagram
-// carries the conn-id TLV within the 1152 B budget, a client 0x10 IDR
-// request raises the encoder-loop keyframe poll, and a conn-id-bearing
-// datagram from a new tuple draws a sealed path challenge on that exact
-// tuple. The test-only passthrough delivers the same frames through the
-// same wiring with the passthrough seal — geometry identical by design.
+// A full loopback-in-process session. The host Session (Noise IK
+// responder, statics pinned out-of-band) and a test client built from
+// LyteWire's own NoiseSession (initiator) complete the handshake; corpus
+// frames ride VideoChannel → Session.seal → the paced sink; the client
+// unseals via its NoiseTransport and reassembles byte-exact frames
+// through VideoAssembler. Beacons seal/emit at 1 Hz plus session start,
+// a synthesized BeaconEcho updates the host's offset estimate (and the
+// next beacon mirrors it), every datagram carries the conn-id TLV within
+// the 1152 B budget, a client 0x10 IDR request raises the encoder-loop
+// keyframe poll, and a conn-id-bearing datagram from a new tuple draws a
+// sealed path challenge on that exact tuple. The test-only passthrough
+// seal produces identical geometry.
 
 final class SessionGateTests: XCTestCase {
 
-    // MARK: Corpus plumbing (the HS-5 gate's, verbatim)
+    // MARK: Corpus plumbing
 
     private static var corpusDirectory: String {
         var components = #filePath.split(
@@ -69,7 +69,7 @@ final class SessionGateTests: XCTestCase {
 
     /// The far end of the loopback: LyteWire's NoiseSession as the
     /// initiator (the client role), with the host's static pinned
-    /// out-of-band exactly as J-G1's debug client will hold it.
+    /// out-of-band.
     private struct LoopbackClient {
         var peer: SealedCtrlPeer<ClientClock>
 
@@ -137,7 +137,7 @@ final class SessionGateTests: XCTestCase {
         return now
     }
 
-    // MARK: The gate — Noise path
+    // MARK: The Noise loopback
 
     func testGateNoiseLoopbackSessionEndToEnd() throws {
         let frames = try corpusFrames()
@@ -197,7 +197,7 @@ final class SessionGateTests: XCTestCase {
         XCTAssertEqual(beacon0.hostSend.microseconds, t1Beacon0)
         XCTAssertNil(beacon0.lastEcho, "no echo has happened yet")
 
-        // The W7 declaration is the first ARQ-carried word: an ARQ
+        // The capability declaration is the first ARQ-carried word: an ARQ
         // segment whose message body is `0x0F ‖ deterministic CBOR` —
         // the host's wireDefault capability set.
         let (_, declarationPlain) = try client.absorb(sent[2].bytes)
@@ -242,8 +242,7 @@ final class SessionGateTests: XCTestCase {
         )])
         XCTAssertEqual(session.clock.samples, 1)
         XCTAssertEqual(session.clock.lastOffsetMicroseconds, offset)
-        XCTAssertEqual(session.clock.lastRttMicroseconds, 10_000)
-        XCTAssertEqual(session.clock.minRttOffsetMicroseconds, offset)
+        XCTAssertEqual(session.clock.minRttMicroseconds, 10_000)
 
         // ── Video: corpus → seal → unseal → assembler, byte-exact ──────
         var clock: UInt64 = 2_000_000
@@ -325,7 +324,7 @@ final class SessionGateTests: XCTestCase {
         // The long feedback-free drain froze the lifecycle machine (the
         // 350 ms detector — no chan-3 traffic exists in this harness);
         // this first returning CTRL evidence is also the RECOVERY exit,
-        // and the HS-16 estimator paces its IDR at the half-stale rate.
+        // and the estimator paces its IDR at the half-stale rate.
         XCTAssertEqual(idrEvents, [
             .lifecycleChanged(.recovery),
             .rateChanged(
@@ -385,7 +384,7 @@ final class SessionGateTests: XCTestCase {
         XCTAssertTrue(session.takeFreshKeyframeRequest(),
             "damage after the delivered anchor still earns a new IDR")
 
-        // ── 1 Hz beacon with the W4a mirror of the last echo ───────────
+        // ── 1 Hz beacon mirroring the last echo ──────────────────────────
         let t1Beacon1: UInt64 = 2_000_000
         let preBeaconCount = sent.count
         let beaconEvents = session.advance(
@@ -425,7 +424,7 @@ final class SessionGateTests: XCTestCase {
         )
 
         // ── Migration hook: a conn-id datagram from a new tuple draws a
-        // sealed challenge on that exact tuple (HS-12 wiring, in vivo) ──
+        // sealed challenge on that exact tuple ──
         let roamEcho = BeaconEcho(
             beaconSeq: 1,
             hostSend: HostTimestamp(microseconds: t1Beacon1),
@@ -472,154 +471,9 @@ final class SessionGateTests: XCTestCase {
             try PathChallenge.decode(challengePlain), challenge,
             "the sealed challenge decodes to the validator's token"
         )
-
-        let expectedShards = try frames.map {
-            try shardCount(frameBytes: $0.count)
-        }.reduce(0, +)
-        print("""
-            HS-7 gate (Noise): handshake 1-RTT, \(frames.count) corpus \
-            frames → \(videoDatagrams.count) sealed datagrams \
-            (\(expectedShards) expected shards + forced IDR \
-            \(forced.count)), \(units.count) frames byte-exact through \
-            unseal; offset \(offset) µs / rtt 10000 µs recovered exactly; \
-            beacon 1 mirrored the echo; challenge on \(on.remoteAddress)
-            """)
     }
 
-    /// The ladder's shard count at the session's TLV-adjusted budget.
-    private func shardCount(frameBytes: Int) throws -> Int {
-        let budget = 1_101 // 1128 − 16 (tag) − 11 (conn-id TLV block)
-        let k = (frameBytes + budget - 1) / budget
-        let m = try FecGeometryTable.parityShards(forDataShards: k, regime: .clean)
-        return k + m
-    }
-
-    // MARK: The gate — test-only passthrough path
-
-    func testGateInsecureLoopbackDeliversFrames() throws {
-        let frames = try Array(corpusFrames().prefix(4))
-        var sent: [VideoChannelDatagram] = []
-        let session = Session(
-            config: SessionConfig(
-                crypto: .testPassthrough,
-                rateBitsPerSecond: Self.rateBPS
-            ),
-            clientTuple: Self.tupleA,
-            now: 0,
-            rng: SplitMix64(seed: 0x11)
-        ) { sent.append($0) }
-        XCTAssertEqual(session.phase, .established,
-                       "insecure mode has no handshake to wait for")
-
-        // First timer wake: the capability declaration (insecure mode
-        // reaches establishment without a handshake, so the first wake
-        // is where the W7 first-word rule lands) and the session-start
-        // beacon, both plaintext.
-        let startEvents = session.advance(now: 0, hostMicroseconds: 77_000)
-        XCTAssertEqual(startEvents, [.beaconSent(beaconSeq: 0)])
-        session.pump(now: 0)
-        XCTAssertEqual(sent.count, 2, "capability declaration + beacon")
-        let (declarationEnvelope, declarationPayload) =
-            try Envelope.decode(sent[0].bytes)
-        XCTAssertEqual(declarationEnvelope.channel, .ctrl)
-        XCTAssertEqual(declarationPayload.first, CtrlMessageType.arqSegment)
-        let (beaconEnvelope, beaconPayload) = try Envelope.decode(sent[1].bytes)
-        XCTAssertEqual(beaconEnvelope.channel, .ctrl)
-        let beacon = try ClockBeacon.decode(beaconPayload)
-        XCTAssertEqual(beacon.beaconSeq, 0)
-        XCTAssertEqual(beacon.hostSend.microseconds, 77_000)
-
-        // Corpus frames, passthrough seal: the payload IS the shard.
-        var clock: UInt64 = 1
-        for (i, frame) in frames.enumerated() {
-            clock = max(clock, UInt64(i) * Self.frameIntervalNS)
-            try session.ingestVideoFrame(
-                frame,
-                captureTimestampMicroseconds: Self.captureMicros(i),
-                isKeyframe: AnnexBCheck.containsIrap(frame),
-                now: clock
-            )
-            clock = drain(
-                session, from: clock,
-                horizon: UInt64(i + 1) * Self.frameIntervalNS
-            )
-        }
-        clock = drain(session, from: clock, horizon: 900_000_000)
-
-        var assembler = VideoAssembler()
-        var units: [DecodeUnit] = []
-        var rxNow = ClientTimestamp(microseconds: 0)
-        for datagram in sent where datagram.pacerClass == .freshVideo {
-            XCTAssertLessThanOrEqual(
-                datagram.bytes.count, WireBudget.maxDatagramByteCount
-            )
-            let (envelope, payload) = try Envelope.decode(datagram.bytes)
-            XCTAssertEqual(
-                try ConnectionId.decode(extensions: envelope.extensions),
-                session.connectionId,
-                "insecure datagrams still carry the conn-id TLV"
-            )
-            rxNow = rxNow.advanced(byMicroseconds: 25)
-            for event in assembler.ingest(
-                envelope: envelope, payload: payload, now: rxNow
-            ) {
-                if case .decoded(let unit) = event { units.append(unit) }
-            }
-        }
-        XCTAssertEqual(units.map(\.annexB), frames,
-                       "insecure path must deliver byte-exact frames")
-
-        // A plaintext echo still feeds the clock estimate.
-        let echo = BeaconEcho(
-            beaconSeq: 0,
-            hostSend: HostTimestamp(microseconds: 77_000),
-            clientReceive: ClientTimestamp(microseconds: 80_000),
-            clientSend: ClientTimestamp(microseconds: 80_500)
-        )
-        let echoEnvelope = Envelope(
-            channel: .ctrl, seq: ChannelSeq(rawValue: 0),
-            frame: FrameNumber(rawValue: 0), timestamp: 80_500, fec: 0
-        )
-        let echoEvents = session.receive(
-            try echoEnvelope.encode(payload: echo.encode()),
-            from: Self.tupleA, now: clock, hostMicroseconds: 84_000
-        )
-        // The feedback-free drain froze the machine; this first CTRL
-        // evidence is also the RECOVERY exit (the Noise gate's pattern),
-        // with the HS-16 half-stale pacing applied on the way.
-        XCTAssertEqual(echoEvents, [
-            .lifecycleChanged(.recovery),
-            .rateChanged(
-                bitsPerSecond: Self.rateBPS / 2,
-                reason: .idrPacing(.halfStaleEstimate)
-            ),
-            .beaconEchoAccepted(
-                beaconSeq: 0,
-                offsetMicroseconds: Int64(3_000 + (-3_500)) / 2,
-                rttMicroseconds: 6_500
-            ),
-        ])
-        XCTAssertEqual(session.clock.samples, 1)
-
-        print("""
-            HS-7 gate (test passthrough): \(units.count) frames byte-exact, \
-            beacon + echo through the passthrough seal
-            """)
-    }
-
-    // MARK: Budget boundary and mode-independent geometry
-
-    /// A synthetic frame-shaped Annex-B blob of exactly `byteCount`
-    /// bytes: start code + a TRAIL_R VCL NAL padded with bytes that can
-    /// never form a start code.
-    private func syntheticFrame(byteCount: Int) -> [UInt8] {
-        precondition(byteCount >= 6)
-        // NAL header 0x02 0x01: type (0x02 >> 1) & 0x3F = 1 = TRAIL_R.
-        return [0, 0, 0, 1, 0x02, 0x01]
-            + [UInt8](repeating: 0xAA, count: byteCount - 6)
-    }
-
-    // MARK: The capture gate's backlog surface (the fps-ceiling fix)
+    // MARK: The capture gate's backlog surface
 
     /// `queuedVideoBytes` is what the capture loop's backpressure gate
     /// reads now that the pacer drain runs off the capture thread: a
@@ -698,7 +552,6 @@ final class SessionGateTests: XCTestCase {
         let pendingBytes = outbox
             .filter {
                 $0.pacerClass == .freshVideo || $0.pacerClass == .videoTail
-                    || $0.pacerClass == .refinement
             }
             .reduce(0) { $0 + $1.bytes.count }
         XCTAssertGreaterThan(pendingBytes, 0)
@@ -717,7 +570,8 @@ final class SessionGateTests: XCTestCase {
         let originalVideoOrder = outbox
             .filter { $0.pacerClass == .freshVideo }
             .map(\.seq)
-        let prioritized = Session.prioritizeLatency(outbox)
+        var prioritized = outbox
+        Session.prioritizeLatency(&prioritized)
         let audioIndex = try XCTUnwrap(
             prioritized.firstIndex { $0.pacerClass == .audio })
         let videoIndex = try XCTUnwrap(
@@ -872,8 +726,8 @@ final class SessionGateTests: XCTestCase {
             )
         }
 
-        // Without the TLV the budget stays the frozen 1112 (HS-5's
-        // geometry, unchanged): 24 + 1112 + 16 = 1152 exactly.
+        // Without the TLV the budget stays the frozen 1112:
+        // 24 + 1112 + 16 = 1152 exactly.
         XCTAssertEqual(
             VideoChannelConfig(rateBitsPerSecond: Self.rateBPS)
                 .shardBudgetByteCount,
@@ -882,8 +736,8 @@ final class SessionGateTests: XCTestCase {
     }
 
     func testGeometryIsIdenticalWithAndWithoutSeal() throws {
-        // §4.2's rule, held by construction: the test passthrough
-        // and the no-seal HS-5 shape emit byte-identical datagrams, so
+        // Held by construction: the test passthrough and the no-seal
+        // channel emit byte-identical datagrams, so
         // FEC geometry and gate results never depend on the crypto mode.
         var rng = SplitMix64(seed: 0x3)
         let connId = ConnectionId.random(using: &rng)

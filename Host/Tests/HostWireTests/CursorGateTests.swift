@@ -6,23 +6,16 @@ import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (E3, the host half — the EyeCursorWatcher itself is
-// Linux-only and drives the exact seam scripted here). Pinned
-// behaviors:
+// The host half of cursor-shape sync; the Linux EyeCursorWatcher drives
+// the seam scripted here (the 0x24 codec and key 13 are Wire's
+// CursorCodecTests):
 //
-//   • the 0x24 codec answers the SAME hand-built arrays Wire's
-//     CursorCodecTests anchors (the cross-pin) and never traps on
-//     hostile bytes;
-//   • capability key 13 rides the W7 forward-compat spine exactly as
-//     keys 9–12 did — the declaration is the local set's bytes plus
-//     one canonical `0D F5` entry, surviving intersection only on
-//     mutual byte-equal declaration;
 //   • in vivo: a negotiated client receives each eye-reported shape
 //     exactly once as a byte-exact 0x24 (the hidden state included),
 //     an identical re-report dedupes, and a contract-breaking shape
 //     (over-ceiling crop) is suppressed and counted, never sent and
 //     never an error;
-//   • the rule-3 gate holds: shapes are never volunteered to a client
+//   • the capability gate holds: shapes are never volunteered to a client
 //     that never declared key 13, and a 0x24 arriving AT the host
 //     drops as role confusion.
 
@@ -41,57 +34,7 @@ final class CursorGateTests: XCTestCase {
         pixels: [0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]
     )
 
-    // MARK: Leg 1 — the 0x24 bytes, pinned (the Wire cross-pin)
-
-    func testCursorCodecPinsBytes() throws {
-        XCTAssertEqual(
-            try Self.arrow.encode(),
-            [0x24, 0x02, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00,
-             0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]
-        )
-        XCTAssertEqual(
-            try CursorShape.decode(try Self.arrow.encode()), Self.arrow
-        )
-        XCTAssertEqual(
-            try CursorShape.hidden.encode(),
-            [0x24, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
-        )
-        // Hostile bytes reject, never trap.
-        XCTAssertThrowsError(try CursorShape.decode([]))
-        XCTAssertThrowsError(try CursorShape.decode([0x24, 0x01, 0x00]))
-        XCTAssertThrowsError(try CursorShape.decode(
-            [0x23, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
-        ))
-        XCTAssertThrowsError(try CursorShape.decode(
-            [0x24, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00]
-        ))
-        print("E3 gate (codec): 0x24 pinned byte-exact against the Wire arrays")
-    }
-
-    // MARK: Leg 2 — key 13 on the spine, mutual-only intersection
-
-    func testCapabilityKeyThirteenRidesTheSpineAndIntersectsMutualOnly(
-    ) throws {
-        let base = try Capabilities.wireDefault.encodeCbor()
-        XCTAssertEqual(base.first, 0xA8)
-        var expected = base
-        expected[0] = 0xA9
-        expected += [0x0D, 0xF5]
-        let declared = Capabilities.wireDefault.declaringCursorShape()
-        XCTAssertEqual(try declared.encodeCbor(), expected)
-
-        XCTAssertTrue(declared.intersecting(declared).cursorShape)
-        XCTAssertFalse(declared.intersecting(.wireDefault).cursorShape)
-        XCTAssertFalse(
-            Capabilities.wireDefault.intersecting(declared).cursorShape
-        )
-        print("""
-            E3 gate (spine): declaration = local bytes + `0D F5`, \
-            mutual-only survival
-            """)
-    }
-
-    // MARK: The scripted client (the ClipboardGateTests harness)
+    // MARK: The scripted client
 
     /// Handshake + capability exchange, direct pipe. The host always
     /// declares key 13 (the direct eye in this gate); the client's
@@ -114,7 +57,7 @@ final class CursorGateTests: XCTestCase {
         return (host, client)
     }
 
-    // MARK: Leg 3 — the negotiated shape stream, dedupe, the ceiling
+    // MARK: - The negotiated shape stream, dedupe, the ceiling
 
     func testGateNegotiatedShapeTravelsOnceDedupesAndHides() throws {
         let (host, clientValue) = try establish(
@@ -130,7 +73,7 @@ final class CursorGateTests: XCTestCase {
         }
         XCTAssertEqual(agreed?.cursorShape, true,
                        "mutual key-13 declaration must survive intersection")
-        XCTAssertTrue(session.agreedCursorShape)
+        XCTAssertEqual(session.agreedCapabilities?.cursorShape, true)
         _ = client.take(type: CtrlMessageType.capabilityDeclaration)
 
         // The eye reports a shape: one byte-exact 0x24 reaches the
@@ -183,14 +126,9 @@ final class CursorGateTests: XCTestCase {
 
         XCTAssertEqual(session.counters.cursorShapesSent, 2)
         XCTAssertEqual(session.counters.cursorShapesSuppressed, 2)
-        print("""
-            E3 gate (in vivo): shape → byte-exact 0x24 once; \
-            duplicate dedupes; hidden travels; over-ceiling \
-            suppresses and counts
-            """)
     }
 
-    // MARK: Leg 4 — the rule-3 gate against the unnegotiated
+    // MARK: - The capability gate against the unnegotiated
 
     func testGateUnnegotiatedStaysSilentAndArrivingShapeDropsLoud() throws {
         // A v1 client: declares, but never key 13.
@@ -206,7 +144,7 @@ final class CursorGateTests: XCTestCase {
             if case .capabilitiesAgreed(let set) = $0 { agreed = set }
         }
         XCTAssertEqual(agreed?.cursorShape, false)
-        XCTAssertFalse(session.agreedCursorShape)
+        XCTAssertNotEqual(session.agreedCapabilities?.cursorShape, true)
         _ = client.take(type: CtrlMessageType.capabilityDeclaration)
 
         // The eye reports — the session stays SILENT (no event, no
@@ -233,10 +171,5 @@ final class CursorGateTests: XCTestCase {
             }
         }
         XCTAssertEqual(drops, [CtrlMessageType.cursorShape])
-
-        print("""
-            E3 gate (rule 3): unnegotiated stays silent; \
-            0x24-at-host drops loud
-            """)
     }
 }

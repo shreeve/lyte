@@ -6,11 +6,10 @@ import HostSession
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (the fall-repricing purge, REMAINING #6): bytes admitted to
-// the pacer at 50 Mbps and repriced by a crash to 5 Mbps used to
-// serialize at the crashed rate — 80–895 ms of stale wire the glass
-// rendered late or never. The purge drops queued video at the fall
-// moment and re-anchors with a fresh IDR through the coalesced latch.
+// The fall purge: bytes admitted to the pacer at 50 Mbps and repriced by
+// a crash to 5 Mbps would serialize at the crashed rate — hundreds of ms
+// of stale wire. The purge drops queued video at the fall moment and
+// re-anchors with a fresh IDR through the coalesced latch.
 // Three rungs: the pacer's dropClass mechanics, the channel's census
 // settlement, and the whole session driven to a genuine loss fall
 // with real chan-3 FeedbackReports.
@@ -75,10 +74,6 @@ final class FallPurgeGateTests: XCTestCase {
         XCTAssertGreaterThan(queuedBefore, 40_000,
                              "the frame is queued, not sent")
         XCTAssertEqual(channel.framesWithQueuedShards(), [7])
-        channel.annotateFrameTelemetry(
-            frame: FrameNumber(rawValue: 7), averageQP: 24,
-            idrCauses: []
-        )
 
         let purged = channel.purgeQueuedVideo()
         XCTAssertGreaterThan(purged.datagrams, 30)
@@ -94,19 +89,6 @@ final class FallPurgeGateTests: XCTestCase {
         XCTAssertEqual(channel.enqueueRepair(
             frame: FrameNumber(rawValue: 7), shardIndices: [0], now: 1
         ), 0, "a NACK cannot resurrect a purged frame as videoTail")
-        let telemetryBatch = channel.takeFrameTransmitTelemetry()
-        XCTAssertEqual(telemetryBatch.count, 1)
-        let telemetry = try XCTUnwrap(telemetryBatch.first)
-        XCTAssertEqual(telemetry.frameNumber, 7)
-        XCTAssertEqual(telemetry.captureTimestampMicroseconds, 1_000)
-        XCTAssertEqual(telemetry.admittedAtNS, 0)
-        XCTAssertNil(telemetry.firstTransmitAtNS)
-        XCTAssertNil(telemetry.lastTransmitAtNS)
-        XCTAssertEqual(telemetry.averageQP, 24)
-        XCTAssertEqual(telemetry.pacerRateBitsPerSecond, 2_000_000)
-        XCTAssertEqual(telemetry.fecRegime, .clean)
-        XCTAssertEqual(telemetry.queuedWireTimeBeforeAdmissionNS, 0)
-        XCTAssertTrue(telemetry.purged)
         XCTAssertEqual(sent, 0)
 
         // Nothing ghost-drains afterwards.
@@ -371,40 +353,6 @@ final class FallPurgeGateTests: XCTestCase {
         )
         XCTAssertEqual(clamped.impairedVideoQueueBudgetNS, 100_000_000,
                        "impaired mode must remain hard-bounded")
-    }
-
-    func testFrameFlightTelemetryJoinsStagesWithinCleanBudget() throws {
-        let channel = VideoChannel(
-            config: VideoChannelConfig(rateBitsPerSecond: 20_000_000),
-            now: 0
-        ) { _ in }
-        var annexB: [UInt8] = [0, 0, 0, 1, 0x02, 0x01]
-        annexB += [UInt8](repeating: 0x42, count: 8_000)
-        try channel.ingest(
-            frame: annexB, frameNumber: FrameNumber(rawValue: 11),
-            captureTimestampMicroseconds: 777, isKeyframe: false, now: 0
-        )
-        channel.annotateFrameTelemetry(
-            frame: FrameNumber(rawValue: 11), averageQP: 23,
-            idrCauses: []
-        )
-        var now: UInt64 = 0
-        while !channel.isIdle {
-            channel.pump(now: now)
-            guard let wake = channel.nextWake(now: now) else { break }
-            now = max(now + 1, wake)
-        }
-        let telemetry = try XCTUnwrap(
-            channel.takeFrameTransmitTelemetry().first
-        )
-        let first = try XCTUnwrap(telemetry.firstTransmitAtNS)
-        let last = try XCTUnwrap(telemetry.lastTransmitAtNS)
-        XCTAssertEqual(telemetry.captureTimestampMicroseconds, 777)
-        XCTAssertEqual(telemetry.averageQP, 23)
-        XCTAssertEqual(telemetry.pacerRateBitsPerSecond, 20_000_000)
-        XCTAssertLessThanOrEqual(last - telemetry.admittedAtNS, 50_000_000)
-        XCTAssertLessThanOrEqual(first, last)
-        XCTAssertFalse(telemetry.purged)
     }
 
     func testQueuedRepairExpiresBeforeItCanBecomeStaleTail() throws {

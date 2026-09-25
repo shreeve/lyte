@@ -4,11 +4,7 @@ import LyteWire
 public struct SessionClockStats: Equatable, Sendable {
     public var samples = 0
     public var lastOffsetMicroseconds: Int64?
-    public var lastRttMicroseconds: Int64?
     public var minRttMicroseconds: Int64?
-    /// The offset carried by the min-RTT sample — the least
-    /// queue-polluted estimate (the min-filter idea, one sample deep).
-    public var minRttOffsetMicroseconds: Int64?
 
     public init() {}
 }
@@ -120,10 +116,8 @@ public struct SessionBeaconClock: Equatable, Sendable {
         outstanding.remove(at: index)
         stats.samples += 1
         stats.lastOffsetMicroseconds = sample.offsetMicroseconds
-        stats.lastRttMicroseconds = sample.rttMicroseconds
         if stats.minRttMicroseconds.map({ sample.rttMicroseconds < $0 }) ?? true {
             stats.minRttMicroseconds = sample.rttMicroseconds
-            stats.minRttOffsetMicroseconds = sample.offsetMicroseconds
         }
         lastEcho = ClockBeacon.LastEcho(
             beaconSeq: echo.beaconSeq,

@@ -28,13 +28,7 @@ public struct SessionLifecycleLane: Sendable {
         establishedAtNanoseconds: UInt64? = nil
     ) {
         self.config = config
-        if let now = establishedAtNanoseconds {
-            machine = SessionStateMachine(
-                role: .mediaSender,
-                config: config,
-                now: Self.instant(now)
-            )
-        }
+        if let now = establishedAtNanoseconds { establish(at: now) }
     }
 
     public var isEstablished: Bool { machine != nil }

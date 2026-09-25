@@ -6,17 +6,15 @@ import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (build plan HS-9 row, host side): pair once by PIN over the
-// sealed reliable-CTRL stream — the CPace run completing through the
-// W-G4 storm — then reconnect 1-RTT against the pinned static; wrong
-// PIN fails loudly (typed 0x0E, one reason, no oracle) and pins
-// nothing; the responder survives floods rate-limited (the message-1
-// gate before any Noise allocation, the per-second attempt throttle,
-// and the 3-guess budget that burns the PIN).
+// The host's pairing responder over the sealed reliable-CTRL stream: a
+// failed confirmation answers one typed reason (no oracle) and pins
+// nothing, three failed guesses burn the PIN, attempts are throttled,
+// the guess budget survives reconnects, and a paired static reconnects
+// 1-RTT while strangers are refused. The full PIN exchange through
+// loss and the wrong-PIN abort run in SystemTests' PairingGateTests.
 //
-// The far end is a LyteWire client build-up (the ArqCtrlGateTests
-// discipline): NoiseSession initiator + ArqEndpoint<ClientClock> +
-// PairingPakeInitiator — exactly what CL-6 will assemble.
+// The far end is a LyteWire client build-up: NoiseSession initiator +
+// ArqEndpoint<ClientClock> + PairingPakeInitiator.
 
 final class PairingGateTests: XCTestCase {
 
@@ -87,7 +85,7 @@ final class PairingGateTests: XCTestCase {
             try drivePairing(nowMicros: nowMicros)
         }
 
-        /// The CL-6 reaction: 0x0C → verify Tb, send 0x0D (or 0x0E on a
+        /// The client's reaction: 0x0C → verify Tb, send 0x0D (or 0x0E on a
         /// mismatch — the wrong-PIN-learned-early path); 0x0E → record.
         mutating func drivePairing(nowMicros: UInt64) throws {
             var rest: [[UInt8]] = []
@@ -215,9 +213,8 @@ final class PairingGateTests: XCTestCase {
         try client.absorb(handshake[1].bytes, nowMicros: 700)
         try client.absorb(handshake[2].bytes, nowMicros: 800)
         XCTAssertNotNil(client.transport)
-        // The W7 declaration rides ahead of everything (HS-8's deferred
-        // capabilities item); ack it so the pairing legs start from a
-        // quiescent reliable stream.
+        // The capability declaration rides ahead of everything; ack it
+        // so the pairing tests start from a quiescent reliable stream.
         XCTAssertEqual(client.delivered.count, 1)
         XCTAssertEqual(client.delivered.first?.first,
                        CtrlMessageType.capabilityDeclaration)
@@ -270,166 +267,6 @@ final class PairingGateTests: XCTestCase {
         }
     }
 
-    // MARK: The gate — pairing completes through the W-G4 storm
-
-    func testGatePairingCompletesOverTheStorm() throws {
-        var sent: [VideoChannelDatagram] = []
-        let (shell, clientValue) = try establish(
-            sent: { sent }, append: { sent.append($0) }
-        )
-        var client = clientValue
-        var forwarded = sent.count // handshake rode outside the pipe
-
-        var net = SimNet(
-            config: SimNetConfig(
-                lossRate: 0.05,
-                duplicateRate: 0.02,
-                baseDelayMicroseconds: 3_000,
-                jitterMicroseconds: 4_000
-            ),
-            seed: 0x9A17_4106
-        )
-
-        var t: UInt64 = 1_000
-        try client.beginPairing(pin: Self.pin, nowMicros: t)
-        let horizon: UInt64 = 30_000_000
-        var converged: UInt64?
-        while t < horizon {
-            for delivery in net.deliveries(upTo: t) {
-                if delivery.destination == 0 {
-                    shell.handle(
-                        shell.session.receive(
-                            delivery.bytes, from: Self.tupleA,
-                            now: t * 1_000, hostMicroseconds: t
-                        ),
-                        nowNS: t * 1_000
-                    )
-                } else {
-                    try client.absorb(delivery.bytes, nowMicros: t)
-                }
-            }
-            shell.handle(
-                shell.session.advance(now: t * 1_000, hostMicroseconds: t),
-                nowNS: t * 1_000
-            )
-            shell.session.pump(now: t * 1_000)
-            while forwarded < sent.count {
-                net.send(from: 0, bytes: sent[forwarded].bytes, now: t)
-                forwarded += 1
-            }
-            for datagram in try client.pollOut(nowMicros: t) {
-                net.send(from: 1, bytes: datagram, now: t)
-            }
-            if shell.service.isPaired, client.result != nil,
-               shell.session.arqIsQuiescent, client.arq.isQuiescent,
-               net.nextArrivalTime == nil {
-                converged = t
-                break
-            }
-            var next = t + 5_000
-            if let arrival = net.nextArrivalTime {
-                next = min(next, max(arrival, t + 1))
-            }
-            if let wake = shell.session.nextWake(now: t * 1_000) {
-                next = min(next, max(wake / 1_000 + 1, t + 1))
-            }
-            t = next
-        }
-
-        XCTAssertNotNil(converged, "pairing did not converge in the storm")
-        XCTAssertGreaterThan(net.lostCount, 0, "the storm must be real")
-
-        // Both ends hold the same authenticated ISK, and each pins the
-        // other's static — the promotion of keys the session carried.
-        XCTAssertEqual(
-            shell.service.pairedClientStaticPublicKey,
-            client.staticKeys.publicKey,
-            "the host pins the client static message 1 delivered"
-        )
-        XCTAssertEqual(
-            client.result?.peerStaticPublicKeyToPin,
-            client.hostStaticPublicKey,
-            "the client pins the host static it dialed"
-        )
-        XCTAssertTrue(shell.events.contains(
-            .paired(clientStaticPublicKey: client.staticKeys.publicKey)
-        ))
-        XCTAssertEqual(shell.events.contains { event in
-            if case .attemptOpened = event { return true } else { return false }
-        }, true)
-        XCTAssertEqual(shell.replyFailures, 0)
-        XCTAssertNil(client.sawReject)
-
-        print("""
-            HS-9 gate: paired through 5% loss / 2% dup / 4 ms jitter \
-            (\(net.lostCount) lost, \(net.duplicatedCount) duplicated of \
-            \(net.sentCount); converged at \(converged.map(String.init) ?? "-") \
-            µs virtual)
-            """)
-    }
-
-    // MARK: Wrong PIN — loud, oracle-free, nothing pinned
-
-    func testWrongPinAbortsClientSideAndPinsNothing() throws {
-        var sent: [VideoChannelDatagram] = []
-        let (shell, clientValue) = try establish(
-            sent: { sent }, append: { sent.append($0) }
-        )
-        var client = clientValue
-        var forwarded = sent.count
-        var t: UInt64 = 1_000_000
-
-        // The client holds the wrong PIN. It learns at share B (Tb
-        // mismatch), aborts with 0x0E, and the host pins nothing. The
-        // attempt was spent when share B left — the online-guess
-        // accounting the service's comment pins down.
-        try client.beginPairing(pin: Array("000000".utf8), nowMicros: t)
-        try settle(shell: shell, client: &client,
-                   sent: { sent }, forwarded: &forwarded, t: &t)
-
-        XCTAssertEqual(client.pakeFailure, .confirmationFailed,
-                       "the client's own Tb check must fail")
-        XCTAssertFalse(shell.service.isPaired)
-        XCTAssertNil(shell.service.pairedClientStaticPublicKey)
-        XCTAssertTrue(shell.events.contains(
-            .clientAborted(.confirmationFailed)
-        ), "the host hears the abort loudly")
-        XCTAssertTrue(shell.events.contains(
-            .attemptOpened(attempt: 1, of: 3)
-        ), "share B left, so the guess was spent")
-    }
-
-    func testForgedConfirmRejectsWithOneReason() throws {
-        var sent: [VideoChannelDatagram] = []
-        let (shell, clientValue) = try establish(
-            sent: { sent }, append: { sent.append($0) }
-        )
-        var client = clientValue
-        var forwarded = sent.count
-        var t: UInt64 = 1_000_000
-
-        // A right-PIN share A, then a forged confirmation tag: the
-        // tamper case. The wire answer must be the same single reason
-        // wrong PIN gets — 0x0E confirmation-failed, no oracle.
-        try client.beginPairing(pin: Self.pin, nowMicros: t)
-        try settleUntilShareB(shell: shell, client: &client,
-                              sent: { sent }, forwarded: &forwarded, t: &t)
-        try client.arq.send(
-            message: PairingConfirm(
-                confirmationTag: [UInt8](repeating: 0xAA, count: 64)
-            ).encode(),
-            now: ClientTimestamp(microseconds: t)
-        )
-        try settle(shell: shell, client: &client,
-                   sent: { sent }, forwarded: &forwarded, t: &t)
-
-        XCTAssertFalse(shell.service.isPaired)
-        XCTAssertTrue(shell.events.contains(
-            .rejected(.confirmationFailed, attemptsRemaining: 2)
-        ))
-        XCTAssertEqual(client.sawReject, .confirmationFailed)
-    }
-
     /// Like settle, but stops the client's driver from reacting to the
     /// share B (the forged-confirm tests speak for the client instead).
     private func settleUntilShareB(
@@ -462,9 +299,13 @@ final class PairingGateTests: XCTestCase {
         var forwarded = sent.count
         var t: UInt64 = 1_000_000
 
+        // The first attempt holds the right PIN but forges the
+        // confirmation tag: the host's answer is the same single reason a
+        // wrong PIN gets, so a reject is no oracle.
         for attempt in 1...3 {
-            try client.beginPairing(pin: Array("11111\(attempt)".utf8),
-                                    nowMicros: t)
+            try client.beginPairing(
+                pin: attempt == 1 ? Self.pin : Array("11111\(attempt)".utf8),
+                nowMicros: t)
             try settleUntilShareB(shell: shell, client: &client,
                                   sent: { sent }, forwarded: &forwarded, t: &t)
             try client.arq.send(
@@ -478,6 +319,12 @@ final class PairingGateTests: XCTestCase {
             XCTAssertTrue(shell.events.contains(
                 .attemptOpened(attempt: attempt, of: 3)
             ))
+            if attempt < 3 {
+                XCTAssertTrue(shell.events.contains(.rejected(
+                    .confirmationFailed, attemptsRemaining: 3 - attempt
+                )))
+                XCTAssertEqual(client.sawReject, .confirmationFailed)
+            }
         }
 
         XCTAssertEqual(

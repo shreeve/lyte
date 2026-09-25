@@ -58,9 +58,6 @@ public struct HandshakeGate: Sendable {
         public var cookieExitThreshold: Int
         /// The sliding window the flood detector counts arrivals over.
         public var floodWindowNS: UInt64
-        /// How long a minted cookie verifies (RetryCookie's own default
-        /// is generous against Wi-Fi power-save latencies).
-        public var cookieLifetimeNS: UInt64
         /// Sustained verified-cookie admissions per second. Each honest
         /// client needs one; the budget caps the Noise work a cookie
         /// holder can buy.
@@ -79,7 +76,6 @@ public struct HandshakeGate: Sendable {
             cookieEnterThreshold: Int = 20,
             cookieExitThreshold: Int = 5,
             floodWindowNS: UInt64 = 1_000_000_000,
-            cookieLifetimeNS: UInt64 = RetryCookie.defaultLifetimeNanoseconds,
             cookieAdmissionsPerSecond: Int = 50,
             cookieAdmissionBurst: Int = 50,
             cookieAdmissionsPerAddressPerSecond: Int = 2
@@ -92,7 +88,6 @@ public struct HandshakeGate: Sendable {
                 max(cookieExitThreshold, 0), max(cookieEnterThreshold, 1) - 1
             )
             self.floodWindowNS = floodWindowNS
-            self.cookieLifetimeNS = cookieLifetimeNS
             self.cookieAdmissionsPerSecond = cookieAdmissionsPerSecond
             self.cookieAdmissionBurst = cookieAdmissionBurst
             self.cookieAdmissionsPerAddressPerSecond =
@@ -174,8 +169,6 @@ public struct HandshakeGate: Sendable {
     private var addressBuckets = BoundedFifoMap<[UInt8], TokenBucket>(
         capacity: 256)
 
-    public private(set) var admitted = 0
-    public private(set) var refused = 0
     /// RetryChallenges minted in require-cookie mode.
     public private(set) var challengesMinted = 0
     /// Cookies presented that verified — the extra-round-trip admits.
@@ -233,11 +226,11 @@ public struct HandshakeGate: Sendable {
                     message1: message1,
                     now: now,
                     secrets: [secret],
-                    lifetimeNanoseconds: config.cookieLifetimeNS
+                    lifetimeNanoseconds:
+                        RetryCookie.defaultLifetimeNanoseconds
                   )
             else {
                 cookiesRejected += 1
-                refused += 1
                 return decided(.drop(.cookieInvalid))
             }
             cookiesVerified += 1
@@ -258,11 +251,9 @@ public struct HandshakeGate: Sendable {
             addressBuckets.set(share, for: clientAddress)
             guard spent else {
                 cookiesThrottled += 1
-                refused += 1
                 return decided(.drop(.throttled))
             }
             admittedCookies.set((), for: cookie)
-            admitted += 1
             return decided(.admit)
         }
 
@@ -271,7 +262,6 @@ public struct HandshakeGate: Sendable {
         // stateless challenge (one HMAC, no Noise, no state); the honest
         // client resubmits with the cookie echoed.
         if !cookieMode, bucket.spend() {
-            admitted += 1
             return decided(.admit)
         }
         if let secret = config.cookieSecret,
@@ -280,15 +270,12 @@ public struct HandshakeGate: Sendable {
                 now: now, secret: secret
            ) {
             challengesMinted += 1
-            refused += 1
             return decided(.challenge(cookie: cookie))
         }
         // The mint refused a malformed tuple: the bucket still applies.
         if cookieMode, bucket.spend() {
-            admitted += 1
             return decided(.admit)
         }
-        refused += 1
         return decided(.drop(.throttled))
     }
 
@@ -361,8 +348,8 @@ public struct HandshakeGate: Sendable {
 
     private mutating func noteArrival(now: UInt64) {
         recentArrivals.append(now)
-        while let oldest = recentArrivals.first,
-              now &- oldest > config.floodWindowNS {
+        while let oldest = recentArrivals.first, now > oldest,
+              now - oldest > config.floodWindowNS {
             recentArrivals.removeFirst()
         }
         // The dial only compares against thresholds; keep the newest.

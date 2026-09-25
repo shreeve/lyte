@@ -6,14 +6,11 @@ import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (build plan HS-13 row, the in-tree half — the live leg runs
-// on the reference host): the wire→injection path. Pinned behaviors:
+// The wire→injection path (the 0x16/0x17 codecs are Wire's
+// ControlCodecTests):
 //
-//   • the 0x16/0x17 codecs are byte-pinned against hand-built layouts
-//     (mirror-then-promote: these bytes move to Wire/ with CL-9,
-//     unchanged) and never trap on hostile bytes;
-//   • input events ride the sealed reliable CTRL stream through the
-//     W-G4 fault model (5% loss, 2% dup, jitter reorder) and arrive
+//   • input events ride the sealed reliable CTRL stream through loss,
+//     duplication and jitter reorder, and arrive
 //     exactly once, IN ORDER — a reordered keystroke is corruption;
 //   • every injection report produces exactly one echo tuple back on
 //     the client, carrying the true (seq, rx, inject) host-µs stamps,
@@ -23,9 +20,8 @@ import LyteWireTestKit
 //     conn-id — and the frame still reassembles byte-exact within the
 //     1152 B budget (geometry derives from the real TLV headroom).
 //
-// The far end is the SessionLifecycleGateTests discipline: a LyteWire
-// client build-up (NoiseSession initiator + ArqEndpoint<ClientClock>) —
-// exactly what CL-9 will assemble on top of CL-7.
+// The far end is a LyteWire client build-up (NoiseSession initiator +
+// ArqEndpoint<ClientClock>).
 
 final class InputGateTests: XCTestCase {
 
@@ -35,127 +31,6 @@ final class InputGateTests: XCTestCase {
         localAddress: "10.0.0.249", localPort: 41_010,
         remoteAddress: "10.0.0.23", remotePort: 61_000
     )
-
-    // MARK: Codec pins — the bytes CL-9 will speak
-
-    func testInputEventCodecPinsBytes() throws {
-        // keyKeycode: KEY_A (30) pressed, seq 7, client µs 0x1122334455.
-        let key = InputEvent(
-            seq: 7, clientMicroseconds: 0x11_2233_4455,
-            body: .keyKeycode(keycode: 30, pressed: true)
-        )
-        XCTAssertEqual(try key.encode(), [
-            0x16,                                   // type
-            7, 0, 0, 0,                             // seq u32 LE
-            0x55, 0x44, 0x33, 0x22, 0x11, 0, 0, 0,  // clientMicros u64 LE
-            0x01,                                   // kind keyKeycode
-            30, 0, 0, 0,                            // keycode u32 LE
-            1,                                      // pressed
-        ])
-        XCTAssertEqual(try InputEvent.decode(key.encode()), key)
-
-        // pointerMotionAbsolute: f64 bit patterns, LE.
-        let move = InputEvent(
-            seq: 8, clientMicroseconds: 2,
-            body: .pointerMotionAbsolute(x: 512.0, y: 320.25)
-        )
-        var expected: [UInt8] = [0x16, 8, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0x02]
-        for value in [512.0, 320.25] {
-            let bits = value.bitPattern
-            for shift in stride(from: 0, to: 64, by: 8) {
-                expected.append(UInt8(truncatingIfNeeded: bits >> shift))
-            }
-        }
-        XCTAssertEqual(try move.encode(), expected)
-        XCTAssertEqual(try InputEvent.decode(move.encode()), move)
-
-        // The remaining kinds round-trip.
-        for body: InputEvent.Body in [
-            .pointerMotionRelative(dx: -3.5, dy: 12.0),
-            .pointerButton(button: 0x110, pressed: false),
-            .pointerAxis(dx: 0, dy: -45.0, finish: true),
-        ] {
-            let event = InputEvent(seq: 99, clientMicroseconds: 1_000, body: body)
-            XCTAssertEqual(try InputEvent.decode(event.encode()), event)
-        }
-
-        // Echo: two tuples, hand-built layout.
-        let echo = InputEcho(tuples: [
-            InputEchoTuple(seq: 1, receivedMicroseconds: 0x0A,
-                           injectedMicroseconds: 0x0B),
-            InputEchoTuple(seq: 2, receivedMicroseconds: 0x0C,
-                           injectedMicroseconds: 0x0D),
-        ])
-        XCTAssertEqual(echo.encode(), [
-            0x17, 2,
-            1, 0, 0, 0,
-            0x0A, 0, 0, 0, 0, 0, 0, 0,
-            0x0B, 0, 0, 0, 0, 0, 0, 0,
-            2, 0, 0, 0,
-            0x0C, 0, 0, 0, 0, 0, 0, 0,
-            0x0D, 0, 0, 0, 0, 0, 0, 0,
-        ])
-        XCTAssertEqual(try InputEcho.decode(echo.encode()), echo)
-
-        print("""
-            HS-13 gate (codec): 0x16 all five kinds + 0x17 pinned \
-            byte-exact against hand-built layouts
-            """)
-    }
-
-    func testHostileInputBytesRejectAndNeverTrap() throws {
-        let good = try InputEvent(
-            seq: 1, clientMicroseconds: 2,
-            body: .keyKeycode(keycode: 30, pressed: true)
-        ).encode()
-
-        // Truncations at every length below the minimum.
-        for length in 0..<good.count {
-            XCTAssertThrowsError(
-                try InputEvent.decode(Array(good.prefix(length))),
-                "truncation to \(length) bytes must reject"
-            )
-        }
-        // Foreign type byte.
-        XCTAssertThrowsError(try InputEvent.decode([0x15] + good.dropFirst()))
-        // Unknown kind.
-        var badKind = good
-        badKind[13] = 0x77
-        XCTAssertThrowsError(try InputEvent.decode(badKind))
-        // Trailing junk (body length disagrees with the kind).
-        XCTAssertThrowsError(try InputEvent.decode(good + [0x00]))
-        // A flag byte that is neither 0 nor 1.
-        var badFlag = good
-        badFlag[18] = 2
-        XCTAssertThrowsError(try InputEvent.decode(badFlag))
-        // Reserved axis-flag bits.
-        var axis = try InputEvent(
-            seq: 1, clientMicroseconds: 2,
-            body: .pointerAxis(dx: 1, dy: 2, finish: false)
-        ).encode()
-        axis[axis.count - 1] = 0x82
-        XCTAssertThrowsError(try InputEvent.decode(axis))
-
-        // Echo: count 0, count/length mismatch, over-limit count.
-        XCTAssertThrowsError(try InputEcho.decode([0x17, 0]))
-        XCTAssertThrowsError(try InputEcho.decode([0x17, 1, 1, 2, 3]))
-        XCTAssertThrowsError(try InputEcho.decode(
-            [0x17, 33] + [UInt8](repeating: 0, count: 33 * 20)
-        ))
-
-        // The TLV: duplicate and malformed value.
-        let tlv = LastInputSeqTlv.wireExtension(seq: 5)
-        XCTAssertEqual(try LastInputSeqTlv.decode(extensions: [tlv]), 5)
-        XCTAssertThrowsError(
-            try LastInputSeqTlv.decode(extensions: [tlv, tlv])
-        )
-        XCTAssertThrowsError(try LastInputSeqTlv.decode(
-            extensions: [try WireExtension(
-                type: WireExtension.ReservedType.lastInputSeq, value: [1, 2]
-            )]
-        ))
-        XCTAssertNil(try LastInputSeqTlv.decode(extensions: []))
-    }
 
     // MARK: The input-capable loopback client
 
@@ -239,14 +114,7 @@ final class InputGateTests: XCTestCase {
         }
     }
 
-    /// A synthetic frame-shaped Annex-B blob (the lifecycle suite's).
-    private func syntheticFrame(byteCount: Int) -> [UInt8] {
-        precondition(byteCount >= 6)
-        return [0, 0, 0, 1, 0x02, 0x01]
-            + [UInt8](repeating: 0xAA, count: byteCount - 6)
-    }
-
-    // MARK: The storm — exactly once, in order, echoed, through W-G4 weather
+    // MARK: Exactly once, in order, echoed, through loss and reorder
 
     func testGateInputStormExactlyOnceInOrderWithEchoes() throws {
         let (host, clientValue) = try establish()
@@ -257,9 +125,8 @@ final class InputGateTests: XCTestCase {
         try settle(host, &client, t: &t)
         _ = client.take(type: CtrlMessageType.capabilityDeclaration)
 
-        // The W-G4 fault model (input traffic is sparser than the HS-8
-        // storm's, so duplication runs hotter to keep the dup evidence
-        // non-vacuous at this datagram count).
+        // Input traffic is sparse, so duplication runs hot to keep the
+        // dup evidence non-vacuous at this datagram count.
         var net = SimNet(
             config: SimNetConfig(
                 lossRate: 0.05,
@@ -407,16 +274,6 @@ final class InputGateTests: XCTestCase {
                 39, "every shard carries the last injected seq"
             )
         }
-
-        print("""
-            HS-13 gate (storm): 40 events all kinds exactly-once \
-            IN ORDER through 5% loss / 5% dup / 4 ms jitter \
-            (\(net.lostCount) lost, \(net.duplicatedCount) duplicated of \
-            \(net.sentCount)); 40/40 echo tuples byte-faithful in \
-            \(client.echoMessageTupleCounts.count) messages; post-storm \
-            frame stamped lastInputSeq=39 on all \
-            \(client.videoShards.count) shards
-            """)
     }
 
     // MARK: lastInputSeq stamping + geometry under the extra TLV
@@ -516,11 +373,5 @@ final class InputGateTests: XCTestCase {
         }
         XCTAssertEqual(units.map(\.annexB), [stamped],
                        "the stamped frame must reassemble byte-exact")
-
-        print("""
-            HS-13 gate (stamp): pre-input frames bare; post-injection \
-            frames carry TLV 0x03 = 7 on every shard, geometry at the \
-            1095 B TLV-adjusted budget, byte-exact through VideoAssembler
-            """)
     }
 }

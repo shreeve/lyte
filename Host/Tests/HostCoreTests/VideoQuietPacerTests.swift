@@ -66,7 +66,7 @@ final class VideoQuietPacerTests: XCTestCase {
     /// the ladder instead of trapping in the Double-to-Int conversion.
     func testExtremeIdleReadingsStayOnTheLadder() {
         let pacer = VideoQuietPacer()
-        let ceiling = UInt8(pacer.config.maxIntervalSeconds)
+        let ceiling = VideoQuietPacer.maxIntervalSeconds
         XCTAssertEqual(pacer.interval(idleSeconds: 1e300), ceiling)
         XCTAssertEqual(pacer.interval(idleSeconds: .infinity), ceiling)
         XCTAssertEqual(pacer.interval(idleSeconds: .nan), 1)

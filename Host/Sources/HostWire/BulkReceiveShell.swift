@@ -412,7 +412,8 @@ public enum BulkFileNaming {
     /// spaces and combining marks stripped (no dotfiles — nothing lands
     /// invisible or overrides shell config), trailing dots/spaces
     /// trimmed, empty → the fallback, overlong truncated on a character
-    /// boundary with the extension preserved.
+    /// boundary with the extension preserved (a stem truncated away
+    /// becomes the fallback).
     ///
     /// Every test is per Unicode scalar, never per Character: "/" or "."
     /// followed by a combining mark is one Character that compares unequal
@@ -430,20 +431,16 @@ public enum BulkFileNaming {
         var name = trimmingTrailingDotsAndSpaces(scalars)
         if name.isEmpty { return fallbackName }
         if name.utf8.count > maxNameByteCount {
-            let (stem, ext) = splitExtension(name)
-            var kept = ext.utf8.count <= 16 ? ext : ""
-            var truncated = ext.utf8.count <= 16 ? stem : name
-            while truncated.utf8.count + kept.utf8.count > maxNameByteCount {
-                if truncated.isEmpty {
-                    kept = ""
-                    truncated = String(name.prefix(1))
-                    break
-                }
-                truncated.removeLast()
+            var (stem, ext) = splitExtension(name)
+            if ext.utf8.count > 16 { (stem, ext) = (name, "") }
+            while !stem.isEmpty,
+                  stem.utf8.count + ext.utf8.count > maxNameByteCount {
+                stem.removeLast()
             }
-            name = trimmingTrailingDotsAndSpaces(
-                Array((truncated + kept).unicodeScalars))
-            if name.isEmpty { return fallbackName }
+            // The stem's first Character survives unless truncation
+            // consumed it whole; a bare extension would be a dotfile.
+            stem = trimmingTrailingDotsAndSpaces(Array(stem.unicodeScalars))
+            name = (stem.isEmpty ? fallbackName : stem) + ext
         }
         return name
     }
@@ -473,12 +470,14 @@ public enum BulkFileNaming {
     }
 
     /// Scalars that have no place in a displayed file name: controls
-    /// (C0, DEL, C1), bidi embeddings, overrides, isolates and marks, and
-    /// the line and paragraph separators.
+    /// (C0, DEL, C1), bidi embeddings, overrides, isolates and marks, the
+    /// line and paragraph separators, and the zero-width and invisible
+    /// format characters (which could otherwise hide a leading dot).
     private static func isHiddenControl(_ scalar: Unicode.Scalar) -> Bool {
         switch scalar.value {
         case 0x00...0x1F, 0x7F...0x9F: return true
-        case 0x061C, 0x200E, 0x200F, 0x2028...0x202E, 0x2066...0x2069:
+        case 0x061C, 0x200B...0x200F, 0x2028...0x202E, 0x2060...0x2064,
+             0x2066...0x2069, 0xFEFF:
             return true
         default: return false
         }
@@ -494,14 +493,6 @@ public enum BulkFileNaming {
         return (0...maxCollisionNumber).lazy.map {
             $0 == 0 ? name : "\(stem) (\($0))\(ext)"
         }
-    }
-
-    /// The first candidate `exists` does not claim; nil once every
-    /// number is taken.
-    public static func collisionFree(
-        _ name: String, exists: (String) -> Bool
-    ) -> String? {
-        candidates(name).first { !exists($0) }
     }
 
     /// "archive.tar.gz" → ("archive.tar", ".gz"); a leading dot is

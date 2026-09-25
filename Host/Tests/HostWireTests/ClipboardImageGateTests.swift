@@ -7,9 +7,8 @@ import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (P-1, clipboard v2 — the host half; the Mutter leaf's
-// image flavors are Linux-only and this drives the exact seam they
-// will). Pinned behaviors:
+// The host half of clipboard images; the Linux clipboard leaf's image
+// flavors drive the seam scripted here:
 //
 //   • the image gate is keys 10 ∧ 12 and NEVER key 11: a host that
 //     accepts no files still syncs clipboard images, and file
@@ -21,7 +20,7 @@ import LyteWireTestKit
 //     lands byte-exact in the client's channel — and each side's
 //     apply echo SUPPRESSES through the shared book (the boomerang
 //     proof, cross-modal keys);
-//   • the rule-3 gate holds: a 0x22 without keys 10∧12 in the
+//   • the capability gate holds: a 0x22 without keys 10∧12 in the
 //     agreed set drops loud (.clipboardImagesNotNegotiated), and an
 //     ungated noteHostClipboardImageChanged stays silent;
 //   • a foreign mime draws abort(declined) — typed weather, and the
@@ -39,16 +38,7 @@ final class ClipboardImageGateTests: XCTestCase {
 
     private func makePayload(count: Int, seed: UInt64) -> [UInt8] {
         var rng = SplitMix64(seed: seed)
-        var bytes = [UInt8]()
-        bytes.reserveCapacity(count)
-        while bytes.count < count {
-            var word = rng.next()
-            for _ in 0..<8 where bytes.count < count {
-                bytes.append(UInt8(truncatingIfNeeded: word))
-                word >>= 8
-            }
-        }
-        return bytes
+        return rng.bytes(count)
     }
 
     // MARK: The client end (the REAL Wire ClipboardImageChannel — both
@@ -210,7 +200,7 @@ final class ClipboardImageGateTests: XCTestCase {
         XCTAssertNotEqual(token, transferId)
     }
 
-    // MARK: Leg 1 — the gate is 10 ∧ 12, never 11
+    // MARK: - The gate is 10 ∧ 12, never 11
 
     func testImageGateNegotiatesWithoutFileConsent() throws {
         // Neither end accepts files (no key 11) — images still agree.
@@ -228,8 +218,8 @@ final class ClipboardImageGateTests: XCTestCase {
         XCTAssertEqual(agreed?.clipboardImagesAgreed, true,
                        "images must agree with NO key 11 anywhere")
         XCTAssertEqual(agreed?.bulkTransfer, false)
-        XCTAssertTrue(session.agreedClipboardImages)
-        XCTAssertFalse(session.agreedBulkTransfer)
+        XCTAssertEqual(session.agreedCapabilities?.clipboardImagesAgreed, true)
+        XCTAssertNotEqual(session.agreedCapabilities?.bulkTransfer, true)
 
         // A text-only client degrades v2 to v1 — text agreed, images
         // not, and the host's image mouth stays silent.
@@ -241,22 +231,17 @@ final class ClipboardImageGateTests: XCTestCase {
         let session2 = host2.session
         var t2: UInt64 = 1_000
         try host2.settle(&client2, t: &t2)
-        XCTAssertTrue(session2.agreedClipboardText)
-        XCTAssertFalse(session2.agreedClipboardImages)
+        XCTAssertEqual(session2.agreedCapabilities?.clipboardText, true)
+        XCTAssertNotEqual(session2.agreedCapabilities?.clipboardImagesAgreed, true)
         XCTAssertEqual(
             session2.noteHostClipboardImageChanged(
                 [1, 2, 3], now: t2 * 1_000, hostMicroseconds: t2
             ), [],
             "an ungated session never narrates the host clipboard"
         )
-
-        print("""
-            P-1 gate (negotiation): images agreed 10∧12 with no \
-            key 11; text-only peer degrades to v1, host mouth silent
-            """)
     }
 
-    // MARK: Leg 2 — both directions in vivo + the boomerang proofs
+    // MARK: - Both directions in vivo, and the boomerang proofs
 
     func testGateImageRoundTripsBothDirectionsAndEchoesSuppress() throws {
         let (host, clientValue) = try establish(
@@ -267,7 +252,7 @@ final class ClipboardImageGateTests: XCTestCase {
         let session = host.session
         var t: UInt64 = 1_000
         try host.settle(&client, t: &t)
-        XCTAssertTrue(session.agreedClipboardImages)
+        XCTAssertEqual(session.agreedCapabilities?.clipboardImagesAgreed, true)
 
         // Client → host: a 150 KiB "PNG" (3 chunks — the multi-chunk
         // geometry through the sealed stack).
@@ -341,15 +326,9 @@ final class ClipboardImageGateTests: XCTestCase {
         // And both reliable sublayers drain to quiet.
         try host.settle(&client, t: &t)
         XCTAssertTrue(session.arqIsQuiescent)
-
-        print("""
-            P-1 gate (in vivo): client image → host byte-exact \
-            (\(clientImage.count) B, 3 chunks); host image → client \
-            byte-exact (\(hostImage.count) B); both echoes suppressed
-            """)
     }
 
-    // MARK: Leg 2b — a refused host copy is never hashed
+    // MARK: - A refused host copy is never hashed
 
     func testHostCopyIsJudgedByTheDigestFreeGatesBeforeAnyHash() throws {
         let (host, clientValue) = try establish(
@@ -413,8 +392,7 @@ final class ClipboardImageGateTests: XCTestCase {
             [])
     }
 
-    // MARK: Leg 3 — rule 3: ungated 0x22 drops loud; the lanes'
-    // gates stay independent
+    // MARK: - Ungated 0x22 drops loud; the lanes' gates stay independent
 
     func testGateUngatedCargoDropsLoudAndLanesStayIndependent() throws {
         // A files-only pair: chan 8 is OPEN (key 11 agreed) but the
@@ -430,8 +408,8 @@ final class ClipboardImageGateTests: XCTestCase {
         let session = host.session
         var t: UInt64 = 1_000
         try host.settle(&client, t: &t)
-        XCTAssertTrue(session.agreedBulkTransfer)
-        XCTAssertFalse(session.agreedClipboardImages)
+        XCTAssertEqual(session.agreedCapabilities?.bulkTransfer, true)
+        XCTAssertNotEqual(session.agreedCapabilities?.clipboardImagesAgreed, true)
 
         let cargo = try ClipboardImageCargo(
             transferId: 0xD1, mime: "image/png"
@@ -473,16 +451,10 @@ final class ClipboardImageGateTests: XCTestCase {
         XCTAssertEqual(fileRefusals, 1)
         XCTAssertEqual(surfaced, 0)
         XCTAssertEqual(session2.counters.bulkMessagesReceived, 0)
-
-        print("""
-            P-1 gate (rule 3): ungated 0x22 dropped loud; file \
-            offer on an images-only chan 8 dropped loud — the \
-            lanes' gates are independent
-            """)
     }
 
-    // MARK: Leg 4 — a foreign mime is typed weather, and the
-    // trailing offer never leaks
+    // MARK: - A foreign mime is typed weather, and the trailing offer
+    // never leaks
 
     func testGateForeignMimeDeclinedAndOfferSwallowed() throws {
         let (host, clientValue) = try establish(
@@ -532,10 +504,17 @@ final class ClipboardImageGateTests: XCTestCase {
             [.declined]
         )
         XCTAssertEqual(session.clipboardImageCounters.receivesRefused, 1)
+    }
+}
 
-        print("""
-            P-1 gate (mime): image/jxl → abort(declined), offer \
-            swallowed, nothing leaked
-            """)
+private extension Session {
+    /// The host-clipboard report with the digest computed in place.
+    func noteHostClipboardImageChanged(
+        _ data: [UInt8], now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        noteHostClipboardImageChanged(
+            data, sha256: { Sha256.digest(data) },
+            now: now, hostMicroseconds: hostMicroseconds
+        )
     }
 }

@@ -26,17 +26,6 @@ final class ScreenSamplingCadenceTests: XCTestCase {
                        .sample(skippedBeats: 0))
     }
 
-    func testResetMakesTheCurrentInstantANewBeat() {
-        var cadence = ScreenSamplingCadence(periodMicroseconds: 10)
-        _ = cadence.poll(nowMicroseconds: 100)
-        cadence.reset()
-
-        XCTAssertEqual(cadence.poll(nowMicroseconds: 103),
-                       .sample(skippedBeats: 0))
-        XCTAssertEqual(cadence.poll(nowMicroseconds: 104),
-                       .wait(untilMicroseconds: 113))
-    }
-
     /// The host samples on the same beat the client conductor steps by.
     func testHostSamplesOnTheScoreBeat() {
         XCTAssertEqual(

@@ -74,9 +74,7 @@ final class SessionBeaconClockTests: XCTestCase {
 
         XCTAssertEqual(clock.stats.samples, 2)
         XCTAssertEqual(clock.stats.lastOffsetMicroseconds, 2_000)
-        XCTAssertEqual(clock.stats.lastRttMicroseconds, 400)
         XCTAssertEqual(clock.stats.minRttMicroseconds, 200)
-        XCTAssertEqual(clock.stats.minRttOffsetMicroseconds, 2_000)
 
         let beacon = clock.makeSessionStartBeacon(
             now: 9_000, hostMicroseconds: 9_500

@@ -24,11 +24,7 @@ final class SessionRepairBudgetBookTests: XCTestCase {
 
     func testCadenceSamplesClampThenEwmaAndDeriveTheBudget() {
         var book = SessionRepairBudgetBook()
-        XCTAssertEqual(book.freezeBudgetNanoseconds(
-            override: nil,
-            cadenceMultiplier: 1.5,
-            jitterAllowanceNanoseconds: 15_000_000
-        ), 90_000_000)
+        XCTAssertEqual(book.freezeBudgetNanoseconds(override: nil), 90_000_000)
 
         book.noteFeedback(report(), now: 0)
         XCTAssertNil(book.observedFeedbackCadenceNanoseconds)
@@ -36,16 +32,8 @@ final class SessionRepairBudgetBookTests: XCTestCase {
         XCTAssertEqual(book.observedFeedbackCadenceNanoseconds, 25_000_000)
         book.noteFeedback(report(), now: 100_000_000)
         XCTAssertEqual(book.observedFeedbackCadenceNanoseconds, 28_125_000)
-        XCTAssertEqual(book.freezeBudgetNanoseconds(
-            override: nil,
-            cadenceMultiplier: 2,
-            jitterAllowanceNanoseconds: 5_000_000
-        ), 61_250_000)
-        XCTAssertEqual(book.freezeBudgetNanoseconds(
-            override: 123,
-            cadenceMultiplier: 2,
-            jitterAllowanceNanoseconds: 5_000_000
-        ), 123)
+        XCTAssertEqual(book.freezeBudgetNanoseconds(override: nil), 57_187_500)
+        XCTAssertEqual(book.freezeBudgetNanoseconds(override: 123), 123)
     }
 
     func testOpeningGeometryIsFirstOnlyAndGlassEvidenceIsSticky() {
@@ -66,6 +54,40 @@ final class SessionRepairBudgetBookTests: XCTestCase {
         XCTAssertTrue(book.hasClientGlassEvidence)
         book.noteFeedback(report(received: 0, missing: 12), now: 160_000_000)
         XCTAssertTrue(book.hasClientGlassEvidence)
+    }
+
+    func testGlassEvidenceCountsFromTheOpeningIdrNotTheSessionStart() {
+        var book = SessionRepairBudgetBook()
+        book.noteFeedback(report(received: 400, missing: 1), now: 0)
+        book.noteOpeningIdr(shardCount: 12)
+        book.noteFeedback(report(received: 411, missing: 1), now: 40_000_000)
+        XCTAssertFalse(book.hasClientGlassEvidence)
+        book.noteFeedback(report(received: 890, missing: 1), now: 80_000_000)
+        XCTAssertTrue(book.hasClientGlassEvidence,
+                      "loss before the IDR must not hold the exemption open")
+
+        var lateFill = SessionRepairBudgetBook()
+        lateFill.noteFeedback(report(received: 5, missing: 2), now: 0)
+        lateFill.noteOpeningIdr(shardCount: 4)
+        lateFill.noteFeedback(report(received: 10, missing: 1), now: 40_000_000)
+        XCTAssertTrue(lateFill.hasClientGlassEvidence,
+                      "a late arrival filling an old gap is not new loss")
+
+        var lossy = SessionRepairBudgetBook()
+        lossy.noteFeedback(report(received: 5, missing: 0), now: 0)
+        lossy.noteOpeningIdr(shardCount: 4)
+        lossy.noteFeedback(report(received: 50, missing: 1), now: 40_000_000)
+        XCTAssertFalse(lossy.hasClientGlassEvidence,
+                       "loss since the IDR is not glass evidence")
+
+        var wrapped = SessionRepairBudgetBook()
+        wrapped.noteFeedback(
+            report(received: .max - 2, missing: .max), now: 0
+        )
+        wrapped.noteOpeningIdr(shardCount: 4)
+        wrapped.noteFeedback(report(received: 1, missing: .max), now: 40_000_000)
+        XCTAssertTrue(wrapped.hasClientGlassEvidence,
+                      "the cumulative u32 counters may wrap")
     }
 
     func testOpeningExemptionRequiresTheIdrAndHonorsBothBounds() {

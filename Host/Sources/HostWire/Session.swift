@@ -18,7 +18,7 @@
 //   • path validation: the session mints its ConnectionId (TLV on every
 //     outbound datagram), inbound datagrams feed the PathValidator,
 //     challenges ride CTRL to the exact unvalidated tuple, and
-//     `takeFreshKeyframeRequest()` merges promotion IDRs with client
+//     `takeFreshKeyframeDemand()` merges promotion IDRs with client
 //     0x10 requests into one encoder-loop poll.
 //   • one Pacer schedule for every traffic class (VideoChannel owns it;
 //     control enters via `enqueueControl`).
@@ -87,8 +87,7 @@ public struct SessionConfig: Sendable {
     /// retransmit serialization still fit inside what remains of it,
     /// measured from the frame's last shard release. Derived as
     ///
-    ///   budget = repairBudgetCadenceMultiplier × observedCadence
-    ///            + repairBudgetJitterAllowanceNS
+    ///   budget = 1.5 × observedCadence + 15 ms
     ///
     /// where observedCadence is an EWMA (α = 1/8) of feedback-report
     /// inter-arrival clamped to the wire's 25–50 ms cadence, starting at
@@ -99,10 +98,6 @@ public struct SessionConfig: Sendable {
     /// horizon, so an honored repair is still usable. Non-nil overrides
     /// the derivation (tests, ops).
     public var repairFreezeBudgetOverrideNS: UInt64?
-    /// The derived budget's cadence multiplier.
-    public var repairBudgetCadenceMultiplier: Double
-    /// The derived budget's scheduling-jitter allowance.
-    public var repairBudgetJitterAllowanceNS: UInt64
     /// Bounds on the opening-IDR exemption: until a frame has plausibly
     /// completed at the client, the last IDR stays repairable regardless
     /// of the freeze budget (on black glass a late repair beats a later
@@ -144,8 +139,6 @@ public struct SessionConfig: Sendable {
         lifecycle: SessionMachineConfig = SessionMachineConfig(),
         estimator: RateEstimatorConfig? = nil,
         repairFreezeBudgetOverrideNS: UInt64? = nil,
-        repairBudgetCadenceMultiplier: Double = 1.5,
-        repairBudgetJitterAllowanceNS: UInt64 = 15_000_000,
         openingRepairMaxAttempts: Int = 4,
         openingRepairMaxBytes: Int = 2 << 20,
         repairRetentionNS: UInt64 = 4_000_000_000,
@@ -168,8 +161,6 @@ public struct SessionConfig: Sendable {
         self.lifecycle = lifecycle
         self.estimator = estimator
         self.repairFreezeBudgetOverrideNS = repairFreezeBudgetOverrideNS
-        self.repairBudgetCadenceMultiplier = repairBudgetCadenceMultiplier
-        self.repairBudgetJitterAllowanceNS = repairBudgetJitterAllowanceNS
         self.openingRepairMaxAttempts = openingRepairMaxAttempts
         self.openingRepairMaxBytes = openingRepairMaxBytes
         self.repairRetentionNS = repairRetentionNS
@@ -208,7 +199,7 @@ public enum SessionEvent: Equatable, Sendable {
         offsetMicroseconds: Int64,
         rttMicroseconds: Int64
     )
-    /// A client 0x10 arrived; `takeFreshKeyframeRequest()` is now true.
+    /// A client 0x10 arrived; `takeFreshKeyframeDemand()` now owes one.
     case idrRequested(IdrRequest)
     /// The ARQ delivered one reliable CTRL message — exactly once, in
     /// order within its group. The bytes start with its CTRL type byte.
@@ -469,7 +460,6 @@ public struct SessionVideoFramePreparationContext: Sendable {
 }
 
 public struct SessionCounters: Equatable, Sendable {
-    public var datagramsReceived = 0
     public var dropped = 0
     public var unsealFailures = 0
     /// Reliable sends refused with `ArqSendError.queueFull` on the CTRL
@@ -734,44 +724,12 @@ public final class Session {
     /// The agreed capability set; nil until the client's declaration
     /// lands (a client that sends none stays nil, which is not an error).
     public var agreedCapabilities: Capabilities? { negotiator.agreed }
-    /// True when hostAudioRouting (key 9) survived the intersection.
-    /// Gates 0x18 consumption and 0x19 emission.
-    public var agreedHostAudioRouting: Bool {
-        negotiator.agreed?.hostAudioRouting == true
-    }
-    /// True when audioQuietPosture (key 15) survived the intersection.
-    /// The audio leg gates transmission only under this agreement; a
-    /// legacy client keeps always-on audio, silence included.
-    public var agreedAudioQuietPosture: Bool {
-        negotiator.agreed?.audioQuietPosture == true
-    }
-    /// True when videoQuietPosture (key 16) survived the intersection;
-    /// the keepalive backs off only under this agreement.
-    public var agreedVideoQuietPosture: Bool {
-        negotiator.agreed?.videoQuietPosture == true
-    }
-    /// True when clipboardText (key 10) survived the intersection. Gates
-    /// 0x1A consumption and 0x1B emission.
-    public var agreedClipboardText: Bool {
-        negotiator.agreed?.clipboardText == true
-    }
-    /// True when bulkTransfer (key 11) survived the intersection. Gates
-    /// chan-8 ingest and `sendBulk`; consent is the standing toggle that
-    /// decided whether key 11 was declared.
-    public var agreedBulkTransfer: Bool {
-        negotiator.agreed?.bulkTransfer == true
-    }
-    /// True when the image gate (keys 10 ∧ 12) survived the
-    /// intersection. Gates 0x22 consumption and image cargo emission.
-    /// Key 11 is deliberately not consulted — the file-drop consent
-    /// must not couple to the clipboard tier.
-    public var agreedClipboardImages: Bool {
-        negotiator.agreed?.clipboardImagesAgreed == true
-    }
-    /// True when cursorShape (key 13) survived the intersection. Gates
-    /// 0x24 emission; only the direct eye declares the key.
-    public var agreedCursorShape: Bool {
-        negotiator.agreed?.cursorShape == true
+    /// True when `key` survived the intersection. Each feature's entry
+    /// points and ingest gate on its key (the image gate on keys 10 ∧ 12,
+    /// never on key 11, so file-drop consent cannot couple to the
+    /// clipboard tier).
+    private func agrees(_ key: KeyPath<Capabilities, Bool>) -> Bool {
+        negotiator.agreed?[keyPath: key] == true
     }
 
     /// The loop-prevention/dedupe book, shared by the 0x1A consume path
@@ -920,7 +878,6 @@ public final class Session {
         now: UInt64,
         hostMicroseconds: UInt64
     ) -> [SessionEvent] {
-        counters.datagramsReceived += 1
         if phase == .awaitingHandshake {
             return receiveBeforeHandshake(
                 datagram, from: tuple,
@@ -1018,7 +975,7 @@ public final class Session {
             // Chan-8 traffic outside both agreements (key 11 files, keys
             // 10∧12 images) uses a capability never negotiated: dropped
             // loud. Message-level routing separates the two lanes.
-            guard agreedBulkTransfer || agreedClipboardImages,
+            guard agrees(\.bulkTransfer) || agrees(\.clipboardImagesAgreed),
                   bulkArqLane != nil else {
                 events += drop(.bulkNotNegotiated)
                 return events
@@ -1542,12 +1499,6 @@ public final class Session {
         }
     }
 
-    /// Audio datagrams still waiting in the shared pacer — the audio
-    /// thread's bounded "make sure it left" loop reads this.
-    public var queuedAudioDatagramCount: Int {
-        channel.queuedCount(.audio)
-    }
-
     /// Video-class bytes (fresh + repair tail) still queued in the pacer
     /// or the shell's socket outbox — what pre-encode admission weighs
     /// against the queue budget.
@@ -1556,13 +1507,10 @@ public final class Session {
             + socketPending.videoByteCount
     }
 
+    /// Accepted and discarded: nothing reads per-frame flight records.
     public func annotateVideoFrameTelemetry(
         frame: FrameNumber, averageQP: Int?, idrCauses: [String]
-    ) {
-        channel.annotateFrameTelemetry(
-            frame: frame, averageQP: averageQP, idrCauses: idrCauses
-        )
-    }
+    ) {}
 
     /// Queue latency budget currently in force. The FEC regime is the
     /// existing clean/impaired posture, so admission and fall purge use
@@ -1573,15 +1521,10 @@ public final class Session {
             : config.cleanVideoQueueBudgetNS
     }
 
-    /// The encoder-loop poll: true when a fresh IDR is owed (path
-    /// promotion, client 0x10, or a lifecycle demand). Clears every
-    /// source; fires once per demand.
-    public func takeFreshKeyframeRequest() -> Bool {
-        !takeFreshKeyframeDemand().isEmpty
-    }
-
-    /// The same poll with its causes attached (a demand may carry several
-    /// coalesced causes). Clears every source.
+    /// The encoder-loop poll: the causes of a fresh IDR now owed (path
+    /// promotion, client 0x10, a lifecycle demand; a demand may carry
+    /// several coalesced causes), empty when none is. Clears every source;
+    /// fires once per demand.
     public func takeFreshKeyframeDemand() -> FreshKeyframeDemand {
         if validator.takeFreshKeyframeRequest() {
             freshKeyframes.arm(.pathPromotion)
@@ -1642,7 +1585,7 @@ public final class Session {
     public func noteAudioRoutingApplied(
         _ mode: HostAudioRoutingMode, now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
-        guard agreedHostAudioRouting else { return [] }
+        guard agrees(\.hostAudioRouting) else { return [] }
         do {
             try sendReliable(
                 AudioRoutingStatus(mode: mode).encode(),
@@ -1661,7 +1604,7 @@ public final class Session {
     public func noteAudioTrackState(
         _ state: AudioTrackState.State, now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
-        guard agreedAudioQuietPosture else { return [] }
+        guard agrees(\.audioQuietPosture) else { return [] }
         do {
             try sendReliable(
                 AudioTrackState(state: state).encode(),
@@ -1678,7 +1621,7 @@ public final class Session {
     public func noteVideoPostureState(
         _ state: VideoPostureState, now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
-        guard agreedVideoQuietPosture else { return [] }
+        guard agrees(\.videoQuietPosture) else { return [] }
         do {
             try sendReliable(
                 state.encode(), now: now, hostMicroseconds: hostMicroseconds
@@ -1698,7 +1641,7 @@ public final class Session {
     public func noteHostClipboardChanged(
         _ text: String, now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
-        guard agreedClipboardText, !text.isEmpty else { return [] }
+        guard agrees(\.clipboardText), !text.isEmpty else { return [] }
         switch clipboardBook.admitLocalChange(text) {
         case .suppressEcho:
             counters.clipboardAnnouncesSuppressed += 1
@@ -1737,7 +1680,7 @@ public final class Session {
     public func noteCursorShapeChanged(
         _ shape: CursorShape, now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
-        guard agreedCursorShape else { return [] }
+        guard agrees(\.cursorShape) else { return [] }
         guard shape != lastSentCursorShape else {
             counters.cursorShapesSuppressed += 1
             return [.cursorShapeSuppressed(.duplicate)]
@@ -1776,7 +1719,7 @@ public final class Session {
     public func prejudgeHostClipboardImage(
         byteCount: Int, now: UInt64
     ) -> [SessionEvent]? {
-        guard agreedClipboardImages, phase == .established else {
+        guard agrees(\.clipboardImagesAgreed), phase == .established else {
             return []
         }
         guard let refused = clipboardImageChannel
@@ -1796,7 +1739,7 @@ public final class Session {
         _ data: [UInt8], sha256: () -> [UInt8],
         now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
-        guard agreedClipboardImages, phase == .established else {
+        guard agrees(\.clipboardImagesAgreed), phase == .established else {
             return []
         }
         let channelEvents = clipboardImageChannel.shareLocalImage(
@@ -1808,17 +1751,6 @@ public final class Session {
             .bulk, now: now, hostMicroseconds: hostMicroseconds
         )
         return events
-    }
-
-    /// The one-lock form: hashes `data` itself, and only once the
-    /// digest-free gates pass.
-    public func noteHostClipboardImageChanged(
-        _ data: [UInt8], now: UInt64, hostMicroseconds: UInt64
-    ) -> [SessionEvent] {
-        noteHostClipboardImageChanged(
-            data, sha256: { Sha256.digest(data) },
-            now: now, hostMicroseconds: hostMicroseconds
-        )
     }
 
     /// An orderly local close: the typed SessionTeardown leaves on the
@@ -1896,7 +1828,7 @@ public final class Session {
         guard phase == .established else {
             throw SessionError.notEstablished
         }
-        guard agreedBulkTransfer, bulkArqLane != nil else {
+        guard agrees(\.bulkTransfer), bulkArqLane != nil else {
             throw SessionError.bulkNotNegotiated
         }
         try enqueueReliable(on: .bulkTransfer) {
@@ -1964,7 +1896,7 @@ public final class Session {
                 return drop(.malformedBulk)
             }
             // Image cargo without keys 10 ∧ 12 agreed: dropped loud.
-            guard agreedClipboardImages else {
+            guard agrees(\.clipboardImagesAgreed) else {
                 return drop(.clipboardImagesNotNegotiated)
             }
             return processImageEvents(
@@ -1985,7 +1917,7 @@ public final class Session {
                 now: now
             )
         }
-        guard agreedBulkTransfer else {
+        guard agrees(\.bulkTransfer) else {
             // Chan 8 was admitted for the image lane only — a file
             // message without key 11 is still ungated traffic.
             return drop(.bulkNotNegotiated)
@@ -2163,7 +2095,7 @@ public final class Session {
             }
             // A request without hostAudioRouting agreed by both ends uses
             // a capability never negotiated: dropped loud, never fatal.
-            guard agreedHostAudioRouting else {
+            guard agrees(\.hostAudioRouting) else {
                 return drop(.audioRoutingNotNegotiated)
             }
             counters.audioRoutingRequestsReceived += 1
@@ -2173,7 +2105,7 @@ public final class Session {
                 return drop(.malformedCtrl)
             }
             // A set without clipboardText agreed: dropped loud, never fatal.
-            guard agreedClipboardText else {
+            guard agrees(\.clipboardText) else {
                 return drop(.clipboardNotNegotiated)
             }
             counters.clipboardSetsReceived += 1
@@ -2483,10 +2415,7 @@ public final class Session {
     /// derivation documented on `repairFreezeBudgetOverrideNS`.
     public var repairFreezeBudgetNS: UInt64 {
         repairBudget.freezeBudgetNanoseconds(
-            override: config.repairFreezeBudgetOverrideNS,
-            cadenceMultiplier: config.repairBudgetCadenceMultiplier,
-            jitterAllowanceNanoseconds:
-                config.repairBudgetJitterAllowanceNS
+            override: config.repairFreezeBudgetOverrideNS
         )
     }
 
@@ -2766,16 +2695,8 @@ public final class Session {
     /// video byte-identically. Relative order within every channel remains
     /// unchanged; video classes are deliberately not reordered among
     /// themselves because they share channel 2.
-    public static func prioritizeLatency(
-        _ datagrams: [VideoChannelDatagram]
-    ) -> [VideoChannelDatagram] {
-        var ordered = datagrams
-        prioritizeLatency(&ordered)
-        return ordered
-    }
-
-    /// In-place form. The pacer already releases in class order, so the
-    /// common case is a single ordered scan with no allocation.
+    /// The pacer already releases in class order, so the common case is a
+    /// single ordered scan with no allocation.
     public static func prioritizeLatency(
         _ datagrams: inout [VideoChannelDatagram]
     ) {
@@ -2924,10 +2845,6 @@ public final class Session {
     /// Bytes retained for repair (the retention ring's live size).
     public var repairStoreBytes: Int { channel.repairStoreBytes }
 
-    public func takeFrameTransmitTelemetry() -> [VideoFrameTransmitTelemetry] {
-        channel.takeFrameTransmitTelemetry()
-    }
-
     // MARK: Handshake (responder)
 
     /// True when `datagram` is shaped like a client handshake initiation:
@@ -2986,7 +2903,7 @@ public final class Session {
             answeredHandshake = (Array(message1), message2Body)
             lastAnswerNS = now
         } catch {
-            return [.dropped(.handshakeFailed(String(describing: error)))]
+            return drop(.handshakeFailed(String(describing: error)))
         }
         lifecycleLane.establish(at: now)
         var events: [SessionEvent] = [.handshakeCompleted(
@@ -3138,7 +3055,7 @@ public final class Session {
                 estimator.notePathChanged(now: now)
             }
             // .freshKeyframeNeeded needs no execution here: the encoder
-            // loop polls takeFreshKeyframeRequest(), which reads the
+            // loop polls takeFreshKeyframeDemand(), which reads the
             // validator's latch directly.
             events.append(.path(event))
         }

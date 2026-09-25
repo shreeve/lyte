@@ -9,8 +9,7 @@ import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (F-3, the host receiving end of file transfer). Pinned
-// behaviors:
+// The host's receiving end of file transfer:
 //
 //   • the shell drives Wire's BulkReceiveEngine against a REAL
 //     directory: chunks pwrite+fsync into a dotted `.part` staging
@@ -22,15 +21,14 @@ import LyteWireTestKit
 //   • the offer's name is UNTRUSTED: path separators, dotfiles,
 //     control bytes, overlong names all neutralize (the table), and
 //     collisions number around the incumbent;
-//   • one transfer at a time (v1): a second concurrent offer draws
+//   • one transfer at a time: a second concurrent offer draws
 //     abort(busy) from the dispatcher without disturbing the live
 //     transfer;
 //   • storage failure paths: a refusing disk aborts loud with the
 //     honest reason, PERSISTS the fsync'd possession, and the next
 //     session resumes it; an offer past free space refuses up front;
-//   • capability key 11 rides the W7 spine (`0B F5`, mutual-only) and
-//     the rule-3 gate holds in vivo: a toggle-off host declares no
-//     key, drops chan-8 traffic loud, and refuses sendBulk;
+//   • the capability gate holds in vivo: a toggle-off host declares no
+//     key 11, drops chan-8 traffic loud, and refuses sendBulk;
 //   • the full drop works END TO END through a real Session pair:
 //     offer → accept → chunks → ack → verify → complete over chan 8's
 //     own sealed ARQ stream, and the file lands byte-exact.
@@ -62,16 +60,7 @@ final class BulkReceiveGateTests: XCTestCase {
 
     private func makePayload(count: Int, seed: UInt64) -> [UInt8] {
         var rng = SplitMix64(seed: seed)
-        var bytes = [UInt8]()
-        bytes.reserveCapacity(count)
-        while bytes.count < count {
-            var word = rng.next()
-            for _ in 0..<8 where bytes.count < count {
-                bytes.append(UInt8(truncatingIfNeeded: word))
-                word >>= 8
-            }
-        }
-        return bytes
+        return rng.bytes(count)
     }
 
     private func makeOffer(
@@ -102,7 +91,7 @@ final class BulkReceiveGateTests: XCTestCase {
         try FileManager.default.contentsOfDirectory(atPath: dir).sorted()
     }
 
-    // MARK: The scripted sender (the F-4 client end, in miniature)
+    // MARK: The scripted sender (the client end, in miniature)
 
     /// A BulkSendEngine wrapper answering every `.readChunk` from the
     /// payload synchronously — the TestKit harness's sender half,
@@ -182,7 +171,7 @@ final class BulkReceiveGateTests: XCTestCase {
         return events
     }
 
-    // MARK: Leg 1 — the happy path lands byte-exact in a real directory
+    // MARK: - The happy path lands byte-exact in a real directory
 
     func testGateHappyPathLandsByteExactNoStrays() throws {
         let root = try makeTempDir()
@@ -217,14 +206,9 @@ final class BulkReceiveGateTests: XCTestCase {
         XCTAssertEqual(shell.counters.transfersAborted, 0)
         XCTAssertEqual(shell.state, .awaitingOffer,
                        "a completed shell re-arms for the next offer")
-
-        print("""
-            F-3 gate (happy path): 10,000 B → 3 chunks → sha-verified \
-            → fsync-then-rename, byte-exact, zero strays
-            """)
     }
 
-    // MARK: Leg 2 — teardown, resume, completes byte-exact
+    // MARK: - Teardown, resume, completes byte-exact
 
     func testGateTeardownResumeCompletesByteExact() throws {
         let dir = try makeTempDir()
@@ -265,14 +249,9 @@ final class BulkReceiveGateTests: XCTestCase {
                        "the resumed file must be byte-exact")
         XCTAssertEqual(try allEntries(dir), ["video.mp4"],
                        "the resume file and staging file both clean up")
-
-        print("""
-            F-3 gate (resume): teardown at 5/13 chunks → persisted \
-            state → fresh shell resumes the 8-chunk gap → byte-exact
-            """)
     }
 
-    // MARK: Leg 3 — the filename sanitization table
+    // MARK: - The filename sanitization table
 
     func testGateFilenameSanitizationTable() {
         let table: [(offered: String, expected: String)] = [
@@ -299,6 +278,14 @@ final class BulkReceiveGateTests: XCTestCase {
             ("a\u{2066}b\u{2069}\u{200F}c\u{061C}.txt", "abc.txt"),
             ("csi\u{9B}31m\u{85}.log", "csi31m.log"),
             ("two\u{2028}lines\u{2029}.md", "twolines.md"),
+            // Zero-width and invisible format characters vanish, so none
+            // can hide a leading dot.
+            ("\u{FEFF}.bashrc", "bashrc"),
+            ("zero\u{200B}wi\u{2060}d\u{200D}th\u{2064}.txt", "zerowidth.txt"),
+            // Truncation that consumes the whole stem never exposes the
+            // extension as a dotfile.
+            ("a" + String(repeating: "\u{301}", count: 125) + ".txt",
+             BulkFileNaming.fallbackName + ".txt"),
             // Trailing dots trim (Windows-hostile, dedupe-hostile).
             ("archive.tar.gz...", "archive.tar.gz"),
             // Nothing left → the fallback.
@@ -334,38 +321,23 @@ final class BulkReceiveGateTests: XCTestCase {
         )
         XCTAssertTrue(cyrillic.hasSuffix(".bin"))
 
-        // Collisions number around every incumbent.
-        let taken: Set<String> = ["photo.png", "photo (1).png", "plain"]
+        // Collisions number around the stem, keeping the extension, up
+        // to the last number.
         XCTAssertEqual(
-            BulkFileNaming.collisionFree("photo.png") { taken.contains($0) },
-            "photo (2).png"
+            Array(BulkFileNaming.candidates("photo.png").prefix(3)),
+            ["photo.png", "photo (1).png", "photo (2).png"]
         )
         XCTAssertEqual(
-            BulkFileNaming.collisionFree("plain") { taken.contains($0) },
-            "plain (1)"
+            Array(BulkFileNaming.candidates("plain").prefix(2)),
+            ["plain", "plain (1)"]
         )
         XCTAssertEqual(
-            BulkFileNaming.collisionFree("free.txt") { taken.contains($0) },
-            "free.txt"
-        )
-        XCTAssertEqual(
-            BulkFileNaming.collisionFree("full.txt") {
-                $0 != "full (9999).txt"
-            },
+            Array(BulkFileNaming.candidates("full.txt")).last,
             "full (9999).txt"
         )
-        XCTAssertNil(
-            BulkFileNaming.collisionFree("full.txt") { _ in true },
-            "past the last number there is no name, never a taken one"
-        )
-
-        print("""
-            F-3 gate (names): \(table.count)-row hostile-name table \
-            pinned; truncation byte-budgeted, collisions numbered
-            """)
     }
 
-    // MARK: Leg 4 — the resume codec: pinned bytes, hostile decode
+    // MARK: - The resume codec: pinned bytes, hostile decode
 
     func testGateResumeCodecPinsBytesAndRefusesHostileInput() throws {
         // The minimal state, hand-built byte for byte (LBR1 layout).
@@ -429,35 +401,9 @@ final class BulkReceiveGateTests: XCTestCase {
                 $0 as? BulkResumeStateCodec.CodecError, .trailingBytes
             )
         }
-
-        print("""
-            F-3 gate (codec): LBR1 resume record pinned byte-exact; \
-            truncation/magic/trailing all reject loud
-            """)
     }
 
-    // MARK: Leg 5 — the shared streaming digest survives shell chunking
-
-    func testGateSharedSha256SurvivesFileStoreChunkBoundaries() {
-        let payload = makePayload(count: 200_001, seed: 0x5A5A)
-        let reference = Sha256.digest(payload)
-        for splits in [[1, 62, 63, 64, 65, 200_001], [131_072, 200_001]] {
-            var stream = Sha256()
-            var cursor = 0
-            for edge in splits {
-                stream.update(payload[cursor..<min(edge, payload.count)])
-                cursor = min(edge, payload.count)
-            }
-            XCTAssertEqual(stream.finalized(), reference)
-        }
-
-        print("""
-            F-3 gate (digest): shared SHA-256 streaming splits \
-            match its one-shot result on 200,001 B
-            """)
-    }
-
-    // MARK: Leg 6 — abort(busy): one transfer at a time, undisturbed
+    // MARK: - abort(busy): one transfer at a time, undisturbed
 
     func testGateSecondConcurrentOfferDrawsBusyFirstCompletes() throws {
         let dir = try makeTempDir()
@@ -503,14 +449,9 @@ final class BulkReceiveGateTests: XCTestCase {
         XCTAssertEqual(try fileBytes(dir + "/first.bin"), payload)
         XCTAssertEqual(try visibleEntries(dir), ["first.bin"],
                        "second.bin must never exist in any form")
-
-        print("""
-            F-3 gate (busy): concurrent offer → abort(busy) from the \
-            dispatcher; the live transfer completes byte-exact
-            """)
     }
 
-    // MARK: Leg 7 — storage failures: honest aborts, possession kept
+    // MARK: - Storage failures: honest aborts, possession kept
 
     /// A real BulkFileStore with sabotage dials: a write budget, a
     /// lying free-space gauge, a racer that plants a file on the chosen
@@ -636,11 +577,6 @@ final class BulkReceiveGateTests: XCTestCase {
         XCTAssertEqual(shell.counters.spaceRefusals, 1)
         XCTAssertEqual(shell.counters.chunksStored, 0)
         XCTAssertEqual(try allEntries(dir), [], "nothing may touch disk")
-
-        print("""
-            F-3 gate (space): a 10,000 B offer against 1,024 B free \
-            → abort(storageFailure) before a byte lands
-            """)
     }
 
     func testGateMidTransferWriteFailurePersistsPossessionThenResumes()
@@ -684,40 +620,9 @@ final class BulkReceiveGateTests: XCTestCase {
                        "only the 10 chunks past the failure re-travel")
         XCTAssertEqual(try fileBytes(dir + "/resilient.dat"), payload)
         XCTAssertEqual(try allEntries(dir), ["resilient.dat"])
-
-        print("""
-            F-3 gate (write failure): disk refuses at chunk 3 → \
-            abort(storageFailure) + possession persisted → recovered \
-            disk resumes 10 chunks → byte-exact
-            """)
     }
 
-    // MARK: Leg 8 — key 11 on the spine, mutual-only intersection
-
-    func testCapabilityKeyElevenRidesTheSpineAndIntersectsMutualOnly()
-        throws
-    {
-        let base = try Capabilities.wireDefault.encodeCbor()
-        XCTAssertEqual(base.first, 0xA8)
-        var expected = base
-        expected[0] = 0xA9
-        expected += [0x0B, 0xF5]
-        let declared = Capabilities.wireDefault.declaringBulkTransfer()
-        XCTAssertEqual(try declared.encodeCbor(), expected)
-
-        XCTAssertTrue(declared.intersecting(declared).bulkTransfer)
-        XCTAssertFalse(declared.intersecting(.wireDefault).bulkTransfer)
-        XCTAssertFalse(
-            Capabilities.wireDefault.intersecting(declared).bulkTransfer
-        )
-        print("""
-            F-3 gate (spine): declaration = local bytes + `0B F5`, \
-            mutual-only survival
-            """)
-    }
-
-    // MARK: The negotiated loopback client (the ClipboardGateTests
-    // shape, grown a bulk channel)
+    // MARK: The negotiated loopback client, with a bulk channel
 
     private struct BulkClient: PeerBackedClient {
         var peer: SealedCtrlPeer<ClientClock>
@@ -770,7 +675,7 @@ final class BulkReceiveGateTests: XCTestCase {
         return (host, client)
     }
 
-    // MARK: Leg 9 — the rule-3 gate: toggle off, chan 8 refused loud
+    // MARK: - The capability gate: toggle off, chan 8 refused loud
 
     func testGateToggleOffDropsChanEightLoudAndRefusesSendBulk() throws {
         // The toggle-off host: key 11 never declared (exactly what
@@ -789,7 +694,7 @@ final class BulkReceiveGateTests: XCTestCase {
         }
         XCTAssertEqual(agreed?.bulkTransfer, false,
                        "one-sided key 11 must not survive intersection")
-        XCTAssertFalse(session.agreedBulkTransfer)
+        XCTAssertNotEqual(session.agreedCapabilities?.bulkTransfer, true)
 
         // The client offers anyway (hostile or confused): every chan-8
         // datagram drops loud, no bulk event ever surfaces.
@@ -817,14 +722,9 @@ final class BulkReceiveGateTests: XCTestCase {
         )) {
             XCTAssertEqual($0 as? SessionError, .bulkNotNegotiated)
         }
-
-        print("""
-            F-3 gate (rule 3): toggle-off host — key 11 absent, \
-            chan 8 dropped loud (\(refusals)×), sendBulk refused
-            """)
     }
 
-    // MARK: Leg 10 — the full drop, in vivo: Session + shell + disk
+    // MARK: - The full drop, in vivo: Session + shell + disk
 
     func testGateFullFileDropThroughRealSessionPair() throws {
         let dir = try makeTempDir()
@@ -836,7 +736,7 @@ final class BulkReceiveGateTests: XCTestCase {
         let session = host.session
         var t: UInt64 = 1_000
         try host.settle(&client, t: &t)
-        XCTAssertTrue(session.agreedBulkTransfer)
+        XCTAssertEqual(session.agreedCapabilities?.bulkTransfer, true)
 
         let shell = try BulkReceiveShell(directoryPath: dir)
         let payload = makePayload(count: 9_000, seed: 0xE2E) // 3 chunks
@@ -895,11 +795,5 @@ final class BulkReceiveGateTests: XCTestCase {
         )
         XCTAssertTrue(session.arqIsQuiescent,
                       "both reliable sublayers drain to quiet")
-
-        print("""
-            F-3 gate (in vivo): offer→accept→3 chunks→ack→verify→\
-            complete through a real Session pair; dropped.dat \
-            byte-exact in \(rounds) rounds
-            """)
     }
 }

@@ -6,31 +6,22 @@ import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (build plan HS-15 row: "AudioFramer, DSCP 48, priority above
-// video" — R-G8's in-tree half). Pinned behaviors, each a leg below:
+// The host's audio path (the framer's layout, FEC and size contract
+// are Wire's AudioInteriorTests):
 //
-//   • the audio wire layout is FROZEN DATA: hand-built envelope bytes,
-//     not codec-vs-codec — chan 1, frame = group id = first packet
-//     number, per-packet capture µs on data shards / group-first µs on
-//     parity, the video-identical 8-byte fec interior (4+2, scheme RS);
-//   • one packet = one data shard = one datagram, emitted immediately;
-//     parity emits only when the group completes (cadence before
-//     protection);
-//   • the 4+2 group survives ANY two losses byte-exact and refuses
-//     three, through the same FecDecoder the client will run;
-//   • the hard-CBR contract is enforced loud (a mid-group size change
-//     would shear shard boundaries off packet boundaries);
+//   • every audio datagram carries the conn-id TLV;
 //   • audio rides PacerClass.audio in the ONE shared schedule: above
-//     every video class, below control;
-//   • sealed exactly like video (header bytes as AAD) and unsealable
-//     by the LyteWire client build-up; a tampered header fails;
-//   • lifecycle: audio flows in ACTIVE, IDLE, and FROZEN (W4b: audio
-//     is the path probe; the 5 ms cadence is what lets the client
-//     detector tighten to 350 ms) and stops only at closed;
-//   • THE CADENCE GATE (audio-continuity §4.1, R-G8's shape in virtual
-//     time): audio inter-send stays 5 ms ± 2 ms at p99 while
-//     worst-case IDRs drain, and no audio datagram ever waits behind
-//     more than one ≤1 ms video batch.
+//     every video class, below control, and exempt from a
+//     video-incurred bucket deficit;
+//   • sealed exactly like video (header bytes as AAD), unsealable and
+//     FEC-recoverable by the LyteWire client build-up; a tampered
+//     header fails;
+//   • lifecycle: audio flows in ACTIVE, IDLE, and FROZEN (audio is the
+//     path probe; its 5 ms cadence is what lets the client detector
+//     tighten to 350 ms) and stops only at closed;
+//   • audio inter-send stays 5 ms ± 2 ms at p99 while worst-case IDRs
+//     drain, and no audio datagram ever waits behind more than one
+//     ≤1 ms video batch.
 
 final class AudioGateTests: XCTestCase {
 
@@ -43,98 +34,12 @@ final class AudioGateTests: XCTestCase {
 
     /// A hard-CBR-shaped Opus packet stand-in: `byteCount` deterministic
     /// bytes seeded by the packet number (real 128 kbps CBR packets are
-    /// a constant 80 B — HS-14's evidence).
+    /// a constant 80 B).
     private func opusPacket(_ n: Int, byteCount: Int = 80) -> [UInt8] {
         (0..<byteCount).map { UInt8(truncatingIfNeeded: n &* 31 &+ $0) }
     }
 
-    /// A synthetic frame-shaped Annex-B blob (the SessionGateTests
-    /// pattern); `irap: true` makes it a genuine IDR-shaped keyframe.
-    private func syntheticFrame(byteCount: Int, irap: Bool = false) -> [UInt8] {
-        precondition(byteCount >= 6)
-        return [0, 0, 0, 1, irap ? 0x26 : 0x02, 0x01]
-            + [UInt8](repeating: 0xAA, count: byteCount - 6)
-    }
-
-    // MARK: Leg 1 — the layout, pinned as hand-built bytes
-
-    func testFramerLayoutPinnedAgainstHandBuiltBytes() throws {
-        var framer = AudioFramer(config: AudioFramerConfig())
-        let packets = (0..<4).map { opusPacket($0, byteCount: 12) }
-
-        var emitted: [(envelope: Envelope, payload: [UInt8])] = []
-        for (n, packet) in packets.enumerated() {
-            emitted += try framer.ingest(
-                packet: packet,
-                captureTimestampMicroseconds: 1_000 + UInt64(n) * 5_000
-            )
-        }
-        XCTAssertEqual(emitted.count, 6, "4 data + 2 parity")
-
-        // Hand-assembled wire image of data shard `i`: the layout IS
-        // the contract. All fields little-endian (envelope rule).
-        func handBuilt(shardIndex i: UInt8, timestamp: UInt64,
-                       payload: [UInt8]) -> [UInt8] {
-            var out: [UInt8] = []
-            out.append(1)                    // chan 1 = audio
-            out.append(0)                    // flags: no TLV block
-            out += [UInt8(i), 0]             // seq u16 LE (emit order)
-            out += [0, 0, 0, 0]              // frame u32 LE = group id 0
-            for shift in stride(from: 0, to: 64, by: 8) {
-                out.append(UInt8(truncatingIfNeeded: timestamp >> shift))
-            }
-            // fec u64 LE: shardIndex ‖ k=4 ‖ m=2 ‖ scheme=RS(0x01) ‖
-            // groupByteCount u24 = 48 ‖ reserved 0.
-            out += [i, 4, 2, 0x01, 48, 0, 0, 0]
-            out += payload
-            return out
-        }
-
-        for i in 0..<4 {
-            let wire = try emitted[i].envelope.encode(
-                plaintextShard: emitted[i].payload
-            )
-            XCTAssertEqual(
-                wire,
-                handBuilt(shardIndex: UInt8(i),
-                          timestamp: 1_000 + UInt64(i) * 5_000,
-                          payload: packets[i]),
-                "data shard \(i) layout drifted"
-            )
-        }
-
-        // Parity shards: envelope hand-built (group-FIRST capture µs —
-        // they correspond to no single packet); payload pinned against
-        // the frozen FEC machinery (fec-v1.json owns the matrix math).
-        let geometry = try FecGeometry(
-            dataShards: 4, parityShards: 2, groupByteCount: 48
-        )
-        let reference = try FecEncoder.encode(
-            group: packets.flatMap { $0 }, geometry: geometry
-        )
-        for (offset, i) in [4, 5].enumerated() {
-            let wire = try emitted[i].envelope.encode(
-                plaintextShard: emitted[i].payload
-            )
-            var expected = handBuilt(
-                shardIndex: UInt8(i), timestamp: 1_000,
-                payload: reference[4 + offset]
-            )
-            expected[2] = UInt8(i) // seq keeps counting through parity
-            XCTAssertEqual(wire, expected, "parity shard \(i) drifted")
-        }
-
-        // The next group starts at packet number 4 and seq 6.
-        let next = try framer.ingest(
-            packet: opusPacket(4, byteCount: 12),
-            captureTimestampMicroseconds: 21_000
-        )
-        XCTAssertEqual(next.count, 1)
-        XCTAssertEqual(next[0].envelope.frame.rawValue, 4,
-                       "group id = the group's first packet number")
-        XCTAssertEqual(next[0].envelope.seq.rawValue, 6)
-        XCTAssertEqual(framer.counters.groupsCompleted, 1)
-    }
+    // MARK: - The layout
 
     func testConnectionIdTlvRidesEveryAudioDatagram() throws {
         var rng = SplitMix64(seed: 0xA15)
@@ -163,116 +68,7 @@ final class AudioGateTests: XCTestCase {
         }
     }
 
-    // MARK: Leg 2 — FEC geometry and recovery
-
-    func testGroupSurvivesAnyTwoLossesAndRefusesThree() throws {
-        var framer = AudioFramer(config: AudioFramerConfig())
-        let packets = (0..<4).map { opusPacket($0) }
-        var shards: [[UInt8]] = []
-        for (n, packet) in packets.enumerated() {
-            for (_, payload) in try framer.ingest(
-                packet: packet,
-                captureTimestampMicroseconds: UInt64(n) * 5_000
-            ) {
-                shards.append(payload)
-            }
-        }
-        XCTAssertEqual(shards.count, 6)
-        let geometry = try FecGeometry(
-            dataShards: 4, parityShards: 2, groupByteCount: 4 * 80
-        )
-
-        // Every 2-of-6 loss pattern recovers the packets byte-exact.
-        for a in 0..<6 {
-            for b in (a + 1)..<6 {
-                var slots: [[UInt8]?] = shards
-                slots[a] = nil
-                slots[b] = nil
-                let group = try FecDecoder.decode(
-                    shards: slots, geometry: geometry
-                )
-                for (n, packet) in packets.enumerated() {
-                    XCTAssertEqual(
-                        Array(group[(n * 80)..<((n + 1) * 80)]), packet,
-                        "packet \(n) after losing shards \(a),\(b)"
-                    )
-                }
-            }
-        }
-
-        // Three losses (two of them data) are honestly refused.
-        var slots: [[UInt8]?] = shards
-        slots[0] = nil
-        slots[1] = nil
-        slots[4] = nil
-        XCTAssertThrowsError(
-            try FecDecoder.decode(shards: slots, geometry: geometry)
-        )
-    }
-
-    // MARK: Leg 3 — contract enforcement
-
-    func testSizeChangeMidGroupAbandonsTheGroupAndReopensAtTheNewSize() throws {
-        var framer = AudioFramer(config: AudioFramerConfig())
-        _ = try framer.ingest(
-            packet: opusPacket(0, byteCount: 80),
-            captureTimestampMicroseconds: 0
-        )
-        // An Opus bitrate step mid-group: the open group closes without
-        // parity and the packet opens a fresh group as its shard 0, at
-        // the geometry of its own size.
-        let stepped = try framer.ingest(
-            packet: opusPacket(1, byteCount: 81),
-            captureTimestampMicroseconds: 5_000
-        )
-        XCTAssertEqual(stepped.count, 1)
-        XCTAssertEqual(stepped[0].envelope.frame, FrameNumber(rawValue: 1),
-                       "the fresh group's id is its first packet number")
-        let field = try FecField.reedSolomonShard(
-            0, of: FecGeometry(dataShards: 4, parityShards: 2,
-                               groupByteCount: 4 * 81)
-        )
-        XCTAssertEqual(stepped[0].envelope.fec, field.encoded)
-        XCTAssertEqual(framer.counters.groupsAbandoned, 1)
-        // The new group completes at the new size with its parity.
-        var last: [(envelope: Envelope, payload: [UInt8])] = []
-        for n in 2..<5 {
-            last = try framer.ingest(
-                packet: opusPacket(n, byteCount: 81),
-                captureTimestampMicroseconds: UInt64(n) * 5_000
-            )
-        }
-        XCTAssertEqual(last.count, 3, "the fourth data shard plus 2 parity")
-        XCTAssertEqual(framer.counters.groupsCompleted, 1)
-        // A change at a group boundary abandons nothing.
-        XCTAssertEqual(
-            try framer.ingest(
-                packet: opusPacket(5, byteCount: 96),
-                captureTimestampMicroseconds: 25_000
-            ).count, 1
-        )
-        XCTAssertEqual(framer.counters.groupsAbandoned, 1)
-    }
-
-    func testEmptyAndOversizedPacketsRefused() {
-        var framer = AudioFramer(config: AudioFramerConfig())
-        XCTAssertThrowsError(try framer.ingest(
-            packet: [], captureTimestampMicroseconds: 0
-        )) {
-            XCTAssertEqual($0 as? AudioFramerError, .emptyPacket)
-        }
-        let over = framer.config.packetBudgetByteCount + 1
-        XCTAssertThrowsError(try framer.ingest(
-            packet: [UInt8](repeating: 0, count: over),
-            captureTimestampMicroseconds: 0
-        )) {
-            XCTAssertEqual(
-                $0 as? AudioFramerError, .packetOverBudget(over)
-            )
-        }
-    }
-
-    // MARK: Leg 4 — class assignment in the shared schedule
+    // MARK: - Class assignment in the shared schedule
 
     func testAudioOutranksQueuedVideoInTheOneSchedule() throws {
         var sent: [VideoChannelDatagram] = []
@@ -309,14 +105,11 @@ final class AudioGateTests: XCTestCase {
         }
     }
 
-    /// HS-31 (squeeze review §1, consult-corrected shape): at the
-    /// 500 kbps estimator floor one max-size video datagram drives the
-    /// shared bucket ~19 ms negative — and audio used to wait the
-    /// whole deficit out (22.9–53.6 ms measured live vs §4.1's
-    /// 5 ± 2 ms bound). Through the REAL ingest → pacer → sink path:
-    /// audio enqueued mid-deficit emits at once, `nextWake` is NOW
-    /// while audio is queued (what the sender thread's signalDrain
-    /// wake relies on — the fix-2 seam), and the video tail stays
+    /// At the 500 kbps estimator floor one max-size video datagram
+    /// drives the shared bucket ~19 ms negative. Through the real
+    /// ingest → pacer → sink path: audio enqueued mid-deficit emits at
+    /// once, `nextWake` is NOW while audio is queued (what the sender
+    /// thread's signalDrain wake relies on), and the video tail stays
     /// parked until the deficit is truly repaid.
     func testAudioEmitsThroughVideoIncurredDeficitAtRateFloor() throws {
         var sent: [VideoChannelDatagram] = []
@@ -352,7 +145,6 @@ final class AudioGateTests: XCTestCase {
         _ = try session.ingestAudioPacket(
             opusPacket(0), captureTimestampMicroseconds: 1_000, now: 1 * ms
         )
-        XCTAssertGreaterThan(session.queuedAudioDatagramCount, 0)
         let wake = session.nextWake(now: 1 * ms)
         XCTAssertNotNil(wake)
         XCTAssertLessThanOrEqual(wake ?? .max, 1 * ms,
@@ -364,7 +156,6 @@ final class AudioGateTests: XCTestCase {
         session.pump(now: 1 * ms)
         XCTAssertEqual(sent.count { $0.pacerClass == .audio }, 1,
             "audio must emit through the video-incurred deficit")
-        XCTAssertEqual(session.queuedAudioDatagramCount, 0)
         XCTAssertEqual(sent.count { $0.pacerClass == .freshVideo },
                        videoSentAtOpen,
                        "video must not borrow audio's exemption")
@@ -380,7 +171,7 @@ final class AudioGateTests: XCTestCase {
             "audio queue delay must hold §4.1's bound through the deficit")
     }
 
-    // MARK: Leg 5 — sealed round trip through the LyteWire client build-up
+    // MARK: - Sealed round trip through the LyteWire client build-up
 
     /// The minimal client far end (the SessionGateTests discipline):
     /// NoiseSession initiator + unseal; audio datagrams collected with
@@ -389,10 +180,6 @@ final class AudioGateTests: XCTestCase {
         var peer: SealedCtrlPeer<ClientClock>
         var audio: [(envelope: Envelope, payload: [UInt8])] = []
         var videoDatagrams = 0
-
-        init(hostStaticPublicKey: [UInt8]) throws {
-            peer = try SealedCtrlPeer(initiatorTo: hostStaticPublicKey)
-        }
 
         mutating func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
             guard case .plain(let envelope, let plaintext) =
@@ -417,77 +204,36 @@ final class AudioGateTests: XCTestCase {
         var datagrams: [VideoChannelDatagram] = []
     }
 
-    /// Handshake + settle: an established Noise session with the audio
-    /// path live and the client's ARQ answering (so lifecycle flips can
-    /// be exercised).
+    /// An established Noise session with the audio path live and the
+    /// client's ARQ answering (so lifecycle flips can be exercised).
     private func establish() throws -> (
-        session: Session, client: AudioClient, box: DatagramBox
+        host: HostSessionHarness, client: AudioClient
     ) {
-        let hostStatic = NoiseKeyPair.generate()
-        let box = DatagramBox()
-        let session = Session(
+        let host = HostSessionHarness(
             config: SessionConfig(
-                crypto: .noise(hostStatic: hostStatic),
+                crypto: .noise(hostStatic: NoiseKeyPair.generate()),
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: 1 << 62
             ),
-            clientTuple: Self.tupleA,
-            now: 0,
-            rng: SplitMix64(seed: 0x1515),
-            send: { box.datagrams.append($0) }
+            tuple: Self.tupleA,
+            rng: SplitMix64(seed: 0x1515)
         )
-        var client = try AudioClient(hostStaticPublicKey: hostStatic.publicKey)
-        _ = session.receive(
-            try client.message1Datagram(clientMicros: 500),
-            from: Self.tupleA, now: 0, hostMicroseconds: 0
-        )
-        XCTAssertEqual(session.phase, .established)
-        session.pump(now: 0)
-        return (session, client, box)
-    }
-
-    /// Lossless exchange passes until both ends quiesce (the lifecycle
-    /// harness's settle, trimmed).
-    private func settle(
-        _ session: Session, _ client: inout AudioClient,
-        _ box: DatagramBox, forwarded: inout Int, t: inout UInt64
-    ) throws {
-        var idle = 0
-        while idle < 3 {
-            t += 2_000
-            let before = forwarded
-            _ = session.advance(now: t * 1_000, hostMicroseconds: t)
-            session.pump(now: t * 1_000)
-            while forwarded < box.datagrams.count {
-                try client.absorb(box.datagrams[forwarded].bytes, nowMicros: t)
-                forwarded += 1
-            }
-            for datagram in try client.pollOut(nowMicros: t) {
-                _ = session.receive(
-                    datagram, from: Self.tupleA,
-                    now: t * 1_000, hostMicroseconds: t
-                )
-                session.pump(now: t * 1_000)
-                while forwarded < box.datagrams.count {
-                    try client.absorb(
-                        box.datagrams[forwarded].bytes, nowMicros: t
-                    )
-                    forwarded += 1
-                }
-            }
-            idle = forwarded == before ? idle + 1 : 0
-        }
+        let client = AudioClient(peer: try host.connectClient(
+            declaring: nil, openChannels: nil
+        ))
+        XCTAssertEqual(host.session.phase, .established)
+        return (host, client)
     }
 
     func testSealedAudioRoundTripsAndRecoversThroughTheClientStack() throws {
-        let (session, clientValue, box) = try establish()
+        let (host, clientValue) = try establish()
         var client = clientValue
-        var forwarded = 0
+        let session = host.session
         var t: UInt64 = 1_000
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try host.settle(&client, t: &t)
 
         // Two full groups of real-shaped packets through the sealed path.
-        let audioStart = forwarded
+        let audioStart = host.forwarded
         let packets = (0..<8).map { opusPacket($0) }
         var captureStamps: [UInt64] = []
         for packet in packets {
@@ -500,11 +246,8 @@ final class AudioGateTests: XCTestCase {
             )
             session.pump(now: t * 1_000)
         }
-        while forwarded < box.datagrams.count {
-            try client.absorb(box.datagrams[forwarded].bytes, nowMicros: t)
-            forwarded += 1
-        }
-        let audioDatagrams = box.datagrams[audioStart...].filter {
+        try host.deliver(to: &client, at: t)
+        let audioDatagrams = host.sent[audioStart...].filter {
             $0.pacerClass == .audio
         }
         XCTAssertEqual(client.audio.count, 12, "2 × (4 data + 2 parity)")
@@ -576,20 +319,20 @@ final class AudioGateTests: XCTestCase {
         }
 
         // A tampered header dies at the AAD check, like every channel.
-        let sample = box.datagrams.last { $0.pacerClass == .audio }!
+        let sample = host.sent.last { $0.pacerClass == .audio }!
         var tampered = sample.bytes
         tampered[8] ^= 0x01 // one timestamp bit
         XCTAssertThrowsError(try client.transport!.openDatagram(tampered))
     }
 
-    // MARK: Leg 6 — lifecycle: the probe never stops (except closed)
+    // MARK: - Lifecycle: the probe never stops (except closed)
 
     func testAudioFlowsUntilTheSessionCloses() throws {
-        let (session, clientValue, box) = try establish()
+        let (host, clientValue) = try establish()
         var client = clientValue
-        var forwarded = 0
+        let session = host.session
         var t: UInt64 = 1_000
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try host.settle(&client, t: &t)
 
         // Audio is the 5 ms path probe: it flows whatever video does.
         let audioBefore = client.audio.count
@@ -601,17 +344,14 @@ final class AudioGateTests: XCTestCase {
             )
             session.pump(now: t * 1_000)
         }
-        while forwarded < box.datagrams.count {
-            try client.absorb(box.datagrams[forwarded].bytes, nowMicros: t)
-            forwarded += 1
-        }
+        try host.deliver(to: &client, at: t)
         XCTAssertEqual(client.audio.count - audioBefore, 6)
 
         // closed: teardown, then audio is suppressed — counted, silent.
         _ = session.beginTeardown(
             reason: .shuttingDown, now: t * 1_000, hostMicroseconds: t
         )
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try host.settle(&client, t: &t)
         XCTAssertEqual(session.lifecycleState, .closed)
         let sent = session.counters.audioDatagramsEnqueued
         XCTAssertEqual(try session.ingestAudioPacket(
@@ -693,13 +433,12 @@ final class AudioGateTests: XCTestCase {
         }
     }
 
-    // MARK: Leg 7 — THE CADENCE GATE (audio-continuity §4.1 in virtual time)
+    // MARK: - Audio cadence through worst-case IDRs
 
     /// 5 s of virtual time at 20 Mbps: 5 ms audio, steady 60 fps damage
-    /// frames, and a worst-case conforming IDR every 2 s (R-G8's forced
-    /// IDR profile). The pass criteria are the audio-continuity doc's,
-    /// verbatim: data-shard inter-send 5 ms ± 2 ms at p99, and no audio
-    /// datagram waits behind more than one ≤1 ms video batch.
+    /// frames, and a worst-case conforming IDR every 2 s. Data-shard
+    /// inter-send must hold 5 ms ± 2 ms at p99, and no audio datagram
+    /// may wait behind more than one ≤1 ms video batch.
     func testGateAudioCadenceHoldsThroughWorstCaseIdrs() throws {
         let box = DatagramBox()
         var sendInstant: UInt64 = 0
@@ -771,7 +510,7 @@ final class AudioGateTests: XCTestCase {
                     isKeyframe: false, now: now
                 )
             case .idr:
-                // The HS-6 gate's conforming worst case: 59,904 B at
+                // The conforming worst case: 59,904 B at
                 // 20 Mbps fills the whole 25 ms drain budget — the
                 // burst that traps audio on an unpaced sender.
                 _ = try session.ingestVideoFrame(
@@ -811,7 +550,6 @@ final class AudioGateTests: XCTestCase {
         }
         deviations.sort()
         let p99 = deviations[Int(Double(deviations.count - 1) * 0.99)]
-        let worst = deviations.last!
         XCTAssertLessThanOrEqual(p99, 2 * ms,
             "audio inter-send p99 deviation \(Double(p99) / 1e6) ms > 2 ms")
 
@@ -828,14 +566,5 @@ final class AudioGateTests: XCTestCase {
         XCTAssertLessThanOrEqual(
             session.pacerTelemetry.maxBatchWireTimeNS, ms
         )
-
-        print("""
-            HS-15 gate @20 Mbps, 5 s virtual, IDR every 2 s: \
-            \(dataSends.count) audio packets; inter-send deviation \
-            p99 \(Double(p99) / 1e6) ms, worst \(Double(worst) / 1e6) ms; \
-            max audio queue delay \(Double(audioWait) / 1e6) ms; \
-            max batch wire time \
-            \(Double(session.pacerTelemetry.maxBatchWireTimeNS) / 1e6) ms
-            """)
     }
 }

@@ -7,14 +7,13 @@ extension PacerClass {
         switch self {
         case .control: .ctrl
         case .audio: .audio
-        case .telemetry: .feedback
         case .bulk: .bulkTransfer
-        case .freshVideo, .videoTail, .refinement: .videoActive
+        case .freshVideo, .videoTail: .videoActive
         }
     }
 
     var countsAsPendingVideo: Bool {
-        self == .freshVideo || self == .videoTail || self == .refinement
+        self == .freshVideo || self == .videoTail
     }
 }
 
