@@ -143,8 +143,6 @@ struct TransportDirection: Sendable {
     var trackers = [ExtendedCounterTracker](
         repeating: ExtendedCounterTracker(), count: 256
     )
-    /// Datagrams processed since the last rekey — the trigger input.
-    var datagramsSinceRekey: UInt64 = 0
 
     init(cipher: NoiseCipherState) {
         self.cipher = cipher
@@ -174,7 +172,6 @@ struct TransportDirection: Sendable {
         previousCipher = keepPrevious ? cipher : nil
         try cipher.rekey()
         epoch &+= 1
-        datagramsSinceRekey = 0
     }
 }
 
@@ -189,11 +186,6 @@ public struct NoiseTransport: Sendable {
     /// The completed handshake's transcript hash — the pairing PAKE binds
     /// to it.
     public let handshakeHash: [UInt8]
-
-    /// A rekey trigger for when one exists: every 2^24 datagrams per
-    /// direction. Wire v1 has no CTRL message that coordinates a rekey,
-    /// so no v1 end calls `rekeySend`/`rekeyReceive`.
-    public static let rekeyDatagramThreshold: UInt64 = 1 << 24
 
     init(
         send: NoiseCipherState,
@@ -236,7 +228,6 @@ public struct NoiseTransport: Sendable {
         )
         tracker.accept(extended)
         send.trackers[Int(channel.rawValue)] = tracker
-        send.datagramsSinceRekey &+= 1
         return sealed
     }
 
@@ -304,7 +295,6 @@ public struct NoiseTransport: Sendable {
         }
         tracker.accept(extended)
         receive.trackers[Int(channel.rawValue)] = tracker
-        receive.datagramsSinceRekey &+= 1
         return plaintext
     }
 
@@ -377,7 +367,8 @@ public struct NoiseTransport: Sendable {
 
     /// Rekeys the send direction (Noise REKEY, epoch += 1). Coordination
     /// — telling the peer to `rekeyReceive()` via a CTRL message — is
-    /// session territory; this is the pure primitive. The superseded
+    /// session territory, and wire v1 has no such message, so no v1 end
+    /// rekeys; this is the pure primitive. The superseded
     /// send key is dropped, not retained: only the receive side needs a
     /// grace key.
     public mutating func rekeySend() throws {
@@ -392,7 +383,4 @@ public struct NoiseTransport: Sendable {
 
     public var sendEpoch: UInt32 { send.epoch }
     public var receiveEpoch: UInt32 { receive.epoch }
-    /// Rekey-trigger inputs: datagrams sealed/opened since the last rekey.
-    public var datagramsSealedSinceRekey: UInt64 { send.datagramsSinceRekey }
-    public var datagramsOpenedSinceRekey: UInt64 { receive.datagramsSinceRekey }
 }

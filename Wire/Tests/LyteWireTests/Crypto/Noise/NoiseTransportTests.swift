@@ -437,7 +437,6 @@ final class NoiseTransportTests: XCTestCase {
         try host.rekeyReceive()
         XCTAssertEqual(client.sendEpoch, 1)
         XCTAssertEqual(host.receiveEpoch, 1)
-        XCTAssertEqual(client.datagramsSealedSinceRekey, 0)
 
         // Post-rekey traffic flows on the new epoch key…
         let env1 = envelope(seq: 1)
@@ -501,11 +500,6 @@ final class NoiseTransportTests: XCTestCase {
             plaintext: plaintext[...], aad: headerBytes[...], envelope: env
         )
         XCTAssertNotEqual(a, b)
-    }
-
-    func testRekeyThresholdConstantIsSane() {
-        // The transport-doc policy input: 2^24 datagrams per direction.
-        XCTAssertEqual(NoiseTransport.rekeyDatagramThreshold, 16_777_216)
     }
 
     // MARK: ARQ retransmits vs the replay window (the W3 concern)
@@ -585,24 +579,6 @@ final class NoiseTransportTests: XCTestCase {
             }
         }
         XCTAssertEqual(delivered, [message], "exactly once, in order")
-    }
-
-    func testDatagramCountersFeedRekeyPolicy() throws {
-        var (client, host) = try makeTransports()
-        for seq in 0..<3 {
-            let env = envelope(seq: UInt16(seq))
-            let headerBytes = try aad(env)
-            let wire = try client.seal(
-                plaintext: [0][...], aad: headerBytes[...], envelope: env
-            )
-            _ = try host.unseal(
-                wirePayload: wire[...], aad: headerBytes[...], envelope: env
-            )
-        }
-        XCTAssertEqual(client.datagramsSealedSinceRekey, 3)
-        XCTAssertEqual(host.datagramsOpenedSinceRekey, 3)
-        try client.rekeySend()
-        XCTAssertEqual(client.datagramsSealedSinceRekey, 0)
     }
 }
 
