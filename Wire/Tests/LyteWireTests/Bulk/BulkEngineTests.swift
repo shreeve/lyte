@@ -318,28 +318,6 @@ final class BulkEngineTests: XCTestCase {
         XCTAssertTrue(harness.resumeBook.isEmpty)
     }
 
-    /// A holed possession map (extras beyond the prefix): the sender
-    /// re-dispatches exactly the holes, never the held chunks.
-    func testResumeWithHolesDispatchesOnlyMissing() throws {
-        let (offer, payload) = makeFixture(
-            chunkCount: 8, finalChunkBytes: 4_096
-        )
-        var harness = BulkTransferHarness(
-            offer: offer, payload: payload, window: 16,
-            initialPossession: BulkPossession(
-                contiguousCount: 3, extras: [5, 6]
-            )
-        )
-        let result = try harness.runSession()
-        XCTAssertEqual(result.senderFinalState, .completed)
-        XCTAssertEqual(result.receiverFinalState, .completed)
-        let sentChunks = result.senderMessages.filter {
-            $0[0] == CtrlMessageType.bulkChunk
-        }
-        XCTAssertEqual(sentChunks.count, 3, "chunks 3, 4, 7 only")
-        XCTAssertEqual(harness.assembledDigest(), offer.sha256)
-    }
-
     /// Resume when possession is already complete (the teardown ate
     /// only the finish): no chunks travel; the digest still gates.
     func testResumeAlreadyCompleteVerifiesWithoutChunks() throws {

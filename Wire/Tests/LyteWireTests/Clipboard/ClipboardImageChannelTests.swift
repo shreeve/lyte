@@ -3,10 +3,10 @@ import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-// The clipboard-image channel's laws (P-1, clipboard v2): a full
-// marker → offer → chunks → digest-verdict loopback between two
-// channels (the ends hash — LyteCore's Sha256 plays both), the
-// suppression ladder, the refusal ladder with its abort answers, the
+// The clipboard-image channel's laws: a full marker → offer → chunks →
+// digest-verdict loopback between two channels (the ends hash —
+// LyteCore's Sha256 plays both), the local-copy suppressions, the
+// refusal ladder with its abort answers, the
 // refused-id swallow, lane-occupancy discipline, and the book
 // interplay that keeps an applied image from boomeranging.
 
@@ -269,61 +269,25 @@ final class ClipboardImageChannelTests: XCTestCase {
         ))
     }
 
-    // MARK: The suppression ladder (local copies that never leave)
+    // MARK: The digest-keyed suppressions (local copies that never leave)
 
-    func testSuppressionLadder() {
+    /// Past the digest-free gates (testLocalCopiesAreHashedOnlyPastTheDigestFreeGates),
+    /// the sync book decides: a remote apply's OS echo never boomerangs.
+    func testRemoteApplyEchoIsSuppressed() {
         var channel = ClipboardImageChannel(imageByteCeiling: 4_096)
         var book = ClipboardSyncBook()
         var rng = CountingRng()
-
-        // Empty read — a leaf bug, loud in the counter.
-        XCTAssertEqual(
-            channel.shareLocalImage([], sha256: { Sha256.digest([]) },
-                                    book: &book, rng: &rng),
-            [.suppressed(.emptyImage)]
-        )
-
-        // Over the ceiling: suppressed, never sent (the test seam's
-        // small ceiling stands in for 32 MiB).
-        let big = patterned(4_097)
-        XCTAssertEqual(
-            channel.shareLocalImage(big, sha256: { Sha256.digest(big) },
-                                    book: &book, rng: &rng),
-            [.suppressed(.overBudget(4_097))]
-        )
-
-        // The echo: a remote apply's OS event never boomerangs.
         let image = patterned(64)
-        let key = ClipboardImageWire.bookKey(sha256: Sha256.digest(image))
-        book.noteRemoteApplied(bytes: key)
+        book.noteRemoteApplied(
+            bytes: ClipboardImageWire.bookKey(sha256: Sha256.digest(image))
+        )
         XCTAssertEqual(
             channel.shareLocalImage(image, sha256: { Sha256.digest(image) },
                                     book: &book, rng: &rng),
             [.suppressed(.loopEcho)]
         )
-
-        // Send lane busy: a share in flight, a second copy drops
-        // (latest-wins is v2's documented posture).
-        let inFlight = patterned(128)
-        let events = channel.shareLocalImage(
-            inFlight, sha256: { Sha256.digest(inFlight) },
-            book: &book, rng: &rng
-        )
-        XCTAssertTrue(events.contains { event in
-            if case .shareStarted = event { return true }
-            return false
-        })
-        XCTAssertTrue(channel.isSendActive)
-        let superseded = patterned(129)
-        XCTAssertEqual(
-            channel.shareLocalImage(
-                superseded, sha256: { Sha256.digest(superseded) },
-                book: &book, rng: &rng
-            ),
-            [.suppressed(.sendBusy)]
-        )
-        XCTAssertEqual(channel.counters.sharesSuppressed, 4)
-        XCTAssertEqual(channel.counters.sharesStarted, 1)
+        XCTAssertEqual(channel.counters.sharesSuppressed, 1)
+        XCTAssertFalse(channel.isSendActive)
     }
 
     // MARK: The refusal ladder (incoming cargo that never lands)
