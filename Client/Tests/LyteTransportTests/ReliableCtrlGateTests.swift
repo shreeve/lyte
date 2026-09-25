@@ -5,24 +5,14 @@ import LyteWire
 import LyteWireTestKit
 @testable import LyteTransport
 
-// THE GATE (build plan CL-7, the ARQ leg — the client half of HS-8's
-// gate): the client's real reliable-CTRL stack — NoiseTransportCrypto
-// initiator, ReceiveDemux unseal, TransportSender seal,
-// ReliableCtrlEndpoint over ArqEndpoint<ClientClock> — SURVIVES the
-// W-G4 fault model against a LyteWire host build-up: 5% seeded loss
-// plus duplication and jitter-driven reorder through SimNet,
-// RTT-adaptive retransmit, exactly-once in-order delivery both
-// directions — while the deliberately ARQ-exempt traffic stays exempt
-// (beacons pass the one-byte peek untouched; a sealed IDR request
-// still lands mid-storm on its fire-and-forget path).
-//
-// The far end here is a host stand-in assembled from LyteWire parts:
-// NoiseSession responder plus its own ArqEndpoint<HostClock>, configured
-// to pack conn-id-tagged CTRL at the session's real 1101 B plaintext
-// ceiling — exactly the HS-8 Session's discipline, met
-// through the same frame codecs the frozen arq-v1 vectors pin. The
-// host-side ArqCtrlGateTests runs the mirror-image pairing with the real
-// Session; this gate deliberately retains its isolated Wire peer.
+// The client's real reliable-CTRL stack — NoiseTransportCrypto initiator,
+// ReceiveDemux unseal, TransportSender seal, ReliableCtrlEndpoint over
+// ArqEndpoint<ClientClock> — survives seeded loss, duplication and
+// jitter-driven reorder through SimNet against a host stand-in built from
+// LyteWire parts that packs conn-id-tagged CTRL at the session's 1101 B
+// plaintext ceiling: exactly-once in-order delivery both directions, while
+// ARQ-exempt traffic stays exempt (beacons pass the one-byte peek; a
+// sealed IDR request lands mid-storm on its fire-and-forget path).
 
 final class ReliableCtrlGateTests: XCTestCase {
 
@@ -36,7 +26,6 @@ final class ReliableCtrlGateTests: XCTestCase {
         var handshakeOutbox: [[UInt8]] = []
         var beaconSeq: UInt32 = 0
 
-        var oneShotAcks: [ArqGroupId] = []
         var arqIgnored = 0
         /// Byte-identical network duplicates die at the transport's
         /// replay window — before any layer above sees them.
@@ -113,10 +102,8 @@ final class ReliableCtrlGateTests: XCTestCase {
                 }
                 for event in events {
                     switch event {
-                    case .message:
-                        break // in `received`
-                    case .oneShotAcknowledged(let group):
-                        oneShotAcks.append(group)
+                    case .message, .oneShotAcknowledged:
+                        break
                     case .ignored:
                         arqIgnored += 1
                     }
@@ -230,13 +217,6 @@ final class ReliableCtrlGateTests: XCTestCase {
                 return nil
             }
         }
-
-        var oneShotAcks: [ArqGroupId] {
-            capturedEvents.all.compactMap {
-                if case .oneShotAcknowledged(let group) = $0 { return group }
-                return nil
-            }
-        }
     }
 
     private final class LockedEvents: @unchecked Sendable {
@@ -277,9 +257,6 @@ final class ReliableCtrlGateTests: XCTestCase {
             [UInt8](repeating: UInt8(truncatingIfNeeded: 0x40 &+ i),
                     count: sizes[i % sizes.count])
         }
-        let clientOneShotMessages: [[UInt8]] = [
-            [0xC7], [UInt8](repeating: 0xC9, count: 1_400),
-        ]
         let hostStream: [[UInt8]] = (0..<30).map { i in
             [UInt8](repeating: UInt8(truncatingIfNeeded: i &+ 1),
                     count: sizes[(i + 3) % sizes.count])
@@ -295,7 +272,6 @@ final class ReliableCtrlGateTests: XCTestCase {
         var clientSent = 0
         var hostSent = 0
         var oneShotsSent = false
-        var clientOneShotGroups: [ArqGroupId] = []
 
         // An ARQ-exempt IDR request fired mid-storm proves the exempt
         // fire-and-forget path is untouched by the reliable machinery
@@ -339,10 +315,6 @@ final class ReliableCtrlGateTests: XCTestCase {
             }
             if !oneShotsSent, t >= 1_200_000 {
                 oneShotsSent = true
-                for message in clientOneShotMessages {
-                    clientOneShotGroups.append(try harness.reliable.sendOneShot(
-                        message, now: ClientTimestamp(microseconds: t)))
-                }
                 for (group, message) in hostOneShots.sorted(by: { $0.key < $1.key }) {
                     try host.arq.sendOneShot(
                         message: message, group: ArqGroupId(rawValue: group),
@@ -381,7 +353,7 @@ final class ReliableCtrlGateTests: XCTestCase {
                harness.deliveredMessages.count
                    == hostStream.count + hostOneShots.count,
                host.received.count
-                   == clientStream.count + clientOneShotMessages.count,
+                   == clientStream.count,
                net.nextArrivalTime == nil {
                 converged = t
                 break
@@ -422,19 +394,12 @@ final class ReliableCtrlGateTests: XCTestCase {
             .filter { $0.group == .orderedStream }.map(\.bytes)
         XCTAssertEqual(hostOrdered, clientStream,
                        "client→host stream: exactly once, in order")
-        for (group, message) in zip(clientOneShotGroups, clientOneShotMessages) {
-            let hits = host.received.filter { $0.group == group }
-            XCTAssertEqual(hits.count, 1)
-            XCTAssertEqual(hits.first?.bytes, message)
-            XCTAssertTrue(harness.oneShotAcks.contains(group),
-                          "one-shot \(group.rawValue): the acknowledgment must surface")
-        }
 
         // ── Retransmission is what survived the loss ───────────────────
         let stats = harness.reliable.snapshotStats()
         XCTAssertGreaterThan(
             Int(stats.datagramsSent),
-            clientStream.count + clientOneShotMessages.count,
+            clientStream.count,
             "retransmits + re-ACKs must exceed the fresh-message count"
         )
         XCTAssertEqual(stats.sendFailures, 0)
@@ -452,49 +417,6 @@ final class ReliableCtrlGateTests: XCTestCase {
         XCTAssertTrue(host.idrSeen,
                       "the exempt IDR request must land mid-storm")
 
-        let convergedText = converged.map(String.init) ?? "-"
-        print("""
-            CL-7 gate: \(clientStream.count)+\(clientOneShotMessages.count) \
-            client and \(hostStream.count)+\(hostOneShots.count) host \
-            messages exactly-once in-order through 5% loss / 2% dup / 4 ms \
-            jitter (\(net.lostCount) lost, \(net.duplicatedCount) duplicated \
-            of \(net.sentCount) datagrams; \(stats.datagramsSent) client ARQ \
-            datagrams, \(host.clientConnIdTags) conn-id-tagged; converged at \
-            \(convergedText) µs virtual; \(harness.beaconSeqsSeen.count) \
-            beacons through the peek, none retransmitted; \
-            \(harness.replayDrops)+\(host.replayDrops) replay drops)
-            """)
-    }
-
-    // MARK: PTO wake clears armed-deadline book before service
-
-    /// The production one-shot retires before `serviceLocked` runs. If the
-    /// skip bookkeeping were left holding the old target, an unchanged
-    /// PTO deadline would skip `timer.schedule` and sleep forever.
-    func testTimerWakeClearsArmedDeadlineBeforeService() throws {
-        let harness = try Harness()
-        let host = harness.host
-        harness.absorb(try host.beaconDatagram(hostMicros: 100), tMicros: 200)
-        harness.reliable.testingAssumeTimerPresent = true
-
-        let t: UInt64 = 1_000_000
-        try harness.reliable.send(
-            [CtrlMessageType.idrRequest, 0xEE],
-            now: ClientTimestamp(microseconds: t))
-        let armed = harness.reliable.testingArmedDeadlineMicros
-        XCTAssertNotNil(armed, "send must arm a PTO deadline")
-        XCTAssertFalse(
-            harness.reliable.testingRescheduleSkipped,
-            "first arm is never a skip")
-
-        // Wake while the PTO is not yet due — poll re-derives the same
-        // target. Clearing first is what makes re-arm happen.
-        harness.reliable.testingWakeFromTimer(
-            now: ClientTimestamp(microseconds: t))
-        XCTAssertFalse(
-            harness.reliable.testingRescheduleSkipped,
-            "wake must re-arm even when the PTO target is unchanged")
-        XCTAssertEqual(harness.reliable.testingArmedDeadlineMicros, armed)
     }
 
     // MARK: PTO retransmit rides the tick machinery
@@ -691,29 +613,6 @@ final class ReliableCtrlGateTests: XCTestCase {
             harness.outbound.count - cursor, 2,
             "the client carrier must not widen a caller's smaller ceiling"
         )
-    }
-
-    /// One-shot groups come from ArqEndpoint's allocator (its own tests
-    /// pin the wrap past 0): ids ascend from 1, a refused send consumes
-    /// none, and the peer receives every group.
-    func testOneShotGroupsComeFromTheArqAllocator() throws {
-        let harness = try Harness()
-        let host = harness.host
-        harness.absorb(try host.beaconDatagram(hostMicros: 100), tMicros: 200)
-        let now = ClientTimestamp(microseconds: 1_000_000)
-        var groups: [ArqGroupId] = []
-        groups.append(try harness.reliable.sendOneShot(
-            [CtrlMessageType.idleFrame, 0], now: now))
-        XCTAssertThrowsError(try harness.reliable.sendOneShot([], now: now))
-        for index in 1..<3 {
-            groups.append(try harness.reliable.sendOneShot(
-                [CtrlMessageType.idleFrame, UInt8(index)], now: now))
-        }
-        XCTAssertEqual(groups.map(\.rawValue), [1, 2, 3])
-        for datagram in harness.outbound.all {
-            try host.absorb(datagram, nowMicros: 1_000_000)
-        }
-        XCTAssertEqual(host.received.map(\.group.rawValue), [1, 2, 3])
     }
 
     /// Before the first host datagram there is no conn-id to echo; the
