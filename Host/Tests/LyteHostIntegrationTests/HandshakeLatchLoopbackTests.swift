@@ -14,7 +14,7 @@ final class HandshakeLatchLoopbackTests: XCTestCase {
     func testAHandshakeAfterASpoofedFirstArrivalStillEstablishes() throws {
         let hostStatic = NoiseKeyPair.generate()
         let wire = try SessionWire(
-            listener: HostListener(port: 0), peer: nil,
+            listener: HostListener(port: 0),
             rateBitsPerSecond: 1_000_000)
         defer { wire.shutdown(reason: .shuttingDown, lingerSeconds: 0) }
 
@@ -45,7 +45,7 @@ final class HandshakeLatchLoopbackTests: XCTestCase {
         let listener = try HostListener(port: 0)
         let port = lyte_netio_local_port(listener.netio)
         let wire = try SessionWire(
-            listener: listener, peer: nil, rateBitsPerSecond: 1_000_000)
+            listener: listener, rateBitsPerSecond: 1_000_000)
         defer { wire.shutdown(reason: .shuttingDown, lingerSeconds: 0) }
 
         // A message 1 observed from an earlier dial, replayed from
@@ -76,7 +76,7 @@ final class HandshakeLatchLoopbackTests: XCTestCase {
     func testAnAnswerNobodyConfirmsIsDiscardedAfterTheRetransmitSpan() throws {
         let hostStatic = NoiseKeyPair.generate()
         let wire = try SessionWire(
-            listener: HostListener(port: 0), peer: nil,
+            listener: HostListener(port: 0),
             rateBitsPerSecond: 1_000_000)
         defer { wire.shutdown(reason: .shuttingDown, lingerSeconds: 0) }
         let replayer = try LoopbackDialer(
@@ -98,7 +98,7 @@ final class HandshakeLatchLoopbackTests: XCTestCase {
     func testAFirstDialWhoseEarlyAnswersAreLostStillEstablishes() throws {
         let hostStatic = NoiseKeyPair.generate()
         let wire = try SessionWire(
-            listener: HostListener(port: 0), peer: nil,
+            listener: HostListener(port: 0),
             rateBitsPerSecond: 1_000_000)
         defer { wire.shutdown(reason: .shuttingDown, lingerSeconds: 0) }
         let client = try LoopbackDialer(
@@ -128,7 +128,7 @@ final class HandshakeLatchLoopbackTests: XCTestCase {
         let port = lyte_netio_local_port(listener.netio)
 
         let first = try SessionWire(
-            listener: listener, peer: nil, rateBitsPerSecond: 1_000_000)
+            listener: listener, rateBitsPerSecond: 1_000_000)
         let client = try LoopbackDialer(
             port: port, hostStaticPublicKey: hostStatic.publicKey)
         try client.dial()
@@ -142,7 +142,7 @@ final class HandshakeLatchLoopbackTests: XCTestCase {
         first.release()
 
         let second = try SessionWire(
-            listener: listener, peer: nil, rateBitsPerSecond: 1_000_000)
+            listener: listener, rateBitsPerSecond: 1_000_000)
         defer { second.shutdown(reason: .shuttingDown, lingerSeconds: 0) }
         usleep(50_000)
         client.drain() // session one's words, and its teardown

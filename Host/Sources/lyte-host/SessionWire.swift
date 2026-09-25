@@ -92,16 +92,13 @@ final class SessionWire {
     /// (message 1, a migrated client's new path) and carries every
     /// explicitly addressed datagram.
     private let listenNetio: OpaquePointer
-    /// The listening socket's owner: the service's shared listener, or a
-    /// private one on a kernel-assigned port for a wire-out run.
+    /// The listening socket's owner, shared by every session of the run.
     private let listener: HostListener
     /// The media sockets (SO_REUSEPORT members of the listening port,
     /// connected to the client's primary tuple; nil until it is known):
     /// video at SO_PRIORITY 4, control and audio at 6.
     private var videoNetio: OpaquePointer?
     private var latencyNetio: OpaquePointer?
-    /// wire-out mode: only this peer may complete a handshake.
-    private let requiredPeer: (host: String, port: UInt16)?
     private let handshakeWitness: FileHandle? = {
         guard let path = ProcessInfo.processInfo.environment[
             "LYTE_HANDSHAKE_WITNESS_JSONL"] else { return nil }
@@ -435,14 +432,8 @@ final class SessionWire {
     /// The derived freeze budget in force (ms).
     var repairBudgetMS: UInt64 { session.repairFreezeBudgetNS / 1_000_000 }
 
-    /// - Parameters:
-    ///   - listener: the service's listening socket (nil = open one on a
-    ///     kernel-assigned port, requires `peer`).
-    ///   - peer: optional pre-connected far end; Noise message 1 must
-    ///     still arrive from it before the session is established.
     init(
-        listener: HostListener?,
-        peer: (host: String, port: UInt16)?,
+        listener: HostListener,
         rateBitsPerSecond: Int,
         capabilities: Capabilities = .wireDefault,
         allowedClientStatics: [[UInt8]]? = nil,
@@ -451,8 +442,6 @@ final class SessionWire {
         onPairingEvent: @escaping (PairingResponderService.Event) -> Void
             = { _ in }
     ) throws {
-        precondition(listener != nil || peer != nil,
-                     "a session needs a port to listen on or a peer")
         // Nothing may throw past thread.start() below: the drain thread
         // would be left holding a deinit'd `self`.
         self.rateBitsPerSecond = rateBitsPerSecond
@@ -462,10 +451,8 @@ final class SessionWire {
         self.pairing = pairing
         self.onPairingEvent = onPairingEvent
 
-        self.requiredPeer = peer
-        let listening = try listener ?? HostListener(port: 0)
-        self.listener = listening
-        listenNetio = listening.netio
+        self.listener = listener
+        listenNetio = listener.netio
         wakeFd = lyte_netio_wake_new()
         guard wakeFd >= 0 else {
             throw HostError("sender wake eventfd failed (errno \(errno))")
@@ -487,9 +474,6 @@ final class SessionWire {
             slots.append(slot)
         }
         recvSlots = slots
-        if let peer {
-            try connectMedia(host: peer.host, port: peer.port)
-        }
 
         // The sender thread comes up parked and holds `self` until
         // stopped (shutdown does). SessionWire is cross-thread by design
@@ -691,7 +675,7 @@ final class SessionWire {
     /// unread; a newer one that authenticates replaces an unconfirmed
     /// session; an unconfirmed session whose lifecycle closes is
     /// discarded. So no replayed, spoofed or abandoned message 1 can lock
-    /// out the next client. A wire-out host accepts only its peer.
+    /// out the next client.
     ///
     /// `idle` runs off the lock once per wait pass: every 10 ms while no
     /// handshake is answered, every 2 ms while an answered one's timers
@@ -803,9 +787,8 @@ final class SessionWire {
         }
         if let message1 {
             // Shape check, not trust: the gate still authenticates.
-            let plausible = admitsPeer(tuple)
-                && (message1 == session?.answeredMessage1
-                    || !listener.answeredHandshakes.contains(message1: message1))
+            let plausible = message1 == session?.answeredMessage1
+                || !listener.answeredHandshakes.contains(message1: message1)
             traceAwaitDatagram(datagram, from: tuple, accepted: plausible)
             guard plausible else { return }
         }
@@ -876,13 +859,6 @@ final class SessionWire {
 
     /// The session port (the kernel's pick when bound to port 0).
     var localPort: UInt16 { lyte_netio_local_port(listenNetio) }
-
-    /// wire-out mode admits only its configured peer.
-    private func admitsPeer(_ tuple: FourTuple) -> Bool {
-        guard let requiredPeer else { return true }
-        return tuple.remoteAddress == requiredPeer.host
-            && tuple.remotePort == requiredPeer.port
-    }
 
     /// One receive batch from every socket, or only from the sockets in
     /// `readable` (fds that polled readable; nil = all). A closed session

@@ -19,7 +19,7 @@ final class HeldInputReleaseLoopbackTests: XCTestCase {
         throws {
         let hostStatic = NoiseKeyPair.generate()
         let wire = try SessionWire(
-            listener: HostListener(port: 0), peer: nil,
+            listener: HostListener(port: 0),
             rateBitsPerSecond: 1_000_000)
         let injector = HoldingInjector()
         injector.hold(keys: [Self.keyA, Self.leftShift], buttons: [Self.leftButton])

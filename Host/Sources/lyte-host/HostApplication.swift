@@ -1,7 +1,7 @@
 // lyte-host: the direct eye (pixel observation + EGL blit + native VAAPI
-// encode, HostEye) → an Annex-B file, or a Lyte-UDP session
-// (`--wire-out HOST:PORT` or `--wire-listen PORT`): the Noise IK responder
-// handshake, then capture → encode → VideoChannel → seal → Pacer → CNetIO.
+// encode, HostEye) → an Annex-B file, or Lyte-UDP sessions on
+// `--wire-listen PORT`: the Noise IK responder handshake, then capture →
+// encode → VideoChannel → seal → Pacer → CNetIO.
 
 import CNetIO
 import Foundation
@@ -25,8 +25,6 @@ struct Options {
     /// session; a --wire-listen run without it is the service.
     var seconds = 5.0
     var secondsGiven = false
-    /// Run a session to this peer instead of writing the file.
-    var wireOut: (host: String, port: UInt16)?
     /// Bind here and await a connecting client.
     var wireListen: UInt16?
     /// The session rate ceiling: the estimator moves the pacer inside
@@ -93,17 +91,6 @@ struct Options {
                 }
                 opts.seconds = v
                 opts.secondsGiven = true
-            case "--wire-out":
-                i += 1
-                guard i < args.count else {
-                    throw HostError("--wire-out needs HOST:PORT")
-                }
-                let parts = args[i].split(separator: ":")
-                guard parts.count == 2, let port = UInt16(parts[1]), port > 0
-                else {
-                    throw HostError("--wire-out needs HOST:PORT (got \(args[i]))")
-                }
-                opts.wireOut = (String(parts[0]), port)
             case "--wire-rate-mbps":
                 i += 1
                 guard i < args.count, let v = Double(args[i]), v > 0,
@@ -199,7 +186,7 @@ struct Options {
             case "--help", "-h":
                 print("""
                 usage: lyte-host [--out PATH] [--seconds N]
-                                 [--wire-out HOST:PORT] [--wire-rate-mbps N]
+                                 [--wire-listen PORT] [--wire-rate-mbps N]
                 Captures the desktop with the direct eye (GPU pixel observation
                 + EGL blit, needs CAP_SYS_ADMIN) and encodes native VAAPI
                 HEVC — to Annex-B PATH (default /tmp/lyte-h0a.hevc) or a
@@ -211,11 +198,6 @@ struct Options {
                                     clock, keeping the eye, listening
                                     socket, advertisement and input
                                     devices up between them
-                  --wire-out H:P    session mode: Noise IK handshake with
-                                    the client at HOST:PORT, then sealed
-                                    Lyte-UDP shards (packetizer + FEC +
-                                    pacer + 1 Hz beacon, per-packet TOS)
-                                    instead of writing the file
                   --wire-listen P   session mode, but bind port P and adopt
                                     whichever client completes message 1
                                     (advertises _lyte._udp via Avahi)
@@ -408,9 +390,8 @@ final class SessionHost {
     let clipboardLeaf: MutterClipboardLeaf?
     let declared: Capabilities
     let gateConfig: HandshakeGate.Config
-    /// The listening socket (nil for a wire-out run, whose wire opens
-    /// its own on a kernel-assigned port).
-    let listener: HostListener?
+    /// The listening socket, bound once for the whole run.
+    let listener: HostListener
     let injector: InputInjector?
     /// Releasing it withdraws the record.
     private let advertiser: AvahiAdvertiser?
@@ -420,7 +401,7 @@ final class SessionHost {
     /// a fresh shell that reloads the persisted resume states.
     private var firstBulkShell: BulkReceiveShell?
 
-    init(opts: Options, screen: DirectScreenSource) throws {
+    init(opts: Options, port: UInt16, screen: DirectScreenSource) throws {
         self.opts = opts
         if opts.pair, opts.requirePaired {
             throw HostError("""
@@ -575,18 +556,16 @@ final class SessionHost {
             at \(opts.cookieEnter) msg1/s, clears at \(opts.cookieExit)/s)
             """)
 
-        // Binds once for the whole run, so the port stays bound between
-        // sessions.
-        listener = try opts.wireListen.map { try HostListener(port: $0) }
+        listener = try HostListener(port: port)
 
         // Up before the first handshake wait; the advertiser re-files
         // the record whenever it is withdrawn (`serviceOrgans`).
-        advertiser = opts.advertise ? opts.wireListen.map {
-            AvahiAdvertiser(
-                port: $0,
+        advertiser = opts.advertise
+            ? AvahiAdvertiser(
+                port: port,
                 staticPublicKey: keys.publicKey,
                 interfaceName: opts.advertiseInterface)
-        } : nil
+            : nil
 
         // Injection is ready before any client connects and stays up
         // across sessions; each session's end releases what it held.
@@ -656,11 +635,8 @@ static func run(arguments: [String]) throws {
             """)
     }
 
-    let sessionMode = opts.wireOut != nil || opts.wireListen != nil
-    let peer = opts.wireOut.map { "\($0.host):\($0.port)" }
-        ?? "listen :\(opts.wireListen ?? 0)"
-    let destination = sessionMode
-        ? "lyte-udp session (\(peer), noise)" : opts.outputPath
+    let destination = opts.wireListen
+        .map { "lyte-udp sessions on :\($0) (noise)" } ?? opts.outputPath
     print("""
         lyte-host — direct eye (GPU pixel observation + EGL blit) → \
         native VAAPI (our pens) → \(destination)
@@ -675,15 +651,14 @@ static func run(arguments: [String]) throws {
     let screen = try DirectEyeLeg.openScreen(
         device: opts.drmDevice)
     let eye = WarmEye(screen: screen)
-    guard sessionMode else {
+    guard let port = opts.wireListen else {
         try runFileLeg(opts, screen: screen, eye: eye)
         return
     }
 
-    let host = try SessionHost(opts: opts, screen: screen)
+    let host = try SessionHost(opts: opts, port: port, screen: screen)
     defer { host.stop() }
     var loop = HostServiceLoop(posture: HostServiceLoop.posture(
-        listening: opts.wireListen != nil,
         secondsGiven: opts.secondsGiven,
         pairing: opts.pair,
         seconds: opts.seconds))
@@ -746,7 +721,6 @@ static func serveSession(
     // is the session's first IDR.
     let w = try SessionWire(
         listener: host.listener,
-        peer: opts.wireOut,
         rateBitsPerSecond: Int(opts.wireRateMbps * 1_000_000),
         capabilities: host.declared,
         allowedClientStatics: host.allowed,
@@ -758,12 +732,11 @@ static func serveSession(
     w.inputInjector = host.injector
     let awaitOutcome: SessionWire.ClientAwaitOutcome
     do {
-        // A listening service waits forever; a wire-out run gives its
-        // peer two minutes. Unattached, the clipboard leaf still serves
-        // host pastes and drains host copies unread.
+        // Unattached, the clipboard leaf still serves host pastes and
+        // drains host copies unread.
         awaitOutcome = try w.awaitClient(
             hostStatic: host.hostStatic,
-            timeoutSeconds: opts.wireListen != nil ? nil : 120,
+            timeoutSeconds: nil,
             stopRequested: { lyteTerminationRequested != 0 },
             idle: { host.serviceOrgans() })
     } catch {

@@ -13,7 +13,7 @@ final class SenderSyscallLoopbackTests: XCTestCase {
     func testAStreamingSendersPassesSpendFewSyscalls() throws {
         let hostStatic = NoiseKeyPair.generate()
         let wire = try SessionWire(
-            listener: HostListener(port: 0), peer: nil,
+            listener: HostListener(port: 0),
             rateBitsPerSecond: 100_000_000)
         let client = try LoopbackDialer(
             port: wire.localPort, hostStaticPublicKey: hostStatic.publicKey)
