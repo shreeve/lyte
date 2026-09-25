@@ -92,8 +92,10 @@ public struct BrowserVideoPlayout {
     private var decodeOrder = Deque<UInt32>()
     private var scheduledByFrame: [UInt32: ScheduledFrame] = [:]
     private var pendingEarly: ScheduledFrame?
-    /// Frames the handoff dropped after the page was told to present them.
-    private var abandoned: [UInt32] = []
+    /// Frames the handoff dropped after the page was told to present them,
+    /// newest `decodeBacklogCapacity` kept for a page that stops draining.
+    private var abandoned = BoundedRing<UInt32>(
+        capacity: BrowserVideoPlayout.decodeBacklogCapacity)
     public private(set) var counters = Counters()
 
     /// The IDR-request episode, the native requester's policy.
@@ -198,8 +200,8 @@ public struct BrowserVideoPlayout {
     /// Frames the page was told to present that will never be due: close
     /// them wherever they are. Each is reported once.
     public mutating func takeAbandoned() -> [UInt32] {
-        defer { abandoned.removeAll(keepingCapacity: true) }
-        return abandoned
+        defer { abandoned.removeAll() }
+        return Array(abandoned)
     }
 
     /// Pops the next handoff entry whose Conductor beat is due. Frames late

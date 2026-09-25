@@ -243,6 +243,35 @@ final class BrowserPlayoutTests: XCTestCase {
         }
     }
 
+    /// A page that stops presenting (a hidden tab) never drains abandoned
+    /// frames; every keyframe's chain overflowing the handoff abandons
+    /// another dozen, and the list must stay bounded, newest kept.
+    func testAbandonedFramesStayBoundedWhenThePageStopsPresenting() throws {
+        let corpus = try Self.corpus()
+        var playout = BrowserVideoPlayout()
+        var packetizer = VideoPacketizer()
+        let total = 13 * 13
+        for index in 0..<total {
+            let idr = index % 13 == 0
+            let shards = try packetizer.packetize(
+                frame: idr ? corpus[0] : corpus[1 + index % (corpus.count - 1)],
+                frameNumber: FrameNumber(rawValue: UInt32(index)),
+                captureTimestamp: HostTimestamp(
+                    microseconds: 1_000_000 + UInt64(index) * Self.beatMicros),
+                isIDR: idr,
+                regime: .clean)
+            for shard in shards {
+                _ = playout.ingestShard(
+                    envelope: shard.envelope, payload: shard.payload[...],
+                    arrivalMicroseconds: 1_000_000 + UInt64(index) * Self.beatMicros)
+            }
+        }
+        let abandoned = playout.takeAbandoned()
+        XCTAssertEqual(abandoned.count, BrowserVideoPlayout.decodeBacklogCapacity)
+        XCTAssertEqual(abandoned, abandoned.sorted())
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(abandoned.last), UInt32(total - 13))
+    }
+
     /// When the page stops taking decode input, the backlog is bounded; the
     /// evicted frame takes its dependents with it, so the page is never
     /// handed a frame whose reference is gone, and the loss asks for an IDR.
