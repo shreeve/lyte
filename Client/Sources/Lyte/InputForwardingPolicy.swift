@@ -14,9 +14,12 @@ import LyteWire
 ///   back until a forwarded key or button joins it, then sent first; a ⌘
 ///   used only for local (AppKit) shortcuts is never seen by the host, so
 ///   no lone Super tap (GNOME's Activities toggle) leaks out.
-/// - ⌘ with a letter is the Mac's Control chord: the host gets Ctrl with
-///   the letter and whatever else is held (⌘⇧Z is Ctrl+Shift+Z), never
-///   Super. The Ctrl it adds is released with the last such letter.
+/// - ⌘ with a key that types a letter is the Mac's Control chord: the
+///   host gets Ctrl with the key and whatever else is held (⌘⇧Z is
+///   Ctrl+Shift+Z), never Super. The Ctrl it adds is released with the
+///   last such key, or ahead of any other key or click; a physical Ctrl
+///   pressed meanwhile takes it over, so the host sees one press and one
+///   release.
 /// - Local shortcuts stay local; auto-repeats never cross (the wire has
 ///   no repeat value — a down without its up wedges a key), and a key the
 ///   host holds never becomes a local shortcut by repeating under ⌘.
@@ -49,8 +52,6 @@ struct InputForwardingPolicy {
     static let plainModifierKeycodes: Set<UInt32> = [42, 54, 29, 97, 56, 100]
     /// KEY_LEFTCTRL and KEY_RIGHTCTRL.
     static let controlKeycodes: Set<UInt32> = [29, 97]
-    /// The evdev positions of the letters A–Z.
-    static let letterKeycodes = Set<UInt32>(16...25).union(30...38).union(44...50)
 
     /// evdev key codes the host believes are down.
     private(set) var heldKeys: Set<UInt32> = []
@@ -60,8 +61,8 @@ struct InputForwardingPolicy {
     private(set) var pendingCommandKeys: Set<UInt32> = []
     /// The evdev code each forwarded press went out as, by Mac key code.
     private(set) var pressedAs: [UInt16: UInt32] = [:]
-    /// Letters held in a ⌘ chord that pressed KEY_LEFTCTRL on the host
-    /// for them; that Ctrl is down exactly while this is non-empty.
+    /// Keys held in a ⌘ chord that pressed KEY_LEFTCTRL on the host for
+    /// them; that Ctrl is down exactly while this is non-empty.
     private(set) var controlChordKeys: Set<UInt32> = []
     /// The host's Caps Lock as this capture has driven it.
     private(set) var hostCapsLock = false
@@ -72,12 +73,13 @@ struct InputForwardingPolicy {
     /// A key press. `mapped` is nil for keys with no evdev mapping;
     /// `macKeyCode` names the physical key, so its release can reuse this
     /// press's code; `isLocalShortcut` says an app shortcut owns this ⌘
-    /// chord; `modifiersDown` is the event's own record of which plain
+    /// chord; `typesLetter` says the key types a letter in the current
+    /// layout; `modifiersDown` is the event's own record of which plain
     /// modifier keys are physically down and `capsLockOn` its Caps Lock
     /// state (nil when unknown).
     mutating func keyDown(
         _ mapped: UInt32?, macKeyCode: UInt16? = nil, isRepeat: Bool,
-        commandHeld: Bool, isLocalShortcut: Bool,
+        commandHeld: Bool, isLocalShortcut: Bool, typesLetter: Bool = false,
         modifiersDown: Set<UInt32>? = nil, capsLockOn: Bool? = nil
     ) -> Verdict {
         let code = macKeyCode.flatMap { pressedAs[$0] } ?? mapped
@@ -87,10 +89,11 @@ struct InputForwardingPolicy {
         if commandHeld, isLocalShortcut { return .passThrough }
         if isRepeat { return .swallow }
         guard let code else { return .passThrough }
-        var sends: [InputEvent.Body] = []
+        let controlChord = commandHeld && typesLetter
+        var sends = controlChord ? [] : releaseChordControl()
         if let capsLockOn { sends += syncCapsLock(capsLockOn) }
         sends += resyncModifiers(modifiersDown)
-        if commandHeld, Self.letterKeycodes.contains(code) {
+        if controlChord {
             sends += holdBackCommand()
             // A physically held Ctrl already makes the chord.
             if !controlChordKeys.isEmpty
@@ -135,6 +138,12 @@ struct InputForwardingPolicy {
                 if !heldKeys.contains(code) { pendingCommandKeys.insert(code) }
                 return .swallow
             }
+            // Already down for a ⌘ chord: the physical key takes it over.
+            if code == 29, !controlChordKeys.isEmpty {
+                controlChordKeys.removeAll()
+                heldKeys.insert(code)
+                return .swallow
+            }
             heldKeys.insert(code)
             return Verdict(
                 sends: [.keyKeycode(keycode: code, pressed: true)],
@@ -165,7 +174,7 @@ struct InputForwardingPolicy {
         guard let code else { return .passThrough }
         if pressed {
             guard onVideo else { return .passThrough }
-            var sends = resyncModifiers(modifiersDown)
+            var sends = releaseChordControl() + resyncModifiers(modifiersDown)
             sends += resyncCommand(held: commandHeld)
             sends.append(.pointerButton(button: code, pressed: true))
             heldButtons.insert(code)
@@ -183,18 +192,23 @@ struct InputForwardingPolicy {
     /// Focus loss or teardown: release everything the host holds. A ⌘
     /// that was never forwarded is simply forgotten.
     mutating func releaseAll() -> [InputEvent.Body] {
-        let keys = heldKeys.sorted() + (controlChordKeys.isEmpty ? [] : [29])
-        let sends = keys.map {
+        let sends = heldKeys.sorted().map {
             InputEvent.Body.keyKeycode(keycode: $0, pressed: false)
-        } + heldButtons.sorted().map {
+        } + releaseChordControl() + heldButtons.sorted().map {
             InputEvent.Body.pointerButton(button: $0, pressed: false)
         }
         heldKeys.removeAll()
-        controlChordKeys.removeAll()
         heldButtons.removeAll()
         pendingCommandKeys.removeAll()
         pressedAs.removeAll()
         return sends
+    }
+
+    /// The release of the Ctrl a ⌘ chord added, if it is down.
+    private mutating func releaseChordControl() -> [InputEvent.Body] {
+        guard !controlChordKeys.isEmpty else { return [] }
+        controlChordKeys.removeAll()
+        return [.keyKeycode(keycode: 29, pressed: false)]
     }
 
     /// The Caps Lock tap that brings the host to the Mac's state `on`.

@@ -137,6 +137,29 @@ final class VideoRendererHandoffTests: XCTestCase {
         XCTAssertFalse(stats.recoveryOutstanding)
     }
 
+    /// That IRAP itself fails to decode, and nothing follows it (a static
+    /// screen): the handoff still notices and asks for another.
+    func testAGateClosingIrapThatFailsToDecodeStillAsksForAnother() throws {
+        let rig = Rig(deadlineMicroseconds: 20_000)
+        let core = rig.bindCore()
+        try rig.submit(frame: 1, idr: true, bytes: corpus[0])
+        rig.barrier()
+        rig.renderer.failed = true
+        rig.renderer.failsDecoding = true
+        try rig.submit(frame: 2, idr: true, bytes: corpus[0])
+        rig.barrier()
+        XCTAssertEqual(rig.peer.gateClosingIraps, [2])
+
+        let deadline = Date().addingTimeInterval(2)
+        while rig.peer.recoveryRequests.isEmpty, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.005)
+        }
+        rig.barrier()
+        XCTAssertEqual(rig.peer.recoveryRequests.map(\.cause), [.rendererFailure])
+        XCTAssertEqual(rig.renderer.recoveryFlushes, 2)
+        XCTAssertEqual(core.idrStats.requestsSent, 1)
+    }
+
     /// A P-frame that trips the flush asks once, the handoff's own demand
     /// is not echoed back into it, and the next IRAP closes both gates.
     func testAPFrameThatTripsAFlushAsksOnceAndTheNextIrapHeals() throws {
@@ -452,12 +475,19 @@ private final class ScriptedRenderer: VideoRendererPort, @unchecked Sendable {
     private var _recoveryFlushes = 0
     private var _plainFlushes = 0
     private var _failed = false
+    private var _failsDecoding = false
     var holdRecoveryFlush = false
 
     /// Reports `.failed` until the next recovery flush, as AVFoundation does.
     var failed: Bool {
         get { lock.withLock { _failed } }
         set { lock.withLock { _failed = newValue } }
+    }
+
+    /// Every enqueued sample fails to decode.
+    var failsDecoding: Bool {
+        get { lock.withLock { _failsDecoding } }
+        set { lock.withLock { _failsDecoding = newValue } }
     }
 
     var ready: Bool {
@@ -514,7 +544,10 @@ private final class ScriptedRenderer: VideoRendererPort, @unchecked Sendable {
     var error: (any Error)? { nil }
 
     func enqueue(_ sampleBuffer: CMSampleBuffer) {
-        lock.withLock { enqueued.append(sampleBuffer) }
+        lock.withLock {
+            enqueued.append(sampleBuffer)
+            if _failsDecoding { _failed = true }
+        }
     }
 
     func flush() {

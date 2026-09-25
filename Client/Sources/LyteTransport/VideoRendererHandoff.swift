@@ -429,6 +429,13 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
                           frame: pending.unit.frameNumber.rawValue,
                           isRandomAccess: true, reset: resetAttached)
                     activeRecoveryEpisode = nil
+                    // If this IRAP fails to decode, a static screen sends
+                    // nothing more to notice it: drain once more, reading
+                    // the renderer's status, after a queued frame's
+                    // deadline.
+                    queue.asyncAfter(deadline: .now() + .microseconds(
+                        Int(policy.config.deadlineMicroseconds))
+                    ) { [weak self] in self?.drainReady() }
                 }
             }
             finish(

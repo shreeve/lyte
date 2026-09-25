@@ -4,8 +4,8 @@
 // ARQ datagram is sealed with a fresh channel seq and tagged with the
 // connection ID once the host has taught it (never invented). The endpoint
 // packs once at the conn-id-tagged plaintext ceiling, so the shell never
-// re-cuts ARQ output. The PTO timer re-arms after every pass; tests drive
-// `tick(now:)` instead.
+// re-cuts ARQ output. The PTO timer re-arms after every pass; `tick(now:)`
+// runs the same pass in virtual time.
 
 import LyteIO
 import Dispatch

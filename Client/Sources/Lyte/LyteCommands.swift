@@ -50,12 +50,13 @@ struct LyteCommands: Commands {
             Divider()
 
             // Present but disabled without capability key 10. The check
-            // mark is the live consent state.
+            // mark is the live consent state. ⌘⇧C and ⌘⇧V stay the host's
+            // (a Linux terminal's copy and paste).
             Toggle("Share Clipboard", isOn: Binding(
                 get: { connection?.clipboardSharing ?? false },
                 set: { connection?.setClipboardSharing($0) }
             ))
-            .keyboardShortcut("c", modifiers: [.command, .shift])
+            .keyboardShortcut("c", modifiers: [.command, .option])
             .disabled(connection?.negotiated.clipboardText != true)
 
             // Gated on keys 10 and 12; images move only while "Share
