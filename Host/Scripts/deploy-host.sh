@@ -37,6 +37,7 @@ fail() {
 }
 
 host_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source "$host_root/Scripts/lib/host-common.sh"
 mode=deploy
 restart=0
 keep=5
@@ -76,14 +77,6 @@ previous_file="$data_root/previous"
 bin_dir="$HOME/.local/bin"
 link="$bin_dir/lyte-host"
 companions=(lyte-audio-check)
-
-sha256_file() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$1" | awk '{print $1}'
-    else
-        shasum -a 256 "$1" | awk '{print $1}'
-    fi
-}
 
 # The id of the version a symlink target names, or failure when the target
 # is anything but <versions>/<12 hex>/lyte-host.
@@ -145,11 +138,7 @@ flip_link() {
     local id="$1" current="$2" temporary="$bin_dir/.lyte-host.tmp.$$"
     rm -f -- "$temporary"
     ln -s "$versions/$id/lyte-host" "$temporary"
-    if mv --version >/dev/null 2>&1; then
-        mv -f -T "$temporary" "$link"
-    else
-        mv -f "$temporary" "$link" # BSD mv: the link never names a directory
-    fi
+    mv_no_target_dir -f "$temporary" "$link" # the link never names a directory
     if [[ -n "$current" && "$current" != "$id" ]]; then
         write_previous "$current"
     fi
@@ -213,17 +202,13 @@ deploy() {
         [[ "$(sha256_file "$staging/lyte-host")" == "$sha" ]] \
             || fail "copied binary does not match $source/lyte-host"
         chmod 0755 "$staging"
-        # -T: a version that appeared meanwhile (a concurrent deploy of
-        # the same binary) fails the rename instead of receiving the
-        # staging directory inside it.
-        if mv --version >/dev/null 2>&1; then
-            mv -T "$staging" "$versions/$id" \
-                || fail "version $id appeared during this deploy"
-        else
-            [[ ! -e "$versions/$id" ]] \
-                || fail "version $id appeared during this deploy"
-            mv "$staging" "$versions/$id"
-        fi
+        # A version that appeared meanwhile (a concurrent deploy of the
+        # same binary) fails the rename instead of receiving the staging
+        # directory inside it.
+        [[ ! -e "$versions/$id" ]] \
+            || fail "version $id appeared during this deploy"
+        mv_no_target_dir "$staging" "$versions/$id" \
+            || fail "version $id appeared during this deploy"
         trap - EXIT
         echo "deployed version $id from $source"
     fi

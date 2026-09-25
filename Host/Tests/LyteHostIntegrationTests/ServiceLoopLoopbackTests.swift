@@ -22,7 +22,7 @@ final class ServiceLoopLoopbackTests: XCTestCase {
 
         for round in 1...3 {
             let wire = try SessionWire(
-                listener: listener, peer: nil, rateBitsPerSecond: 1_000_000)
+                listener: listener, rateBitsPerSecond: 1_000_000)
             XCTAssertEqual(wire.localPort, port, "round \(round)")
             do {
                 let client = try LoopbackDialer(

@@ -46,6 +46,31 @@ final class InputBoundaryTests: XCTestCase {
                 y: -Int(InputCoordinate.pixelLimit)))
     }
 
+    /// A code the devices never declared would do nothing in the kernel
+    /// yet land in the held-input book, which a peer could grow forever.
+    func testOnlyCodesTheVirtualDevicesDeclareAreInjected() {
+        for code: UInt32 in [0, 256, 1000, 0x110, 0x1001E] {
+            XCTAssertNil(UinputInjector.leafCall(
+                for: .keyKeycode(keycode: code, pressed: true)), "\(code)")
+        }
+        for code: UInt32 in [30, 0x10F, 0x118, 0x10110] {
+            XCTAssertNil(UinputInjector.leafCall(
+                for: .pointerButton(button: code, pressed: true)), "\(code)")
+        }
+        for code: UInt32 in [1, 255] {
+            XCTAssertEqual(
+                UinputInjector.leafCall(
+                    for: .keyKeycode(keycode: code, pressed: false)),
+                .key(code, pressed: false))
+        }
+        for code: UInt32 in [0x110, 0x117] {
+            XCTAssertEqual(
+                UinputInjector.leafCall(
+                    for: .pointerButton(button: code, pressed: true)),
+                .key(code, pressed: true))
+        }
+    }
+
     func testOrdinaryValuesRoundToTheLeafsUnits() {
         XCTAssertEqual(
             UinputInjector.leafCall(

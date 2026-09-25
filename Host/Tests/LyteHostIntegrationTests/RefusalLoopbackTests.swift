@@ -34,7 +34,7 @@ final class RefusalLoopbackTests: XCTestCase {
     func testAClientThatExitsEndsTheSessionOnceItsPathGoesSilent() throws {
         let hostStatic = NoiseKeyPair.generate()
         let wire = try SessionWire(
-            listener: HostListener(port: 0), peer: nil,
+            listener: HostListener(port: 0),
             rateBitsPerSecond: 1_000_000)
         defer { wire.shutdown(reason: .shuttingDown, lingerSeconds: 0) }
 

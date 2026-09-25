@@ -1,5 +1,3 @@
-#if os(Linux)
-
 import Foundation
 import Glibc
 @testable import HostEye
@@ -51,5 +49,3 @@ final class ScanoutIdentityTests: XCTestCase {
         return fd
     }
 }
-
-#endif

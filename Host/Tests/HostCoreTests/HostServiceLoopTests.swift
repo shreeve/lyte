@@ -10,24 +10,16 @@ final class HostServiceLoopTests: XCTestCase {
     func testOnlyAnUnclockedNonPairingListenerIsTheService() {
         typealias Loop = HostServiceLoop
         XCTAssertEqual(
-            Loop.posture(listening: true, secondsGiven: false,
-                         pairing: false, seconds: 5),
+            Loop.posture(secondsGiven: false, pairing: false, seconds: 5),
             .service)
         XCTAssertEqual(
-            Loop.posture(listening: true, secondsGiven: true,
-                         pairing: false, seconds: 7_200),
+            Loop.posture(secondsGiven: true, pairing: false, seconds: 7_200),
             .singleSession(seconds: 7_200),
             "an explicit --seconds keeps the bounded one-session run")
         XCTAssertEqual(
-            Loop.posture(listening: true, secondsGiven: false,
-                         pairing: true, seconds: 5),
+            Loop.posture(secondsGiven: false, pairing: true, seconds: 5),
             .singleSession(seconds: 5),
             "one PIN, one session")
-        XCTAssertEqual(
-            Loop.posture(listening: false, secondsGiven: false,
-                         pairing: false, seconds: 5),
-            .singleSession(seconds: 5),
-            "wire-out and file mode serve once")
     }
 
     func testTheServiceHasNoClockAndServesSessionAfterSession() {

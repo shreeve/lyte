@@ -14,15 +14,12 @@ import Foundation
 /// polling readers, no ordering requirement beyond eventually.
 nonisolated(unsafe) var lyteTerminationRequested: Int32 = 0
 
-/// The status a second termination signal exits with: the shell's
-/// 128 + signal number, so a supervisor reads SIGTERM (143) as SIGTERM
-/// and SIGINT (130) as SIGINT.
-func lyteSignalExitStatus(_ signal: Int32) -> Int32 { 128 + signal }
-
-/// Arms SIGINT/SIGTERM → the graceful-exit flag; a second one → _exit.
+/// Arms SIGINT/SIGTERM → the graceful-exit flag; a second one exits at
+/// once with the shell's 128 + signal status, so a supervisor reads
+/// SIGTERM (143) as SIGTERM and SIGINT (130) as SIGINT.
 func lyteInstallTerminationHandlers() {
     let handler: @convention(c) (Int32) -> Void = { signal in
-        if lyteTerminationRequested != 0 { _exit(lyteSignalExitStatus(signal)) }
+        if lyteTerminationRequested != 0 { _exit(128 + signal) }
         lyteTerminationRequested = 1
     }
     signal(SIGINT, handler)

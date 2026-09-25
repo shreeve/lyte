@@ -63,53 +63,40 @@ let toneHz: Float = 440
 
 func parseArgs(_ argv: [String]) throws -> Options {
     var opts = Options()
-    var i = 0
-    while i < argv.count {
-        let a = argv[i]
+    var rest = argv[...]
+    /// The value after `flag` through `parse`, or a reason naming it.
+    func value<T>(
+        _ flag: String, _ want: String, _ parse: (String) -> T? = { $0 }
+    ) throws -> T {
+        guard let raw = rest.popFirst(), let value = parse(raw) else {
+            throw PeerError.message("\(flag) needs \(want)")
+        }
+        return value
+    }
+    while let a = rest.popFirst() {
         switch a {
         case "--listen":
-            i += 1
-            guard i < argv.count, let p = UInt16(argv[i]), p != 41151 else {
-                throw PeerError.message("--listen needs a fresh 41xxx port (not 41151)")
+            opts.listenPort = try value(a, "a fresh 41xxx port (not 41151)") {
+                UInt16($0).flatMap { $0 != 41151 ? $0 : nil }
             }
-            opts.listenPort = p
         case "--bind":
-            i += 1
-            guard i < argv.count else { throw PeerError.message("--bind needs a host") }
-            opts.bindHost = argv[i]
+            opts.bindHost = try value(a, "a host")
         case "--pin":
-            i += 1
-            guard i < argv.count else { throw PeerError.message("--pin needs digits") }
-            opts.pin = argv[i]
+            opts.pin = try value(a, "digits")
         case "--seconds":
-            i += 1
-            guard i < argv.count, let s = Double(argv[i]), s > 0,
-                  s.isFinite else {
-                throw PeerError.message("--seconds needs a positive number")
+            opts.seconds = try value(a, "a positive number") {
+                Double($0).flatMap { $0 > 0 && $0.isFinite ? $0 : nil }
             }
-            opts.seconds = s
         case "--sessions":
-            i += 1
-            guard i < argv.count, let n = Int(argv[i]), n >= 0 else {
-                throw PeerError.message("--sessions needs a count (0 = unlimited)")
+            opts.sessions = try value(a, "a count (0 = unlimited)") {
+                Int($0).flatMap { $0 >= 0 ? $0 : nil }
             }
-            opts.sessions = n
         case "--meta-out":
-            i += 1
-            guard i < argv.count else { throw PeerError.message("--meta-out needs a path") }
-            opts.metaOut = argv[i]
+            opts.metaOut = try value(a, "a path")
         case "--host-static-hex":
-            i += 1
-            guard i < argv.count else {
-                throw PeerError.message("--host-static-hex needs hex")
-            }
-            opts.hostStaticHex = argv[i]
+            opts.hostStaticHex = try value(a, "hex")
         case "--emit-corpus":
-            i += 1
-            guard i < argv.count else {
-                throw PeerError.message("--emit-corpus needs a directory")
-            }
-            opts.emitCorpusDir = argv[i]
+            opts.emitCorpusDir = try value(a, "a directory")
         case "--help", "-h":
             print(
                 """
@@ -137,24 +124,14 @@ func parseArgs(_ argv: [String]) throws -> Options {
         default:
             throw PeerError.message("unknown argument: \(a)")
         }
-        i += 1
     }
     return opts
 }
 
 func loadCorpusFrames(from directory: String) throws -> [[UInt8]] {
-    let names = [
-        "frame-000-idr.annexb",
-        "frame-001-p.annexb",
-        "frame-002-p.annexb",
-        "frame-003-p.annexb",
-        "frame-004-p.annexb",
-        "frame-005-p.annexb",
-        "frame-006-p.annexb",
-        "frame-007-p.annexb",
-        "frame-008-p.annexb",
-        "frame-009-p.annexb",
-    ]
+    let names = (0..<10).map {
+        "frame-00\($0)-\($0 == 0 ? "idr" : "p").annexb"
+    }
     var frames: [[UInt8]] = []
     for name in names {
         let path = (directory as NSString).appendingPathComponent(name)
@@ -360,9 +337,8 @@ final class PeerSession {
         // sidecar/Chrome datagram path and FEC-impossibles.
         // Control-only keeps the native-like ceiling.
         let pace = corpusFrames == nil ? 50_000_000 : 3_000_000
-        // The browser sends no chan-3 feedback, so the default 350 ms
-        // blackout would freeze video after ~3 frames and suppress the
-        // rest of the corpus. Widen silence for corpus emit only.
+        // Corpus runs widen the blackout clocks so no silence freezes
+        // video before every corpus frame has left.
         let lifecycle = corpusFrames == nil
             ? SessionMachineConfig()
             : SessionMachineConfig(
@@ -716,9 +692,6 @@ final class ControlPeer {
     let corpusFrames: [[UInt8]]?
 
     init(opts: Options) throws {
-        if opts.listenPort == 41151 {
-            throw PeerError.message("refusing standing host UDP 41151")
-        }
         hostStatic = try loadHostStatic(hex: opts.hostStaticHex)
         var rng = SystemRandomNumberGenerator()
         pin = opts.pin ?? PairingResponderService.mintPin(using: &rng)

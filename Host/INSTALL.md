@@ -91,10 +91,10 @@ What it does, idempotently:
   the ambient capability.
 - `daemon-reload` + `enable`. Start is left to you.
 
-Before the first start, replace the seed's `--advertise-interface
-CHANGE_ME` in `~/.config/lyte/host.conf` with the interface clients reach;
-the app finds hosts only over mDNS on that interface.
-
+Before the first start, check the seeded `--advertise-interface` in
+`~/.config/lyte/host.conf`: the installer seeds the first wired (`en*` or
+`eth*`) interface it finds and prints it, or leaves `CHANGE_ME` when it
+finds none. Clients find the host over mDNS only on that interface.
 
 ```sh
 sudo systemctl start lyte-host

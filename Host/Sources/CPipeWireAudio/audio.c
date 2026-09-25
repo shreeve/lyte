@@ -82,6 +82,14 @@ static void set_err(char *err, size_t errlen, const char *fmt, ...)
     va_end(ap);
 }
 
+/* Writes the default-sink key as `json`, or clears it when NULL (then
+   wireplumber recomputes the default from priorities). */
+static void set_default_sink(struct lyte_pw_audio *a, const char *json)
+{
+    pw_metadata_set_property(a->metadata, PW_ID_CORE, DEFAULT_SINK_KEY,
+                             json ? "Spa:String:JSON" : NULL, json);
+}
+
 /* --- core events: the roundtrip's done edge + loud protocol errors --- */
 
 static void on_core_done(void *data, uint32_t id, int seq)
@@ -306,9 +314,7 @@ static int setup_virtual_sink(struct lyte_pw_audio *a,
 
     /* The default switch: the configured key is wireplumber's user
        preference — exactly what wpctl set-default writes. */
-    pw_metadata_set_property(a->metadata, PW_ID_CORE, DEFAULT_SINK_KEY,
-                             "Spa:String:JSON",
-                             "{\"name\":\"" LYTE_SINK_NAME "\"}");
+    set_default_sink(a, "{\"name\":\"" LYTE_SINK_NAME "\"}");
     a->default_switched = 1;
     if (roundtrip(a) < 0)
         goto core_error;
@@ -593,15 +599,9 @@ int lyte_pw_audio_restore(lyte_pw_audio *a, char *err, size_t errlen)
         return -1;
     }
     /* Put the original preference back — or clear the key when none
-       existed (wireplumber then recomputes from priorities, which is
-       the pre-Lyte state by definition). The roundtrip flushes the
-       change before anything is torn down. */
-    if (a->have_saved_default)
-        pw_metadata_set_property(a->metadata, PW_ID_CORE, DEFAULT_SINK_KEY,
-                                 "Spa:String:JSON", a->saved_default);
-    else
-        pw_metadata_set_property(a->metadata, PW_ID_CORE, DEFAULT_SINK_KEY,
-                                 NULL, NULL);
+       existed, which is the pre-Lyte state by definition. The roundtrip
+       flushes the change before anything is torn down. */
+    set_default_sink(a, a->have_saved_default ? a->saved_default : NULL);
     a->restored = 1;
     /* A core error mid-flush leaves the metadata as the server saw it
        last; the next-start sweep is the backstop. */
@@ -666,12 +666,7 @@ int lyte_pw_audio_restore_default(const char *saved_json,
         goto out;
     }
 
-    if (saved_json)
-        pw_metadata_set_property(a->metadata, PW_ID_CORE, DEFAULT_SINK_KEY,
-                                 "Spa:String:JSON", saved_json);
-    else
-        pw_metadata_set_property(a->metadata, PW_ID_CORE, DEFAULT_SINK_KEY,
-                                 NULL, NULL);
+    set_default_sink(a, saved_json);
     if (roundtrip(a) < 0) {
         set_err(err, errlen, "%s", a->error);
         goto out;

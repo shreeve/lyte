@@ -7,8 +7,6 @@
 // mismatch. Needs read access to /dev/input/event* (run under sudo;
 // the injection itself needs only the udev-rule ACL on /dev/uinput).
 
-#if os(Linux)
-
 import CInputUinput
 import Foundation
 import Glibc
@@ -203,7 +201,3 @@ mouse.expect([
 lyte_uinput_free(handle)
 print("uinput-check: ALL PASS")
 exit(0)
-
-#else
-print("uinput-check: Linux only")
-#endif

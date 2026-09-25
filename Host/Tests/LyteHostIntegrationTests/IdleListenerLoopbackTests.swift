@@ -10,7 +10,7 @@ final class IdleListenerLoopbackTests: XCTestCase {
     func testAnIdleListenerPassesAtTheJanitorCadence() throws {
         let hostStatic = NoiseKeyPair.generate()
         let wire = try SessionWire(
-            listener: HostListener(port: 0), peer: nil,
+            listener: HostListener(port: 0),
             rateBitsPerSecond: 1_000_000)
         defer { wire.shutdown(reason: .shuttingDown, lingerSeconds: 0) }
         var passes = 0
@@ -24,7 +24,7 @@ final class IdleListenerLoopbackTests: XCTestCase {
     func testADialStillWakesTheListenerAtOnce() throws {
         let hostStatic = NoiseKeyPair.generate()
         let wire = try SessionWire(
-            listener: HostListener(port: 0), peer: nil,
+            listener: HostListener(port: 0),
             rateBitsPerSecond: 1_000_000)
         defer { wire.shutdown(reason: .shuttingDown, lingerSeconds: 0) }
         let client = try LoopbackDialer(
