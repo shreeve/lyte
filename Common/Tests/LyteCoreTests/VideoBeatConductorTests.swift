@@ -500,6 +500,37 @@ final class VideoBeatConductorTests: XCTestCase {
                       "the grid must not chatter at the ceiling: \(gaps)")
     }
 
+    /// horizon: a capture stamp leaping an hour ahead (a host clock fault)
+    /// moves the mapped capture with it, so no ceiling cut can reach the
+    /// part. It must still present within the cue and cushion ceilings of
+    /// its arrival, and the stream continues a beat apart on time.
+    func testFarFutureCaptureReanchorsNearItsArrival() {
+        var policy = VideoBeatConductor()
+        let lead = policy.config.maximumCueMicroseconds
+            + UInt64(policy.config.maximumCushionBeats) * period
+        var capture: UInt64 = 1_000_000
+        var arrival = capture + 9_000
+        var previous: UInt64 = 0
+        for index in 0..<120 {
+            if index == 60 { capture += 3_600_000_000 }
+            let decision = policy.schedule(
+                mappedCaptureMicroseconds: capture,
+                arrivalMicroseconds: arrival,
+                sourceCaptureMicroseconds: capture)
+            XCTAssertLessThanOrEqual(
+                decision.presentationMicroseconds, arrival + lead,
+                "frame \(index)")
+            if index > 60 {
+                XCTAssertEqual(
+                    decision.presentationMicroseconds - previous, period)
+                XCTAssertEqual(decision.latenessMicroseconds, 0)
+            }
+            previous = decision.presentationMicroseconds
+            capture += period
+            arrival += period
+        }
+    }
+
     // MARK: - Clock skew
 
     private struct SkewOutcome {
