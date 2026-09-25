@@ -47,48 +47,6 @@ import LyteWireTestKit
 
 final class RoamingClientGateTests: XCTestCase {
 
-    // MARK: The pairing store keys by identity, not address
-
-    func testPinnedHostStoreKeysByIdentityNotAddress() throws {
-        let keys = NoiseKeyPair.generate()
-        let pkh = LyteDiscovery.publicKeyHash(
-            ofStaticPublicKey: keys.publicKey)
-
-        var store = PinnedHostStore()
-        XCTAssertTrue(store.pin(
-            staticPublicKey: keys.publicKey, name: "pup",
-            address: "10.0.0.60", port: 41_161,
-            pairedAt: "2026-07-28T00:00:00Z"),
-            "first pin is fresh")
-        store.setStartHostAudioMuted(publicKeyHash: pkh, muted: false)
-        store.setShareClipboard(publicKeyHash: pkh, share: true)
-
-        // The host MOVED: re-pinning the same key at a new address is
-        // a dial-hint refresh, never a new trust event — and the
-        // per-host preferences survive verbatim.
-        XCTAssertFalse(store.pin(
-            staticPublicKey: keys.publicKey, name: "pup",
-            address: "172.16.4.9", port: 41_161,
-            pairedAt: "2026-07-28T01:00:00Z"),
-            "same key = same host, not a fresh pin")
-        XCTAssertEqual(store.hosts.count, 1,
-                       "one identity, one entry — the address is a hint")
-        let moved = try XCTUnwrap(store.host(publicKeyHash: pkh))
-        XCTAssertEqual(moved.address, "172.16.4.9")
-        XCTAssertEqual(moved.startHostAudioMuted, false,
-                       "the start-audible opt-out survived the move")
-        XCTAssertEqual(moved.shareClipboard, true,
-                       "the clipboard consent survived the move")
-        // Recognition is the identity lookup — the new address and
-        // the stable NAME both resolve; the STALE address resolves to
-        // nothing (it is a hint, not an identity, and it moved).
-        XCTAssertNotNil(store.host(address: "172.16.4.9"))
-        XCTAssertEqual(store.host(address: "pup")?.address, "172.16.4.9",
-                       "the name still finds the host, wherever it lives")
-        XCTAssertNil(store.host(address: "10.0.0.60"),
-                     "the old address is nobody now")
-    }
-
     // MARK: The platform path trigger rule
 
     func testPathTriggerRule() {

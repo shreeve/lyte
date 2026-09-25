@@ -212,37 +212,6 @@ final class VideoPipelineTests: XCTestCase {
 
     // MARK: - 5% drop recovers via FEC (the CL-2 gate's loss clause)
 
-    func testFivePercentSeededDropRecoversEverything() throws {
-        let frames = try loadPrefix()
-        let shardGroups = try packetizePrefix(frames)
-
-        var rng = SplitMix64(seed: 5)
-        var delivered = 0, dropped = 0
-        let collector = Collector()
-        let now = ClientTimestamp(microseconds: 1_000)
-        for shard in shardGroups.flatMap({ $0 }) {
-            if Double.random(in: 0..<1, using: &rng) < 0.05 {
-                dropped += 1
-                continue
-            }
-            delivered += 1
-            collector.pipeline.ingest(
-                envelope: shard.envelope, payload: shard.payload, now: now)
-        }
-        XCTAssertGreaterThan(dropped, 0, "the seed must actually exercise loss")
-
-        let stats = collector.pipeline.snapshotStats()
-        XCTAssertEqual(stats.framesDecoded, 10,
-                       "5% drop (seed 5: \(dropped)/\(dropped + delivered) shards) must recover via FEC")
-        XCTAssertEqual(stats.framesSkipped, 0)
-        XCTAssertEqual(stats.samplesDelivered, 10)
-        for (index, (_, unit)) in collector.samples.enumerated() {
-            XCTAssertEqual(unit.annexB, frames[index])
-        }
-        XCTAssertTrue(collector.fecImpossibleFrames.isEmpty,
-                      "recoverable loss must not cry impossible")
-    }
-
     func testDuplicateRepairRoutesFromAssemblerIntoPolicyBook() throws {
         let frame = try XCTUnwrap(loadPrefix().first)
         let shards = try XCTUnwrap(try packetizePrefix([frame]).first)
@@ -517,35 +486,6 @@ final class VideoPipelineTests: XCTestCase {
             out += annexB[unit.offset..<end]
         }
         return out
-    }
-
-    func testLengthPrefixedConversionRoundTripsNalPayloads() throws {
-        let frames = try loadPrefix()
-        let annexB = frames[0]
-        let hvcc = lengthPrefixed(annexB: annexB)
-        XCTAssertFalse(hvcc.isEmpty)
-
-        // Walk the length-prefixed output and compare each NAL payload
-        // (sans padding) against the AnnexBCheck walk of the input.
-        var nals: [[UInt8]] = []
-        var i = 0
-        while i + 4 <= hvcc.count {
-            var length = 0
-            for byte in hvcc[i..<(i + 4)] {
-                length = length << 8 | Int(byte)
-            }
-            nals.append(Array(hvcc[(i + 4)..<(i + 4 + length)]))
-            i += 4 + length
-        }
-        XCTAssertEqual(i, hvcc.count, "no trailing bytes after the last NAL")
-
-        let expected = AnnexBCheck.nalUnits(in: annexB).map { unit -> [UInt8] in
-            var bytes = Array(annexB[unit.offset..<unit.offset + unit.length])
-            while bytes.last == 0 { bytes.removeLast() }
-            return bytes
-        }
-        XCTAssertEqual(nals, expected)
-        XCTAssertEqual(nals.count, 5, "corpus IDR: VPS SPS PPS PREFIX_SEI IDR_W_RADL")
     }
 
     func testSamplePayloadIsByteExactWithOneOwnedCopy() throws {

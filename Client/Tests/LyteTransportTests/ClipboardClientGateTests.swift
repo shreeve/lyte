@@ -158,7 +158,6 @@ final class ClipboardClientGateTests: XCTestCase {
         XCTAssertEqual(counters.clipboardLoopSuppressed, 2)
         XCTAssertEqual(counters.clipboardDropsLoud, 0)
         XCTAssertEqual(counters.malformedReliableMessages, 0)
-
     }
 
     // MARK: Consent gates both directions, live toggle
@@ -209,7 +208,6 @@ final class ClipboardClientGateTests: XCTestCase {
             try ClipboardAnnounce(text: "host reply").encode(), nowMicros: t)
         try harness.settle(t: &t)
         XCTAssertEqual(harness.clipboardEvents, ["host reply"])
-
     }
 
     // MARK: The rule-3 gate + the ceiling
@@ -275,53 +273,6 @@ final class ClipboardClientGateTests: XCTestCase {
         )
         try negotiated.settle(t: &t2)
         XCTAssertEqual(negotiatedHost.setsReceived, [])
-
-    }
-
-    // MARK: The per-host consent default's plumbing
-
-    func testPinnedHostClipboardPreferencePlumbing() throws {
-        // A pre-CL-15 file (no shareClipboard key) decodes unchanged:
-        // the preference reads nil, meaning OFF.
-        let keyHex = String(repeating: "ab", count: 32)
-        let legacy = Data("""
-        {"hosts":{"deadbeef":{"name":"pup","address":"10.0.0.249",\
-        "port":41000,"staticPublicKeyHex":"\(keyHex)",\
-        "pairedAt":"2026-07-21T09:00:00Z","startHostAudioMuted":true}}}
-        """.utf8)
-        let store = try JSONDecoder().decode(PinnedHostStore.self, from: legacy)
-        XCTAssertNil(store.hosts["deadbeef"]?.shareClipboard)
-        XCTAssertEqual(store.hosts["deadbeef"]?.startHostAudioMuted, true,
-                       "CL-13's preference decodes beside the new one")
-
-        // Round trip through the real save/load path, preference set.
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("cl15-pinned-\(UUID().uuidString).json")
-        defer { try? FileManager.default.removeItem(at: url) }
-        var live = PinnedHostStore()
-        let staticKey = (0..<32).map { UInt8($0) }
-        live.pin(staticPublicKey: staticKey, name: "pup",
-                 address: "10.0.0.249", port: 41_000,
-                 pairedAt: "2026-07-22T15:00:00Z")
-        let pkh = try XCTUnwrap(live.hosts.keys.first)
-        XCTAssertTrue(live.setShareClipboard(publicKeyHash: pkh, share: true))
-        try live.save(to: url)
-        let reloaded = PinnedHostStore.load(from: url)
-        XCTAssertEqual(
-            reloaded.host(publicKeyHash: pkh)?.shareClipboard, true)
-
-        // A re-pair refreshes dial hints WITHOUT resetting consent.
-        var repaired = reloaded
-        repaired.pin(staticPublicKey: staticKey, name: "pup",
-                     address: "10.0.0.77", port: 41_131,
-                     pairedAt: "2026-07-23T09:00:00Z")
-        XCTAssertEqual(repaired.hosts[pkh]?.address, "10.0.0.77")
-        XCTAssertEqual(repaired.hosts[pkh]?.shareClipboard, true,
-                       "a re-pair is a trust event, not a settings reset")
-
-        // The setter refuses hashes it has never pinned.
-        XCTAssertFalse(repaired.setShareClipboard(
-            publicKeyHash: "0000", share: true))
     }
 }
 

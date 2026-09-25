@@ -1,4 +1,5 @@
 import Foundation
+import LyteClientCore
 import LyteWire
 import XCTest
 @testable import LyteTransport
@@ -53,5 +54,71 @@ final class PinnedHostStoreRoundTripTests: XCTestCase {
         XCTAssertNotNil(loaded.unpin(publicKeyHash: pkh))
         XCTAssertNil(loaded.unpin(publicKeyHash: pkh))
         XCTAssertTrue(loaded.hosts.isEmpty)
+    }
+
+    /// Every per-host preference is optional (a file written before it
+    /// decodes unchanged), survives save/load and a re-pin at a new
+    /// address, stores its default as nil, and refuses an unpinned hash.
+    func testPreferencesSurviveReloadAndRepinAndRefuseUnknownHosts() throws {
+        let legacy = Data("""
+        {"hosts":{"deadbeef":{"name":"pup","address":"10.0.0.249",\
+        "port":41000,"staticPublicKeyHex":"\(String(repeating: "ab", count: 32))",\
+        "pairedAt":"2026-07-21T09:00:00Z"}}}
+        """.utf8)
+        var old = try XCTUnwrap(JSONDecoder().decode(
+            PinnedHostStore.self, from: legacy).hosts["deadbeef"])
+        XCTAssertNil(old.startHostAudioMuted)
+        XCTAssertNil(old.shareClipboard)
+        XCTAssertNil(old.shareClipboardImages)
+        XCTAssertEqual(old.sessionChromaTier, .good)
+        // Only an explicit false opts out of starting the host muted.
+        for (stored, posture) in [(nil, .hostMuted), (true, .hostMuted),
+                                  (false, .hostAudible)]
+            as [(Bool?, HostAudioRoutingMode)] {
+            old.startHostAudioMuted = stored
+            XCTAssertEqual(old.sessionStartHostAudioRouting, posture)
+        }
+        // A tier this build cannot declare reads as the default.
+        for stored in ["ultra", "better"] {
+            old.chromaTier = stored
+            XCTAssertEqual(old.sessionChromaTier, .good)
+        }
+
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pinned-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let key = (0..<32).map { UInt8($0) }
+        let pkh = LyteDiscovery.publicKeyHash(ofStaticPublicKey: key)
+        var store = PinnedHostStore()
+        store.pin(staticPublicKey: key, name: "pup", address: "10.0.0.60",
+                  port: 41_161, pairedAt: "2026-07-28T00:00:00Z")
+        XCTAssertTrue(store.setStartHostAudioMuted(publicKeyHash: pkh, muted: false))
+        XCTAssertTrue(store.setShareClipboard(publicKeyHash: pkh, share: true))
+        XCTAssertTrue(store.setShareClipboardImages(publicKeyHash: pkh, share: true))
+        XCTAssertTrue(store.setChromaTier(publicKeyHash: pkh, tier: .best))
+        try store.save(to: url)
+
+        var moved = PinnedHostStore.load(from: url)
+        XCTAssertFalse(moved.pin(
+            staticPublicKey: key, name: "pup", address: "172.16.4.9",
+            port: 41_161, pairedAt: "2026-07-28T01:00:00Z"))
+        let host = try XCTUnwrap(moved.host(publicKeyHash: pkh))
+        XCTAssertEqual(host.address, "172.16.4.9")
+        XCTAssertNil(moved.host(address: "10.0.0.60"), "the address was a hint")
+        XCTAssertEqual(host.sessionStartHostAudioRouting, .hostAudible)
+        XCTAssertEqual(host.shareClipboard, true)
+        XCTAssertEqual(host.shareClipboardImages, true)
+        XCTAssertEqual(host.sessionChromaTier, .best)
+
+        XCTAssertTrue(moved.setShareClipboardImages(publicKeyHash: pkh, share: false))
+        XCTAssertTrue(moved.setChromaTier(publicKeyHash: pkh, tier: .good))
+        XCTAssertNil(moved.host(publicKeyHash: pkh)?.shareClipboardImages)
+        XCTAssertNil(moved.host(publicKeyHash: pkh)?.chromaTier)
+
+        let stranger = String(repeating: "0", count: 64)
+        XCTAssertFalse(moved.setStartHostAudioMuted(publicKeyHash: stranger, muted: true))
+        XCTAssertFalse(moved.setShareClipboard(publicKeyHash: stranger, share: true))
+        XCTAssertFalse(moved.setShareClipboardImages(publicKeyHash: stranger, share: true))
+        XCTAssertFalse(moved.setChromaTier(publicKeyHash: stranger, tier: .best))
     }
 }

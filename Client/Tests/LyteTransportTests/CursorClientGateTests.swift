@@ -126,7 +126,6 @@ final class CursorClientGateTests: XCTestCase {
         XCTAssertEqual(harness.cursorEvents, [])
         XCTAssertEqual(
             harness.core.snapshotCounters().malformedReliableMessages, 2)
-
     }
 }
 

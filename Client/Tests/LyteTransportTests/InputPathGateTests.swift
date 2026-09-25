@@ -548,7 +548,6 @@ final class InputPathGateTests: XCTestCase {
             }
             return out
         }
-
     }
 
     // MARK: - The client harness (real core, no socket)
@@ -802,6 +801,5 @@ final class InputPathGateTests: XCTestCase {
         XCTAssertGreaterThan(counters.inputEchoMessagesReceived, 0)
         XCTAssertTrue(harness.core.isReliableQuiescent,
                       "all input + echo traffic acknowledged both ways")
-
     }
 }

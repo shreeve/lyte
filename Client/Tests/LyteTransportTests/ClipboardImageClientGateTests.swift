@@ -227,7 +227,6 @@ final class ClipboardImageClientGateTests: XCTestCase {
         try harness.settle(t: &t)
         XCTAssertEqual(host.applied.count, 1,
                        "the echo must never return as new cargo")
-
     }
 
     // MARK: The consent tier gates both directions, live
@@ -284,7 +283,6 @@ final class ClipboardImageClientGateTests: XCTestCase {
         try harness.settle(t: &t)
         XCTAssertEqual(host.applied.count, 1)
         XCTAssertEqual(host.applied.first?.data, image)
-
     }
 
     // MARK: Rule 3 per lane: 10∧12 vs 11 stay independent
@@ -379,7 +377,6 @@ final class ClipboardImageClientGateTests: XCTestCase {
         )
         try harness2.settle(t: &t2)
         XCTAssertEqual(imagesHost.applied.count, 1)
-
     }
 
     // MARK: Hashing cost stays off refused images and the lock
@@ -506,60 +503,6 @@ final class ClipboardImageClientGateTests: XCTestCase {
         XCTAssertEqual(harness.imageApplies.first?.data, hostImage)
         XCTAssertEqual(probe.absorbedSizes, [65_536, 65_536, 18_928])
         XCTAssertEqual(probe.callCount, 1)
-    }
-
-    // MARK: The per-host images-rung default's plumbing
-
-    func testPinnedHostImagesPreferencePlumbing() throws {
-        // A pre-P-1 file (no shareClipboardImages key) decodes
-        // unchanged: the rung reads nil, meaning text-only.
-        let keyHex = String(repeating: "ab", count: 32)
-        let legacy = Data("""
-        {"hosts":{"deadbeef":{"name":"pup","address":"10.0.0.249",\
-        "port":41000,"staticPublicKeyHex":"\(keyHex)",\
-        "pairedAt":"2026-07-21T09:00:00Z","shareClipboard":true}}}
-        """.utf8)
-        let store = try JSONDecoder().decode(
-            PinnedHostStore.self, from: legacy)
-        XCTAssertNil(store.hosts["deadbeef"]?.shareClipboardImages)
-        XCTAssertEqual(store.hosts["deadbeef"]?.shareClipboard, true,
-                       "CL-15's preference decodes beside the new one")
-
-        // Round trip through the real save/load path, rung set.
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("p1-pinned-\(UUID().uuidString).json")
-        defer { try? FileManager.default.removeItem(at: url) }
-        var live = PinnedHostStore()
-        let staticKey = (0..<32).map { UInt8($0) }
-        live.pin(staticPublicKey: staticKey, name: "pup",
-                 address: "10.0.0.249", port: 41_000,
-                 pairedAt: "2026-07-22T15:00:00Z")
-        let pkh = try XCTUnwrap(live.hosts.keys.first)
-        XCTAssertTrue(live.setShareClipboardImages(
-            publicKeyHash: pkh, share: true))
-        try live.save(to: url)
-        let reloaded = PinnedHostStore.load(from: url)
-        XCTAssertEqual(
-            reloaded.host(publicKeyHash: pkh)?.shareClipboardImages, true)
-
-        // Text-only writes nil — the default posture keeps the file
-        // clean (the setShareClipboard precedent).
-        var cleaned = reloaded
-        XCTAssertTrue(cleaned.setShareClipboardImages(
-            publicKeyHash: pkh, share: false))
-        XCTAssertNil(cleaned.hosts[pkh]?.shareClipboardImages)
-
-        // A re-pair refreshes dial hints WITHOUT resetting the rung.
-        var repaired = reloaded
-        repaired.pin(staticPublicKey: staticKey, name: "pup",
-                     address: "10.0.0.77", port: 41_131,
-                     pairedAt: "2026-07-23T09:00:00Z")
-        XCTAssertEqual(repaired.hosts[pkh]?.shareClipboardImages, true,
-                       "a re-pair is a trust event, not a settings reset")
-
-        // The setter refuses hashes it has never pinned.
-        XCTAssertFalse(repaired.setShareClipboardImages(
-            publicKeyHash: "0000", share: true))
     }
 }
 

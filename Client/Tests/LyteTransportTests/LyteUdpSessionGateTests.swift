@@ -494,7 +494,8 @@ final class LyteUdpSessionGateTests: XCTestCase {
     // MARK: - The 0x15 codec mirror (bytes pinned before promotion)
 
     /// Declaration is dialect, not consent: the core declares every
-    /// optional key it speaks, and both clipboard rungs start off.
+    /// optional key it speaks, both clipboard rungs start off, and the
+    /// session asks for the host's speakers muted.
     func testCoreDefaultDeclaresEveryKeyItSpeaksWithConsentOff() {
         let defaults = LyteUdpSessionCoreConfig()
         XCTAssertTrue(defaults.capabilities.hostAudioRouting)
@@ -504,6 +505,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
         XCTAssertTrue(defaults.capabilities.cursorShape)
         XCTAssertFalse(defaults.shareClipboard)
         XCTAssertFalse(defaults.shareClipboardImages)
+        XCTAssertEqual(defaults.desiredHostAudioRouting, .hostMuted)
     }
 
     // MARK: - The full lifecycle gate
