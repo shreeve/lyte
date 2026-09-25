@@ -658,7 +658,6 @@ final class BulkReceiveGateTests: XCTestCase {
     ) throws -> (host: HostSessionHarness, client: BulkClient) {
         let host = HostSessionHarness(
             config: SessionConfig(
-                crypto: .noise(hostStatic: NoiseKeyPair.generate()),
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: 1 << 62,
                 capabilities: hostCapabilities
@@ -671,7 +670,6 @@ final class BulkReceiveGateTests: XCTestCase {
             openChannels: [.ctrl, .bulkTransfer]
         ))
         client.peer.bulkArq = ArqEndpoint(channel: .bulkTransfer)
-        XCTAssertEqual(host.session.phase, .established)
         return (host, client)
     }
 

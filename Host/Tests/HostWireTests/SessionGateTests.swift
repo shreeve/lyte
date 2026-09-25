@@ -145,33 +145,22 @@ final class SessionGateTests: XCTestCase {
 
         let hostStatic = NoiseKeyPair.generate()
         var sent: [VideoChannelDatagram] = []
-        let session = Session(
-            config: SessionConfig(
-                crypto: .noise(hostStatic: hostStatic),
-                rateBitsPerSecond: Self.rateBPS
-            ),
-            clientTuple: Self.tupleA,
-            now: 0,
-            rng: SplitMix64(seed: 0x7)
-        ) { sent.append($0) }
-        XCTAssertEqual(session.phase, .awaitingHandshake)
-
-        // Video may not flow before the handshake.
-        XCTAssertThrowsError(try session.ingestVideoFrame(
-            frames[0], captureTimestampMicroseconds: 1,
-            isKeyframe: true, now: 0
-        )) {
-            XCTAssertEqual($0 as? SessionError, .notEstablished)
-        }
 
         // ── Handshake: msg1 in, msg2 + session-start beacon out ────────
         var client = try LoopbackClient(hostStaticPublicKey: hostStatic.publicKey)
         let message1 = try client.message1Datagram(clientMicros: 3_500_000)
         let t1Beacon0: UInt64 = 1_000_000
-        let handshakeEvents = session.receive(
-            message1, from: Self.tupleA, now: 0, hostMicroseconds: t1Beacon0
-        )
-        XCTAssertEqual(session.phase, .established)
+        var acceptor = HandshakeAcceptor(
+            config: HandshakeAcceptor.Config(hostStatic: hostStatic))
+        guard case .authenticated(let handshake) = acceptor.accept(
+            message1[...], from: Self.tupleA, now: 0
+        ).verdict else { return XCTFail("message 1 authenticates") }
+        let (session, handshakeEvents) = try Session.answer(
+            handshake,
+            config: SessionConfig(rateBitsPerSecond: Self.rateBPS),
+            now: 0, hostMicroseconds: t1Beacon0,
+            rng: SplitMix64(seed: 0x7)
+        ) { sent.append($0) }
         XCTAssertEqual(handshakeEvents, [
             .handshakeCompleted(remoteStaticPublicKey: client.staticKeys.publicKey),
             .beaconSent(beaconSeq: 0),
@@ -484,10 +473,9 @@ final class SessionGateTests: XCTestCase {
         var sent: [VideoChannelDatagram] = []
         let session = Session(
             config: SessionConfig(
-                crypto: .testPassthrough,
                 rateBitsPerSecond: Self.rateBPS
             ),
-            clientTuple: Self.tupleA,
+            passthroughTo: Self.tupleA,
             now: 0,
             rng: SplitMix64(seed: 0x22)
         ) { sent.append($0) }
@@ -532,11 +520,10 @@ final class SessionGateTests: XCTestCase {
         var outbox: [VideoChannelDatagram] = []
         let session = Session(
             config: SessionConfig(
-                crypto: .testPassthrough,
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: 1 << 62
             ),
-            clientTuple: Self.tupleA,
+            passthroughTo: Self.tupleA,
             now: 0,
             rng: SplitMix64(seed: 0xEA61),
             sendAccounting: .socketConfirmed
@@ -602,11 +589,10 @@ final class SessionGateTests: XCTestCase {
         var sent: [VideoChannelDatagram] = []
         let session = Session(
             config: SessionConfig(
-                crypto: .testPassthrough,
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: 1 << 62
             ),
-            clientTuple: Self.tupleA,
+            passthroughTo: Self.tupleA,
             now: 0,
             rng: SplitMix64(seed: 0xFEC)
         ) { sent.append($0) }
@@ -774,10 +760,9 @@ final class SessionGateTests: XCTestCase {
     func testKernelPressureFrameShedArmsOneFreshIDR() {
         let session = Session(
             config: SessionConfig(
-                crypto: .testPassthrough,
                 rateBitsPerSecond: Self.rateBPS
             ),
-            clientTuple: Self.tupleA,
+            passthroughTo: Self.tupleA,
             now: 0,
             rng: SplitMix64(seed: 0x51ED)
         ) { _ in }

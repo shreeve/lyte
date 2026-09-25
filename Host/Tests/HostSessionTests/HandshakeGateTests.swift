@@ -82,17 +82,17 @@ final class HandshakeGateTests: XCTestCase {
         let cookie = try RetryCookie.mint(
             clientTuple: Self.tuple, message1: msg1[...],
             now: 1_000, secret: Self.secret)
-        var admits = 0
+        var admits = 0, throttled = 0
         // One second of line-rate replays inside the cookie's lifetime.
         for index in 0..<1_000 {
             let decision = gate.admitMessage1(
                 presentedCookie: cookie[...], clientTuple: Self.tuple, clientAddress: shareKey(Self.tuple),
                 message1: msg1[...], now: 2_000 + UInt64(index) * 1_000_000)
             if decision.admission == .admit { admits += 1 }
+            if decision.admission == .drop(.throttled) { throttled += 1 }
         }
         XCTAssertEqual(admits, 1)
-        XCTAssertEqual(gate.cookiesVerified, 1_000)
-        XCTAssertEqual(gate.cookiesThrottled, 999)
+        XCTAssertEqual(throttled, 999)
     }
 
     /// Distinct verified cookies (one per honest client) spend their own
@@ -243,7 +243,6 @@ final class HandshakeGateTests: XCTestCase {
         XCTAssertEqual(admits, 10, "exactly the burst is admitted")
         XCTAssertEqual(drops, 190)
         XCTAssertFalse(gate.cookieMode)
-        XCTAssertEqual(gate.challengesMinted, 0)
     }
 
     /// The flood detector flips ON at the enter threshold and OFF at the
@@ -314,7 +313,6 @@ final class HandshakeGateTests: XCTestCase {
         guard case .challenge(let cookie) = decision.admission else {
             return XCTFail("a flooded un-cookied msg1 must be challenged")
         }
-        XCTAssertEqual(gate.challengesMinted, 1)
         XCTAssertEqual(cookie.count, RetryCookie.byteCount, "24-byte cookie")
         // The cookie the challenge carries verifies for this exact
         // (tuple, msg1) inside its lifetime.
@@ -347,7 +345,6 @@ final class HandshakeGateTests: XCTestCase {
             presentedCookie: cookie[...], clientTuple: Self.tuple, clientAddress: shareKey(Self.tuple),
             message1: Self.msg1[...], now: 2_000
         ).admission, .admit)
-        XCTAssertEqual(gate.cookiesVerified, 1)
 
         // A tampered cookie drops.
         var forged = cookie
@@ -370,7 +367,6 @@ final class HandshakeGateTests: XCTestCase {
             clientTuple: Array("10.0.0.99:5000".utf8), clientAddress: shareKey(Array("10.0.0.99:5000".utf8)),
             message1: Self.msg1[...], now: 5_000
         ).admission, .drop(.cookieInvalid))
-        XCTAssertEqual(gate.cookiesRejected, 3)
     }
 
     func testPresentedCookieBranchesCarryTheSameExactModeEdge() throws {

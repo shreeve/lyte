@@ -9,63 +9,46 @@ public struct SessionLifecycleVerdict: Sendable {
 
 /// The sans-IO owner of the Host session's lifecycle projection.
 ///
-/// The shared Wire machine owns transition policy. This Host-role lane owns
-/// when that machine exists, converts its microsecond timer into the session's
-/// nanosecond domain, and projects its local freeze/resume actions into video
-/// admission. `Session` retains every external effect: reliable messages,
+/// The shared Wire machine owns transition policy. This Host-role lane
+/// converts its microsecond timer into the session's nanosecond domain and
+/// projects its local freeze/resume actions into video admission. `Session` retains every external effect: reliable messages,
 /// estimator and pacer changes, keyframe causes, counters, and events.
 ///
 /// FROZEN deliberately suppresses video only. Audio remains admitted as the
 /// path probe until the terminal CLOSED state suppresses both media lanes.
 public struct SessionLifecycleLane: Sendable {
-    private let config: SessionMachineConfig
-    private var machine: SessionStateMachine<HostClock>?
+    private var machine: SessionStateMachine<HostClock>
 
     public private(set) var nextDeadlineNanoseconds: UInt64?
 
-    public init(
-        config: SessionMachineConfig,
-        establishedAtNanoseconds: UInt64? = nil
-    ) {
-        self.config = config
-        if let now = establishedAtNanoseconds { establish(at: now) }
-    }
-
-    public var isEstablished: Bool { machine != nil }
-    public var state: SessionState? { machine?.state }
-    public var wireMode: SessionWireMode? { machine?.wireMode }
-    public var isRecovering: Bool { machine?.state == .recovery }
-
-    /// A newly established machine needs one first service pass to project
-    /// its timer. Thereafter only the exact due boundary runs; CLOSED is
-    /// absorbing and owns no timer.
-    public func shouldService(at now: UInt64) -> Bool {
-        guard let machine, machine.state != .closed else { return false }
-        return nextDeadlineNanoseconds.map { now >= $0 } ?? true
-    }
-
-    /// Before establishment neither media lane exists. FROZEN then blocks
-    /// only video; CLOSED blocks both.
-    public var videoSendsSuppressed: Bool {
-        machine == nil || machine?.state == .frozen || machine?.state == .closed
-    }
-
-    public var audioSendsSuppressed: Bool {
-        machine == nil || machine?.state == .closed
-    }
-
-    /// Begins the machine in ACTIVE without inventing a state-change event.
-    /// The first `drive` projects its timer, matching the machine's rule that
-    /// apply/poll service starts only after establishment is complete.
-    public mutating func establish(at now: UInt64) {
-        guard machine == nil else { return }
+    /// Begins the machine in ACTIVE at establishment without inventing a
+    /// state-change event. The first `drive` projects its timer.
+    public init(config: SessionMachineConfig, establishedAt now: UInt64) {
         machine = SessionStateMachine(
             role: .mediaSender,
             config: config,
             now: Self.instant(now)
         )
-        nextDeadlineNanoseconds = nil
     }
+
+    public var state: SessionState { machine.state }
+    public var wireMode: SessionWireMode { machine.wireMode }
+    public var isRecovering: Bool { machine.state == .recovery }
+
+    /// A new machine needs one first service pass to project its timer.
+    /// Thereafter only the exact due boundary runs; CLOSED is absorbing
+    /// and owns no timer.
+    public func shouldService(at now: UInt64) -> Bool {
+        guard machine.state != .closed else { return false }
+        return nextDeadlineNanoseconds.map { now >= $0 } ?? true
+    }
+
+    /// FROZEN blocks only video; CLOSED blocks both.
+    public var videoSendsSuppressed: Bool {
+        machine.state == .frozen || machine.state == .closed
+    }
+
+    public var audioSendsSuppressed: Bool { machine.state == .closed }
 
     /// Applies one input first, then polls timers at the same injected instant.
     /// Freeze/resume actions are consumed into the local projection; all other
@@ -73,17 +56,12 @@ public struct SessionLifecycleLane: Sendable {
     public mutating func drive(
         _ input: SessionInput?, now: UInt64
     ) -> SessionLifecycleVerdict {
-        // Moved out and back so the machine mutates uniquely referenced.
-        guard var current = machine.take() else {
-            return SessionLifecycleVerdict(actions: [], stateChangedTo: nil)
-        }
-        defer { machine = current }
-        let before = current.state
+        let before = machine.state
         var actions: [SessionAction] = []
         if let input {
-            actions += current.apply(input, now: Self.instant(now))
+            actions += machine.apply(input, now: Self.instant(now))
         }
-        let (polled, deadline) = current.poll(now: Self.instant(now))
+        let (polled, deadline) = machine.poll(now: Self.instant(now))
         actions += polled
         nextDeadlineNanoseconds = deadline.map {
             $0.microseconds &* 1_000
@@ -101,7 +79,7 @@ public struct SessionLifecycleLane: Sendable {
         }
         return SessionLifecycleVerdict(
             actions: external,
-            stateChangedTo: current.state == before ? nil : current.state
+            stateChangedTo: machine.state == before ? nil : machine.state
         )
     }
 

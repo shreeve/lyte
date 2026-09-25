@@ -2362,10 +2362,10 @@ final class RateEstimatorGateTests: XCTestCase {
         var sent: [VideoChannelDatagram] = []
         let session = Session(
             config: SessionConfig(
-                crypto: .testPassthrough, rateBitsPerSecond: Self.ceiling,
+                rateBitsPerSecond: Self.ceiling,
                 beaconIntervalNS: 1 << 62
             ),
-            clientTuple: Self.tupleA,
+            passthroughTo: Self.tupleA,
             now: 0,
             rng: SplitMix64(seed: 0x1616)
         ) { sent.append($0) }
@@ -2438,10 +2438,10 @@ final class RateEstimatorGateTests: XCTestCase {
         var sent: [VideoChannelDatagram] = []
         let session = Session(
             config: SessionConfig(
-                crypto: .testPassthrough, rateBitsPerSecond: Self.ceiling,
+                rateBitsPerSecond: Self.ceiling,
                 beaconIntervalNS: 1 << 62
             ),
-            clientTuple: Self.tupleA,
+            passthroughTo: Self.tupleA,
             now: 0,
             rng: SplitMix64(seed: 0xBAD)
         ) { sent.append($0) }
@@ -2482,9 +2482,9 @@ final class RateEstimatorGateTests: XCTestCase {
         let box = Box()
         let session = Session(
             config: SessionConfig(
-                crypto: .testPassthrough, rateBitsPerSecond: Self.ceiling
+                rateBitsPerSecond: Self.ceiling
             ),
-            clientTuple: Self.tupleA,
+            passthroughTo: Self.tupleA,
             now: 0,
             rng: SplitMix64(seed: 0x1620)
         ) { datagram in

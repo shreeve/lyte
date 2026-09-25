@@ -98,9 +98,11 @@ final class ArqCtrlGateTests: XCTestCase {
         append: @escaping (VideoChannelDatagram) -> Void
     ) throws -> (session: Session, client: ArqClient) {
         let hostStatic = NoiseKeyPair.generate()
-        let session = Session(
+        var client = try ArqClient(hostStaticPublicKey: hostStatic.publicKey)
+        let (session, _) = try Session.answering(
+            try client.message1Datagram(clientMicros: 500),
+            hostStatic: hostStatic, from: Self.tupleA,
             config: SessionConfig(
-                crypto: .noise(hostStatic: hostStatic),
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: beaconIntervalNS,
                 arq: arqConfig,
@@ -109,17 +111,9 @@ final class ArqCtrlGateTests: XCTestCase {
                     livenessTimeoutMicroseconds: 1 << 45
                 )
             ),
-            clientTuple: Self.tupleA,
-            now: 0,
             rng: SplitMix64(seed: 0x88),
             send: append
         )
-        var client = try ArqClient(hostStaticPublicKey: hostStatic.publicKey)
-        _ = session.receive(
-            try client.message1Datagram(clientMicros: 500),
-            from: Self.tupleA, now: 0, hostMicroseconds: 0
-        )
-        XCTAssertEqual(session.phase, .established)
         var now: UInt64 = 0
         session.pump(now: now)
         while let wake = session.nextWake(now: now), wake < 5_000_000 {
@@ -628,25 +622,8 @@ final class ArqCtrlGateTests: XCTestCase {
 
     // MARK: API guards
 
-    func testReliableSendRefusesBeforeEstablishmentAndBadGroups() throws {
-        // Before the handshake there is no transport to seal under.
-        let hostStatic = NoiseKeyPair.generate()
-        let session = Session(
-            config: SessionConfig(
-                crypto: .noise(hostStatic: hostStatic),
-                rateBitsPerSecond: Self.rateBPS
-            ),
-            clientTuple: Self.tupleA,
-            now: 0,
-            rng: SplitMix64(seed: 0x1)
-        ) { _ in }
-        XCTAssertThrowsError(try session.sendReliable(
-            [0x10], now: 0, hostMicroseconds: 0
-        )) {
-            XCTAssertEqual($0 as? SessionError, .notEstablished)
-        }
-
-        // Established: the endpoint's own refusals surface unchanged.
+    func testReliableSendRefusesBadGroups() throws {
+        // The endpoint's own refusals surface unchanged.
         var sent: [VideoChannelDatagram] = []
         let (live, _) = try establish(
             sent: { sent }, append: { sent.append($0) }
@@ -679,9 +656,9 @@ final class ArqCtrlGateTests: XCTestCase {
     func testQueueFullIsCountedBackpressure() throws {
         let session = Session(
             config: SessionConfig(
-                crypto: .testPassthrough, rateBitsPerSecond: Self.rateBPS
+                rateBitsPerSecond: Self.rateBPS
             ),
-            clientTuple: Self.tupleA,
+            passthroughTo: Self.tupleA,
             now: 0,
             rng: SplitMix64(seed: 0x51)
         ) { _ in }
@@ -713,7 +690,6 @@ final class ArqCtrlGateTests: XCTestCase {
     func testAPoisonedCtrlStreamEndsTheSessionWithATypedTeardown() throws {
         let host = HostSessionHarness(
             config: SessionConfig(
-                crypto: .noise(hostStatic: NoiseKeyPair.generate()),
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: 1 << 62,
                 arq: ArqConfig(maxMessageByteCount: 2_048)
@@ -745,7 +721,6 @@ final class ArqCtrlGateTests: XCTestCase {
     func testTheCrossingSegmentAloneEndsThePoisonedCtrlStream() throws {
         let host = HostSessionHarness(
             config: SessionConfig(
-                crypto: .noise(hostStatic: NoiseKeyPair.generate()),
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: 1 << 62,
                 arq: ArqConfig(maxMessageByteCount: 2_048)

@@ -49,9 +49,9 @@ final class UnprotectableFrameGateTests: XCTestCase {
     private func makeSession(box: Box) -> Session {
         Session(
             config: SessionConfig(
-                crypto: .testPassthrough, rateBitsPerSecond: Self.rate
+                rateBitsPerSecond: Self.rate
             ),
-            clientTuple: Self.tuple,
+            passthroughTo: Self.tuple,
             now: 0,
             rng: SplitMix64(seed: 0x2501)
         ) { [box] datagram in

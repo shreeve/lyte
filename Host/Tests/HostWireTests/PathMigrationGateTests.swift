@@ -193,11 +193,10 @@ final class PathMigrationGateTests: XCTestCase {
         let box = Box()
         let session = Session(
             config: SessionConfig(
-                crypto: .testPassthrough,
                 rateBitsPerSecond: 20_000_000,
                 beaconIntervalNS: 1 << 62
             ),
-            clientTuple: Self.tupleA,
+            passthroughTo: Self.tupleA,
             now: 0,
             rng: SplitMix64(seed: 0x9A7B)
         ) { box.sent.append(($0, box.now)) }

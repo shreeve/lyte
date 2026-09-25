@@ -283,9 +283,9 @@ enum SessionVerdict {
     case fail(String)
 }
 
-/// One client's session: a fresh HostWire Session, pairing responder and
-/// media emitters, opened by a message 1 and bound to the client that
-/// completes the handshake (the Session's primary path).
+/// One client's session: a HostWire Session answering an authenticated
+/// message 1, a pairing responder and media emitters, bound to the client
+/// that sent it (the Session's primary path).
 final class PeerSession {
     let session: Session
     let pairing: PairingResponderService
@@ -294,7 +294,6 @@ final class PeerSession {
     let toneEncoder: HostOpusEncoder?
     let outbox = Outbox()
 
-    var established = false
     var paired = false
     var capabilitiesAgreed = false
     var closed = false
@@ -308,7 +307,7 @@ final class PeerSession {
     var clipboardSetsAcked = 0
 
     init(
-        latching packet: UdpSocket.Packet,
+        answering handshake: AuthenticatedHandshake,
         sock: UdpSocket,
         hostStatic: NoiseKeyPair,
         pin: String,
@@ -327,12 +326,6 @@ final class PeerSession {
             toneEncoder = nil
             toneEmitFinished = true
         }
-        let tuple = FourTuple(
-            localAddress: sock.localHost,
-            localPort: sock.localPort,
-            remoteAddress: packet.host,
-            remotePort: packet.port
-        )
         // Corpus→WT needs a modest pace: 50 Mbps blasts the
         // sidecar/Chrome datagram path and FEC-impossibles.
         // Control-only keeps the native-like ceiling.
@@ -346,24 +339,28 @@ final class PeerSession {
                 recoveryBlackoutSilenceMicroseconds: 30_000_000
             )
         let outbox = self.outbox
-        session = Session(
+        let opening: [SessionEvent]
+        (session, opening) = try Session.answer(
+            handshake,
             config: SessionConfig(
-                crypto: .noise(hostStatic: hostStatic),
                 rateBitsPerSecond: pace,
                 capabilities: .wireDefault.declaringClipboardText(),
                 lifecycle: lifecycle
             ),
-            clientTuple: tuple,
             now: now,
+            hostMicroseconds: now / 1_000,
             rng: SystemRandomNumberGenerator()
         ) { datagram in
             outbox.datagrams.append(datagram)
         }
-        print("session: latched \(packet.host):\(packet.port)")
+        let client = handshake.clientTuple
+        print("session: answered \(client.remoteAddress):\(client.remotePort)")
+        handleEvents(opening, now: now)
+        service(now: now)
     }
 
     var mediaReady: Bool {
-        established && paired && capabilitiesAgreed
+        paired && capabilitiesAgreed
     }
 
     /// One inbound datagram, then the emitters and a flush.
@@ -533,7 +530,6 @@ final class PeerSession {
         for event in events {
             switch event {
             case .handshakeCompleted(let remote):
-                established = true
                 print("noise: handshake completed — client static \(Hex.string(remote))")
                 if let hash = session.handshakeHash {
                     logPairing(pairing.sessionEstablished(
@@ -637,10 +633,9 @@ final class PeerSession {
                 flushOutbox()
             }
         }
-        guard established && paired && capabilitiesAgreed else {
+        guard paired && capabilitiesAgreed else {
             return .fail("""
-                incomplete (established=\(established) paired=\(paired) \
-                caps=\(capabilitiesAgreed))
+                incomplete (paired=\(paired) caps=\(capabilitiesAgreed))
                 """)
         }
         if let frames = corpusFrames, !corpusEmitFinished {
@@ -742,18 +737,19 @@ final class ControlPeer {
     }
 
     /// Serves sessions one at a time. A session ends when the client
-    /// closes it, when no handshake completed 30 s after its first
-    /// datagram, or `seconds` after that datagram; then the peer waits
-    /// for the next message 1. A single-session run must see its
+    /// closes it, when its answer goes unconfirmed past the client's
+    /// retransmit span, or `seconds` after the answer; then the peer
+    /// waits for the next message 1. A single-session run must see its
     /// handshake within 30 s and fails the process when the session
     /// fails; a multi-session run logs a failed session and keeps serving.
     func run() throws {
         let start = SystemMonotonicClock.nowNanoseconds
         let handshakeDeadline: UInt64? =
             sessions == 1 ? start + 30_000_000_000 : nil
+        var acceptor = HandshakeAcceptor(
+            config: HandshakeAcceptor.Config(hostStatic: hostStatic))
         var current: PeerSession?
         var sessionDeadline: UInt64 = 0
-        var establishDeadline: UInt64 = 0
         var served = 0
         var failed = 0
         print("noise: awaiting client handshake…")
@@ -762,7 +758,7 @@ final class ControlPeer {
             let now = SystemMonotonicClock.nowNanoseconds
             if let peer = current,
                peer.closed || now >= sessionDeadline
-                || (!peer.established && now >= establishDeadline) {
+                || peer.session.isUnconfirmedAnswerAbandoned(now: now) {
                 current = nil
                 served += 1
                 switch peer.finish(now: now) {
@@ -793,21 +789,25 @@ final class ControlPeer {
             }
 
             if let packet = sock.recv() {
-                if current == nil {
-                    guard Session.looksLikeHandshakeInitiation(packet.bytes)
-                    else { continue }
-                    current = try PeerSession(
-                        latching: packet,
-                        sock: sock,
-                        hostStatic: hostStatic,
-                        pin: pin,
-                        corpusFrames: corpusFrames,
-                        now: now
-                    )
-                    sessionDeadline = now + UInt64(seconds * 1e9)
-                    establishDeadline = now + 30_000_000_000
+                if let peer = current {
+                    peer.receive(packet, now: now)
+                    continue
                 }
-                current?.receive(packet, now: now)
+                let tuple = FourTuple(
+                    localAddress: sock.localHost, localPort: sock.localPort,
+                    remoteAddress: packet.host, remotePort: packet.port)
+                guard case .authenticated(let handshake) = acceptor.accept(
+                    packet.bytes[...], from: tuple, now: now
+                ).verdict else { continue }
+                current = try PeerSession(
+                    answering: handshake,
+                    sock: sock,
+                    hostStatic: hostStatic,
+                    pin: pin,
+                    corpusFrames: corpusFrames,
+                    now: now
+                )
+                sessionDeadline = now + UInt64(seconds * 1e9)
                 continue
             }
 

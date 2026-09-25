@@ -1,6 +1,7 @@
 import CNetIO
 import Foundation
 import Glibc
+import HostSession
 @testable import lyte_host
 import LyteWire
 import XCTest
@@ -128,10 +129,22 @@ final class LoopbackDialer {
     }
 }
 
+extension HostListener {
+    /// A listener admitting dials to `hostStatic`, on a kernel-picked port
+    /// unless `port` names one.
+    convenience init(
+        port: UInt16 = 0, hostStatic: NoiseKeyPair = .generate()
+    ) throws {
+        try self.init(
+            port: port,
+            acceptor: HandshakeAcceptor.Config(hostStatic: hostStatic))
+    }
+}
+
 /// Runs `awaitClient` on a worker thread while `client` plays the client
 /// on the calling one; returns the wait's outcome.
 func awaitClient(
-    _ wire: SessionWire, hostStatic: NoiseKeyPair, timeoutSeconds: Double,
+    _ wire: SessionWire, timeoutSeconds: Double,
     while client: () throws -> Void
 ) throws -> SessionWire.ClientAwaitOutcome {
     nonisolated(unsafe) var result: Result<SessionWire.ClientAwaitOutcome, any Error>?
@@ -139,7 +152,7 @@ func awaitClient(
     let done = DispatchSemaphore(value: 0)
     Thread {
         result = Result {
-            try wire.awaitClient(hostStatic: hostStatic, timeoutSeconds: timeoutSeconds)
+            try wire.awaitClient(timeoutSeconds: timeoutSeconds)
         }
         done.signal()
     }.start()

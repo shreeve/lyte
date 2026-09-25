@@ -55,15 +55,16 @@ func elevateCurrentThread(_ label: String, rtPriority: Int32) {
 }
 
 /// The listening service's socket, bound once and never connected, so a
-/// client that dials between sessions is heard by the next one.
+/// client that dials between sessions is heard by the next one, and its
+/// handshake admission, which outlives every session.
 final class HostListener {
     let netio: OpaquePointer
-    /// Message 1s any session of this process answered; a replay or stale
-    /// retransmit is dropped unread. Touched only by `awaitClient` under
-    /// the waiting wire's lock (one session waits at a time).
-    var answeredHandshakes = AnsweredHandshakeMemory()
+    /// Touched only by `awaitClient` under the waiting wire's lock (one
+    /// session waits at a time) and read after the session ends.
+    var acceptor: HandshakeAcceptor
 
-    init(port: UInt16) throws {
+    init(port: UInt16, acceptor: HandshakeAcceptor.Config) throws {
+        self.acceptor = HandshakeAcceptor(config: acceptor)
         var err = [CChar](repeating: 0, count: 256)
         guard let n = lyte_netio_new_listener(
             "0.0.0.0", port, &err, err.count
@@ -108,9 +109,9 @@ final class SessionWire {
     private let rateBitsPerSecond: Int
     /// What this host declares in the capability exchange.
     private let capabilities: Capabilities
-    /// Non-nil = only these client statics may complete message 1.
-    private let allowedClientStatics: [[UInt8]]?
-    private let handshakeGateConfig: HandshakeGate.Config
+    /// RetryChallenges owed to the tuples that asked, sent after the wait
+    /// pass's released datagrams.
+    private var pendingChallenges: [(datagram: [UInt8], to: FourTuple)] = []
     /// Non-nil = pairing mode: the service consumes the pairing CTRL
     /// types off the reliable stream; replies ride sendReliable.
     private let pairing: PairingResponderService?
@@ -382,8 +383,6 @@ final class SessionWire {
     var agreedChromaModes: [UInt64]? {
         withConfigLock { _agreedPosture.chromaModes }
     }
-    /// Whether the flood dial currently demands a retry cookie.
-    var handshakeCookieMode: Bool { session?.handshakeCookieMode ?? false }
     var clock: SessionClockStats { session.clock }
     var pacerTelemetry: PacerTelemetry { session.pacerTelemetry }
     var lifecycleState: SessionState? { session?.lifecycleState }
@@ -425,8 +424,6 @@ final class SessionWire {
         listener: HostListener,
         rateBitsPerSecond: Int,
         capabilities: Capabilities = .wireDefault,
-        allowedClientStatics: [[UInt8]]? = nil,
-        handshakeGateConfig: HandshakeGate.Config = HandshakeGate.Config(),
         pairing: PairingResponderService? = nil,
         onPairingEvent: @escaping (PairingResponderService.Event) -> Void
             = { _ in }
@@ -435,8 +432,6 @@ final class SessionWire {
         // would be left holding a deinit'd `self`.
         self.rateBitsPerSecond = rateBitsPerSecond
         self.capabilities = capabilities
-        self.allowedClientStatics = allowedClientStatics
-        self.handshakeGateConfig = handshakeGateConfig
         self.pairing = pairing
         self.onPairingEvent = onPairingEvent
 
@@ -551,22 +546,28 @@ final class SessionWire {
         }
     }
 
-    private func makeSession(crypto: SessionCryptoMode, clientTuple: FourTuple) {
-        session = Session(
-            config: SessionConfig(
-                crypto: crypto,
-                rateBitsPerSecond: rateBitsPerSecond,
-                allowedClientStaticPublicKeys: allowedClientStatics,
-                handshakeGate: handshakeGateConfig,
-                capabilities: capabilities
-            ),
-            clientTuple: clientTuple,
-            now: SystemMonotonicClock.nowNanoseconds,
-            rng: SystemRandomNumberGenerator(),
-            sendAccounting: .socketConfirmed
-        ) { [weak self] datagram in
-            self?.outbox.enqueue(
-                datagram, now: SystemMonotonicClock.nowNanoseconds)
+    /// Requires `lock`. Answers an authenticated message 1 with a new
+    /// session and executes its opening events.
+    private func answer(_ handshake: AuthenticatedHandshake) {
+        do {
+            let (answered, events) = try Session.answer(
+                handshake,
+                config: SessionConfig(
+                    rateBitsPerSecond: rateBitsPerSecond,
+                    capabilities: capabilities
+                ),
+                now: SystemMonotonicClock.nowNanoseconds,
+                hostMicroseconds: SystemMonotonicClock.nowMicroseconds,
+                rng: SystemRandomNumberGenerator(),
+                sendAccounting: .socketConfirmed
+            ) { [weak self] datagram in
+                self?.outbox.enqueue(
+                    datagram, now: SystemMonotonicClock.nowNanoseconds)
+            }
+            session = answered
+            for event in events { execute(event) }
+        } catch {
+            emit("noise: answering message 1 failed: \(error)")
         }
     }
 
@@ -645,23 +646,22 @@ final class SessionWire {
     /// `timeoutSeconds` (nil = forever). Call before capture opens.
     ///
     /// Answering commits nothing — Noise IK message 1 carries no
-    /// freshness. A message 1 this process already answered is dropped
-    /// unread; a newer one that authenticates replaces an unconfirmed
-    /// session; an unconfirmed session whose lifecycle closes is
-    /// discarded. So no replayed, spoofed or abandoned message 1 can lock
-    /// out the next client.
+    /// freshness. The listener's acceptor admits every other message 1
+    /// (it refuses one this process already answered); one that
+    /// authenticates replaces an unconfirmed session; an unconfirmed
+    /// session whose lifecycle closes is discarded. So no replayed,
+    /// spoofed or abandoned message 1 can lock out the next client.
     ///
     /// `idle` runs off the lock once per wait pass: every 10 ms while no
     /// handshake is answered, every 2 ms while an answered one's timers
     /// run, and at once when a datagram arrives.
     func awaitClient(
-        hostStatic: NoiseKeyPair,
         timeoutSeconds: Double?,
         stopRequested: () -> Bool = { false },
         idle: () -> Void = {}
     ) throws -> ClientAwaitOutcome {
-        print(
-            "noise: host static public key \(Hex.string(hostStatic.publicKey))")
+        let hostKey = Hex.string(listener.acceptor.hostStaticPublicKey)
+        print("noise: host static public key \(hostKey)")
         print("""
             noise: awaiting client handshake on port \
             \(lyte_netio_local_port(listenNetio)) …
@@ -677,9 +677,9 @@ final class SessionWire {
             lock.lock()
             do {
                 try receiveFromAll { [weak self] datagram, tuple in
-                    self?.awaitDatagram(datagram, from: tuple, hostStatic: hostStatic)
+                    self?.awaitDatagram(datagram, from: tuple)
                 }
-                if let session, session.phase == .established {
+                if let session {
                     // The answered session's timers run here until it is
                     // confirmed; the sender thread takes over after.
                     for event in session.advance(
@@ -700,12 +700,12 @@ final class SessionWire {
                         discardUnconfirmedSession()
                     }
                 }
-                // Pre-establishment pump: carries 0x13 RetryChallenges
-                // under flood, message 2 and the opening words.
+                // Message 2 and the opening words, then the challenges.
                 if let session {
                     pumpForSocketState(session)
                 }
                 try flushOutbox()
+                sendPendingChallenges()
             } catch {
                 lock.unlock()
                 flushLogLines()
@@ -744,58 +744,68 @@ final class SessionWire {
             fds, events, &revents, Int32(fds.count), timeoutNS)
     }
 
-    /// Requires `lock`. One datagram while awaiting a confirmed client.
-    private func awaitDatagram(
-        _ datagram: [UInt8], from tuple: FourTuple, hostStatic: NoiseKeyPair
-    ) {
-        let message1 = Session.handshakeMessage1(in: datagram)
-        guard message1 != nil || session?.phase == .established else {
-            // Before an answer only an initiation matters: a relaunched
-            // host also hears the old session's feedback.
-            return
-        }
-        // A replay check, not trust: the gate still authenticates.
-        if let message1, message1 != session?.answeredMessage1,
-           listener.answeredHandshakes.contains(message1: message1) {
-            return
-        }
-        if session == nil {
-            makeSession(crypto: .noise(hostStatic: hostStatic), clientTuple: tuple)
-        }
-        let wasConfirmed = session.isPeerConfirmed
-        for event in session.receive(
-            datagram, from: tuple,
-            now: SystemMonotonicClock.nowNanoseconds,
-            hostMicroseconds: SystemMonotonicClock.nowMicroseconds
-        ) {
-            execute(event)
-        }
-        if let superseding = session.takeSupersedingHandshake() {
-            handshakesSuperseded += 1
-            emit("""
-                noise: a newer handshake from \
-                \(superseding.clientTuple.remoteAddress):\
-                \(superseding.clientTuple.remotePort) replaces the \
-                unconfirmed one
-                """)
-            discardUnconfirmedSession()
-            makeSession(
-                crypto: .noise(hostStatic: hostStatic),
-                clientTuple: superseding.clientTuple)
-            for event in session.completeSupersedingHandshake(
-                superseding,
+    /// Requires `lock`. One datagram while awaiting a confirmed client:
+    /// an answered session reads it first (its confirming datagram, a
+    /// verbatim message-1 repeat); anything else is the acceptor's.
+    private func awaitDatagram(_ datagram: [UInt8], from tuple: FourTuple) {
+        if let session {
+            let wasConfirmed = session.isPeerConfirmed
+            var initiation = false
+            for event in session.receive(
+                datagram, from: tuple,
                 now: SystemMonotonicClock.nowNanoseconds,
                 hostMicroseconds: SystemMonotonicClock.nowMicroseconds
             ) {
-                execute(event)
+                if event == .initiationWhileUnconfirmed {
+                    initiation = true
+                } else {
+                    execute(event)
+                }
             }
+            if !wasConfirmed, session.isPeerConfirmed {
+                emit("noise: client confirmed — it holds the session keys")
+            }
+            guard initiation else { return }
         }
-        if let answered = session.answeredMessage1 {
-            listener.answeredHandshakes.record(message1: answered)
+        let decision = listener.acceptor.accept(
+            datagram[...], from: tuple,
+            now: SystemMonotonicClock.nowNanoseconds)
+        if let requireCookie = decision.cookieModeChangedTo {
+            emit("handshake: require-cookie \(requireCookie ? "ENGAGED" : "cleared")")
         }
-        if !wasConfirmed, session.isPeerConfirmed {
-            emit("noise: client confirmed — it holds the session keys")
+        // A flood would print per datagram; the stats line carries the
+        // acceptor's counts instead.
+        switch decision.verdict {
+        case .notInitiation, .refused(.answeredBefore), .refused(.throttled),
+             .refused(.cookieInvalid):
+            break
+        case .refused(let refusal):
+            emitLimited("drop: handshakeFailed", "drop: \(refusal)")
+        case .challenge(let challenge):
+            pendingChallenges.append((challenge, tuple))
+        case .authenticated(let handshake):
+            if session != nil {
+                handshakesSuperseded += 1
+                emit("""
+                    noise: a newer handshake from \
+                    \(tuple.remoteAddress):\(tuple.remotePort) replaces \
+                    the unconfirmed one
+                    """)
+                discardUnconfirmedSession()
+            }
+            answer(handshake)
         }
+    }
+
+    /// Requires `lock`. Each challenge leaves unsealed from the listening
+    /// socket to the tuple that asked. A challenge is best effort: the
+    /// client retransmits, so a refused send is not recorded.
+    private func sendPendingChallenges() {
+        let tos = WireTos.byte(for: .control)
+        for (datagram, tuple) in pendingChallenges {
+            _ = sendFromListener(datagram, tos: tos, to: tuple)
+        }
+        pendingChallenges.removeAll(keepingCapacity: true)
     }
 
     /// Requires `lock`. Drops an unconfirmed session and its queue; the
@@ -858,8 +868,7 @@ final class SessionWire {
     /// Requires `lock`. A non-nil directive must reach the encoder before
     /// the next frame is sent.
     private func takeEncoderRateDirectiveLocked() -> EncoderRateDirective? {
-        guard let vbvPolicy, let session, session.phase == .established
-        else { return nil }
+        guard let vbvPolicy, let session else { return nil }
         guard let directive = vbvPolicy.note(
             frameByteCeiling: session.frameByteCeiling(
                 fps: vbvPolicy.config.fps),
@@ -1047,7 +1056,7 @@ final class SessionWire {
         // blocks, and the audio thread never does console I/O.
         if lock.try() {
             drainAudioMailboxLocked()
-            if let session, session.phase == .established, !peerGone {
+            if let session, !peerGone {
                 pumpForSocketState(session)
                 do {
                     try flushOutbox()
@@ -1070,7 +1079,7 @@ final class SessionWire {
         guard !pending.isEmpty else { return }
 
         for entry in pending {
-            guard let session, session.phase == .established, !peerGone else {
+            guard let session, !peerGone else {
                 if case .packet = entry { audioPacketsDroppedPreSession += 1 }
                 continue
             }
@@ -1378,7 +1387,7 @@ final class SessionWire {
         lock.lock()
         defer { lock.unlock() }
         before()
-        guard let session, session.phase == .established else { return }
+        guard let session else { return }
         for event in note(
             session, SystemMonotonicClock.nowNanoseconds,
             SystemMonotonicClock.nowMicroseconds
@@ -1773,16 +1782,8 @@ final class SessionWire {
                     emit("path: rebind failed: \(error)")
                 }
             }
-        case .handshakeCookieModeChanged(let requireCookie):
-            emit("handshake: require-cookie \(requireCookie ? "ENGAGED" : "cleared")")
-        // A flood would print per datagram; the final stats line carries
-        // these counts instead.
-        case .handshakeChallenged:
-            break
-        case .dropped(.handshakeThrottled):
-            break
-        case .dropped(.handshakeCookieInvalid):
-            break
+        case .initiationWhileUnconfirmed:
+            break // awaitDatagram hands it to the acceptor
         case .dropped(let reason):
             emitLimited("drop: \(Self.caseName(reason))", "drop: \(reason)")
         case .sendFailed(let what):
@@ -2113,19 +2114,26 @@ final class SessionWire {
     private func sendOffPrimary(
         _ datagram: VideoChannelDatagram, to destination: FourTuple
     ) -> SocketWriteResult {
-        let rc = datagram.bytes.withUnsafeBufferPointer { buf -> Int32 in
+        let rc = sendFromListener(
+            datagram.bytes, tos: WireTos.byte(for: datagram.pacerClass),
+            to: destination)
+        // The unconnected listening socket reports refusals for any tuple
+        // it sent to; once the media sockets carry the primary, those are
+        // other tuples'.
+        return writeResult(rc, onPrimaryPath: videoNetio == nil)
+    }
+
+    private func sendFromListener(
+        _ bytes: [UInt8], tos: UInt8, to destination: FourTuple
+    ) -> Int32 {
+        bytes.withUnsafeBufferPointer { buf in
             var pkt = lyte_netio_pkt(
-                data: buf.baseAddress, len: buf.count,
-                tos: WireTos.byte(for: datagram.pacerClass))
+                data: buf.baseAddress, len: buf.count, tos: tos)
             return lyte_netio_send_to(
                 listenNetio, &pkt,
                 destination.remoteAddress, destination.remotePort,
                 &sendError, sendError.count)
         }
-        // The unconnected listening socket reports refusals for any tuple
-        // it sent to; once the media sockets carry the primary, those are
-        // other tuples'.
-        return writeResult(rc, onPrimaryPath: videoNetio == nil)
     }
 
     /// One lane's batch staged into `scratch`, each datagram with its

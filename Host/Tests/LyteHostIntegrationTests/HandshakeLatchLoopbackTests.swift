@@ -14,7 +14,7 @@ final class HandshakeLatchLoopbackTests: XCTestCase {
     func testAHandshakeAfterASpoofedFirstArrivalStillEstablishes() throws {
         let hostStatic = NoiseKeyPair.generate()
         let wire = try SessionWire(
-            listener: HostListener(port: 0),
+            listener: HostListener(hostStatic: hostStatic),
             rateBitsPerSecond: 1_000_000)
         defer { wire.shutdown(reason: .shuttingDown, lingerSeconds: 0) }
 
@@ -27,7 +27,7 @@ final class HandshakeLatchLoopbackTests: XCTestCase {
         try client.dial()
 
         XCTAssertEqual(try awaitClient(
-            wire, hostStatic: hostStatic, timeoutSeconds: 5
+            wire, timeoutSeconds: 5
         ) {
             let reply = try XCTUnwrap(
                 client.awaitMessage2(), "the real client gets message 2")
@@ -42,7 +42,7 @@ final class HandshakeLatchLoopbackTests: XCTestCase {
     /// replaces the unconfirmed handshake instead of being locked out.
     func testAReplayedMessage1CannotLockOutTheNextClient() throws {
         let hostStatic = NoiseKeyPair.generate()
-        let listener = try HostListener(port: 0)
+        let listener = try HostListener(hostStatic: hostStatic)
         let port = lyte_netio_local_port(listener.netio)
         let wire = try SessionWire(
             listener: listener, rateBitsPerSecond: 1_000_000)
@@ -60,7 +60,7 @@ final class HandshakeLatchLoopbackTests: XCTestCase {
         let client = try LoopbackDialer(
             port: port, hostStaticPublicKey: hostStatic.publicKey)
         XCTAssertEqual(try awaitClient(
-            wire, hostStatic: hostStatic, timeoutSeconds: 5
+            wire, timeoutSeconds: 5
         ) {
             XCTAssertNotNil(replayer.awaitMessage2(),
                 "the replay is answered — and commits nothing")
@@ -76,7 +76,7 @@ final class HandshakeLatchLoopbackTests: XCTestCase {
     func testAnAnswerNobodyConfirmsIsDiscardedAfterTheRetransmitSpan() throws {
         let hostStatic = NoiseKeyPair.generate()
         let wire = try SessionWire(
-            listener: HostListener(port: 0),
+            listener: HostListener(hostStatic: hostStatic),
             rateBitsPerSecond: 1_000_000)
         defer { wire.shutdown(reason: .shuttingDown, lingerSeconds: 0) }
         let replayer = try LoopbackDialer(
@@ -84,7 +84,7 @@ final class HandshakeLatchLoopbackTests: XCTestCase {
         try replayer.dial()
         let span = Double(Session.unconfirmedAnswerLifetimeNS) / 1e9
         XCTAssertThrowsError(try awaitClient(
-            wire, hostStatic: hostStatic, timeoutSeconds: span + 1
+            wire, timeoutSeconds: span + 1
         ) {
             XCTAssertNotNil(replayer.awaitMessage2(), "answered, never confirmed")
         })
@@ -98,13 +98,13 @@ final class HandshakeLatchLoopbackTests: XCTestCase {
     func testAFirstDialWhoseEarlyAnswersAreLostStillEstablishes() throws {
         let hostStatic = NoiseKeyPair.generate()
         let wire = try SessionWire(
-            listener: HostListener(port: 0),
+            listener: HostListener(hostStatic: hostStatic),
             rateBitsPerSecond: 1_000_000)
         defer { wire.shutdown(reason: .shuttingDown, lingerSeconds: 0) }
         let client = try LoopbackDialer(
             port: wire.localPort, hostStaticPublicKey: hostStatic.publicKey)
         XCTAssertEqual(try awaitClient(
-            wire, hostStatic: hostStatic, timeoutSeconds: 15
+            wire, timeoutSeconds: 15
         ) {
             try client.dial()
             for _ in 0..<4 {
@@ -124,7 +124,7 @@ final class HandshakeLatchLoopbackTests: XCTestCase {
     /// retransmit timer left queued, or a replay of it.
     func testAMessage1AnsweredEarlierInTheProcessIsDropped() throws {
         let hostStatic = NoiseKeyPair.generate()
-        let listener = try HostListener(port: 0)
+        let listener = try HostListener(hostStatic: hostStatic)
         let port = lyte_netio_local_port(listener.netio)
 
         let first = try SessionWire(
@@ -133,7 +133,7 @@ final class HandshakeLatchLoopbackTests: XCTestCase {
             port: port, hostStaticPublicKey: hostStatic.publicKey)
         try client.dial()
         XCTAssertEqual(try awaitClient(
-            first, hostStatic: hostStatic, timeoutSeconds: 5
+            first, timeoutSeconds: 5
         ) {
             let reply = try XCTUnwrap(client.awaitMessage2())
             try client.confirm(message2: reply.payload)
@@ -148,7 +148,7 @@ final class HandshakeLatchLoopbackTests: XCTestCase {
         client.drain() // session one's words, and its teardown
         client.send(client.message1Datagram)
         XCTAssertThrowsError(try second.awaitClient(
-            hostStatic: hostStatic, timeoutSeconds: 0.3))
+            timeoutSeconds: 0.3))
         XCTAssertNil(client.awaitMessage2(), "nothing answers it")
     }
 }

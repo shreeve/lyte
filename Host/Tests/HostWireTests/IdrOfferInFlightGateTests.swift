@@ -31,7 +31,6 @@ final class IdrOfferInFlightGateTests: XCTestCase {
     private func makeSession(box: Box) -> Session {
         Session(
             config: SessionConfig(
-                crypto: .testPassthrough,
                 rateBitsPerSecond: Self.ceiling,
                 // Keep the lifecycle machine out of this pin: the stall is
                 // about 0x10 vs encode-time lastKeyframeNumber, not FROZEN.
@@ -41,7 +40,7 @@ final class IdrOfferInFlightGateTests: XCTestCase {
                 ),
                 clientIdrOfferInFlightNS: Self.inFlightNS
             ),
-            clientTuple: Self.tuple,
+            passthroughTo: Self.tuple,
             now: 0,
             rng: SplitMix64(seed: 0x1010)
         ) { [box] datagram in

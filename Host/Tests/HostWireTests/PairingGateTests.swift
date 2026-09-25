@@ -178,13 +178,11 @@ final class PairingGateTests: XCTestCase {
         append: @escaping (VideoChannelDatagram) -> Void
     ) throws -> (shell: HostShell, client: PakeClient) {
         let hostStatic = NoiseKeyPair.generate()
-        let session = Session(
-            config: SessionConfig(
-                crypto: .noise(hostStatic: hostStatic),
-                rateBitsPerSecond: Self.rateBPS
-            ),
-            clientTuple: Self.tupleA,
-            now: 0,
+        var client = try PakeClient(hostStaticPublicKey: hostStatic.publicKey)
+        let (session, opening) = try Session.answering(
+            try client.message1Datagram(clientMicros: 500),
+            hostStatic: hostStatic, from: Self.tupleA,
+            config: SessionConfig(rateBitsPerSecond: Self.rateBPS),
             rng: SplitMix64(seed: 0x96),
             send: append
         )
@@ -196,15 +194,7 @@ final class PairingGateTests: XCTestCase {
                 config: serviceConfig
             )
         )
-        var client = try PakeClient(hostStaticPublicKey: hostStatic.publicKey)
-        shell.handle(
-            session.receive(
-                try client.message1Datagram(clientMicros: 500),
-                from: Self.tupleA, now: 0, hostMicroseconds: 0
-            ),
-            nowNS: 0
-        )
-        XCTAssertEqual(session.phase, .established)
+        shell.handle(opening, nowNS: 0)
         session.pump(now: 0)
         let handshake = sent()
         XCTAssertEqual(handshake.count, 3,
@@ -527,123 +517,16 @@ final class PairingGateTests: XCTestCase {
         ])
         XCTAssertFalse(service.isBurned)
     }
+}
 
-    // MARK: The message-1 flood gate
-
-    func testHandshakeGateDropsFloodBeforeNoiseAllocation() throws {
-        let hostStatic = NoiseKeyPair.generate()
-        var sent: [VideoChannelDatagram] = []
-        let session = Session(
-            config: SessionConfig(
-                crypto: .noise(hostStatic: hostStatic),
-                rateBitsPerSecond: Self.rateBPS,
-                handshakeGate: HandshakeGate.Config(
-                    ratePerSecond: 10, burst: 10
-                )
-            ),
-            clientTuple: Self.tupleA,
-            now: 0,
-            rng: SplitMix64(seed: 0x7)
-        ) { sent.append($0) }
-
-        // 200 garbage message 1s in one instant: the burst admits 10
-        // (each fails in the Noise responder), the rest drop unread.
-        var rng = SplitMix64(seed: 0xF100D)
-        var throttled = 0
-        var failed = 0
-        for i in 0..<200 {
-            let garbage = (0..<64).map { _ in
-                UInt8.random(in: 0...255, using: &rng)
-            }
-            let envelope = Envelope(
-                channel: .ctrl,
-                seq: ChannelSeq(rawValue: UInt16(i)),
-                frame: FrameNumber(rawValue: 0),
-                timestamp: 0,
-                fec: 0
-            )
-            let datagram = try envelope.encode(
-                payload: [CtrlMessageType.noiseHandshake1] + garbage
-            )
-            for event in session.receive(
-                datagram, from: Self.tupleA, now: 1_000, hostMicroseconds: 1
-            ) {
-                if case .dropped(.handshakeThrottled) = event { throttled += 1 }
-                if case .dropped(.handshakeFailed) = event { failed += 1 }
-            }
+final class PairingPinTests: XCTestCase {
+    func testPinsAreSixZeroPaddedDigits() {
+        var rng = SplitMix64(seed: 7)
+        for _ in 0..<1_000 {
+            let pin = PairingResponderService.mintPin(using: &rng)
+            XCTAssertEqual(pin.count, 6)
+            XCTAssertTrue(pin.allSatisfy(\.isASCII))
+            XCTAssertTrue(pin.allSatisfy(\.isNumber))
         }
-        XCTAssertEqual(failed, 10, "exactly the burst reaches Noise")
-        XCTAssertEqual(throttled, 190)
-        XCTAssertEqual(session.counters.handshakesThrottled, 190)
-        XCTAssertEqual(session.phase, .awaitingHandshake,
-                       "garbage must never establish")
-
-        // Two seconds later the bucket has refilled: an honest client's
-        // message 1 completes — the flood cost availability for moments,
-        // not the session.
-        var client = try PakeClient(hostStaticPublicKey: hostStatic.publicKey)
-        let events = session.receive(
-            try client.message1Datagram(clientMicros: 2_000_000),
-            from: Self.tupleA,
-            now: 2_000_000_000, hostMicroseconds: 2_000_000
-        )
-        XCTAssertTrue(events.contains(.handshakeCompleted(
-            remoteStaticPublicKey: client.staticKeys.publicKey
-        )))
-        XCTAssertEqual(session.phase, .established)
-    }
-
-    // MARK: 1-RTT reconnect against the pinned set
-
-    func testPairedSetAdmitsPairedAndRefusesStrangers() throws {
-        let hostStatic = NoiseKeyPair.generate()
-        let paired = NoiseKeyPair.generate()
-        let stranger = NoiseKeyPair.generate()
-
-        func attempt(_ keys: NoiseKeyPair) throws -> [SessionEvent] {
-            let session = Session(
-                config: SessionConfig(
-                    crypto: .noise(hostStatic: hostStatic),
-                    rateBitsPerSecond: Self.rateBPS,
-                    allowedClientStaticPublicKeys: [paired.publicKey]
-                ),
-                clientTuple: Self.tupleA,
-                now: 0,
-                rng: SplitMix64(seed: 0x51)
-            ) { _ in }
-            var noise = try NoiseSession(
-                role: .initiator,
-                staticKeys: keys,
-                remoteStaticPublicKey: hostStatic.publicKey
-            )
-            let envelope = Envelope(
-                channel: .ctrl,
-                seq: ChannelSeq(rawValue: 0),
-                frame: FrameNumber(rawValue: 0),
-                timestamp: 0,
-                fec: 0
-            )
-            let datagram = try envelope.encode(
-                payload: [CtrlMessageType.noiseHandshake1]
-                    + (try noise.writeMessage1())
-            )
-            return session.receive(
-                datagram, from: Self.tupleA, now: 0, hostMicroseconds: 0
-            )
-        }
-
-        // The paired client reconnects 1-RTT: message 1 in, established.
-        XCTAssertTrue(try attempt(paired).contains(.handshakeCompleted(
-            remoteStaticPublicKey: paired.publicKey
-        )), "pair once, reconnect 1-RTT — no PAKE, no UI")
-
-        // A stranger's message 1 dies at the paired-set check.
-        let refused = try attempt(stranger)
-        XCTAssertTrue(refused.contains { event in
-            if case .dropped(.handshakeFailed(let why)) = event {
-                return why.contains("paired set")
-            }
-            return false
-        })
     }
 }

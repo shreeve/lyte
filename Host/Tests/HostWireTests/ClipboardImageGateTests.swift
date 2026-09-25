@@ -134,7 +134,6 @@ final class ClipboardImageGateTests: XCTestCase {
     ) throws -> (host: HostSessionHarness, client: ImageClient) {
         let host = HostSessionHarness(
             config: SessionConfig(
-                crypto: .noise(hostStatic: NoiseKeyPair.generate()),
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: 1 << 62,
                 capabilities: hostCapabilities
@@ -147,7 +146,6 @@ final class ClipboardImageGateTests: XCTestCase {
             openChannels: [.ctrl, .bulkTransfer]
         ))
         client.peer.bulkArq = ArqEndpoint(channel: .bulkTransfer)
-        XCTAssertEqual(host.session.phase, .established)
         return (host, client)
     }
 

@@ -13,13 +13,13 @@ final class SenderSyscallLoopbackTests: XCTestCase {
     func testAStreamingSendersPassesSpendFewSyscalls() throws {
         let hostStatic = NoiseKeyPair.generate()
         let wire = try SessionWire(
-            listener: HostListener(port: 0),
+            listener: HostListener(hostStatic: hostStatic),
             rateBitsPerSecond: 100_000_000)
         let client = try LoopbackDialer(
             port: wire.localPort, hostStaticPublicKey: hostStatic.publicKey)
         try client.dial()
         XCTAssertEqual(try awaitClient(
-            wire, hostStatic: hostStatic, timeoutSeconds: 5
+            wire, timeoutSeconds: 5
         ) {
             let reply = try XCTUnwrap(client.awaitMessage2())
             try client.confirm(message2: reply.payload)

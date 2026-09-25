@@ -93,8 +93,8 @@ final class SenderWaitTests: XCTestCase {
     func testSessionLatencyWakeKeepsTimersAndDropsHeldVideo() throws {
         let session = Session(
             config: SessionConfig(
-                crypto: .testPassthrough, rateBitsPerSecond: 50_000_000),
-            clientTuple: FourTuple(
+                rateBitsPerSecond: 50_000_000),
+            passthroughTo: FourTuple(
                 localAddress: "0.0.0.0", localPort: 41_151,
                 remoteAddress: "10.0.0.23", remotePort: 61_000),
             now: 0, rng: SplitMix64(seed: 2)) { _ in }

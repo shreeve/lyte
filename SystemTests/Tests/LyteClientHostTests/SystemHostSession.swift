@@ -30,23 +30,41 @@ final class SystemHostSession: NoiseHandshakeIO {
     /// Where client datagrams arrive from; a gate moves it to roam.
     var clientTuple = SystemHostSession.initialClientTuple
 
-    private(set) lazy var session = Session(
-        config: config,
-        clientTuple: Self.initialClientTuple,
-        now: 0,
-        rng: SplitMix64(seed: 0xC1_12),
-        send: { [outbox] datagram in
-            outbox.datagrams.append(datagram)
-        }
-    )
+    private var acceptor: HandshakeAcceptor
+    /// Nil until the client's message 1 is answered.
+    private(set) var session: Session!
 
     init(tweak: (inout SessionConfig) -> Void = { _ in }) {
-        var config = SessionConfig(
-            crypto: .noise(hostStatic: staticKeys),
-            rateBitsPerSecond: 1_000_000_000
-        )
+        var config = SessionConfig(rateBitsPerSecond: 1_000_000_000)
         tweak(&config)
         self.config = config
+        acceptor = HandshakeAcceptor(
+            config: HandshakeAcceptor.Config(hostStatic: staticKeys))
+    }
+
+    /// The listening shell's routing: the answered session reads first;
+    /// anything else is the acceptor's.
+    private func route(_ datagram: [UInt8]) throws -> [SessionEvent] {
+        var events = session?.receive(
+            datagram, from: clientTuple,
+            now: nowNS, hostMicroseconds: nowNS / 1_000
+        ) ?? []
+        if session == nil || events.contains(.initiationWhileUnconfirmed),
+           case .authenticated(let handshake) = acceptor.accept(
+               datagram[...], from: clientTuple, now: nowNS
+           ).verdict {
+            let answered = try Session.answer(
+                handshake, config: config,
+                now: nowNS, hostMicroseconds: nowNS / 1_000,
+                rng: SplitMix64(seed: 0xC1_12),
+                send: { [outbox] datagram in
+                    outbox.datagrams.append(datagram)
+                }
+            )
+            session = answered.session
+            events += answered.events
+        }
+        return events
     }
 
     var nowMicroseconds: UInt64 {
@@ -54,13 +72,8 @@ final class SystemHostSession: NoiseHandshakeIO {
     }
 
     func sendToHost(_ datagram: [UInt8]) throws {
-        record(session.receive(
-            datagram,
-            from: clientTuple,
-            now: nowNS,
-            hostMicroseconds: nowNS / 1_000
-        ))
-        session.pump(now: nowNS)
+        record(try route(datagram))
+        session?.pump(now: nowNS)
     }
 
     func receiveDatagram(timeoutMilliseconds: Int) throws -> [UInt8]? {
@@ -77,12 +90,7 @@ final class SystemHostSession: NoiseHandshakeIO {
     {
         let arrivalNS = clientMicros * 1_000
         try advanceClock(to: arrivalNS)
-        let received = session.receive(
-            bytes,
-            from: clientTuple,
-            now: nowNS,
-            hostMicroseconds: nowNS / 1_000
-        )
+        let received = try route(bytes)
         record(received)
         session.pump(now: nowNS)
         return received
@@ -196,6 +204,7 @@ final class SystemHostSession: NoiseHandshakeIO {
 
     private func serviceFor(maxAdvanceNS: UInt64) {
         let horizon = nowNS &+ maxAdvanceNS
+        guard let session else { return }
         session.pump(now: nowNS)
         while let wake = session.nextWake(now: nowNS), wake <= horizon {
             nowNS = max(nowNS &+ 1, wake)
@@ -212,6 +221,7 @@ final class SystemHostSession: NoiseHandshakeIO {
         _ done: () -> Bool
     ) {
         let horizon = nowNS &+ maxAdvanceNS
+        guard let session else { return }
         session.pump(now: nowNS)
         while !done(),
               let wake = session.nextWake(now: nowNS),
