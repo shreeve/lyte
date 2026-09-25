@@ -71,6 +71,34 @@ final class ReliableCtrlTransmitTests: XCTestCase {
         wire.gate = nil
     }
 
+    /// The production PTO wake retransmits a lost segment on its own. The
+    /// endpoint's clock runs slower than the timer's, so the first wake
+    /// finds the same deadline still ahead and must re-arm for it.
+    func testTheTimerRetransmitsALostSegmentOnItsOwn() {
+        let wire = Wire()
+        let origin = DispatchTime.now().uptimeNanoseconds
+        let reliable = ReliableCtrlEndpoint(
+            sender: TransportSender(
+                crypto: PassthroughTransportCrypto(),
+                transmit: { wire.transmit($0) }),
+            config: ArqConfig(initialRttMicroseconds: 10_000),
+            now: {
+                let elapsed = DispatchTime.now().uptimeNanoseconds - origin
+                return ClientTimestamp(microseconds: elapsed / 1_250)
+            })
+        reliable.start()
+        defer { reliable.stop() }
+        XCTAssertNoThrow(try reliable.send([CtrlMessageType.inputEvent, 1]))
+        XCTAssertEqual(wire.segmentSeqs, [0], "the first copy is lost")
+
+        let deadline = Date().addingTimeInterval(2)
+        while wire.segmentSeqs.count < 2, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.005)
+        }
+        XCTAssertEqual(wire.segmentSeqs.prefix(2), [0, 0],
+                       "the PTO wake must retransmit without other traffic")
+    }
+
     func testConcurrentSendersTransmitSegmentsInPollOrder() {
         let wire = Wire()
         let reliable = endpoint(wire)
