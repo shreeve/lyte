@@ -28,14 +28,15 @@ public struct VectorFileBuilder: Sendable {
     }
 }
 
+/// The committed corpus the video builders packetize.
+private let videoCorpusDirectory = WireVectors.path("video-corpus-v1")
+
 /// Every vector file's builder, in authoring order.
 public let vectorFileBuilders: [VectorFileBuilder] = [
     VectorFileBuilder("envelope", makeEnvelopeVectorFile),
     VectorFileBuilder("fec", makeFecVectorFile),
     VectorFileBuilder("video") {
-        try makeVideoVectorFile(
-            corpusDirectory: WireVectors.path("video-corpus-v1")
-        )
+        try makeVideoVectorFile(corpusDirectory: videoCorpusDirectory)
     },
     VectorFileBuilder("beacon", makeBeaconVectorFile),
     VectorFileBuilder("noise", makeNoiseVectorFile),
@@ -54,8 +55,6 @@ public let vectorFileBuilders: [VectorFileBuilder] = [
     VectorFileBuilder("postures", makePostureVectorFile),
     VectorFileBuilder("input-coordinates", makeInputCoordinateVectorFile),
     VectorFileBuilder("video-decisions") {
-        try makeVideoDecisionVectorFile(
-            corpusDirectory: WireVectors.path("video-corpus-v1")
-        )
+        try makeVideoDecisionVectorFile(corpusDirectory: videoCorpusDirectory)
     },
 ]

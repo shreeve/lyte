@@ -9,6 +9,23 @@ func counting(from offset: Int, count: Int) -> [UInt8] {
     (0..<count).map { UInt8((offset + $0) & 0xFF) }
 }
 
+/// `count` printable-ASCII characters cycling byte i = 0x20 + i mod 0x5F,
+/// auditable by eye in a hex dump.
+func printableASCII(count: Int) -> String {
+    String(decoding: (0..<count).map { UInt8(0x20 + $0 % 0x5F) }, as: UTF8.self)
+}
+
+/// The hex of a fixed video datagram (chan 2, seq 7, frame 3, t = 1 s,
+/// shard `01 02 03`) carrying `extensions` — the carrier every TLV-value
+/// codec vector rides.
+func tlvCarrierDatagram(_ extensions: [WireExtension]) throws -> String {
+    Hex.string(try Envelope(
+        channel: .videoActive, seq: ChannelSeq(rawValue: 7),
+        frame: FrameNumber(rawValue: 3), timestamp: 1_000_000, fec: 0,
+        extensions: extensions
+    ).encode(plaintextShard: [1, 2, 3]))
+}
+
 /// A vector file's hex u64 field, or `malformedField(field)`.
 func vectorU64(_ hex: String, _ field: String) throws -> UInt64 {
     guard let value = Hex.uint64(hex) else {

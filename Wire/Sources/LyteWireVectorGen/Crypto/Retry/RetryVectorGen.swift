@@ -19,8 +19,9 @@ public func makeRetryVectorFile() throws -> RetryVectorFile {
     // msg1-shaped counting bytes at the IK structural minimum
     // (e ‖ enc(s) ‖ enc(version byte)): 32 + 48 + 17.
     let message1 = counting(from: 0x00, count: 97)
-    let alteredMessage1 = message1.prefix(40) + [message1[40] ^ 0x01]
-        + message1.dropFirst(41)
+    let alteredMessage1 = Array(
+        message1.prefix(40) + [message1[40] ^ 0x01] + message1.dropFirst(41)
+    )
     let mintNow: UInt64 = 5_000_000_000
 
     let cookie = try RetryCookie.mint(
@@ -30,196 +31,94 @@ public func makeRetryVectorFile() throws -> RetryVectorFile {
 
     var cookieVectors: [RetryCookieVector] = []
     let pinned = "pinned-self-consistent"
+    let later = mintNow + 200_000_000
+    let lifetime = RetryCookie.defaultLifetimeNanoseconds
 
     // MARK: Mint rows — the exact cookie bytes, then the decisions.
 
-    cookieVectors.append(RetryCookieVector(
-        name: "mint-nominal",
-        description: "The reference mint: (tuple, msg1, now, secret) →"
-            + " these exact 24 bytes, verifying fresh under the minting"
-            + " secret. Stateless: same inputs always yield these bytes.",
-        provenance: pinned,
-        kind: .mint,
-        tupleHex: Hex.string(tuple),
-        message1Hex: Hex.string(message1),
-        mintNowHex: Hex.uint64String(mintNow),
-        secretHex: Hex.string(secret),
-        cookieHex: Hex.string(cookie),
-        verifyNowHex: Hex.uint64String(mintNow + 200_000_000),
-        secretsHex: [Hex.string(secret)],
-        valid: true
-    ))
-    cookieVectors.append(RetryCookieVector(
-        name: "mint-verify-at-lifetime-edge",
-        description: "Verification at exactly mint + lifetime still"
-            + " accepts — the window is closed-ended.",
-        provenance: pinned,
-        kind: .mint,
-        tupleHex: Hex.string(tuple),
-        message1Hex: Hex.string(message1),
-        mintNowHex: Hex.uint64String(mintNow),
-        secretHex: Hex.string(secret),
-        cookieHex: Hex.string(cookie),
-        verifyNowHex: Hex.uint64String(
-            mintNow + RetryCookie.defaultLifetimeNanoseconds
-        ),
-        secretsHex: [Hex.string(secret)],
-        valid: true
-    ))
-    cookieVectors.append(RetryCookieVector(
-        name: "mint-expired",
-        description: "One nanosecond past the lifetime: a harvested"
-            + " cookie is dead.",
-        provenance: pinned,
-        kind: .mint,
-        tupleHex: Hex.string(tuple),
-        message1Hex: Hex.string(message1),
-        mintNowHex: Hex.uint64String(mintNow),
-        secretHex: Hex.string(secret),
-        cookieHex: Hex.string(cookie),
-        verifyNowHex: Hex.uint64String(
-            mintNow + RetryCookie.defaultLifetimeNanoseconds + 1
-        ),
-        secretsHex: [Hex.string(secret)],
-        valid: false
-    ))
-    cookieVectors.append(RetryCookieVector(
-        name: "mint-future-stamp",
-        description: "A timestamp from the future rejects outright —"
-            + " one monotonic host clock mints and verifies, so a"
-            + " future stamp is a forgery.",
-        provenance: pinned,
-        kind: .mint,
-        tupleHex: Hex.string(tuple),
-        message1Hex: Hex.string(message1),
-        mintNowHex: Hex.uint64String(mintNow),
-        secretHex: Hex.string(secret),
-        cookieHex: Hex.string(cookie),
-        verifyNowHex: Hex.uint64String(mintNow - 1),
-        secretsHex: [Hex.string(secret)],
-        valid: false
-    ))
-    cookieVectors.append(RetryCookieVector(
-        name: "mint-custom-lifetime",
-        description: "A caller-chosen 1 ms lifetime is honored: this"
-            + " verify sits past it and rejects.",
-        provenance: pinned,
-        kind: .mint,
-        tupleHex: Hex.string(tuple),
-        message1Hex: Hex.string(message1),
-        mintNowHex: Hex.uint64String(mintNow),
-        secretHex: Hex.string(secret),
-        cookieHex: Hex.string(cookie),
-        verifyNowHex: Hex.uint64String(mintNow + 1_000_001),
-        secretsHex: [Hex.string(secret)],
-        lifetimeHex: Hex.uint64String(1_000_000),
-        valid: false
-    ))
-    cookieVectors.append(RetryCookieVector(
-        name: "mint-rotation-previous-secret",
-        description: "After rotation the previous secret (second in"
-            + " the current-first list) still verifies the cookie it"
-            + " minted.",
-        provenance: pinned,
-        kind: .mint,
-        tupleHex: Hex.string(tuple),
-        message1Hex: Hex.string(message1),
-        mintNowHex: Hex.uint64String(mintNow),
-        secretHex: Hex.string(secret),
-        cookieHex: Hex.string(cookie),
-        verifyNowHex: Hex.uint64String(mintNow + 200_000_000),
-        secretsHex: [Hex.string(rotatedSecret), Hex.string(secret)],
-        valid: true
-    ))
-    cookieVectors.append(RetryCookieVector(
-        name: "mint-rotated-out",
-        description: "The minting secret rotated fully out of the"
-            + " list: reject — rotation tolerance is exactly one"
-            + " configured window, not forever.",
-        provenance: pinned,
-        kind: .mint,
-        tupleHex: Hex.string(tuple),
-        message1Hex: Hex.string(message1),
-        mintNowHex: Hex.uint64String(mintNow),
-        secretHex: Hex.string(secret),
-        cookieHex: Hex.string(cookie),
-        verifyNowHex: Hex.uint64String(mintNow + 200_000_000),
-        secretsHex: [Hex.string(rotatedSecret)],
-        valid: false
-    ))
+    for (name, description, verifyNow, secrets, lifetimeHex, valid) in [
+        ("mint-nominal",
+         "The reference mint: (tuple, msg1, now, secret) → these exact 24 "
+            + "bytes, verifying fresh under the minting secret. Stateless: "
+            + "same inputs always yield these bytes.",
+         later, [secret], nil, true),
+        ("mint-verify-at-lifetime-edge",
+         "Verification at exactly mint + lifetime still accepts — the "
+            + "window is closed-ended.",
+         mintNow + lifetime, [secret], nil, true),
+        ("mint-expired",
+         "One nanosecond past the lifetime: a harvested cookie is dead.",
+         mintNow + lifetime + 1, [secret], nil, false),
+        ("mint-future-stamp",
+         "A timestamp from the future rejects outright — one monotonic host "
+            + "clock mints and verifies, so a future stamp is a forgery.",
+         mintNow - 1, [secret], nil, false),
+        ("mint-custom-lifetime",
+         "A caller-chosen 1 ms lifetime is honored: this verify sits past it "
+            + "and rejects.",
+         mintNow + 1_000_001, [secret], Hex.uint64String(1_000_000), false),
+        ("mint-rotation-previous-secret",
+         "After rotation the previous secret (second in the current-first "
+            + "list) still verifies the cookie it minted.",
+         later, [rotatedSecret, secret], nil, true),
+        ("mint-rotated-out",
+         "The minting secret rotated fully out of the list: reject — "
+            + "rotation tolerance is exactly one configured window, not "
+            + "forever.",
+         later, [rotatedSecret], nil, false),
+    ] as [(String, String, UInt64, [[UInt8]], String?, Bool)] {
+        cookieVectors.append(RetryCookieVector(
+            name: name, description: description, provenance: pinned,
+            kind: .mint,
+            tupleHex: Hex.string(tuple),
+            message1Hex: Hex.string(message1),
+            mintNowHex: Hex.uint64String(mintNow),
+            secretHex: Hex.string(secret),
+            cookieHex: Hex.string(cookie),
+            verifyNowHex: Hex.uint64String(verifyNow),
+            secretsHex: secrets.map { Hex.string($0) },
+            lifetimeHex: lifetimeHex,
+            valid: valid
+        ))
+    }
 
     // MARK: Verify rows — presented bytes, no mint step.
 
-    cookieVectors.append(RetryCookieVector(
-        name: "verify-foreign-tuple",
-        description: "The nominal cookie presented from a different"
-            + " address: reject — address ownership is the whole"
-            + " point.",
-        provenance: pinned,
-        kind: .verify,
-        tupleHex: Hex.string(movedTuple),
-        message1Hex: Hex.string(message1),
-        cookieHex: Hex.string(cookie),
-        verifyNowHex: Hex.uint64String(mintNow + 200_000_000),
-        secretsHex: [Hex.string(secret)],
-        valid: false
-    ))
-    cookieVectors.append(RetryCookieVector(
-        name: "verify-altered-message1",
-        description: "Same address, one msg1 byte flipped: reject —"
-            + " one cookie authorizes one exact handshake attempt.",
-        provenance: pinned,
-        kind: .verify,
-        tupleHex: Hex.string(tuple),
-        message1Hex: Hex.string(Array(alteredMessage1)),
-        cookieHex: Hex.string(cookie),
-        verifyNowHex: Hex.uint64String(mintNow + 200_000_000),
-        secretsHex: [Hex.string(secret)],
-        valid: false
-    ))
     var tamperedMac = cookie
     tamperedMac[8] ^= 0x01
-    cookieVectors.append(RetryCookieVector(
-        name: "verify-tampered-mac",
-        description: "First MAC byte flipped: reject.",
-        provenance: pinned,
-        kind: .verify,
-        tupleHex: Hex.string(tuple),
-        message1Hex: Hex.string(message1),
-        cookieHex: Hex.string(tamperedMac),
-        verifyNowHex: Hex.uint64String(mintNow + 200_000_000),
-        secretsHex: [Hex.string(secret)],
-        valid: false
-    ))
     var tamperedStamp = cookie
     tamperedStamp[0] ^= 0x01
-    cookieVectors.append(RetryCookieVector(
-        name: "verify-tampered-timestamp",
-        description: "A timestamp byte flipped: the stamp no longer"
-            + " matches the MAC's transcript — reject.",
-        provenance: pinned,
-        kind: .verify,
-        tupleHex: Hex.string(tuple),
-        message1Hex: Hex.string(message1),
-        cookieHex: Hex.string(tamperedStamp),
-        verifyNowHex: Hex.uint64String(mintNow + 200_000_000),
-        secretsHex: [Hex.string(secret)],
-        valid: false
-    ))
-    cookieVectors.append(RetryCookieVector(
-        name: "verify-truncated-cookie",
-        description: "23 bytes where the interior is exactly 24:"
-            + " quietly false, never a throw — the flood path stays"
-            + " cheap.",
-        provenance: pinned,
-        kind: .verify,
-        tupleHex: Hex.string(tuple),
-        message1Hex: Hex.string(message1),
-        cookieHex: Hex.string(Array(cookie.dropLast())),
-        verifyNowHex: Hex.uint64String(mintNow + 200_000_000),
-        secretsHex: [Hex.string(secret)],
-        valid: false
-    ))
+    for (name, description, presentedTuple, presentedMessage1, presented) in [
+        ("verify-foreign-tuple",
+         "The nominal cookie presented from a different address: reject — "
+            + "address ownership is the whole point.",
+         movedTuple, message1, cookie),
+        ("verify-altered-message1",
+         "Same address, one msg1 byte flipped: reject — one cookie "
+            + "authorizes one exact handshake attempt.",
+         tuple, alteredMessage1, cookie),
+        ("verify-tampered-mac", "First MAC byte flipped: reject.",
+         tuple, message1, tamperedMac),
+        ("verify-tampered-timestamp",
+         "A timestamp byte flipped: the stamp no longer matches the MAC's "
+            + "transcript — reject.",
+         tuple, message1, tamperedStamp),
+        ("verify-truncated-cookie",
+         "23 bytes where the interior is exactly 24: quietly false, never a "
+            + "throw — the flood path stays cheap.",
+         tuple, message1, Array(cookie.dropLast())),
+    ] {
+        cookieVectors.append(RetryCookieVector(
+            name: name, description: description, provenance: pinned,
+            kind: .verify,
+            tupleHex: Hex.string(presentedTuple),
+            message1Hex: Hex.string(presentedMessage1),
+            cookieHex: Hex.string(presented),
+            verifyNowHex: Hex.uint64String(later),
+            secretsHex: [Hex.string(secret)],
+            valid: false
+        ))
+    }
 
     // MARK: Message codec rows — anchored by RetryCodecTests.
 
@@ -227,138 +126,85 @@ public func makeRetryVectorFile() throws -> RetryVectorFile {
     let codecCookie = counting(from: 0xA0, count: 24)
     let codecMessage1 = counting(from: 0x00, count: 96)
 
-    messageVectors.append(RetryMessageVector(
-        name: "challenge-nominal",
-        description: "The hand-computed anchor: type ‖ cookieLen 24 ‖"
-            + " cookie.",
-        kind: .roundtrip,
-        codec: .challenge,
-        messageHex: Hex.string(
-            try RetryChallenge(cookie: codecCookie).encode()
-        ),
-        cookieHex: Hex.string(codecCookie)
-    ))
-    messageVectors.append(RetryMessageVector(
-        name: "challenge-min-cookie",
-        description: "A 1-byte cookie — the codec carries any 1…255"
-            + " bytes; the interior size is the minter's business.",
-        kind: .roundtrip,
-        codec: .challenge,
-        messageHex: Hex.string(
-            try RetryChallenge(cookie: [0x5A]).encode()
-        ),
-        cookieHex: Hex.string([0x5A])
-    ))
-    messageVectors.append(RetryMessageVector(
-        name: "challenge-max-cookie",
-        description: "A 255-byte cookie — the length byte's ceiling.",
-        kind: .roundtrip,
-        codec: .challenge,
-        messageHex: Hex.string(
-            try RetryChallenge(
-                cookie: counting(from: 0, count: 255)
-            ).encode()
-        ),
-        cookieHex: Hex.string(counting(from: 0, count: 255))
-    ))
-    messageVectors.append(RetryMessageVector(
-        name: "handshake1-nominal",
-        description: "The hand-computed anchor: type ‖ cookieLen 24 ‖"
-            + " cookie ‖ msg1 (96 B, the structural minimum).",
-        kind: .roundtrip,
-        codec: .handshake1,
-        messageHex: Hex.string(
-            try RetryHandshake1(
-                cookie: codecCookie, message1: codecMessage1
-            ).encode()
-        ),
-        cookieHex: Hex.string(codecCookie),
-        message1Hex: Hex.string(codecMessage1)
-    ))
-    messageVectors.append(RetryMessageVector(
-        name: "handshake1-real-msg1-shape",
-        description: "A 122 B msg1 (version byte + 25 B application"
-            + " payload) — msg1 is the sole trailing field,"
-            + " self-delimiting.",
-        kind: .roundtrip,
-        codec: .handshake1,
-        messageHex: Hex.string(
-            try RetryHandshake1(
-                cookie: codecCookie,
-                message1: counting(from: 0x10, count: 122)
-            ).encode()
-        ),
-        cookieHex: Hex.string(codecCookie),
-        message1Hex: Hex.string(counting(from: 0x10, count: 122))
-    ))
+    for (name, description, cookie) in [
+        ("challenge-nominal",
+         "The hand-computed anchor: type ‖ cookieLen 24 ‖ cookie.",
+         codecCookie),
+        ("challenge-min-cookie",
+         "A 1-byte cookie — the codec carries any 1…255 bytes; the interior "
+            + "size is the minter's business.",
+         [0x5A]),
+        ("challenge-max-cookie",
+         "A 255-byte cookie — the length byte's ceiling.",
+         counting(from: 0, count: 255)),
+    ] {
+        messageVectors.append(RetryMessageVector(
+            name: name, description: description,
+            kind: .roundtrip, codec: .challenge,
+            messageHex: Hex.string(try RetryChallenge(cookie: cookie).encode()),
+            cookieHex: Hex.string(cookie)
+        ))
+    }
+    for (name, description, message1) in [
+        ("handshake1-nominal",
+         "The hand-computed anchor: type ‖ cookieLen 24 ‖ cookie ‖ msg1 "
+            + "(96 B, the structural minimum).",
+         codecMessage1),
+        ("handshake1-real-msg1-shape",
+         "A 122 B msg1 (version byte + 25 B application payload) — msg1 is "
+            + "the sole trailing field, self-delimiting.",
+         counting(from: 0x10, count: 122)),
+    ] {
+        messageVectors.append(RetryMessageVector(
+            name: name, description: description,
+            kind: .roundtrip, codec: .handshake1,
+            messageHex: Hex.string(try RetryHandshake1(
+                cookie: codecCookie, message1: message1
+            ).encode()),
+            cookieHex: Hex.string(codecCookie),
+            message1Hex: Hex.string(message1)
+        ))
+    }
 
-    messageVectors.append(RetryMessageVector(
-        name: "challenge-truncated-header",
-        description: "The type byte alone.",
-        kind: .decodeReject, codec: .challenge,
-        messageHex: "13", error: "truncatedMessage"
-    ))
-    messageVectors.append(RetryMessageVector(
-        name: "challenge-truncated-cookie",
-        description: "cookieLen 24 but only 23 cookie bytes present.",
-        kind: .decodeReject, codec: .challenge,
-        messageHex: "1318" + Hex.string(counting(from: 0xA0, count: 23)),
-        error: "truncatedMessage"
-    ))
-    messageVectors.append(RetryMessageVector(
-        name: "challenge-zero-cookie-len",
-        description: "cookieLen 0 — the loud zero-fill bug.",
-        kind: .decodeReject, codec: .challenge,
-        messageHex: "1300", error: "zeroCookieLength"
-    ))
-    messageVectors.append(RetryMessageVector(
-        name: "challenge-trailing-byte",
-        description: "One byte past the cookie — a challenge is"
-            + " exactly its layout.",
-        kind: .decodeReject, codec: .challenge,
-        messageHex: "1318" + Hex.string(codecCookie) + "00",
-        error: "trailingBytes"
-    ))
-    messageVectors.append(RetryMessageVector(
-        name: "challenge-bad-type",
-        description: "A handshake1 type byte fed to the challenge"
-            + " decoder.",
-        kind: .decodeReject, codec: .challenge,
-        messageHex: "1418" + Hex.string(codecCookie),
-        error: "unexpectedType"
-    ))
-    messageVectors.append(RetryMessageVector(
-        name: "handshake1-truncated-cookie",
-        description: "cookieLen 24 but the payload ends mid-cookie.",
-        kind: .decodeReject, codec: .handshake1,
-        messageHex: "1418" + Hex.string(counting(from: 0xA0, count: 10)),
-        error: "truncatedMessage"
-    ))
-    messageVectors.append(RetryMessageVector(
-        name: "handshake1-zero-cookie-len",
-        description: "cookieLen 0 — the loud zero-fill bug.",
-        kind: .decodeReject, codec: .handshake1,
-        messageHex: "1400" + Hex.string(codecMessage1),
-        error: "zeroCookieLength"
-    ))
-    messageVectors.append(RetryMessageVector(
-        name: "handshake1-msg1-too-short",
-        description: "95 B where IK msg1's structural minimum is 96 —"
-            + " could never handshake, refused before cookie work.",
-        kind: .decodeReject, codec: .handshake1,
-        messageHex: "1418" + Hex.string(codecCookie)
-            + Hex.string(counting(from: 0, count: 95)),
-        error: "message1TooShort"
-    ))
-    messageVectors.append(RetryMessageVector(
-        name: "handshake1-bad-type",
-        description: "A challenge type byte fed to the handshake1"
-            + " decoder.",
-        kind: .decodeReject, codec: .handshake1,
-        messageHex: "1318" + Hex.string(codecCookie)
-            + Hex.string(codecMessage1),
-        error: "unexpectedType"
-    ))
+    let cookieHex = Hex.string(codecCookie)
+    for (name, description, codec, hex, error) in [
+        ("challenge-truncated-header", "The type byte alone.",
+         RetryMessageVector.Codec.challenge, "13", "truncatedMessage"),
+        ("challenge-truncated-cookie",
+         "cookieLen 24 but only 23 cookie bytes present.",
+         .challenge, "1318" + Hex.string(counting(from: 0xA0, count: 23)),
+         "truncatedMessage"),
+        ("challenge-zero-cookie-len", "cookieLen 0 — the loud zero-fill bug.",
+         .challenge, "1300", "zeroCookieLength"),
+        ("challenge-trailing-byte",
+         "One byte past the cookie — a challenge is exactly its layout.",
+         .challenge, "1318" + cookieHex + "00", "trailingBytes"),
+        ("challenge-bad-type",
+         "A handshake1 type byte fed to the challenge decoder.",
+         .challenge, "1418" + cookieHex, "unexpectedType"),
+        ("handshake1-truncated-cookie",
+         "cookieLen 24 but the payload ends mid-cookie.",
+         .handshake1, "1418" + Hex.string(counting(from: 0xA0, count: 10)),
+         "truncatedMessage"),
+        ("handshake1-zero-cookie-len", "cookieLen 0 — the loud zero-fill bug.",
+         .handshake1, "1400" + Hex.string(codecMessage1), "zeroCookieLength"),
+        ("handshake1-msg1-too-short",
+         "95 B where IK msg1's structural minimum is 96 — could never "
+            + "handshake, refused before cookie work.",
+         .handshake1,
+         "1418" + cookieHex + Hex.string(counting(from: 0, count: 95)),
+         "message1TooShort"),
+        ("handshake1-bad-type",
+         "A challenge type byte fed to the handshake1 decoder.",
+         .handshake1, "1318" + cookieHex + Hex.string(codecMessage1),
+         "unexpectedType"),
+    ] {
+        messageVectors.append(RetryMessageVector(
+            name: name, description: description,
+            kind: .decodeReject, codec: codec,
+            messageHex: hex, error: error
+        ))
+    }
 
     return RetryVectorFile(
         cookieVectors: cookieVectors,

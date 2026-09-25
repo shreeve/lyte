@@ -36,55 +36,37 @@ public func makeVideoVectorFile(corpusDirectory: String) throws -> VideoVectorFi
 
     // Inline synthetic frames — every geometry bucket edge the vectors
     // can afford to carry as full hex.
-    let tinyIdr = syntheticFrame(
-        nalType: HevcNalType.idrWRadl, totalByteCount: 48
-    )
-    specs.append(FrameSpec(
-        name: "inline-tiny-idr",
-        description: "48 B synthetic IDR: k=1 m=1 clean, the smallest group shape",
-        bytes: tinyIdr, source: .inline(tinyIdr),
-        frameNumber: 0, timestamp: 0x0001_0000, isIDR: true,
-        regime: .clean, firstSeq: 0, includeHex: true
-    ))
+    let idr = HevcNalType.idrWRadl, p = HevcNalType.trailR
+    let inlines: [(String, String, UInt8, Int, UInt32, UInt64, FecRegime, UInt16)] = [
+        ("inline-tiny-idr",
+         "48 B synthetic IDR: k=1 m=1 clean, the smallest group shape",
+         idr, 48, 0, 0x0001_0000, .clean, 0),
+        ("inline-p-k3",
+         "2500 B synthetic P: k=3 m=2 clean, balanced split with a short trailing shard",
+         p, 2500, 1, 0x0001_4144, .clean, 2),
+        ("inline-p-k3-lossy",
+         "the same 2500 B P under the lossy regime: k=3 m=2 (percentCeil 50)",
+         p, 2500, 2, 0x0001_8288, .lossy, 7),
+        ("inline-p-tail",
+         "2500 B P continuing the inline channel (seqs 12–16): the follow-on traffic that renders loss verdicts",
+         p, 2500, 3, 0x0001_C3CC, .clean, 12),
+        ("inline-p-seq-wrap",
+         "1500 B P allocated across the u16 seq wrap: k=2 m=1, seqs 0xFFFF 0x0000 0x0001",
+         p, 1500, 4, 0x0002_0510, .clean, 0xFFFF),
+    ]
+    for (name, description, nalType, size, frameNumber, timestamp, regime, firstSeq) in inlines {
+        let bytes = syntheticFrame(nalType: nalType, totalByteCount: size)
+        specs.append(FrameSpec(
+            name: name, description: description,
+            bytes: bytes, source: .inline(bytes),
+            frameNumber: frameNumber, timestamp: timestamp,
+            isIDR: nalType == idr, regime: regime, firstSeq: firstSeq,
+            includeHex: true
+        ))
+    }
 
-    let smallP = syntheticFrame(nalType: HevcNalType.trailR, totalByteCount: 2500)
-    specs.append(FrameSpec(
-        name: "inline-p-k3",
-        description: "2500 B synthetic P: k=3 m=2 clean, balanced split with a short trailing shard",
-        bytes: smallP, source: .inline(smallP),
-        frameNumber: 1, timestamp: 0x0001_4144, isIDR: false,
-        regime: .clean, firstSeq: 2, includeHex: true
-    ))
-
-    let lossyP = syntheticFrame(nalType: HevcNalType.trailR, totalByteCount: 2500)
-    specs.append(FrameSpec(
-        name: "inline-p-k3-lossy",
-        description: "the same 2500 B P under the lossy regime: k=3 m=2 (percentCeil 50)",
-        bytes: lossyP, source: .inline(lossyP),
-        frameNumber: 2, timestamp: 0x0001_8288, isIDR: false,
-        regime: .lossy, firstSeq: 7, includeHex: true
-    ))
-
-    let tailP = syntheticFrame(nalType: HevcNalType.trailR, totalByteCount: 2500)
-    specs.append(FrameSpec(
-        name: "inline-p-tail",
-        description: "2500 B P continuing the inline channel (seqs 12–16): the follow-on traffic that renders loss verdicts",
-        bytes: tailP, source: .inline(tailP),
-        frameNumber: 3, timestamp: 0x0001_C3CC, isIDR: false,
-        regime: .clean, firstSeq: 12, includeHex: true
-    ))
-
-    let wrapP = syntheticFrame(nalType: HevcNalType.trailR, totalByteCount: 1500)
-    specs.append(FrameSpec(
-        name: "inline-p-seq-wrap",
-        description: "1500 B P allocated across the u16 seq wrap: k=2 m=1, seqs 0xFFFF 0x0000 0x0001",
-        bytes: wrapP, source: .inline(wrapP),
-        frameNumber: 4, timestamp: 0x0002_0510, isIDR: false,
-        regime: .clean, firstSeq: 0xFFFF, includeHex: true
-    ))
-
-    // Corpus frames — real HEVC from the H0a host (see the corpus
-    // README for provenance), hash-pinned.
+    // Corpus frames — real HEVC (see the corpus README for provenance),
+    // hash-pinned.
     let corpusPicks: [(file: String, name: String, description: String, isIDR: Bool, regime: FecRegime, frameNumber: UInt32, firstSeq: UInt16)] = [
         // firstSeqs are contiguous across the four frames (20 + 22 + 6
         // shards), the same allocation one packetizer would produce.
@@ -150,122 +132,89 @@ public func makeVideoVectorFile(corpusDirectory: String) throws -> VideoVectorFi
         ))
     }
 
-    func allShards(_ name: String) -> [VideoDeliveryStep] {
-        (0..<geometries[name]!.totalShards).map {
-            VideoDeliveryStep(frame: name, shardIndex: $0)
-        }
+    func steps(_ frame: String, _ indices: some Sequence<Int>) -> [VideoDeliveryStep] {
+        indices.map { VideoDeliveryStep(frame: frame, shardIndex: $0) }
     }
+    func allShards(_ name: String) -> [VideoDeliveryStep] {
+        steps(name, 0..<geometries[name]!.totalShards)
+    }
+    let corpusIdr = geometries["corpus-idr"]!
+    let corpusP = geometries["corpus-p-large"]!
+    var rng = SplitMix64(seed: 0x57_1D_00_02)
 
-    var scenarios: [VideoScenario] = []
+    let scenarios = [
+        VideoScenario(
+            name: "in-order-tiny-idr",
+            description: "single k=1 m=1 frame, in order, no loss",
+            steps: allShards("inline-tiny-idr"),
+            expectDecoded: ["inline-tiny-idr"]
+        ),
+        VideoScenario(
+            name: "shuffled-k3",
+            description: "k=3 m=2 frame with every shard reordered",
+            steps: steps("inline-p-k3", [4, 1, 3, 0, 2]),
+            expectDecoded: ["inline-p-k3"]
+        ),
+        VideoScenario(
+            name: "loss-at-parity-limit-k3",
+            description: "k=3 m=2 with both data shards 0 and 2 lost — exactly m erasures, recovered",
+            steps: steps("inline-p-k3", [1, 3, 4]),
+            expectDecoded: ["inline-p-k3"]
+        ),
+        VideoScenario(
+            name: "duplicates-k3",
+            description: "duplicate datagrams are dropped, single decode",
+            steps: steps("inline-p-k3", [0, 0, 1, 1, 2, 2, 0]),
+            expectDecoded: ["inline-p-k3"]
+        ),
+        VideoScenario(
+            name: "seq-wrap-loss",
+            description: "shard at seq 0x0000 (index 1) lost across the u16 wrap, parity recovers",
+            steps: steps("inline-p-seq-wrap", [0, 2]),
+            expectDecoded: ["inline-p-seq-wrap"]
+        ),
+        VideoScenario(
+            name: "interleaved-frames-emit-in-order",
+            description: "frame 1 opens, frame 2 fully arrives (held for order), frame 1 completes late — decode order is frame order, and the stragglers must NOT have drawn a fec-impossible verdict (NACK candidates yes, write-off no)",
+            steps: steps("inline-p-k3", [0]) + allShards("inline-p-k3-lossy")
+                + steps("inline-p-k3", [1, 2]),
+            expectDecoded: ["inline-p-k3", "inline-p-k3-lossy"]
+        ),
+        VideoScenario(
+            name: "fec-impossible-then-eviction",
+            description: "frame 1 keeps only one parity shard; two full frames of follow-on traffic push every missing seq past the write-off distance — fec-impossible reported, stale tick evicts, later frames emit",
+            steps: steps("inline-p-k3", [3]) + allShards("inline-p-k3-lossy")
+                + allShards("inline-p-tail"),
+            finalTickMicroseconds: 300_000,
+            expectDecoded: ["inline-p-k3-lossy", "inline-p-tail"],
+            expectFecImpossible: ["inline-p-k3"]
+        ),
+        VideoScenario(
+            name: "corpus-idr-in-order",
+            description: "the real IDR access unit, in order, no loss",
+            steps: allShards("corpus-idr"),
+            expectDecoded: ["corpus-idr"]
+        ),
+        VideoScenario(
+            name: "corpus-sequence-with-loss",
+            description: "IDR then large P, each losing its full parity budget in data shards, reordered within the G4 displacement model (≤3) so the loss presumption stays quiet",
+            steps: Reorder.bounded(
+                steps("corpus-idr", corpusIdr.parityShards..<corpusIdr.totalShards)
+                    + steps("corpus-p-large", corpusP.parityShards..<corpusP.totalShards),
+                maxDisplacement: 3, using: &rng
+            ),
+            expectDecoded: ["corpus-idr", "corpus-p-large"]
+        ),
+        VideoScenario(
+            name: "corpus-small-p-lossy-regime",
+            description: "small P under lossy regime survives losing both of its first two shards",
+            steps: steps(
+                "corpus-p-small-lossy",
+                2..<geometries["corpus-p-small-lossy"]!.totalShards
+            ),
+            expectDecoded: ["corpus-p-small-lossy"]
+        ),
+    ]
 
-    scenarios.append(VideoScenario(
-        name: "in-order-tiny-idr",
-        description: "single k=1 m=1 frame, in order, no loss",
-        steps: allShards("inline-tiny-idr"),
-        expectDecoded: ["inline-tiny-idr"]
-    ))
-
-    scenarios.append(VideoScenario(
-        name: "shuffled-k3",
-        description: "k=3 m=2 frame with every shard reordered",
-        steps: [4, 1, 3, 0, 2].map {
-            VideoDeliveryStep(frame: "inline-p-k3", shardIndex: $0)
-        },
-        expectDecoded: ["inline-p-k3"]
-    ))
-
-    scenarios.append(VideoScenario(
-        name: "loss-at-parity-limit-k3",
-        description: "k=3 m=2 with both data shards 0 and 2 lost — exactly m erasures, recovered",
-        steps: [1, 3, 4].map {
-            VideoDeliveryStep(frame: "inline-p-k3", shardIndex: $0)
-        },
-        expectDecoded: ["inline-p-k3"]
-    ))
-
-    scenarios.append(VideoScenario(
-        name: "duplicates-k3",
-        description: "duplicate datagrams are dropped, single decode",
-        steps: [0, 0, 1, 1, 2, 2, 0].map {
-            VideoDeliveryStep(frame: "inline-p-k3", shardIndex: $0)
-        },
-        expectDecoded: ["inline-p-k3"]
-    ))
-
-    scenarios.append(VideoScenario(
-        name: "seq-wrap-loss",
-        description: "shard at seq 0x0000 (index 1) lost across the u16 wrap, parity recovers",
-        steps: [
-            VideoDeliveryStep(frame: "inline-p-seq-wrap", shardIndex: 0),
-            VideoDeliveryStep(frame: "inline-p-seq-wrap", shardIndex: 2),
-        ],
-        expectDecoded: ["inline-p-seq-wrap"]
-    ))
-
-    scenarios.append(VideoScenario(
-        name: "interleaved-frames-emit-in-order",
-        description: "frame 1 opens, frame 2 fully arrives (held for order), frame 1 completes late — decode order is frame order, and the stragglers must NOT have drawn a fec-impossible verdict (NACK candidates yes, write-off no)",
-        steps: [VideoDeliveryStep(frame: "inline-p-k3", shardIndex: 0)]
-            + allShards("inline-p-k3-lossy")
-            + [
-                VideoDeliveryStep(frame: "inline-p-k3", shardIndex: 1),
-                VideoDeliveryStep(frame: "inline-p-k3", shardIndex: 2),
-            ],
-        expectDecoded: ["inline-p-k3", "inline-p-k3-lossy"],
-        expectFecImpossible: []
-    ))
-
-    scenarios.append(VideoScenario(
-        name: "fec-impossible-then-eviction",
-        description: "frame 1 keeps only one parity shard; two full frames of follow-on traffic push every missing seq past the write-off distance — fec-impossible reported, stale tick evicts, later frames emit",
-        steps: [VideoDeliveryStep(frame: "inline-p-k3", shardIndex: 3)]
-            + allShards("inline-p-k3-lossy")
-            + allShards("inline-p-tail"),
-        finalTickMicroseconds: 300_000,
-        expectDecoded: ["inline-p-k3-lossy", "inline-p-tail"],
-        expectFecImpossible: ["inline-p-k3"]
-    ))
-
-    scenarios.append(VideoScenario(
-        name: "corpus-idr-in-order",
-        description: "the real IDR access unit, in order, no loss",
-        steps: allShards("corpus-idr"),
-        expectDecoded: ["corpus-idr"]
-    ))
-
-    scenarios.append(VideoScenario(
-        name: "corpus-sequence-with-loss",
-        description: "IDR then large P, each losing its full parity budget in data shards, reordered within the G4 displacement model (≤3) so the loss presumption stays quiet",
-        steps: {
-            let idr = geometries["corpus-idr"]!
-            let p = geometries["corpus-p-large"]!
-            var rng = SplitMix64(seed: 0x57_1D_00_02)
-            let steps =
-                (idr.parityShards..<idr.totalShards).map {
-                    VideoDeliveryStep(frame: "corpus-idr", shardIndex: $0)
-                }
-                + (p.parityShards..<p.totalShards).map {
-                    VideoDeliveryStep(frame: "corpus-p-large", shardIndex: $0)
-                }
-            return Reorder.bounded(steps, maxDisplacement: 3, using: &rng)
-        }(),
-        expectDecoded: ["corpus-idr", "corpus-p-large"]
-    ))
-
-    scenarios.append(VideoScenario(
-        name: "corpus-small-p-lossy-regime",
-        description: "small P under lossy regime survives losing both of its first two shards",
-        steps: {
-            let g = geometries["corpus-p-small-lossy"]!
-            return (2..<g.totalShards).map {
-                VideoDeliveryStep(frame: "corpus-p-small-lossy", shardIndex: $0)
-            }
-        }(),
-        expectDecoded: ["corpus-p-small-lossy"]
-    ))
-
-    return VideoVectorFile(
-        frames: frames,
-        scenarios: scenarios
-    )
+    return VideoVectorFile(frames: frames, scenarios: scenarios)
 }
