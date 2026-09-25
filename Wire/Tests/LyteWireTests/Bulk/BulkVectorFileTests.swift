@@ -181,6 +181,16 @@ final class BulkVectorFileTests: XCTestCase {
         }
     }
 
+    /// Derived from the enum, so a new abort reason without a round-trip
+    /// vector fails here.
+    func testEveryAbortReasonIsPinned() throws {
+        XCTAssertEqual(
+            Set(try loadFile().messageVectors.lazy
+                .filter { $0.codec == .abort && $0.kind == .roundtrip }
+                .compactMap(\.reason)),
+            Set(BulkAbortReason.allCases.map(bulkAbortReasonName)))
+    }
+
     // MARK: - Capability vectors (the key-11 spine as data)
 
     func testAllCapabilityVectors() throws {
