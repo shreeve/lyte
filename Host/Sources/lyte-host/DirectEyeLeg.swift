@@ -86,8 +86,6 @@ final class DirectEyeLeg {
     /// An IDR is owed; on a static screen it is served by re-encoding
     /// the retained surface.
     private var staticIdrWanted = false
-    /// The owed IDR's cause tags, attached to the keyframe that leaves.
-    private var pendingCauses: [String] = []
     /// Frames the session refused. Never leg-fatal: the session's own
     /// end stops the leg.
     private(set) var deliveryFailures = 0
@@ -328,7 +326,7 @@ final class DirectEyeLeg {
                 staticIdrWanted = false
                 let served: Void? = try pipeline.encodeRetained(forceIDR: true) {
                     bytes, keyframe in
-                    deliverTakingCauses(
+                    deliverRearmingIdr(
                         bytes, keyframe: keyframe,
                         captureUs: lastEncodedCaptureUs)
                 }
@@ -366,7 +364,7 @@ final class DirectEyeLeg {
                    >= keepaliveInterval {
                 let served: Void? = try pipeline.encodeRetained(forceIDR: false) {
                     bytes, keyframe in
-                    _ = deliver(bytes, keyframe: keyframe, causes: [],
+                    _ = deliver(bytes, keyframe: keyframe,
                                 captureUs: lastEncodedCaptureUs)
                 }
                 if served != nil {
@@ -450,9 +448,7 @@ final class DirectEyeLeg {
             // Demands are taken every poll so recovery on a static desktop
             // never waits for damage; the retained surface is re-encoded
             // with its ORIGINAL capture time (not a network-late frame).
-            let demand = snapshot?.demand ?? []
-            if !demand.isEmpty {
-                pendingCauses += demand.names
+            if snapshot?.idrOwed == true {
                 staticIdrWanted = true
             }
 
@@ -542,7 +538,6 @@ final class DirectEyeLeg {
 
             let forceIdr = frames == 0 || staticIdrWanted
             staticIdrWanted = false
-            if frames == 0 { pendingCauses.append("opening") }
 
             do {
                 // 1-in-1-out: keyframe truth rides on the packet.
@@ -551,7 +546,7 @@ final class DirectEyeLeg {
                     bytes, keyframe in
                     deliverStart = SystemMonotonicClock.nowMicroseconds
                     lastEncodedCaptureUs = captureUs
-                    deliverTakingCauses(
+                    deliverRearmingIdr(
                         bytes, keyframe: keyframe, captureUs: captureUs)
                 }
                 lastStages.blitUs = pipeline.lastBlitMicroseconds
@@ -709,16 +704,12 @@ final class DirectEyeLeg {
         }
     }
 
-    /// Delivers one access unit, attaching the owed causes to a keyframe.
-    /// A refused keyframe leaves the IDR (and its causes) owed.
-    private func deliverTakingCauses(
+    /// Delivers one access unit; a refused keyframe leaves the IDR owed.
+    private func deliverRearmingIdr(
         _ packet: UnsafeRawBufferPointer, keyframe: Bool, captureUs: UInt64
     ) {
-        let causes = keyframe ? pendingCauses : []
-        if keyframe { pendingCauses.removeAll() }
-        if !deliver(packet, keyframe: keyframe, causes: causes,
-                    captureUs: captureUs), keyframe {
-            pendingCauses = causes + pendingCauses
+        if !deliver(packet, keyframe: keyframe, captureUs: captureUs),
+           keyframe {
             staticIdrWanted = true
         }
     }
@@ -726,7 +717,7 @@ final class DirectEyeLeg {
     /// One encoded access unit, borrowed from the encoder's coded buffer
     /// for the duration of the call. False when the session refused it.
     private func deliver(_ packet: UnsafeRawBufferPointer, keyframe: Bool,
-                         causes: [String], captureUs: UInt64) -> Bool {
+                         captureUs: UInt64) -> Bool {
         guard let base = packet.baseAddress?.assumingMemoryBound(
             to: UInt8.self) else { return false }
         if firstPacket.isEmpty {
@@ -737,11 +728,6 @@ final class DirectEyeLeg {
                 try wire.sendFrame(
                     data: base, size: packet.count,
                     isKeyframe: keyframe, captureMicros: captureUs)
-                wire.annotateLastVideoFrame(
-                    averageQP: nil,
-                    idrCauses: keyframe
-                        ? (causes.isEmpty ? ["spontaneous"] : causes)
-                        : [])
             } catch {
                 deliveryFailures += 1
                 lastDeliveryFailureSeconds = SystemMonotonicClock.nowSeconds

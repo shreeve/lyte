@@ -229,8 +229,6 @@ final class SessionWire {
     /// Key 13 was agreed: the next service pass sends the standing shape.
     private var cursorAnnounceOwed = false
 
-    /// Most recent admitted frame, for the encoder callback's telemetry.
-    private var lastFrameForTelemetry: FrameNumber?
     /// The audio thread's publications, in capture order.
     private enum AudioMailboxEntry {
         case packet(bytes: [UInt8], captureMicros: UInt64, offeredAtNS: UInt64)
@@ -348,8 +346,8 @@ final class SessionWire {
         var lastInputActivityNS: UInt64
         /// A rate-control move the encoder must apply before its next frame.
         var directive: EncoderRateDirective?
-        /// A forced IDR owed on the next encode, with its causes.
-        var demand: FreshKeyframeDemand
+        /// A forced IDR is owed on the next encode.
+        var idrOwed: Bool
     }
 
     func takeLegSnapshot() -> LegSnapshot {
@@ -370,7 +368,7 @@ final class SessionWire {
             videoQuietPostureAgreed: posture.videoQuiet,
             lastInputActivityNS: inputNS,
             directive: takeEncoderRateDirectiveLocked(),
-            demand: session?.takeFreshKeyframeDemand() ?? [])
+            idrOwed: session?.takeFreshKeyframeDemand().isEmpty == false)
     }
 
     var counters: VideoChannelCounters { session.videoCounters }
@@ -980,16 +978,12 @@ final class SessionWire {
         drainAudioMailboxLocked()
         do {
             if let context, let prepared {
-                let shards = try session.commitPreparedVideoFrame(
+                _ = try session.commitPreparedVideoFrame(
                     prepared,
                     context: context,
                     captureTimestampMicroseconds: captureMicros,
                     now: SystemMonotonicClock.nowNanoseconds
                 )
-                lastFrameForTelemetry = shards > 0
-                    ? session.lastAdmittedVideoFrameNumber : nil
-            } else {
-                lastFrameForTelemetry = nil
             }
         } catch {
             lock.unlock()
@@ -1008,17 +1002,6 @@ final class SessionWire {
         )
         lock.unlock()
         signalDrain()
-    }
-
-    func annotateLastVideoFrame(
-        averageQP: Int?, idrCauses: [String]
-    ) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let frame = lastFrameForTelemetry else { return }
-        session.annotateVideoFrameTelemetry(
-            frame: frame, averageQP: averageQP, idrCauses: idrCauses
-        )
     }
 
     /// VideoAdmissionGate's inputs — queued video wire time and the
