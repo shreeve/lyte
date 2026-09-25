@@ -4,7 +4,8 @@ import XCTest
 /// The two roles are independent ends: client and host code import none of
 /// each other's modules. They meet only in SystemTests and in the browser
 /// package's tests, which drive the browser client against a real HostWire
-/// session. Shipping client code carries no test equipment.
+/// session. No shipping target imports test equipment: XCTest, a
+/// `*TestKit` or the vector builders.
 final class RoleBoundaryTests: XCTestCase {
     private let tree = RepositorySourceTree()
 
@@ -19,13 +20,26 @@ final class RoleBoundaryTests: XCTestCase {
         }
     }
 
-    func testShippingClientCodeCarriesNoTestEquipment() throws {
-        let testKit = "Client/Sources/LyteClientTestKit/"
-        XCTAssertEqual(
-            try importers(below: "Client/Sources") {
-                ["LyteClientTestKit", "LyteTestKit", "XCTest"].contains($0)
-            }.filter { !$0.hasPrefix(testKit) },
-            [])
+    func testShippingCodeCarriesNoTestEquipment() throws {
+        for root in ["Common/Sources", "Wire/Sources", "Host/Sources",
+                     "Client/Sources", "Browser/Sources"] {
+            XCTAssertEqual(
+                try importers(below: root, of: Self.isTestEquipment)
+                    .filter { !Self.isTestEquipmentTarget($0) },
+                [], "\(root) shipping targets must not import test equipment")
+        }
+    }
+
+    private static func isTestEquipment(_ module: String) -> Bool {
+        module == "XCTest" || module.hasSuffix("TestKit")
+            || module.hasPrefix("LyteWireVectorGen")
+    }
+
+    /// Test kits and the vector builders are test equipment themselves.
+    private static func isTestEquipmentTarget(_ path: String) -> Bool {
+        let target = path.split(separator: "/").dropFirst(2).first ?? ""
+        return target.hasSuffix("TestKit")
+            || target.hasPrefix("LyteWireVectorGen")
     }
 
     private static func isHostModule(_ module: String) -> Bool {
