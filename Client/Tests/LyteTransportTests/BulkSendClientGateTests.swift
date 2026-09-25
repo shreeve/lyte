@@ -849,7 +849,7 @@ final class BulkSendClientGateTests: XCTestCase {
         try harness.settle(t: &t)
         XCTAssertEqual(host.agreed?.bulkTransfer, true,
                        "the host must see key 11 in the client's 0x0F")
-        XCTAssertTrue(harness.core.bulkTransferNegotiated)
+        XCTAssertTrue(harness.core.control.agreedCapabilities?.bulkTransfer == true)
 
         // The offer rides chan 8 — never the CTRL stream.
         let offer = try BulkOffer(
@@ -911,7 +911,7 @@ final class BulkSendClientGateTests: XCTestCase {
         try harness.core.open(now: ClientTimestamp(microseconds: t))
         try harness.settle(t: &t)
         XCTAssertEqual(host.agreed?.bulkTransfer, false)
-        XCTAssertFalse(harness.core.bulkTransferNegotiated)
+        XCTAssertFalse(harness.core.control.agreedCapabilities?.bulkTransfer == true)
 
         // Refused BEFORE a byte leaves.
         let offer = try BulkOffer(

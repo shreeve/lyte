@@ -373,7 +373,7 @@ final class RoamingClientGateTests: XCTestCase {
         try harness1.core.open(now: ClientTimestamp(microseconds: t))
         try harness1.settle(t: &t)
         XCTAssertEqual(host1.agreed?.bulkTransfer, true)
-        XCTAssertTrue(harness1.core.bulkTransferNegotiated)
+        XCTAssertTrue(harness1.core.control.agreedCapabilities?.bulkTransfer == true)
 
         var policy = RoamingPolicy(
             targetPublicKeyHash: pkh, address: "10.0.0.60", port: 41_161)
@@ -463,7 +463,7 @@ final class RoamingClientGateTests: XCTestCase {
             clock: clock, clientKeys: clientKeys)
         try harness2.core.open(now: ClientTimestamp(microseconds: t))
         try harness2.settle(t: &t)
-        XCTAssertTrue(harness2.core.bulkTransferNegotiated)
+        XCTAssertTrue(harness2.core.control.agreedCapabilities?.bulkTransfer == true)
         _ = policy.sessionEstablished(
             address: "10.9.9.9", port: 41_161, now: t)
         XCTAssertEqual(policy.status, .attached)

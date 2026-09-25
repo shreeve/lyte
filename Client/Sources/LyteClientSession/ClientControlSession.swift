@@ -117,9 +117,6 @@ public struct ClientControlSession: Sendable {
     public var clipboardImageCounters: ClipboardImageChannelCounters {
         clipboard.imageCounters
     }
-    public var cursorNegotiated: Bool {
-        capabilities.agreed?.cursorShape == true
-    }
     public var hostAnnouncedAudioQuiet: Bool {
         mediaPosture.hostAnnouncedAudioQuiet
     }

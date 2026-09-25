@@ -696,11 +696,11 @@ final class LyteUdpSessionGateTests: XCTestCase {
             }
 
             // Milestones.
-            if frozenSeenAt == nil, harness.core.isFrozen {
+            if frozenSeenAt == nil, harness.core.state == .frozen {
                 frozenSeenAt = t
             }
             if let froze = frozenSeenAt, pillClearedAt == nil,
-               t > froze, !harness.core.isFrozen {
+               t > froze, harness.core.state != .frozen {
                 pillClearedAt = t
             }
 

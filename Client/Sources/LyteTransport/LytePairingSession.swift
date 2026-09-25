@@ -1,6 +1,6 @@
 // The client pairing flow as one blocking call (CLI and app sheet): Noise
-// IK with the persistent client static, then PairingInitiatorService over
-// the sealed ordered CTRL stream, echoing beacons meanwhile.
+// IK with the persistent client static, then ClientPairing over the sealed
+// ordered CTRL stream, echoing beacons meanwhile.
 //
 // "Paired" is reported only once the confirm is acknowledged, so both
 // keystores move together. Persistence is the caller's job.
@@ -8,6 +8,7 @@
 import LyteIO
 import Dispatch
 import Foundation
+import LyteClientSession
 import LyteWire
 
 public enum LytePairing {
@@ -85,10 +86,10 @@ public enum LytePairing {
 
         // The endpoint's datagram hook late-binds the flow, which needs
         // the handshake hash the endpoint's handshake produces.
-        let flowBox = PairingLockedBox<LytePairingFlow?>(nil)
+        let flowSlot = WeakPairingFlow()
         let endpoint = UdpReceiveEndpoint(
             port: 0, crypto: crypto,
-            onDatagram: { outcome, _ in flowBox.value?.handle(outcome) })
+            onDatagram: { outcome, _ in flowSlot.value?.handle(outcome) })
 
         progress("Noise IK handshake → "
             + "\(config.hostAddress):\(config.hostPort) …")
@@ -116,7 +117,7 @@ public enum LytePairing {
         } catch {
             return .failed("pairing init: \(error)")
         }
-        flowBox.value = flow
+        flowSlot.value = flow
         // Consumers are published; only now may host datagrams flow.
         endpoint.startReceiving()
         flow.startTimers()
@@ -154,13 +155,16 @@ public enum LytePairing {
 /// sealed sends go to `transmit`, accepted datagrams come in through
 /// `handle`. Beacons are echoed; host video/audio is ignored.
 public final class LytePairingFlow: @unchecked Sendable {
-    private let service: PairingInitiatorService
     private let reliable: ReliableCtrlEndpoint
     private let echo: BeaconEchoResponder
     private let now: @Sendable () -> ClientTimestamp
+    private let progress: @Sendable (String) -> Void
+    /// Guards `pairing`, `verdict` and `pairingEvents`; the run's thread
+    /// starts the exchange and the receive thread answers it.
     private let lock = NSLock()
+    private var pairing: ClientPairing
     private var verdict: LytePairing.Outcome?
-    private var serviceEvents: [PairingInitiatorService.Event] = []
+    private var pairingEvents: [ClientPairing.Event] = []
 
     /// - Parameters:
     ///   - crypto: the established session; the run binds to its
@@ -181,48 +185,36 @@ public final class LytePairingFlow: @unchecked Sendable {
             throw TransportCryptoError.handshakeFailed(
                 "pairing before the Noise handshake completed")
         }
-        let service = try PairingInitiatorService(
+        pairing = try ClientPairing(
             pin: pin,
             clientStaticPublicKey: crypto.clientStaticPublicKey,
             hostStaticPublicKey: hostStaticPublicKey,
             noiseHandshakeHash: handshakeHash)
         let sender = TransportSender(crypto: crypto, transmit: transmit)
-        let reliableBox = PairingLockedBox<ReliableCtrlEndpoint?>(nil)
         // Weak: the flow owns the reliable endpoint that owns this hook.
-        let verdictSink = WeakPairingFlow()
-        let reliable = ReliableCtrlEndpoint(
+        let slot = WeakPairingFlow()
+        self.reliable = ReliableCtrlEndpoint(
             sender: sender,
             now: now,
             onEvent: { event in
-                guard case .message(_, let bytes) = event,
-                      let output = service.handleReliableCtrl(bytes)
-                else { return }
-                for reply in output.replies {
-                    do { try reliableBox.value?.send(reply) }
-                    catch { progress("reliable reply refused: \(error)") }
-                }
-                verdictSink.value?.record(output.events, progress: progress)
+                guard case .message(_, let bytes) = event else { return }
+                slot.value?.receive(bytes)
             })
-        reliableBox.value = reliable
-        self.service = service
-        self.reliable = reliable
         self.now = now
+        self.progress = progress
         self.echo = BeaconEchoResponder(
             now: now,
             emit: { echo in
                 _ = try? sender.send(channel: .ctrl, timestamp: now(),
                                      plaintext: echo.encode())
             })
-        verdictSink.value = self
+        slot.value = self
     }
 
     /// Opens the run: share A on the reliable stream.
-    public func start() throws {
-        try start(now: now())
-    }
-
-    public func start(now: ClientTimestamp) throws {
-        try reliable.send(try service.start(), now: now)
+    public func start(now: ClientTimestamp? = nil) throws {
+        let share = try lock.withLock { try pairing.start() }
+        try reliable.send(share, now: now)
     }
 
     /// Ends the run with the typed 0x0A (`shuttingDown`) on the ordered
@@ -234,14 +226,11 @@ public final class LytePairingFlow: @unchecked Sendable {
     }
 
     /// Only CTRL matters: ARQ frames feed pairing, beacons are echoed.
-    public func handle(_ outcome: IngestOutcome) {
-        handle(outcome, now: now())
-    }
-
-    public func handle(_ outcome: IngestOutcome, now: ClientTimestamp) {
+    public func handle(_ outcome: IngestOutcome, now: ClientTimestamp? = nil) {
         guard case .accepted(let envelope, let payload) = outcome,
               envelope.channel == .ctrl
         else { return }
+        let now = now ?? self.now()
         if reliable.handleCtrlDatagram(
             envelope: envelope, payload: payload, now: now) {
             return
@@ -268,24 +257,27 @@ public final class LytePairingFlow: @unchecked Sendable {
         return outcome
     }
 
-    /// The service's events so far, in order.
-    public var events: [PairingInitiatorService.Event] {
-        lock.withLock { serviceEvents }
+    /// The pairing events so far, in order.
+    public var events: [ClientPairing.Event] {
+        lock.withLock { pairingEvents }
     }
 
+    /// Set once, on success: the static the caller pins.
     public var pairedHostStaticPublicKey: [UInt8]? {
-        service.pairedHostStaticPublicKey
+        lock.withLock { pairing.pairedHostStaticPublicKey }
     }
 
-    public var isTerminal: Bool { service.isTerminal }
     public var isReliableQuiescent: Bool { reliable.isQuiescent }
     public var nextDeadline: ClientTimestamp? { reliable.nextDeadline }
 
-    private func record(
-        _ events: [PairingInitiatorService.Event],
-        progress: (String) -> Void
-    ) {
-        for event in events {
+    private func receive(_ bytes: [UInt8]) {
+        guard let output = lock.withLock({ pairing.handleReliableCtrl(bytes) })
+        else { return }
+        for reply in output.replies {
+            do { try reliable.send(reply) }
+            catch { progress("reliable reply refused: \(error)") }
+        }
+        for event in output.events {
             let outcome: LytePairing.Outcome?
             switch event {
             case .paired(let key):
@@ -306,24 +298,14 @@ public final class LytePairingFlow: @unchecked Sendable {
                 outcome = nil
             }
             lock.withLock {
-                serviceEvents.append(event)
+                pairingEvents.append(event)
                 if let outcome { verdict = outcome }
             }
         }
     }
 }
 
-/// Locked box for late-binding construction.
-final class PairingLockedBox<T>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var stored: T
-    init(_ value: T) { stored = value }
-    var value: T {
-        get { lock.lock(); defer { lock.unlock() }; return stored }
-        set { lock.lock(); stored = newValue; lock.unlock() }
-    }
-}
-
+/// Late-binds a flow to a hook built before it.
 private final class WeakPairingFlow: @unchecked Sendable {
     private let lock = NSLock()
     private weak var stored: LytePairingFlow?

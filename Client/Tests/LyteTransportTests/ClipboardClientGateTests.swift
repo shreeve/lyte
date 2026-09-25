@@ -175,7 +175,7 @@ final class ClipboardClientGateTests: XCTestCase {
         XCTAssertEqual(host.agreed?.clipboardText, true,
                        "the host must see key 10 in the client's 0x0F")
         XCTAssertTrue(harness.core.clipboardNegotiated)
-        XCTAssertTrue(harness.core.clipboardSharingEnabled)
+        XCTAssertTrue(harness.core.control.clipboardSharingEnabled)
 
         // A local copy rides as ONE byte-exact 0x1A.
         XCTAssertEqual(
@@ -255,7 +255,7 @@ final class ClipboardClientGateTests: XCTestCase {
         try harness.settle(t: &t)
         XCTAssertTrue(harness.core.clipboardNegotiated,
                       "capability negotiates regardless — dialect, not consent")
-        XCTAssertFalse(harness.core.clipboardSharingEnabled)
+        XCTAssertFalse(harness.core.control.clipboardSharingEnabled)
 
         // Nothing leaves.
         XCTAssertEqual(

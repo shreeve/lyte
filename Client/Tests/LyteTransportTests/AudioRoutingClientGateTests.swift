@@ -285,7 +285,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         // The starting 0x19 (the host's default) is the confirmed
         // posture — no ask left (no desired posture configured).
         XCTAssertEqual(harness.postureEvents, [.hostAudible])
-        XCTAssertEqual(harness.core.hostAudioRoutingPosture, .hostAudible)
+        XCTAssertEqual(harness.core.control.hostAudioRoutingPosture, .hostAudible)
         XCTAssertEqual(host.requestsReceived, [],
                        "no desired posture → no session-start 0x18")
 
@@ -297,7 +297,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         XCTAssertEqual(host.requestsReceived, [[0x18, 0x02]],
                        "the ask must ride the ordered stream byte-exact")
         XCTAssertEqual(harness.postureEvents, [.hostAudible, .hostMuted])
-        XCTAssertEqual(harness.core.hostAudioRoutingPosture, .hostMuted)
+        XCTAssertEqual(harness.core.control.hostAudioRoutingPosture, .hostMuted)
 
         // The FAILED flip: the host attempts, fails, and re-reports
         // the OLD posture — the client renders truth (the UI toggle
@@ -310,7 +310,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         XCTAssertEqual(harness.postureEvents,
                        [.hostAudible, .hostMuted, .hostMuted],
                        "a failed flip answers with the old posture")
-        XCTAssertEqual(harness.core.hostAudioRoutingPosture, .hostMuted)
+        XCTAssertEqual(harness.core.control.hostAudioRoutingPosture, .hostMuted)
 
         let counters = harness.core.snapshotCounters()
         XCTAssertEqual(counters.audioRoutingRequestsSent, 2)
@@ -365,7 +365,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         try h2.settle(t: &t2)
         XCTAssertEqual(modern.requestsReceived, [[0x18, 0x04]],
                        "streamOff must ride byte-exact as 0x04")
-        XCTAssertEqual(h2.core.hostAudioRoutingPosture, .streamOff)
+        XCTAssertEqual(h2.core.control.hostAudioRoutingPosture, .streamOff)
 
         print("key-14 gate: streamOff refused typed against a "
             + "key-9-only host; [0x18 0x04] round-trips against a "
@@ -393,7 +393,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         XCTAssertEqual(host.requestsReceived, [[0x18, 0x02]],
                        "exactly one session-start ask")
         XCTAssertEqual(harness.postureEvents, [.hostAudible, .hostMuted])
-        XCTAssertEqual(harness.core.hostAudioRoutingPosture, .hostMuted)
+        XCTAssertEqual(harness.core.control.hostAudioRoutingPosture, .hostMuted)
         XCTAssertEqual(
             harness.core.snapshotCounters().audioRoutingRequestsSent, 1)
 
@@ -404,7 +404,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         try host.injectReliable(
             AudioRoutingStatus(mode: .hostAudible).encode(), nowMicros: t)
         try harness.settle(t: &t)
-        XCTAssertEqual(harness.core.hostAudioRoutingPosture, .hostAudible)
+        XCTAssertEqual(harness.core.control.hostAudioRoutingPosture, .hostAudible)
         XCTAssertEqual(host.requestsReceived.count, 1,
                        "the start ask fires at most once per session")
     }
@@ -424,7 +424,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
 
         // Desire == the host's default: nothing to say.
         XCTAssertEqual(host.requestsReceived, [])
-        XCTAssertEqual(harness.core.hostAudioRoutingPosture, .hostMuted)
+        XCTAssertEqual(harness.core.control.hostAudioRoutingPosture, .hostMuted)
         XCTAssertEqual(harness.postureEvents, [.hostMuted])
     }
 
@@ -446,7 +446,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         // Intersection dropped key 9; the strip's button never exists.
         XCTAssertEqual(host.agreed?.hostAudioRouting, false)
         XCTAssertFalse(harness.core.hostAudioRoutingNegotiated)
-        XCTAssertNil(harness.core.hostAudioRoutingPosture)
+        XCTAssertNil(harness.core.control.hostAudioRoutingPosture)
         XCTAssertEqual(harness.postureEvents, [])
 
         // The ask is refused BEFORE a byte leaves.
@@ -468,7 +468,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         try host.injectReliable(
             AudioRoutingStatus(mode: .hostMuted).encode(), nowMicros: t)
         try harness.settle(t: &t)
-        XCTAssertNil(harness.core.hostAudioRoutingPosture)
+        XCTAssertNil(harness.core.control.hostAudioRoutingPosture)
         XCTAssertEqual(harness.postureEvents, [])
         XCTAssertEqual(
             harness.core.snapshotCounters().audioRoutingDropsLoud, 1)
@@ -558,7 +558,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         XCTAssertEqual(host.requestsReceived, [[0x18, 0x02]],
                        "an unconfigured session asks for hostMuted now")
         XCTAssertEqual(harness.postureEvents, [.hostAudible, .hostMuted])
-        XCTAssertEqual(harness.core.hostAudioRoutingPosture, .hostMuted)
+        XCTAssertEqual(harness.core.control.hostAudioRoutingPosture, .hostMuted)
         XCTAssertEqual(
             harness.core.snapshotCounters().audioRoutingRequestsSent, 1)
 
@@ -587,7 +587,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         try quiet.settle(t: &t)
         XCTAssertEqual(audibleHost.requestsReceived, [],
                        "the audible opt-out suppresses the default ask")
-        XCTAssertEqual(quiet.core.hostAudioRoutingPosture, .hostAudible)
+        XCTAssertEqual(quiet.core.control.hostAudioRoutingPosture, .hostAudible)
 
         // The SAME opt-out against a host whose shell default is
         // muted (--host-audio muted): the preference still means
@@ -602,7 +602,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         try asking.settle(t: &t2)
         XCTAssertEqual(mutedHost.requestsReceived, [[0x18, 0x01]],
                        "the opt-out ASKS for audible against a muted host")
-        XCTAssertEqual(asking.core.hostAudioRoutingPosture, .hostAudible)
+        XCTAssertEqual(asking.core.control.hostAudioRoutingPosture, .hostAudible)
 
         print("CL-18 gate (opt-out): stored audible suppresses the "
             + "muted default and still flips a muted host")
@@ -712,10 +712,10 @@ final class AudioRoutingClientGateTests: XCTestCase {
             harness.core.agreedCapabilities?.audioQuietPosture, true)
 
         // Audio evidence tightens the detector (the existing rule).
-        XCTAssertFalse(harness.core.detectorTightened)
+        XCTAssertFalse(harness.core.control.detectorTightened)
         harness.absorb(
             try sealedAudio(host: host, seq: 0, hostMicros: t), tMicros: t)
-        XCTAssertTrue(harness.core.detectorTightened,
+        XCTAssertTrue(harness.core.control.detectorTightened,
                       "chan-1 evidence must tighten to 350 ms")
 
         // The gate closes: 0x25 quiet relaxes the detector — gated
@@ -723,7 +723,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         try host.injectReliable(
             AudioTrackState(state: .quiet).encode(), nowMicros: t)
         try harness.settle(t: &t)
-        XCTAssertFalse(harness.core.detectorTightened,
+        XCTAssertFalse(harness.core.control.detectorTightened,
                        "announced quiet must relax the blackout detector")
         XCTAssertEqual(
             harness.core.snapshotCounters().audioTrackStatesReceived, 1)
@@ -732,7 +732,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         try host.injectReliable(
             AudioTrackState(state: .quiet).encode(), nowMicros: t)
         try harness.settle(t: &t)
-        XCTAssertFalse(harness.core.detectorTightened)
+        XCTAssertFalse(harness.core.control.detectorTightened)
         XCTAssertEqual(
             harness.core.snapshotCounters().audioTrackStatesReceived, 2)
 
@@ -745,7 +745,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
             harness.core.snapshotCounters().audioTrackStatesReceived, 3)
         harness.absorb(
             try sealedAudio(host: host, seq: 1, hostMicros: t), tMicros: t)
-        XCTAssertTrue(harness.core.detectorTightened,
+        XCTAssertTrue(harness.core.control.detectorTightened,
                       "the wake burst's evidence must re-tighten")
 
         XCTAssertEqual(
@@ -772,12 +772,12 @@ final class AudioRoutingClientGateTests: XCTestCase {
 
         harness.absorb(
             try sealedAudio(host: host, seq: 0, hostMicros: t), tMicros: t)
-        XCTAssertTrue(harness.core.detectorTightened)
+        XCTAssertTrue(harness.core.control.detectorTightened)
 
         try host.injectReliable(
             AudioTrackState(state: .quiet).encode(), nowMicros: t)
         try harness.settle(t: &t)
-        XCTAssertTrue(harness.core.detectorTightened,
+        XCTAssertTrue(harness.core.control.detectorTightened,
                       "an unnegotiated 0x25 must not relax anything")
         XCTAssertEqual(
             harness.core.snapshotCounters().audioTrackStatesReceived, 0)
@@ -806,7 +806,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         try harness.settle(t: &t)
         XCTAssertEqual(
             harness.core.agreedCapabilities?.videoQuietPosture, true)
-        XCTAssertNil(harness.core.announcedVideoPosture,
+        XCTAssertNil(harness.core.control.announcedVideoPosture,
                      "no announcement yet — the always-on contract")
 
         // A ladder step lands: quiet at 30 s.
@@ -817,7 +817,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         XCTAssertEqual(
             harness.core.snapshotCounters().videoPostureStatesReceived, 1)
         XCTAssertEqual(
-            harness.core.announcedVideoPosture,
+            harness.core.control.announcedVideoPosture,
             VideoPostureState(posture: .quiet, keepaliveSeconds: 30))
 
         // The wake back to active.
@@ -827,7 +827,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         try harness.settle(t: &t)
         XCTAssertEqual(
             harness.core.snapshotCounters().videoPostureStatesReceived, 2)
-        XCTAssertEqual(harness.core.announcedVideoPosture?.posture, .active)
+        XCTAssertEqual(harness.core.control.announcedVideoPosture?.posture, .active)
         XCTAssertEqual(
             harness.core.snapshotCounters().malformedReliableMessages, 0)
 
@@ -845,7 +845,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         try legacy.settle(t: &t2)
         XCTAssertEqual(
             legacy.core.snapshotCounters().videoPostureStatesReceived, 0)
-        XCTAssertNil(legacy.core.announcedVideoPosture)
+        XCTAssertNil(legacy.core.control.announcedVideoPosture)
         XCTAssertTrue(legacy.events.contains {
             if case .protocolNote(let note) = $0 {
                 return note.contains("0x26 without negotiated key 16")

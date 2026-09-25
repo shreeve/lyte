@@ -95,7 +95,7 @@ final class AudioDetectorGateTests: XCTestCase {
         let clock = VirtualClock()
         let events = EventLog()
         let core = makeCore(clock: clock, events: events)
-        XCTAssertFalse(core.detectorTightened)
+        XCTAssertFalse(core.control.detectorTightened)
 
         // 400 ms of silence: WELL past 350 ms, far under 2.5 s — a
         // no-audio session must NOT freeze here (the CL-8 rationale:
@@ -122,7 +122,7 @@ final class AudioDetectorGateTests: XCTestCase {
         core.handleDatagram(
             .accepted(envelope: envelope, payload: payload),
             arrivalMicroseconds: clock.now.microseconds)
-        XCTAssertTrue(core.detectorTightened)
+        XCTAssertTrue(core.control.detectorTightened)
         XCTAssertEqual(core.snapshotCounters().audioDatagramsReceived, 1)
         XCTAssertTrue(events.all.contains {
             if case .protocolNote(let note) = $0 {
@@ -212,15 +212,15 @@ final class AudioDetectorGateTests: XCTestCase {
                 .accepted(envelope: ctrl, payload: segment),
                 arrivalMicroseconds: clock.now.microseconds)
         }
-        XCTAssertEqual(core.wireMode, .idle)
+        XCTAssertEqual(core.control.wireMode, .idle)
 
         let (envelope, payload) = try audioDatagram(
             group: 0, captureMicros: 7_000)
         core.handleDatagram(
             .accepted(envelope: envelope, payload: payload),
             arrivalMicroseconds: clock.now.microseconds)
-        XCTAssertTrue(core.detectorTightened)
-        XCTAssertEqual(core.wireMode, .idle,
+        XCTAssertTrue(core.control.detectorTightened)
+        XCTAssertEqual(core.control.wireMode, .idle,
             "the rebuilt machine must carry the wire mode across")
         XCTAssertEqual(core.state, .idle)
     }
@@ -237,7 +237,7 @@ final class AudioDetectorGateTests: XCTestCase {
         core.handleDatagram(
             .accepted(envelope: envelope, payload: payload),
             arrivalMicroseconds: clock.now.microseconds)
-        XCTAssertFalse(core.detectorTightened)
+        XCTAssertFalse(core.control.detectorTightened)
         clock.advance(400_000)
         core.tick(now: clock.now)
         XCTAssertNotEqual(core.state, .frozen)

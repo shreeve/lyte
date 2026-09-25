@@ -147,7 +147,7 @@ final class ClientControlSessionTests: XCTestCase {
             try CapabilityDeclaration(capabilities: cursor).encode(),
             now: at(10))
 
-        XCTAssertTrue(session.cursorNegotiated)
+        XCTAssertEqual(session.agreedCapabilities?.cursorShape, true)
         XCTAssertEqual(
             try session.receiveReliable(
                 try shape.encode(), now: at(11)),

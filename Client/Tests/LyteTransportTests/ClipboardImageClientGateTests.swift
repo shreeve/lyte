@@ -234,8 +234,8 @@ final class ClipboardImageClientGateTests: XCTestCase {
                        "10∧12 must agree — and with NO key 11 in the "
                         + "stand-in's declaration")
         XCTAssertEqual(host.agreed?.bulkTransfer, false)
-        XCTAssertTrue(harness.core.clipboardImagesNegotiated)
-        XCTAssertTrue(harness.core.clipboardImageSharingEnabled)
+        XCTAssertTrue(harness.core.control.clipboardImagesNegotiated)
+        XCTAssertTrue(harness.core.control.clipboardImageSharingEnabled)
 
         // Mac → host: a 150 KB "PNG" (3 chunks — the multi-chunk
         // geometry through real ARQ segmentation + Noise sealing).
@@ -251,7 +251,7 @@ final class ClipboardImageClientGateTests: XCTestCase {
                        "byte-exact through seal/unseal + ARQ + chunks")
         XCTAssertEqual(host.applied.first?.mime, "image/png")
         XCTAssertEqual(
-            harness.core.clipboardImageCounters.sharesCompleted, 1,
+            harness.core.control.clipboardImageCounters.sharesCompleted, 1,
             "the digest verdict must round-trip back to the sender")
 
         // The boomerang proof, host side: the leaf's echo of that
@@ -280,7 +280,7 @@ final class ClipboardImageClientGateTests: XCTestCase {
             return false
         })
         XCTAssertEqual(
-            harness.core.clipboardImageCounters.imagesApplied, 1)
+            harness.core.control.clipboardImageCounters.imagesApplied, 1)
 
         // The boomerang proof, client side: the NSPasteboard echo of
         // that apply judges suppressedEcho through the client's book.
@@ -310,9 +310,9 @@ final class ClipboardImageClientGateTests: XCTestCase {
 
         try harness.core.open(now: ClientTimestamp(microseconds: t))
         try harness.settle(t: &t)
-        XCTAssertTrue(harness.core.clipboardImagesNegotiated,
+        XCTAssertTrue(harness.core.control.clipboardImagesNegotiated,
                       "capability negotiates regardless — dialect")
-        XCTAssertFalse(harness.core.clipboardImageSharingEnabled)
+        XCTAssertFalse(harness.core.control.clipboardImageSharingEnabled)
 
         // Nothing leaves.
         XCTAssertEqual(
@@ -337,12 +337,12 @@ final class ClipboardImageClientGateTests: XCTestCase {
             return false
         }, "the decline must reach the sender as abort(declined)")
         XCTAssertEqual(
-            harness.core.clipboardImageCounters.receivesRefused, 1)
+            harness.core.control.clipboardImageCounters.receivesRefused, 1)
         host.imageEvents.removeAll()
 
         // The live toggle opens both directions.
         harness.core.setClipboardImageSharing(true)
-        XCTAssertTrue(harness.core.clipboardImageSharingEnabled)
+        XCTAssertTrue(harness.core.control.clipboardImageSharingEnabled)
         let image = makePayload(count: 5_000, seed: 0x0107)
         XCTAssertEqual(
             harness.core.shareLocalClipboardImage(
@@ -372,7 +372,7 @@ final class ClipboardImageClientGateTests: XCTestCase {
         harness.clock.value = t
         try harness.core.open(now: ClientTimestamp(microseconds: t))
         try harness.settle(t: &t)
-        XCTAssertFalse(harness.core.clipboardImagesNegotiated)
+        XCTAssertFalse(harness.core.control.clipboardImagesNegotiated)
         XCTAssertEqual(
             harness.core.shareLocalClipboardImage(
                 [1, 2, 3], now: ClientTimestamp(microseconds: t)),
@@ -401,8 +401,8 @@ final class ClipboardImageClientGateTests: XCTestCase {
         harness2.clock.value = t2
         try harness2.core.open(now: ClientTimestamp(microseconds: t2))
         try harness2.settle(t: &t2)
-        XCTAssertFalse(harness2.core.bulkTransferNegotiated)
-        XCTAssertTrue(harness2.core.clipboardImagesNegotiated)
+        XCTAssertFalse(harness2.core.control.agreedCapabilities?.bulkTransfer == true)
+        XCTAssertTrue(harness2.core.control.clipboardImagesNegotiated)
         let fileOffer = try BulkOffer(
             transferId: 0xF11E, totalByteCount: 10,
             chunkByteCount: 4_096,
@@ -479,7 +479,7 @@ final class ClipboardImageClientGateTests: XCTestCase {
             let done = DispatchSemaphore(value: 0)
             let core = self.core
             DispatchQueue.global().async {
-                _ = core?.clipboardImageSharingEnabled
+                _ = core?.control.clipboardImageSharingEnabled
                 done.signal()
             }
             if done.wait(timeout: .now() + 2) == .timedOut {
@@ -537,7 +537,7 @@ final class ClipboardImageClientGateTests: XCTestCase {
         XCTAssertEqual(probe.callCount, 0,
                        "a refused image must never be hashed")
         XCTAssertEqual(
-            harness.core.clipboardImageCounters.sharesSuppressed, 1,
+            harness.core.control.clipboardImageCounters.sharesSuppressed, 1,
             "the pre-digest ceiling refusal still counts as suppressed")
 
         harness.core.setClipboardImageSharing(true)

@@ -252,15 +252,11 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
 
     /// Sends the capability declaration (0x0F) as the first reliable
     /// word, so everything gated on a capability orders behind it.
-    public func open(now: ClientTimestamp) throws {
+    public func open(now: ClientTimestamp? = nil) throws {
         guard let declaration = try lock.withLock({
             try controlSession.start()
         }) else { return }
         try reliable.send(declaration, now: now)
-    }
-
-    public func open() throws {
-        try open(now: now())
     }
 
     /// Production timers: ARQ PTO, pipeline eviction, feedback cadence and
@@ -324,13 +320,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// and the machine closes. The caller lingers on `isReliableQuiescent`
     /// before tearing the socket down.
     public func beginTeardown(
-        reason: SessionTeardownReason, now: ClientTimestamp
+        reason: SessionTeardownReason, now: ClientTimestamp? = nil
     ) {
-        applyMachine(.teardownRequest(reason), now: now)
-    }
-
-    public func beginTeardown(reason: SessionTeardownReason) {
-        beginTeardown(reason: reason, now: now())
+        applyMachine(.teardownRequest(reason), now: now ?? self.now())
     }
 
     // MARK: Input
@@ -340,14 +332,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// pre-arms on every delivered event, so input in IDLE is the wake.
     @discardableResult
     public func sendInput(
-        _ body: InputEvent.Body, now: ClientTimestamp
+        _ body: InputEvent.Body, now: ClientTimestamp? = nil
     ) throws -> UInt32 {
-        try input.send(body, now: now)
-    }
-
-    @discardableResult
-    public func sendInput(_ body: InputEvent.Body) throws -> UInt32 {
-        try sendInput(body, now: now())
+        try input.send(body, now: now ?? self.now())
     }
 
     /// The event carries `captured`; ARQ runs at `now()` so queue wait
@@ -430,7 +417,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// negotiated key 9 or before the exchange settled. The posture changes
     /// only when the host's 0x19 answer says so.
     public func requestHostAudioRouting(
-        _ mode: HostAudioRoutingMode, now: ClientTimestamp
+        _ mode: HostAudioRoutingMode, now: ClientTimestamp? = nil
     ) throws {
         let bytes = try lock.withLock {
             let bytes = try controlSession.requestHostAudioRouting(mode)
@@ -440,20 +427,11 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         try reliable.send(bytes, now: now)
     }
 
-    public func requestHostAudioRouting(_ mode: HostAudioRoutingMode) throws {
-        try requestHostAudioRouting(mode, now: now())
-    }
-
     // MARK: Clipboard
 
     /// True when capability key 10 survived intersection.
     public var clipboardNegotiated: Bool {
         lock.withLock { controlSession.clipboardNegotiated }
-    }
-
-    /// Nothing leaves and nothing lands while false.
-    public var clipboardSharingEnabled: Bool {
-        lock.withLock { controlSession.clipboardSharingEnabled }
     }
 
     /// Local policy only (no wire message): a disabled end goes quiet
@@ -466,7 +444,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// Never throws; the outcome is counted and returned.
     @discardableResult
     public func shareLocalClipboard(
-        _ text: String, now: ClientTimestamp
+        _ text: String, now: ClientTimestamp? = nil
     ) -> ClipboardShareOutcome {
         lock.lock()
         let decision = controlSession.shareLocalClipboard(text)
@@ -492,32 +470,12 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         return .shared
     }
 
-    @discardableResult
-    public func shareLocalClipboard(_ text: String) -> ClipboardShareOutcome {
-        shareLocalClipboard(text, now: now())
-    }
-
     // MARK: Clipboard images
-
-    /// True when keys 10 and 12 survived intersection. Key 11 (files) is
-    /// deliberately not consulted: the tiers do not couple.
-    public var clipboardImagesNegotiated: Bool {
-        lock.withLock { controlSession.clipboardImagesNegotiated }
-    }
-
-    /// Images move only when sharing and this rung are both on.
-    public var clipboardImageSharingEnabled: Bool {
-        lock.withLock { controlSession.clipboardImageSharingEnabled }
-    }
 
     /// Local policy only; a disabled end answers an inbound marker with
     /// abort(declined) because the image sender waits on a verdict.
     public func setClipboardImageSharing(_ enabled: Bool) {
         lock.withLock { controlSession.setClipboardImageSharing(enabled) }
-    }
-
-    public var clipboardImageCounters: ClipboardImageChannelCounters {
-        lock.withLock { controlSession.clipboardImageCounters }
     }
 
     /// Shares one local image copy as 0x22 cargo on chan 8 when policy
@@ -526,8 +484,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// judgment; a refused image is never hashed.
     @discardableResult
     public func shareLocalClipboardImage(
-        _ data: [UInt8], now: ClientTimestamp
+        _ data: [UInt8], now: ClientTimestamp? = nil
     ) -> ClipboardShareOutcome {
+        let now = now ?? self.now()
         lock.lock()
         let refusal = controlSession.prejudgeLocalClipboardImage(
             byteCount: data.count)
@@ -544,13 +503,6 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         )
         lock.unlock()
         return executeClipboardDecision(decision, now: now)
-    }
-
-    @discardableResult
-    public func shareLocalClipboardImage(
-        _ data: [UInt8]
-    ) -> ClipboardShareOutcome {
-        shareLocalClipboardImage(data, now: now())
     }
 
     /// Executes a clipboard decision's sends and events and returns the
@@ -593,12 +545,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             case .image(.send):
                 onEvent(.protocolNote(
                     "clipboard policy leaked an unseparated send event"))
-            case .image(.shareStarted), .image(.suppressed):
-                break
-            case .textChanged, .malformedTextAnnounce,
-                 .unnegotiatedTextAnnounce, .textIgnoredDisabled,
-                 .roleConfusedTextSet, .malformedImageCargo,
-                 .unnegotiatedImageCargo:
+            default:
                 break
             }
         }
@@ -607,16 +554,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
 
     // MARK: Bulk transfer
 
-    /// True when key 11 survived intersection: the host accepts files.
-    public var bulkTransferNegotiated: Bool {
-        lock.withLock {
-            controlSession.agreedCapabilities?.bulkTransfer == true
-        }
-    }
-
     /// Queues one bulk message on chan 8; refused without key 11.
     public func sendBulkMessage(
-        _ message: [UInt8], now: ClientTimestamp
+        _ message: [UInt8], now: ClientTimestamp? = nil
     ) throws {
         lock.lock()
         guard controlSession.agreedCapabilities?.bulkTransfer == true else {
@@ -626,10 +566,6 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         counters.bulkMessagesSent += 1
         lock.unlock()
         try bulkReliable.send(message, now: now)
-    }
-
-    public func sendBulkMessage(_ message: [UInt8]) throws {
-        try sendBulkMessage(message, now: now())
     }
 
     // MARK: Ingest
@@ -749,9 +685,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
 
     // MARK: Snapshots
 
-    /// The last accepted video posture announcement, or nil.
-    public var announcedVideoPosture: VideoPostureState? {
-        lock.withLock { controlSession.announcedVideoPosture }
+    /// The control policy as it stands (a value copy).
+    public var control: ClientControlSession {
+        lock.withLock { controlSession }
     }
 
     /// True between an accepted quiet announcement and the next accepted
@@ -770,23 +706,10 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         lock.withLock { controlSession.state }
     }
 
-    public var wireMode: SessionWireMode {
-        lock.withLock { controlSession.wireMode }
-    }
-
-    /// Local overlay only: the path is dark. Never a wire state.
-    public var isFrozen: Bool { state == .frozen }
-
     /// True once a host message over the ARQ ceiling ended the session
     /// (the close itself reads `.localTeardown(.shuttingDown)`).
     public var orderedStreamPoisoned: Bool {
         lock.withLock { streamPoisoned }
-    }
-
-    /// True once authenticated audio tightened the blackout detector, until
-    /// an announced audio quiet relaxes it.
-    public var detectorTightened: Bool {
-        lock.withLock { controlSession.detectorTightened }
     }
 
     public var agreedCapabilities: Capabilities? {
@@ -796,12 +719,6 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// True when capability key 9 survived intersection.
     public var hostAudioRoutingNegotiated: Bool {
         lock.withLock { controlSession.hostAudioRoutingNegotiated }
-    }
-
-    /// The host speakers' 0x19-confirmed posture; nil until the first
-    /// status. Never optimistic.
-    public var hostAudioRoutingPosture: HostAudioRoutingMode? {
-        lock.withLock { controlSession.hostAudioRoutingPosture }
     }
 
     public var isReliableQuiescent: Bool { reliable.isQuiescent }
@@ -1025,30 +942,23 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     private func receiveImageCargo(
         _ bytes: [UInt8], now: ClientTimestamp
     ) {
-        lock.lock()
-        let decision = controlSession.receiveClipboardImageCargo(bytes)
-        switch decision.events.first {
-        case .malformedImageCargo:
-            counters.clipboardDropsLoud += 1
-        case .unnegotiatedImageCargo:
-            counters.clipboardDropsLoud += 1
-        default:
-            break
+        let decision = lock.withLock {
+            controlSession.receiveClipboardImageCargo(bytes)
         }
-        lock.unlock()
         for event in decision.events {
+            let note: String
             switch event {
             case .malformedImageCargo(let byteCount):
-                onEvent(.protocolNote(
-                    "malformed clipboard-image marker dropped "
-                        + "(\(byteCount) B)"))
+                note = "malformed clipboard-image marker dropped "
+                    + "(\(byteCount) B)"
             case .unnegotiatedImageCargo:
-                onEvent(.protocolNote(
-                    "clipboard-image 0x22 without negotiated keys 10∧12 "
-                        + "— dropped"))
+                note = "clipboard-image 0x22 without negotiated keys 10∧12 "
+                    + "— dropped"
             default:
-                break
+                continue
             }
+            lock.withLock { counters.clipboardDropsLoud += 1 }
+            onEvent(.protocolNote(note))
         }
         executeClipboardDecision(decision, now: now)
     }
