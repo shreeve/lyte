@@ -70,6 +70,8 @@ final class DirectEyeLeg {
         /// The opening VBV (bits): the one-FEC-group frame ceiling the
         /// encoder's HRD buffer must not exceed. Nil = no guard (file mode).
         var vbvBits: Int?
+        /// File mode's chroma; a session's is the client's declaration.
+        var fileChroma: ChromaPosture = .yuv420
     }
 
     private let config: Config
@@ -689,9 +691,9 @@ final class DirectEyeLeg {
     }
 
     /// The agreed chroma posture, or 4:2:0 when no declaration lands
-    /// within the opening wait or there is no session (file mode).
+    /// within the opening wait; file mode takes its configured posture.
     private func awaitOpeningChroma() -> ChromaPosture {
-        guard let wire else { return .yuv420 }
+        guard let wire else { return config.fileChroma }
         let start = SystemMonotonicClock.nowNanoseconds
         while true {
             if let posture = ChromaPosture.opening(

@@ -70,231 +70,131 @@ struct Options {
     var cookieExit = 5
     /// The DRM card node whose primary plane is captured.
     var drmDevice = DirectEyeLeg.Config.defaultDevice
-    /// Debug only: false = never arm the EncoderVbvPolicy; the encoder
-    /// keeps its opening posture for the whole run.
-    var vbvReconfigure = true
+    /// File mode's encoder chroma; a session's is the client's.
+    var fileChroma: ChromaPosture = .yuv420
+
+    static let usage = """
+        usage: lyte-host --wire-listen PORT [--seconds N] [session flags]
+               lyte-host [--out PATH] [--seconds N] [--chroma 420|444]
+               lyte-host sniff --port PORT [--seconds N] [--count N]
+          --wire-listen PORT      serve Lyte-UDP sessions on PORT; without
+                                  --seconds or --pair, in turn (the service)
+          --seconds N             one session, or the file leg, of N s
+          --drm-device PATH       the card to capture (default /dev/dri/card1)
+          --out PATH              file mode's Annex-B output
+          --chroma 420|444        file mode's encoder chroma
+        session flags:
+          --wire-rate-mbps N      rate ceiling (default 50)
+          --no-advertise          no Avahi _lyte._udp record
+          --advertise-interface IFACE
+          --pair                  mint a PIN and pair one client
+          --require-paired        admit only paired clients
+          --cookie-enter N        msg1/s that demands retry cookies (20)
+          --cookie-exit N         msg1/s that clears the demand (5)
+          --input auto|uinput|off input injection (auto = uinput)
+          --no-audio              no audio leg
+          --audio-bitrate-kbps N  Opus CBR bitrate, 1-512 (default 128)
+          --host-audio audible|muted
+          --clipboard[=images]    clipboard sync consent
+          --accept-files[=DIR]    file-drop consent (default ~/Downloads)
+        Details: Host/README.md.
+        """
+
+    /// Flags only file mode reads, and flags either mode reads; every
+    /// other flag means nothing without --wire-listen.
+    private static let fileOnlyFlags: Set<Substring> = ["--out", "--chroma"]
+    private static let eitherModeFlags: Set<Substring> = [
+        "--seconds", "--drm-device", "--wire-listen",
+    ]
 
     static func parse(_ args: [String]) throws -> Options {
         var opts = Options()
-        var i = 1
-        while i < args.count {
-            switch args[i] {
+        var fileFlags: [Substring] = []
+        var sessionFlags: [Substring] = []
+        var cursor = ArgumentCursor(args.dropFirst())
+        while let flag = cursor.next() {
+            switch flag {
             case "--out":
-                i += 1
-                guard i < args.count else { throw HostError("--out needs a path") }
-                opts.outputPath = args[i]
+                opts.outputPath = try cursor.value(flag, "a path") { $0 }
+            case "--chroma":
+                opts.fileChroma = try cursor.value(flag, "420 or 444") {
+                    ["420": .yuv420, "444": .yuv444][$0]
+                }
             case "--seconds":
-                i += 1
-                guard i < args.count, let v = Double(args[i]), v > 0,
-                      v.isFinite else {
-                    throw HostError("--seconds needs a positive number")
-                }
-                opts.seconds = v
+                opts.seconds = try cursor.positive(flag)
                 opts.secondsGiven = true
-            case "--wire-rate-mbps":
-                i += 1
-                guard i < args.count, let v = Double(args[i]), v > 0,
-                      v.isFinite else {
-                    throw HostError("--wire-rate-mbps needs a positive number")
-                }
-                opts.wireRateMbps = v
+            case "--drm-device":
+                opts.drmDevice = try cursor.value(
+                    flag, "an absolute card path") { $0.hasPrefix("/") ? $0 : nil }
             case "--wire-listen":
-                i += 1
-                guard i < args.count, let port = UInt16(args[i]), port > 0 else {
-                    throw HostError("--wire-listen needs a port")
-                }
-                opts.wireListen = port
+                opts.wireListen = try cursor.port(flag)
+            case "--wire-rate-mbps":
+                opts.wireRateMbps = try cursor.positive(flag)
             case "--no-advertise":
                 opts.advertise = false
             case "--advertise-interface":
-                i += 1
-                guard i < args.count, !args[i].isEmpty else {
-                    throw HostError("--advertise-interface needs a name")
+                opts.advertiseInterface = try cursor.value(flag, "a name") {
+                    $0.isEmpty ? nil : $0
                 }
-                opts.advertiseInterface = args[i]
             case "--pair":
                 opts.pair = true
             case "--require-paired":
                 opts.requirePaired = true
             case "--input":
-                i += 1
-                guard i < args.count,
-                      let choice = InputBackendChoice(rawValue: args[i])
-                else {
-                    throw HostError("--input must be auto, uinput, or off")
+                opts.input = try cursor.value(flag, "auto, uinput or off") {
+                    InputBackendChoice(rawValue: $0)
                 }
-                opts.input = choice
             case "--no-audio":
                 opts.audio = false
-            case "--host-audio":
-                i += 1
-                guard i < args.count else {
-                    throw HostError("--host-audio must be audible or muted")
+            case "--audio-bitrate-kbps":
+                opts.audioBitrate = try cursor.value(flag, "1 to 512") {
+                    Int32($0).flatMap { (1...512).contains($0) ? $0 * 1_000 : nil }
                 }
-                switch args[i] {
-                case "audible": opts.hostAudio = .hostAudible
-                case "muted": opts.hostAudio = .hostMuted
-                default:
-                    throw HostError("--host-audio must be audible or muted")
+            case "--host-audio":
+                opts.hostAudio = try cursor.value(flag, "audible or muted") {
+                    ["audible": .hostAudible, "muted": .hostMuted][$0]
                 }
             case "--clipboard":
                 opts.clipboard = true
             case "--clipboard=images":
                 opts.clipboard = true
                 opts.clipboardImages = true
-            case let arg where arg.hasPrefix("--clipboard="):
-                throw HostError("""
-                    --clipboard takes no value or \
-                    =images (the consent tier's third rung)
-                    """)
             case "--accept-files":
                 opts.acceptFiles = true
             case let arg where arg.hasPrefix("--accept-files="):
-                opts.acceptFiles = true
                 let dir = String(arg.dropFirst("--accept-files=".count))
                 guard !dir.isEmpty else {
                     throw HostError("--accept-files= needs a directory")
                 }
+                opts.acceptFiles = true
                 opts.acceptFilesDirectory = dir
             case "--cookie-enter":
-                i += 1
-                guard i < args.count, let v = Int(args[i]), v >= 1 else {
-                    throw HostError("--cookie-enter needs a positive integer")
+                opts.cookieEnter = try cursor.value(flag, "a positive integer") {
+                    Int($0).flatMap { $0 >= 1 ? $0 : nil }
                 }
-                opts.cookieEnter = v
             case "--cookie-exit":
-                i += 1
-                guard i < args.count, let v = Int(args[i]), v >= 0 else {
-                    throw HostError("--cookie-exit needs a non-negative integer")
+                opts.cookieExit = try cursor.value(
+                    flag, "a non-negative integer") {
+                    Int($0).flatMap { $0 >= 0 ? $0 : nil }
                 }
-                opts.cookieExit = v
-            case "--drm-device":
-                i += 1
-                guard i < args.count, args[i].hasPrefix("/") else {
-                    throw HostError("--drm-device needs an absolute card path")
-                }
-                opts.drmDevice = args[i]
-            case "--no-vbv-reconfigure":
-                opts.vbvReconfigure = false
-            case "--audio-bitrate-kbps":
-                i += 1
-                guard i < args.count, let v = Int32(args[i]), v > 0 else {
-                    throw HostError(
-                        "--audio-bitrate-kbps needs a positive number")
-                }
-                opts.audioBitrate = v * 1_000
             case "--help", "-h":
-                print("""
-                usage: lyte-host [--out PATH] [--seconds N]
-                                 [--wire-listen PORT] [--wire-rate-mbps N]
-                Captures the desktop with the direct eye (GPU pixel observation
-                + EGL blit, needs CAP_SYS_ADMIN) and encodes native VAAPI
-                HEVC — to Annex-B PATH (default /tmp/lyte-h0a.hevc) or a
-                Lyte-UDP session.
-                  --seconds N       bound the leg to N s and serve one
-                                    session (default 5). A --wire-listen
-                                    run without it is the service: it
-                                    serves sessions in turn with no
-                                    clock, keeping the eye, listening
-                                    socket, advertisement and input
-                                    devices up between them
-                  --wire-listen P   session mode, but bind port P and adopt
-                                    whichever client completes message 1
-                                    (advertises _lyte._udp via Avahi)
-                  --wire-rate-mbps  session ceiling: pacer rate + the
-                                    estimator's negotiated cap
-                                    (default 50, the LAN ceiling; in
-                                    session mode the encoder recipe
-                                    pairs to it)
-                  --no-advertise    skip the Avahi _lyte._udp advertisement
-                  --advertise-interface NAME
-                                    advertise on ONE interface (e.g. the
-                                    Ethernet NIC) so clients never get
-                                    handed the radio's address
-                                    in --wire-listen mode
-                  --pair            pairing mode (with --wire-listen): mint
-                                    and print a 6-digit PIN, run the CPace
-                                    PAKE over the sealed reliable CTRL
-                                    stream, and pin the paired client's
-                                    static to ~/.config/lyte/
-                                    paired_clients (3 wrong guesses burn
-                                    the PIN; rerun --pair for a fresh one)
-                  --require-paired  only clients already in paired_clients
-                                    may complete the Noise handshake
-                                    (reconnects are plain 1-RTT IK)
-                  --cookie-enter N  message 1s per second at which the
-                                    handshake demands a stateless retry
-                                    cookie (default 20)
-                  --cookie-exit N   the rate at which that demand clears
-                                    (default 5, below --cookie-enter)
-                  --input MODE      injection backend for client input
-                                    events: auto/uinput (kernel
-                                    uinput, compositor-agnostic;
-                                    needs the setup-host.sh udev
-                                    rule), or off
-                  --no-audio        skip the audio leg (default in
-                                    session mode: default-sink monitor →
-                                    5 ms Opus → RS 4+2 → chan 1 at
-                                    DSCP 48, continuous from
-                                    establishment — silence included)
-                  --audio-bitrate-kbps N
-                                    Opus hard-CBR bitrate (default 128)
-                  --clipboard       clipboard sync (UTF-8 text, both
-                                    ways, 64 KiB ceiling): client sets
-                                    (0x1A) land on the host clipboard,
-                                    host copies announce (0x1B).
-                                    Default OFF; capability key 10 is
-                                    declared only when the leaf comes
-                                    up, so a plain run truthfully
-                                    negotiates no clipboard
-                  --clipboard=images
-                                    the consent tier's third rung:
-                                    text AND images (PNG, both
-                                    ways, 32 MiB ceiling) as chan-8
-                                    cargo. Key 12 declared only when
-                                    the leaf comes up with images
-                                    enabled; independent of
-                                    --accept-files (file consent
-                                    never couples to the clipboard)
-                  --accept-files[=DIR]
-                                    the standing per-host file-drop
-                                    consent (client→host only in
-                                    v1): incoming bulk transfers land
-                                    in DIR (default ~/Downloads,
-                                    created if missing) via staging +
-                                    fsync + atomic rename, resumable
-                                    across teardowns. Default OFF;
-                                    capability key 11 is declared only
-                                    when the toggle is ON and the drop
-                                    directory came up, so a plain run
-                                    truthfully negotiates no file
-                                    transfer
-                  --drm-device PATH the DRM card node to capture (default
-                                    /dev/dri/card1); the render node is
-                                    that GPU's own
-                  --no-vbv-reconfigure
-                                    debug: never reconfigure the
-                                    encoder's rate control from the
-                                    estimator's ceiling (the opening
-                                    posture rides the whole run)
-                  --host-audio MODE audible (default) keeps the host's
-                                    speakers playing (default-sink
-                                    monitor capture); muted routes the
-                                    desktop's audio to a session-owned
-                                    "Lyte Audio" virtual sink — only
-                                    the wire hears it, and the original
-                                    default sink is restored at
-                                    teardown (crash paths swept on the
-                                    next start)
-
-                subcommands: lyte-host sniff --port PORT  (header dissector)
-                             lyte-host advertise …        (mDNS discovery)
-                """)
+                print(usage)
                 exit(0)
             default:
-                throw HostError("unknown argument \(args[i]) (try --help)")
+                throw HostError("unknown argument \(flag) (try --help)")
             }
-            i += 1
+            let name = flag.prefix { $0 != "=" }
+            if fileOnlyFlags.contains(name) {
+                fileFlags.append(name)
+            } else if !eitherModeFlags.contains(name) {
+                sessionFlags.append(name)
+            }
+        }
+        if opts.wireListen == nil, let flag = sessionFlags.first {
+            throw HostError("\(flag) needs --wire-listen")
+        }
+        if opts.wireListen != nil, let flag = fileFlags.first {
+            throw HostError("\(flag) is file mode's; drop --wire-listen")
         }
         guard opts.cookieExit < opts.cookieEnter else {
             throw HostError("""
@@ -622,8 +522,6 @@ struct ServedSession {
 
 private extension HostApplication {
 static func run(arguments: [String]) throws {
-    lyte_stdout_linebuf()
-
     let opts = try Options.parse(arguments)
     // The cap_sys_admin file capability clears the dumpable flag at
     // exec; re-arm it for crash forensics. /proc/self/exe stays
@@ -696,7 +594,7 @@ static func runFileLeg(
         throw HostError("cannot open \(opts.outputPath) for writing")
     }
     let leg = DirectEyeLeg(
-        config: .init(seconds: opts.seconds),
+        config: .init(seconds: opts.seconds, fileChroma: opts.fileChroma),
         screen: screen, eye: eye, wire: nil, file: file)
     leg.run()
     fclose(file)
@@ -760,25 +658,17 @@ static func serveSession(
     // wire-rate cap, VBV at the unprotectable-frame guard's ceiling, so
     // a restore can never re-open the >255-shard hole.
     let guardBits = w.worstCaseProtectableFrameCeiling * 8
-    if opts.vbvReconfigure {
-        let rateBits = Int(opts.wireRateMbps * 1_000_000)
-        // Half-rungs and exact tightens; the native seat applies rate
-        // moves without a reset. The loosening sustain stays slow on
-        // purpose: an eager one chases every climb into a limit cycle.
-        w.armEncoderVbv(EncoderVbvConfig(
-            fps: DirectEyeLeg.fps,
-            baselineAverageBitsPerSecond: nil,
-            baselineMaxBitsPerSecond: rateBits,
-            baselineVbvBits: guardBits,
-            rungsPerOctave: 2,
-            exactTighten: true
-        ))
-    } else {
-        print("""
-            encoder-vbv: DISABLED (--no-vbv-reconfigure) — the \
-            opening posture rides the whole run
-            """)
-    }
+    // Half-rungs and exact tightens; the native seat applies rate moves
+    // without a reset. The loosening sustain stays slow on purpose: an
+    // eager one chases every climb into a limit cycle.
+    w.armEncoderVbv(EncoderVbvConfig(
+        fps: DirectEyeLeg.fps,
+        baselineAverageBitsPerSecond: nil,
+        baselineMaxBitsPerSecond: Int(opts.wireRateMbps * 1_000_000),
+        baselineVbvBits: guardBits,
+        rungsPerOctave: 2,
+        exactTighten: true
+    ))
 
     w.shellServiceHook = { [weak host] in
         host?.serviceOrgans()
@@ -1178,18 +1068,13 @@ extension HostApplication {
 
     static func main(arguments: [String]) {
         lyteIgnoreBrokenPipes()
-        // Subcommands never return: `sniff` is the Lyte-UDP header
-        // dissector; `advertise` is the standalone Avahi surface.
-        if arguments.count > 1, arguments[1] == "sniff" {
-            sniffMain(Array(arguments.dropFirst(2)))
-        }
-        if arguments.count > 1, arguments[1] == "advertise" {
-            lyte_stdout_linebuf() // prints must land live through an ssh pipe
-            advertiseMain(Array(arguments.dropFirst(2)))
-        }
-
+        lyte_stdout_linebuf()
         do {
-            try run(arguments: arguments)
+            if arguments.count > 1, arguments[1] == "sniff" {
+                try sniff(Array(arguments.dropFirst(2)))
+            } else {
+                try run(arguments: arguments)
+            }
         } catch {
             FileHandle.standardError.write(
                 Data("lyte-host: error: \(error)\n".utf8)

@@ -126,7 +126,6 @@ var targets: [Target] = [
 
 #if os(Linux)
 products.append(.executable(name: "lyte-host", targets: ["lyte-host"]))
-products.append(.executable(name: "lyte-eye", targets: ["lyte-eye"]))
 
 targets += [
     .systemLibrary(
@@ -193,19 +192,6 @@ targets += [
     // render-node test opens a render node when one exists, which touches
     // no display state.
     .testTarget(name: "HostEyeTests", dependencies: ["HostEye"]),
-    // The standalone eye: doorbell mode (framebuffer flips, unprivileged)
-    // and capture mode (the full loop into an Annex-B file).
-    .executableTarget(
-        name: "lyte-eye",
-        dependencies: [
-            "HostEye", "CDRM",
-            .product(name: "LyteIO", package: "Common"),
-        ],
-        linkerSettings: [
-            .linkedLibrary("va"),
-            .linkedLibrary("va-drm"),
-        ]
-    ),
     // C leaf: nonblocking UDP with sendmmsg/recvmmsg, per-packet TOS and
     // TX timestamps (CMSG macros are unreachable from Swift).
     .target(name: "CNetIO"),
