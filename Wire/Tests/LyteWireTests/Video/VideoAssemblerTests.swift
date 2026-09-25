@@ -257,13 +257,10 @@ final class VideoAssemblerTests: XCTestCase {
         ))
         var events: [VideoAssemblerEvent] = []
         var seq: UInt16 = 0
-        var frames: [UInt32: [UInt8]] = [:]
         for number in [0 as UInt32, 2, 3, 4] {
             let frame = pFrame(100, fill: UInt8(0x60 + number))
-            frames[number] = frame
             let shards = try packetize(frame, number: number, firstSeq: seq)
             seq += UInt16(shards.count)
-            if number == 1 { continue }
             events += assembler.feed(shards)
         }
         XCTAssertTrue(events.contains(.framesSkipped(

@@ -45,7 +45,8 @@ final class VideoPacketizerTests: XCTestCase {
             XCTAssertEqual(shard.envelope.timestamp, 0x1122_3344)
             let field = try FecField.decode(shard.envelope.fec)
             guard case .reedSolomon(let shardIndex, let geometry) = field else {
-                return XCTFail("expected an RS field")
+                XCTFail("expected an RS field")
+                continue
             }
             XCTAssertEqual(Int(shardIndex), index)
             XCTAssertEqual(geometry.dataShards, 1)

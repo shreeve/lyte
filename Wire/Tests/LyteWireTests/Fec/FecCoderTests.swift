@@ -204,7 +204,7 @@ final class FecCoderTests: XCTestCase {
         )
     }
 
-    func testRecoveredOutputIsExactAndIndependentOfShardStorage() throws {
+    func testRecoveredOutputIsExactAtTheParityLimit() throws {
         let geometry = try FecGeometry(
             dataShards: 7, parityShards: 3, groupByteCount: 7_003
         )
@@ -217,11 +217,6 @@ final class FecCoderTests: XCTestCase {
 
         let recovered = try FecDecoder.decode(shards: slots, geometry: geometry)
         XCTAssertEqual(recovered.count, geometry.groupByteCount)
-        XCTAssertEqual(recovered, group)
-
-        // The result owns its logical payload; neither the RS block's
-        // padding nor the caller's shard arrays are retained as a slice.
-        slots = Array(repeating: nil, count: geometry.totalShards)
         XCTAssertEqual(recovered, group)
     }
 

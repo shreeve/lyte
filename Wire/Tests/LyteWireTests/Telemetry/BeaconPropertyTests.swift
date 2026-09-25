@@ -80,12 +80,15 @@ final class BeaconPropertyTests: XCTestCase {
         }
     }
 
-    func testFeedbackDecodeOfTruncatedValidReportsNeverTraps() throws {
+    func testFeedbackDecodeRejectsEveryTruncatedValidReport() throws {
         var rng = SplitMix64(seed: 0x57_4A_B0_05)
         for _ in 0..<2_000 {
             let bytes = try randomReport(using: &rng).encode()
             let cut = rng.int(in: 0..<bytes.count)
-            _ = try? FeedbackReport.decode(Array(bytes.prefix(cut)))
+            XCTAssertThrowsError(
+                try FeedbackReport.decode(Array(bytes.prefix(cut))),
+                "a strict prefix of a report is never a report"
+            )
         }
     }
 

@@ -128,7 +128,8 @@ final class FecPropertyTests: XCTestCase {
                 guard case .reedSolomon(let decodedIndex, let decodedGeometry) =
                     try FecField.decode(field.encoded)
                 else {
-                    return XCTFail("trial \(trial): field lost its scheme")
+                    XCTFail("trial \(trial): field lost its scheme")
+                    continue
                 }
                 XCTAssertEqual(Int(decodedIndex), index)
                 XCTAssertEqual(decodedGeometry, geometry)

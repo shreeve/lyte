@@ -262,8 +262,7 @@ final class BulkEngineTests: XCTestCase {
     /// A stale grant (lower credit than already granted) never claws
     /// credit back.
     func testStaleCreditNeverRegresses() throws {
-        let (offer, payload) = makeFixture()
-        _ = payload
+        let (offer, _) = makeFixture()
         var sender = BulkSendEngine(offer: offer)
         _ = try sender.begin()
         _ = sender.ingest(.accept(try BulkAccept(
@@ -331,8 +330,7 @@ final class BulkEngineTests: XCTestCase {
     /// The identity quadruple must match WHOLE: same id, different
     /// digest = the file changed under the id → abort(resumeMismatch).
     func testResumeMismatchAborts() throws {
-        let (offer, payload) = makeFixture()
-        _ = payload
+        let (offer, _) = makeFixture()
         var receiver = BulkReceiveEngine(
             config: BulkTransferConfig(),
             resumeBook: [BulkResumeState(
@@ -385,8 +383,7 @@ final class BulkEngineTests: XCTestCase {
     }
 
     func testSenderCancelReachesReceiver() throws {
-        let (offer, payload) = makeFixture()
-        _ = payload
+        let (offer, _) = makeFixture()
         var sender = BulkSendEngine(offer: offer)
         var receiver = BulkReceiveEngine()
         _ = receiver.ingest(emissions(try sender.begin())[0])

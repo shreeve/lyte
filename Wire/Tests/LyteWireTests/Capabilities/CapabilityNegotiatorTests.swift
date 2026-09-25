@@ -152,7 +152,8 @@ final class CapabilityNegotiatorTests: XCTestCase {
         for value: UInt64 in [1151, 1401, 1500] {
             let event = try client.receive(Self.raise(to: value))
             guard case .answerUpdate(let ack) = event else {
-                return XCTFail("expected answerUpdate, got \(event)")
+                XCTFail("expected answerUpdate, got \(event)")
+                continue
             }
             XCTAssertEqual(ack.status, .rejected, "\(value)")
             XCTAssertEqual(client.operativeMaxDatagramBytes, 1152)
