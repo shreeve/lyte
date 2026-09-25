@@ -9,9 +9,7 @@ gives the normative byte layout for the layers with a section below; the
 other codecs' layouts are the header comments of their `LyteWire` sources
 (for example `Control/InputMessages.swift` for InputEvent 0x16).
 [docs/PROTOCOL.md](../../docs/PROTOCOL.md) is the living overview that ties
-each protocol layer to its file, and
-[docs/GLOSSARY.md](../../docs/GLOSSARY.md) explains the slice and gate ids
-(W5, W-G6, HS-12, CL-3, …) that name when a layer was built.
+each protocol layer to its file.
 
 **Freeze policy.** A committed vector file is frozen. If the codec and a
 vector ever disagree, that is a wire-contract break to investigate — never a
@@ -28,24 +26,24 @@ library, listed once in its `vectorFileBuilders` registry.
 what its builder writes today. The one exemption is `cursor-v1.json`,
 committed with a single `/` the encoder writes as `\/`; its comparison
 un-escapes that and forgives nothing else. A builder that drifts from its
-frozen file therefore fails the suite. The `lyte-wire-vectorgen` CLI
-writes one NEW file and refuses to replace an existing path unless given
-`--force` (for scratch copies only):
+frozen file therefore fails the suite, so builders list enum values
+literally rather than enumerating `allCases`. The `lyte-wire-vectorgen`
+CLI writes one NEW file and refuses to replace an existing path unless
+given `--force` (for scratch copies only):
 
 ```sh
 swift run --package-path Wire lyte-wire-vectorgen <kind> <output-path>
 # kind: a registry entry's kind; the usage line lists them all
-swift run --package-path Wire lyte-wire-vectorgen video-roundtrip <in.hevc> <out.hevc>
 ```
 
 `video` always reads the committed corpus, `video-corpus-v1/`.
-`video-roundtrip` is not an authoring tool: it packetizes an Annex-B file,
-shuffles and drops shards up to the parity limit, reassembles, verifies
-byte-exactness, and writes the stream for an external `ffmpeg -f null -`
-decode check. Builder output is anchored against hand-computed bytes in
-`EnvelopeTests`/`FecFieldTests` (and the k=1,m=1 parity-identity case in
-`FecCoderTests`, the hand-walked datagram in `VideoPacketizerTests`) so the
-codec never grades its own homework.
+
+**Hand-computed anchors.** Builder output is anchored against bytes
+computed by hand in each codec's tests — `EnvelopeTests`/`FecFieldTests`,
+the k=1,m=1 parity-identity case in `FecCoderTests`, the hand-walked
+datagram in `VideoPacketizerTests`, and the anchor test named with each
+file below — so the codec never grades its own homework. Each vector's
+name and description are in the file.
 
 **Impairment fixtures.** `LyteWireTestKit.SimNet` scenarios are deterministic
 test machinery, not wire contracts: schedules and seeds normally live beside
@@ -55,229 +53,126 @@ file; never rewrite a committed replay.
 
 ## Files
 
-- `envelope-v1.json` — envelope + TLV codec vectors for wire major
-  version 1, plus the (chan, seq) serial-arithmetic table.
-- `fec-v1.json` — fec-field codec vectors, the adaptive parity ladder as
-  data, and RS recovery matrices (W1).
-- `video-v1.json` — video-interior vectors (W2): packetize vectors
-  (frame → frozen shard datagrams) and assembly scenarios (scripted
-  delivery → expected DecodeUnits and fec-impossible verdicts; the
-  whole decision stream is frozen in `video-decisions-v1.json`).
-- `video-corpus-v1/` — real HEVC access units from the H0a host, the
-  golden corpus the video vectors pin by sha256 (own README inside).
-- `beacon-v1.json` — the W4a codecs: CTRL clock-beacon pair and the
-  chan=3 feedback report, plus the offset/RTT worked example.
-- `noise-v1.json` — the W5 crypto layer (gate W-G6): external published
-  `Noise_IK_25519_ChaChaPoly_SHA256` handshake vectors (snow +
-  cacophony) plus the pinned Lyte transport-extension vectors
-  (extended-counter nonces, epoch rekey). Provenance rules below.
-- `session-v1.json` — the promoted end-side session codecs (the
-  codec-unification slice): path challenge/response CTRL 0x03/0x04
-  (HS-12), the IDR request CTRL 0x10 (CL-3/HS-7, reconciled), and the
-  conn-id TLV 0x01 value codec riding whole envelope datagrams. Format
-  mirrors the beacon file (`roundtrip`/`decodeReject` over `messageHex`,
-  typed fields per codec, `error` = the codec's error-case name);
-  anchored against the hand-computed bytes in `SessionCodecTests`. The
-  Noise handshake carriage 0x05/0x06 needs no vectors of its own — the
-  payload is the type byte followed by the raw Noise message, whose
-  bytes noise-v1.json already pins.
-- `arq-v1.json` — the W3 reliable-sublayer frame formats: the data
-  segment 0x07, the ACK 0x08, and the frame-sequence payload rule.
-  Anchored against the hand-computed bytes in `ArqCodecTests`.
-- `lifecycle-v1.json` — the W4b session-lifecycle CTRL messages: the
-  ACTIVE⇄IDLE mode transition 0x09 and the typed session teardown
-  0x0A, the first ARQ-carried CTRL types. Anchored against the
-  hand-computed bytes in `SessionLifecycleCodecTests`.
-- `pairing-v1.json` — the W6 CPace PIN-PAKE (gate W-G7): external
-  draft-irtf-cfrg-cpace-21 vectors (CPACE-X25519-SHA512, appendix
-  A/B.1 plus the B.1.10 low-order table), the pinned PairingPake
-  exchange runs, and the pairing CTRL codecs 0x0B–0x0E. Provenance
-  rules below.
-- `capabilities-v1.json` — the W7 capability layer (gate W-G8): the
-  deterministic CBOR profile, the typed capability set and its
-  unknown-key rules, the intersect algebra frozen as data, and the
-  capability CTRL codecs 0x0F/0x11/0x12. Anchored against RFC 8949's
-  appendix-A examples (transcribed in `CborTests`) and the
-  hand-computed set/message bytes in `CapabilitiesTests` /
-  `CapabilityCodecTests`.
-- `retry-v1.json` — the stateless retry cookie (the msg1-flood
-  defense): the RetryCookie transcript MAC
-  frozen as data (mint bytes, lifetime window, tuple/msg1 binding,
-  secret rotation) plus the retry CTRL codecs 0x13/0x14. Anchored
-  against the hand-built layouts in `RetryCodecTests` and, for the MAC
-  itself, an independent RFC 2104 HMAC-SHA256 built over TestKit's
-  FIPS-verified `Sha256` in `RetryCookieTests`. Details below.
-- `control-v1.json` — the second codec-promotion slice: the CTRL/TLV/
-  capability codecs that shipped end-side under mirror-and-flag during
-  H2 and were promoted verbatim — the reliable idle frame 0x15
-  (HS-11/CL-8), the input pair 0x16/0x17 + the lastInputSeq TLV 0x03
-  (HS-13/CL-9), the audio-routing pair 0x18/0x19 + capability key 9
-  (HS-18/CL-13). Format mirrors the session file (`roundtrip`/
-  `decodeReject` over `messageHex`, typed fields per codec); the TLV
-  rides whole envelope datagrams like the conn-id vectors; the key-9
-  vectors pin the forward-compat-spine bytes (wireDefault's frozen
-  encoding plus exactly the appended `09 F5` entry — key 9 is
-  registered but deliberately NOT a typed set field in v1, so
-  capabilities-v1.json never moves). The InputEvent kind space and
-  both routing codecs' whole mode spaces are pinned (the lifecycle
-  discipline). Anchored against the hand-computed bytes in
-  `ControlCodecTests`. The promoted audio interior (AudioFramer/
-  AudioDepacketizer) needs no vector file of its own — it composes the
-  envelope/fec formats these files already freeze (the Noise-carriage
-  precedent), with the layout pinned as hand-built bytes in
-  `AudioInteriorTests`.
-- `clipboard-v1.json` — the CL-15 clipboard-text sync (the first H3
-  feature; design record `docs/decisions/20260722-231500-lyte-clipboard.md`):
-  ClipboardSet 0x1A (client→host) and ClipboardAnnounce 0x1B
-  (host→client), both `type ‖ UTF-8 text` with the text the sole
-  trailing field, plus capability key 10 (`clipboardText`) on the W7
-  forward-compat spine as data (declared `0A F5`, absent, and composed
-  beside key 9 — capabilities-v1.json never moves). A new file, because
-  committed files never change. Format mirrors the control
-  file (`roundtrip`/`decodeReject` over `messageHex`; text rides as
-  `textUtf8Hex`); anchored against the hand-computed bytes in
-  `ClipboardCodecTests`. Inventory (17): roundtrips covering ASCII,
-  2-/3-/4-byte UTF-8, and the exact 65,536-byte ceiling
-  (printable-ASCII cycle, auditable by eye); rejects covering
-  truncation, empty text (v1 does not sync clearing), both cross-type
-  confusions, a foreign type, one-over-ceiling, and two invalid-UTF-8
-  shapes; the three key-10 spine pins. `ClipboardVectorFileTests`
-  asserts the coverage discipline (every error case name present, the
-  ceiling pinned legal, the spine pinned both ways).
-- `bulk-v1.json` — the W10/F-2 bulk-transfer channel (design record
-  `docs/decisions/20260728-053300-lyte-bulk-channel.md`): the message sextet
-  0x1C–0x21 (offer/accept/chunk/ack/complete/abort, all
-  fixed-layout LE with the chunk-map credit spine shared by
-  accept/ack), capability key 11 (`bulkTransfer`) on the W7
-  forward-compat spine, and — new for this file — worked
-  multi-session TRANSFER traces: both engines run through the
-  deterministic `BulkTransferHarness` (TestKit) with every
-  per-direction emission frozen byte-exact, including a
-  teardown-resume (session 1 dies mid-flight, session 2 resumes from
-  the persisted possession and completes) and a holed-map resume
-  (contiguous prefix + bitmap extras). Message/capability sections
-  are anchored against the hand-computed bytes in `BulkCodecTests`;
-  transfer traces are pinned self-consistent (`provenance` says so —
-  the noise-transport precedent: no external oracle covers our
-  composition, the codecs beneath are hand-anchored). Inventory (68):
-  63 message vectors (roundtrips per codec covering nominal/minimum/
-  maximum shapes, the exact 131,072-byte chunk ceiling, the exact
-  1,024-byte bitmap ceiling, the u64-max total — the no-size-ceiling
-  claim as data — and the whole 7-reason abort space; rejects
-  covering every one of the 16 `BulkMessageError` case names),
-  3 key-11 spine pins, 2 transfer traces. `BulkVectorFileTests`
-  asserts the coverage discipline and replays every trace.
-- `clipboard-images-v1.json` — the P-1 clipboard-image sync
-  (clipboard v2): ClipboardImageCargo 0x22, the direction-neutral cargo
-  marker (`type ‖ transferId u64 LE ‖ mimeLen u8 ‖ mime UTF-8`) that
-  rides chan 8's ordered stream immediately before its transfer's
-  BulkOffer so clipboard cargo and file drops never confuse each
-  other, plus capability key 12 (`clipboardImages`) on the W7
-  forward-compat spine as data (declared `0C F5`, absent, and the
-  keys-10/11/12 composition — the image GATE is 10∧12, key 11 stays
-  independent file consent; capabilities-v1.json never moves). Format
-  mirrors the
-  bulk file (`roundtrip`/`decodeReject`/`encodeReject`; ids ride as
-  hex, mimes as `mimeUtf8Hex`); anchored against the hand-computed
-  bytes in `ClipboardImageCodecTests`. Inventory (16): roundtrips
-  covering the nominal marker, the u64-max id, a
-  foreign-but-well-formed mime (format policy is the channel's, never
-  the codec's — future formats stay speakable), and the exact
-  255-byte mime ceiling; rejects covering truncation (three shapes),
-  a foreign type, trailing bytes, the zero id, the empty mime, and
-  invalid UTF-8; the one wire-inexpressible encode reject
-  (mimeOverBudget); the three key-12 spine pins.
-  `ClipboardImageVectorFileTests` asserts the coverage discipline
-  (every decode-reachable error name present, the mime ceiling pinned
-  legal, the spine pinned both ways).
-- `repair-refusal-v1.json` — the HS-32 repair-refusal CTRL message
-  0x23 (`type ‖ frame u32 LE ‖ reason u8`, fixed 6 bytes): the HS-17
-  NACK responder's stale verdicts made explicit on the wire so the
-  client never blind-waits its full repair deadline on a repair the
-  host already declined. Host→client, sealed, ARQ-exempt
-  fire-and-forget (the 0x10 discipline): a LOST refusal degrades to
-  the client's own deadline expiry by design — nothing may ever
-  require a refusal to arrive. No capability key gates it: an unknown
-  CTRL type is skipped silently on both carriage modes (bare payloads
-  fall through the type peek unconsumed; ARQ-delivered unknowns are
-  counted and dropped), so a v1 client ignoring 0x23 lands exactly on
-  the lost-refusal behavior. Format mirrors the session file (`roundtrip`/`decodeReject` over
-  `messageHex`, `frame`/`reason` typed on roundtrips); anchored
-  against the hand-computed bytes in `RepairRefusalCodecTests`.
-  Inventory (10): roundtrips covering the whole 3-value reason space
-  (stale-budget 0x01, superseded 0x02, unknown-frame 0x03 — the
-  lifecycle discipline) plus the frame 0 and u32-max boundaries;
-  rejects covering truncation, trailing bytes, a foreign type, the
-  zero reason (the zero-fill rule), and an unknown reason.
-  `RepairRefusalVectorFileTests` asserts the coverage discipline
-  (every reason pinned, every decode-reachable error name present).
-- `cursor-v1.json` — the E3 cursor-shape CTRL message 0x24
-  (`type ‖ width u16 ‖ height u16 ‖ hotspotX u16 ‖ hotspotY u16 ‖
-  BGRA pixels`) and the key-13 capability spine. Roundtrips cover the
-  hidden state, a non-square image, the 256 side cap and the exact
-  65,536-byte image ceiling; rejects cover every CursorMessageError
-  case; the spine is pinned declared, absent, and composed with key 10.
-  `CursorVectorFileTests` asserts the coverage discipline and anchors
-  against `CursorCodecTests`.
-- `postures-v1.json` — the quiet-posture announcements: AudioTrackState
-  0x25 (`type ‖ state`, active 0x01 / quiet 0x02) and VideoPostureState
-  0x26 (`type ‖ posture ‖ keepaliveSeconds`, the interval in force,
-  1–255), plus the key-15/16 capability spine declared, absent, and
-  together. Roundtrips cover both states, both postures and the backoff
-  ladder (1, 2, 4, 8, 16, 30 s and the 255 ceiling); rejects cover
-  every AudioTrackStateError and VideoPostureStateError case. A new
-  file rather than an append to control-v1.json, so no frozen file
-  moves. Anchored by hand-computed bytes in `PostureVectorFileTests`.
-- `input-coordinates-v1.json` — the coordinate domain of InputEvent
-  0x16: the f64 coordinates of pointerMotionAbsolute, pointerMotionRelative
-  and pointerAxis must be finite. Roundtrips pin the finite extremes
-  (±f64 max, −0.0, the least subnormal, ±1e300); rejects pin quiet,
-  negative and signaling NaN and ±Inf in each kind and each coordinate
-  slot, all as `nonFiniteCoordinate`. Vectors reuse the control file's
-  shape (`codec = inputEvent`). `InputCoordinateVectorFileTests`
-  asserts both sides of the edge are pinned for every f64 kind.
-- `video-decisions-v1.json` — for every assembly scenario in
-  `video-v1.json` (same names, same frames), the default assembler's
-  whole ordered event stream as one line per event: decodes, skipped
-  ranges, fec-impossible verdicts, NACK candidates (new seqs, missing
-  shard indices, parity, age), repairs, evictions and dropped shards
-  with their reasons. Pinned self-consistent (`provenance` says so): it
-  exists to make any drift in the recovery policy the client depends on
-  loud. `VideoDecisionVectorFileTests` replays every scenario and
-  requires every video-v1 scenario to be pinned.
+Each `*VectorFileTests` suite replays its file; the anchor named here holds
+the hand-computed bytes.
 
-Every file above must be byte-for-byte its builder's output
-(see Authoring above).
+- `envelope-v1.json` — the envelope and TLV codec plus the (chan, seq)
+  serial-arithmetic table. Layout and format below; anchor `EnvelopeTests`.
+- `fec-v1.json` — the fec-field codec, the adaptive parity ladder as data,
+  and RS recovery matrices. Layout and format below; anchor
+  `FecFieldTests`.
+- `video-v1.json` — packetize vectors (frame → frozen shard datagrams) and
+  assembly scenarios (scripted delivery → expected DecodeUnits and
+  fec-impossible verdicts). Format below; anchor `VideoPacketizerTests`.
+- `video-corpus-v1/` — real HEVC access units, the golden corpus
+  `video-v1.json` pins by sha256 (own README inside).
+- `video-decisions-v1.json` — for every `video-v1.json` scenario, the
+  default assembler's whole ordered event stream, one line per event
+  (decodes, skipped ranges, fec-impossible verdicts, NACK candidates,
+  repairs, evictions, dropped shards). Pinned self-consistent: it makes
+  any drift in the recovery policy loud.
+- `beacon-v1.json` — the CTRL clock-beacon pair, the chan 3 feedback
+  report, and the offset/RTT worked example. Layouts and format below;
+  anchors `ClockBeaconTests`/`FeedbackReportTests`.
+- `noise-v1.json` — external `Noise_IK_25519_ChaChaPoly_SHA256` handshake
+  vectors plus pinned transport-extension vectors. Provenance and format
+  below.
+- `session-v1.json` — path challenge/response 0x03/0x04, the IDR request
+  0x10, and the conn-id TLV 0x01 value codec riding whole envelope
+  datagrams; anchor `SessionCodecTests`. The Noise handshake carriage
+  0x05/0x06 needs no vectors of its own: the payload is the type byte
+  followed by the raw Noise message `noise-v1.json` pins.
+- `arq-v1.json` — the data segment 0x07, the ACK 0x08, and the
+  frame-sequence payload rule. Layout and format below; anchor
+  `ArqCodecTests`.
+- `lifecycle-v1.json` — the mode transition 0x09 and the session teardown
+  0x0A. Layout and format below; anchor `SessionLifecycleCodecTests`.
+- `pairing-v1.json` — external draft-irtf-cfrg-cpace-21 vectors, the pinned
+  PairingPake exchange, and the pairing codecs 0x0B–0x0E. Provenance and
+  format below; anchor `PairingCodecTests`.
+- `capabilities-v1.json` — the deterministic CBOR profile, the typed
+  capability set, the intersect algebra as data, and the capability codecs
+  0x0F/0x11/0x12. Format below; anchors RFC 8949 appendix A (in
+  `CborTests`), `CapabilitiesTests` and `CapabilityCodecTests`.
+- `retry-v1.json` — the RetryCookie transcript MAC as data plus the retry
+  codecs 0x13/0x14. Layout and format below; anchors `RetryCodecTests` and,
+  for the MAC, an independent RFC 2104 HMAC in `RetryCookieTests`.
+- `control-v1.json` — the idle frame 0x15, the input pair 0x16/0x17 with
+  the lastInputSeq TLV 0x03, the audio-routing pair 0x18/0x19 (every mode,
+  0x03 pinned as the unknown-mode tombstone), and the key-9 spine; anchor
+  `ControlCodecTests`. The audio interior (AudioFramer/AudioDepacketizer)
+  composes the envelope and fec formats and has no file of its own; its
+  layout is hand-built in `AudioInteriorTests`.
+- `clipboard-v1.json` — ClipboardSet 0x1A and ClipboardAnnounce 0x1B
+  (`type ‖ UTF-8 text`, text the sole trailing field, at most 65,536 B)
+  plus the key-10 spine; anchor `ClipboardCodecTests`.
+- `bulk-v1.json` — the bulk-channel messages 0x1C–0x21, the key-11 spine,
+  and worked multi-session transfer traces replayed through
+  `BulkTransferHarness` with every per-direction emission frozen (traces
+  pinned self-consistent); anchor `BulkCodecTests`.
+- `clipboard-images-v1.json` — the ClipboardImageCargo marker 0x22
+  (`type ‖ transferId u64 LE ‖ mimeLen u8 ‖ mime UTF-8`, riding chan 8's
+  ordered stream just before its transfer's BulkOffer) plus the key-12
+  spine; anchor `ClipboardImageCodecTests`. An unsupported but well-formed
+  mime decodes: format policy belongs to the channel, not the codec.
+- `repair-refusal-v1.json` — RepairRefusal 0x23 (`type ‖ frame u32 LE ‖
+  reason u8`, fixed 6 bytes), host→client, sealed, ARQ-exempt: a lost
+  refusal degrades to the client's own repair deadline, and a client that
+  ignores the unknown type lands on the same behavior, so no capability
+  key gates it; anchor `RepairRefusalCodecTests`.
+- `cursor-v1.json` — CursorShape 0x24 (`type ‖ width u16 ‖ height u16 ‖
+  hotspotX u16 ‖ hotspotY u16 ‖ BGRA pixels`) plus the key-13 spine;
+  anchor `CursorCodecTests`.
+- `postures-v1.json` — AudioTrackState 0x25 (`type ‖ state`, active 0x01 /
+  quiet 0x02) and VideoPostureState 0x26 (`type ‖ posture ‖
+  keepaliveSeconds`, 1–255) plus the key-15/16 spine; anchors in
+  `PostureVectorFileTests`.
+- `input-coordinates-v1.json` — the coordinate domain of InputEvent 0x16:
+  the f64 coordinates of the motion and axis kinds must be finite. Vectors
+  reuse the control file's shape (`codec = inputEvent`).
+- `audio-stream-off-v1.json` — the key-14 (`audioStreamOff`) capability
+  spine declared, absent, and composed with key 9 (`09 F5 0E F5`); each
+  vector's `flags` name the accessors and what they must read. Routing
+  mode 0x04 itself is pinned in `control-v1.json`. Anchors in
+  `AudioStreamOffVectorFileTests`.
+
+The message files share one shape: `roundtrip` encodes the typed fields to
+exactly `messageHex` and decodes back; `decodeReject` decoding `messageHex`
+throws `error`; `encodeReject` constructing the typed value from the fields
+throws `error`. `error` is always the codec error's Swift case name,
+without associated values. u64s ride as hex strings because JSON numbers
+lose their precision.
 
 ## The 24-byte envelope (wire v1)
 
 All multi-byte fields little-endian. The header (these 24 bytes plus the
-optional TLV block) rides as AAD once crypto lands (W5); the payload is the
-AEAD ciphertext + 16 B tag, or the bare shard in `--insecure` mode.
+optional TLV block) rides as AAD; the payload is the AEAD ciphertext + 16 B
+tag. Vectors that pin whole datagrams carry the bare shard instead — an
+unsealed test-passthrough datagram; live sessions always seal it.
 
 | offset | size | field | notes |
 |---|---|---|---|
-| 0 | 1 | chan | 0 CTRL, 1 audio, 2 video-active, 3 feedback/telemetry, 4 video-idle, 5–7 reserved, 8+ features |
+| 0 | 1 | chan | 0 CTRL, 1 audio, 2 video-active, 3 feedback/telemetry, 4 video-idle (registered, unused), 5–7 reserved, 8 bulk, 9+ features |
 | 1 | 1 | flags | bit0: TLV block present; bits 1–7 reserved — 0 on send, ignored on receive |
 | 2 | 2 | seq | per-channel serial u16 (RFC 1982-shaped comparison; see `seqComparisons`) |
 | 4 | 4 | frame | frame number / audio packet number / FEC group id |
-| 8 | 8 | timestamp | µs; host PipeWire monotonic domain host→client, client monotonic client→host |
-| 16 | 8 | fec | interior layout below (pinned at W1, `FecField.swift`) |
+| 8 | 8 | timestamp | µs; host monotonic (CLOCK_MONOTONIC) host→client, client monotonic client→host |
+| 16 | 8 | fec | interior layout below (`FecField.swift`) |
 | 24 | … | TLV block (if flags bit0), then payload | |
 
 TLV block: `count:u8 (type:u8 len:u8 value)*`. Unknown TLV types MUST be
-skipped by consumers and are preserved verbatim by the codec. Reserved
-types, pinned at W0 for later slices: `0x00` invalid (never assigned),
-`0x01` connection ID (migration, Lyte-UDP decision §8.4), `0x02` wire major
-version — reserved and unused in v1: nothing sends it, and the major rides
-the first Noise handshake payload byte instead (§8.3), where it must match
-exactly.
+skipped by consumers and are preserved verbatim by the codec. Assigned
+types: `0x00` invalid (never assigned), `0x01` connection ID (migration,
+Lyte-UDP decision §8.4), `0x02` wire major version — reserved and unused in
+v1: nothing sends it, and the major rides the first Noise handshake payload
+byte instead (§8.3), where it must match exactly — and `0x03` last input
+seq (`control-v1.json`).
 
 Byte budgets, enforced at encode time and covered by reject vectors:
 plaintext shard ≤ **1112 B**, wire payload (ciphertext + tag) ≤ **1128 B**,
 datagram ≤ **1152 B**. TLV bytes count against the datagram budget.
 
-## File format
+## File format: envelope-v1.json
 
 Top-level: `format` ("lyte-wire-envelope-vectors"), `formatVersion` (1),
 `wireVersion` (1), `vectors`, `seqComparisons`.
@@ -310,7 +205,7 @@ comparisons false, distance reports −32768 from either side).
 
 ## The 8-byte fec field (wire v1)
 
-The envelope's offset-16 u64, interior pinned at W1. Byte n below is bit
+The envelope's offset-16 u64. Byte n below is bit
 range [8n, 8n+8) of the little-endian u64 — `Envelope` owns the byte order
 on the wire, this table owns the interior:
 
@@ -351,52 +246,8 @@ k ≤ 231, lossy k ≤ 204 — `frameByteCeiling` derives from these).
 must produce `shardsHex` byte-exact; decoding with `erasedIndices` nil'd
 out must return `groupHex` byte-exact (`expect` "recovered") or throw
 `unrecoverableGroup` (`expect` "unrecoverable") — honest failure, never
-garbage. Byte-identical matrices on macOS and Linux are gate W-G2's
-cross-platform requirement.
-
-## Vector inventory (fec-v1.json, 17 field vectors + 32 geometry rows + 10 matrices)
-
-Field round trips: `none` (all-zero), `rs-nominal-parity-shard` (the
-hand-computed anchor: k=4 m=2 over 4000 B, shard 5),
-`rs-nominal-first-data-shard`, `rs-tiny-frame` (k=1 m=1, 100% parity),
-`rs-audio-4-2` (the W8 shape), `rs-parity-free` (m=0 mechanism),
-`rs-max-block` (k=204 m=51, 255 shards, shard 254).
-
-Field lenient decodes: `rs-reserved-byte-ignored`,
-`none-reserved-byte-ignored`.
-
-Field decode rejects: `unknown-scheme`, `non-zero-none`,
-`zero-data-shards`, `over-gf256-block` (k=200 m=60),
-`group-over-budget` (k=1, 1113 B), `zero-group-bytes`,
-`over-provisioned-shards` (k=4 over 5 B), `shard-index-out-of-range`.
-
-Geometry rows: both regimes at k = 1, 2, 3, 4, 5, 8, 9, 20, 32, 33, 100,
-204, 205, 231, 232, 255 — every bucket edge plus the GF(2⁸) truncation
-points.
-
-Recovery matrices: `k4m2-all-present` (pins the reference parity bytes),
-`k4m2-data-erasures-1-3`, `k4m2-mixed-erasure`,
-`k4m2-parity-only-erasures` (fast path), `k4m2-unrecoverable` (3 erased,
-honest failure), `k3m1-trailing-pad` (short shard recovered and
-trimmed), `k1m1-identity` (parity = data, the eye-verifiable anchor),
-`k1m2-tiny-lossy`, `k5m2-balanced-split` (53 B over k=5),
-`k2m1-full-budget-shards` (2 × 1112 B, the budget interaction).
-
-## Vector inventory (envelope-v1.json, 17 vectors)
-
-Round trips: `nominal-video-shard` (the hand-computed anchor),
-`nominal-audio`, `empty-payload` (0 B), `max-plaintext-shard` (1112 B),
-`max-wire-payload` (1128 B → exactly 1152 B datagram), `seq-wrap-high`
-(seq 0xFFFF) / `seq-wrap-low` (0x0000), `tlv-reserved-types`
-(connectionId + wireVersion), `tlv-unknown-skipped` (type 0x7F).
-
-Lenient decodes: `reserved-flag-bits-ignored`, `tlv-flag-empty-block`.
-
-Encode rejects: `shard-over-budget` (1113 B), `payload-over-budget`
-(1129 B), `datagram-over-budget-tlv` (TLV pushes total past 1152 B).
-
-Decode rejects: `truncated-envelope` (23 B), `truncated-tlv-block`,
-`oversize-datagram` (1153 B).
+garbage. The matrices must be byte-identical on macOS, Linux and
+WebAssembly.
 
 ## File format: video-v1.json
 
@@ -406,9 +257,9 @@ Top-level: `format` ("lyte-wire-video-vectors"), `formatVersion` (1),
 `frames` are packetize vectors: `VideoPacketizer` on the source bytes
 (with the vector's frameNumber, `timestampHex` µs, isIDR, regime,
 firstSeq) must produce exactly the listed shards — seq and `fecHex`
-field-exact, full `--insecure` datagram (header + bare shard) matching
-`datagramSha256`, and `datagramHex` byte-exact where present. Inline
-sources carry `annexBHex` (counting-byte filler, auditable by eye);
+field-exact, the full unsealed test-passthrough datagram (header + bare
+shard; live sessions seal it) matching `datagramSha256`, and
+`datagramHex` byte-exact where present. Inline sources carry `annexBHex` (counting-byte filler, auditable by eye);
 corpus sources name a `video-corpus-v1/` file pinned by sha256 —
 hash-only to keep the repo lean, with the hash covering the whole
 datagram (envelope bytes included), so header drift is as loud as
@@ -427,22 +278,6 @@ source with the vector's frameNumber/timestamp/isIDR; the
 event. Anchored against the hand-walked datagram in
 `VideoPacketizerTests.testHandWalkedTinyFrame`.
 
-## Vector inventory (video-v1.json, 9 frames + 10 scenarios)
-
-Frames: `inline-tiny-idr` (48 B, k=1 m=1), `inline-p-k3` /
-`inline-p-k3-lossy` (2500 B, k=3 m=2 both regimes), `inline-p-tail`
-(follow-on traffic), `inline-p-seq-wrap` (k=2 m=1 across the u16 wrap,
-seqs 0xFFFF 0x0000 0x0001), `corpus-idr` (18400 B, k=17 m=3, carries
-VPS/SPS/PPS), `corpus-p-large` (20786 B, k=19 m=3), `corpus-p-small`
-(4367 B, k=4 m=2), `corpus-p-small-lossy` (same bytes, lossy regime).
-
-Scenarios: `in-order-tiny-idr`, `shuffled-k3`, `loss-at-parity-limit-k3`,
-`duplicates-k3`, `seq-wrap-loss`, `interleaved-frames-emit-in-order`
-(late stragglers must not draw a write-off), `fec-impossible-then-eviction`
-(the CL-3 IDR-request trigger plus stale eviction), `corpus-idr-in-order`,
-`corpus-sequence-with-loss` (parity-limit loss under G4-model reorder),
-`corpus-small-p-lossy-regime`.
-
 ## The CTRL message-type registry and the clock-beacon pair (wire v1)
 
 The complete registry, 0x00–0x26, with each type's direction, carriage and
@@ -450,15 +285,14 @@ vector file, is the table in [docs/PROTOCOL.md](../../docs/PROTOCOL.md#ctrl-mess
 (source: `LyteWire/Control/CtrlMessage.swift`). This section pins the
 registry's rules and the beacon pair.
 
-Every CTRL (chan 0) payload starts with one message-type byte — in
-today's bare datagrams and, once W3 lands, at the start of each
-ARQ-framed message body alike. Types pinned at W4a: `0x00` invalid
-(never assigned, the zero-fill rule), `0x01` clock beacon, `0x02` beacon
-echo. The beacon pair is ARQ-exempt fire-and-forget by design: clock
-mapping wants fresh timestamps, not reliable old ones —
-a lost beacon is superseded by the next 1 Hz send. It is the ONE beacon
-(clock mapping + slow liveness); the 350 ms blackout detector is
-feedback-stream silence, a different mechanism.
+Every CTRL (chan 0) message starts with one type byte, whether it rides
+a bare ARQ-exempt datagram or an ARQ-delivered message body. `0x00` is
+invalid (never assigned, the zero-fill rule), `0x01` the clock beacon,
+`0x02` the beacon echo. The beacon pair is ARQ-exempt fire-and-forget by
+design: clock mapping wants fresh timestamps, not reliable old ones — a
+lost beacon is superseded by the next 1 Hz send. It is the ONE beacon
+(clock mapping + slow liveness); blackout detection is each end's local
+policy, not a message.
 
 ClockBeacon (host→client, 1 Hz plus session start), fixed 34 bytes,
 little-endian:
@@ -468,7 +302,7 @@ little-endian:
 | 0 | 1 | type | 0x01 |
 | 1 | 1 | flags | bit0: lastEcho populated; bits 1–7 reserved — 0 on send, ignored on receive |
 | 2 | 4 | beaconSeq | u32, from 0 at session start |
-| 6 | 8 | hostSend | t1: host PipeWire monotonic µs at send |
+| 6 | 8 | hostSend | t1: host monotonic µs (CLOCK_MONOTONIC) at send |
 | 14 | 4 | lastEchoBeaconSeq | the echo this beacon reports |
 | 18 | 8 | lastEchoClientSend | its t3, echoed verbatim (client µs) |
 | 26 | 8 | lastEchoHostReceive | its t4, measured at arrival (host µs) |
@@ -489,7 +323,7 @@ BeaconEcho (client→host, one per beacon), fixed 29 bytes:
 
 t4 (host receive) is measured locally by the host, never on the wire.
 Offset and RTT from one pair, the classic four-timestamp shape feeding
-CL-10's HostClockModel (min-filtered offset + regression skew):
+the client's HostClockModel (min-filtered offset + regression skew):
 
 ```
 rtt    = (t4 − t1) − (t3 − t2)
@@ -554,41 +388,11 @@ u64 timestamps. `feedbackVectors` mirror the envelope kinds including
 computation above: decoding `echoHex` plus the local `hostReceiveHex`
 must yield exactly `offsetMicroseconds`/`rttMicroseconds`.
 
-## Vector inventory (beacon-v1.json, 13 beacon + 19 feedback + 1 example)
-
-Beacon round trips: `beacon-first` (session start, no echo, flags 0),
-`beacon-steady` (the hand-computed anchor), `beacon-seq-max` (u32/u64
-maxima), `echo-nominal` (the anchor), `echo-worked-example`.
-
-Beacon lenient decode: `beacon-reserved-flags-ignored`.
-
-Beacon decode rejects: `beacon-truncated` (33 B), `beacon-trailing-byte`
-(35 B), `beacon-bad-type` (echo type at beacon length),
-`beacon-nonzero-absent-echo`, `echo-truncated`, `echo-trailing-byte`,
-`echo-bad-type` (0x7f).
-
-Feedback round trips: `feedback-nominal` (the hand-computed anchor,
-80 B), `feedback-empty-sections` (21 B header only),
-`feedback-bounds-maxed` (1035 B structural ceiling),
-`feedback-full-budget` (maxed + 74 B TLV = exactly 1112 B).
-
-Feedback lenient decode: `feedback-reserved-flags-ignored`.
-
-Feedback encode rejects: `feedback-too-many-channels` (9),
-`feedback-too-many-samples` (113), `feedback-too-many-nacks` (7),
-`feedback-delta-overflow` (2²⁴ µs), `feedback-over-budget-tlv` (1113 B).
-
-Feedback decode rejects: `feedback-truncated-header` (20 B),
-`feedback-truncated-sections`, `feedback-sample-count-over-bounds`
-(count byte 200), `feedback-nonzero-base-no-samples`,
-`feedback-nack-bitmap-count-zero`, `feedback-nack-bitmap-count-oversize`
-(33), `feedback-nack-bitmap-noncanonical` (zero final byte),
-`feedback-trailing-bytes`, `feedback-truncated-tlv`.
-
 ## The ARQ frames (wire v1)
 
-The reliable ordered-retransmit sublayer (W3) that CTRL, video-idle,
-and the feature channels ride. Two frame types in the CTRL type space,
+The reliable ordered-retransmit sublayer that CTRL, bulk (chan 8) and
+the feature channels ride; chan 4 (video-idle) is registered but unused.
+Two frame types in the CTRL type space,
 used identically on every reliable channel: a reliable-channel datagram
 payload starting with 0x07 or 0x08 is wholly ARQ — a SEQUENCE of
 self-delimiting frames (an ACK piggybacks ahead of fresh segments in
@@ -652,32 +456,10 @@ byte-exactly; `decodeLenient` decodes (reserved flag bits set) but
 re-encodes differently; `decodeReject` throws `error`, an
 `ArqFrameError` case name.
 
-## Vector inventory (arq-v1.json, 21 vectors)
-
-Round trips: `segment-nominal` (the hand-computed anchor),
-`segment-stream-first` (group 0, seq 0, mid-message),
-`segment-max-body` (1104 B — the frame fills the 1112 B shard budget
-exactly), `segment-seq-wrap-high` (seq 0xFFFF), `ack-nominal` (the
-hand-computed anchor: cumulative + bitmap bits 0 and 2),
-`ack-nothing-in-order` (cumulative = initial − 1 with an out-of-order
-bit), `ack-two-blocks`, `coalesced-ack-then-segments` (the
-frame-sequence rule as bytes).
-
-Lenient decodes: `segment-reserved-flags-ignored`,
-`ack-reserved-flags-ignored`.
-
-Decode rejects: `empty-payload`, `unknown-frame-type`,
-`segment-truncated-header`, `segment-truncated-body`,
-`segment-zero-length-body`, `trailing-garbage-after-frame`,
-`ack-zero-blocks`, `ack-too-many-blocks` (17), `ack-bitmap-too-long`
-(33), `ack-bitmap-noncanonical` (zero final byte),
-`ack-truncated-block`.
-
 ## The session-lifecycle messages (wire v1)
 
-The W4b CTRL types — the first messages that ride the ARQ ordered
-stream (group 0) rather than bare datagrams, which is what makes their
-ordering guarantees real: a mode flip can never reorder against the
+Both CTRL types ride the ARQ ordered stream (group 0) rather than bare
+datagrams, which is what makes their ordering guarantees real: a mode flip can never reorder against the
 messages around it, and a teardown can never overtake the messages
 that explain it. Both are exactly their fixed 2-byte layout: truncation
 and trailing bytes reject, a foreign type byte rejects with what it
@@ -708,20 +490,8 @@ Top-level: `format` ("lyte-wire-lifecycle-vectors"), `formatVersion`
 over `messageHex`: `roundtrip` (typed `value` byte ↔ `messageHex`
 byte-exact both ways) and `decodeReject` (`error`, a
 `LifecycleMessageError` case name). The roundtrips pin the codecs'
-ENTIRE legal value spaces — `LifecycleVectorFileTests` asserts the
-file covers every enum case, so a value added to either enum without a
-vector-file (and wire-version) discussion fails loudly.
-
-## Vector inventory (lifecycle-v1.json, 14 vectors)
-
-Round trips: `mode-active`, `mode-idle`, `teardown-taken-over`,
-`teardown-shutting-down` — the complete value spaces.
-
-Decode rejects: `mode-truncated`, `mode-trailing-byte`,
-`mode-bad-type` (teardown byte at the mode decoder), `mode-zero`
-(the zero-fill rule), `mode-unknown` (0x03 — FROZEN/RECOVERY never
-ride the wire), `teardown-truncated`, `teardown-trailing-byte`,
-`teardown-bad-type`, `teardown-zero`, `teardown-unknown` (0x7f).
+ENTIRE legal value spaces; a new value needs a new file and a
+wire-version discussion.
 
 ## The pairing layer (wire v1)
 
@@ -759,7 +529,7 @@ point on curve or twist) aborts the run before any tag math.
 Top-level: `format` ("lyte-wire-pairing-vectors"), `formatVersion` (1),
 `wireVersion` (1), `draftVectors`, `exchangeVectors`, `messageVectors`.
 
-**Provenance honesty — the noise-v1 discipline.**
+**Provenance honesty** (as in `noise-v1.json`).
 
 `draftVectors` are **external canonical vectors**, transcribed verbatim
 from draft-irtf-cfrg-cpace-21 (`source` URL + `sourceSha256` of the
@@ -782,31 +552,13 @@ inputs, replayed through the real initiator/responder machines — the
 `messageVectors` carry `codec` ("shareA"/"shareB"/"confirm"/"reject")
 plus the lifecycle file's kinds over `messageHex`; `error` names are
 `PairingMessageError` case names. Anchored against the hand-built
-bytes in `PairingCodecTests`. `PairingVectorFileTests` asserts the
-reject codec's whole value space is pinned.
-
-## Vector inventory (pairing-v1.json, 12 low-order + 1 exchange + 14 message)
-
-Draft sections: 4 prepend_len, 1 lv_cat, 2 transcript_ir, the B.1.1
-generator chain, the B.1.2–B.1.5 exchange, the 12-row B.1.10 table.
-
-Exchange: `pairing-nominal` (PIN "482913", counting-byte statics /
-handshake hash / scalars).
-
-Message round trips: `share-a-nominal`, `share-b-nominal`,
-`confirm-nominal`, `reject-confirmation-failed`,
-`reject-invalid-share` (the reject codec's complete value space).
-
-Message decode rejects: `share-a-truncated`, `share-a-trailing-byte`,
-`share-a-bad-type`, `share-b-truncated`, `confirm-bad-type`,
-`confirm-trailing-byte`, `reject-truncated`, `reject-zero`,
-`reject-unknown` (0x7f).
+bytes in `PairingCodecTests`; the reject codec's whole value space is
+pinned.
 
 ## The capability layer (wire v1)
 
-The W7 capability handshake: right after
-establishment, each end sends one capability declaration as the first
-ARQ-carried CTRL message; the session's effective capabilities are the
+The capability handshake: right after establishment, each end sends one
+capability declaration as the first ARQ-carried CTRL message; the session's effective capabilities are the
 INTERSECTION, computed identically on both ends. There is no accept
 round — the intersection is the agreement. Capabilities are
 session-scoped and fixed after the exchange except where the key
@@ -821,34 +573,13 @@ misordered/duplicate map keys REJECT even when well-formed — two ends
 that disagree about bytes are a wire bug the codec refuses to paper
 over. Decode nesting is bounded at depth 8.
 
-**The key registry** (CBOR unsigned map keys; numbers are wire
-contract; `Capabilities.swift`):
-
-| key | field | type | intersect |
-|---|---|---|---|
-| 1 | wireMinor (required) | u16 | min |
-| 2 | videoCodecs (required) | ascending id list — 1 HEVC | set ∩ |
-| 3 | chromaModes (required) | ascending id list — 1 4:2:0, 2 4:4:4 | set ∩ |
-| 4 | idleSilence | bool | AND |
-| 5 | featureChannels | ascending id list — 1 clipboard, 2 files, 3 printing | set ∩ |
-| 6 | audioExpress | bool | AND |
-| 7 | resume | bool | AND |
-| 8 | maxDatagramBytes | u32 ≥ 1152 | min |
-| 9 | hostAudioRouting | flag (`09 F5`) | both declare |
-| 10 | clipboardText | flag (`0A F5`) | both declare |
-| 11 | bulkTransfer | flag (`0B F5`) | both declare |
-| 12 | clipboardImages | flag (`0C F5`) | both declare |
-| 13 | cursorShape | flag (`0D F5`) | both declare |
-| 14 | audioStreamOff | flag (`0E F5`) | both declare |
-| 15 | audioQuietPosture | flag (`0F F5`) | both declare |
-| 16 | videoQuietPosture | flag (`10 F5`) | both declare |
-
-Keys 9–16 are not typed fields of the v1 set: each is one canonical
-`key: true` entry carried through the unknown-entry rule below, so
-`capabilities-v1.json` never moves. Their spine pins live in
-`control-v1.json` (9), `clipboard-v1.json` (10), `bulk-v1.json` (11),
-`clipboard-images-v1.json` (12), `cursor-v1.json` (13) and
-`postures-v1.json` (15, 16). Key 14 has no spine pin yet.
+**The key registry** — numbers, types, intersect rules and what each key
+gates — is the table in
+[docs/PROTOCOL.md](../../docs/PROTOCOL.md#capabilities) (source:
+`Capabilities.swift`). Keys 9–16 are not typed fields of the v1 set: each
+is one canonical `key: true` entry (`09 F5` … `10 F5`) carried through the
+unknown-entry rule below, so `capabilities-v1.json` never moves; each has
+its spine pin in the file named in the Files list.
 
 Forward compatibility, three rules: unknown KEYS are ignored (never a
 decode error) and preserved verbatim; unknown VALUES inside id lists
@@ -906,45 +637,13 @@ as data, not assumed.
 `decodeReject` (`error`, a `CapabilityMessageError` case name).
 Anchored against the hand-computed bytes in `CapabilityCodecTests`.
 
-## Vector inventory (capabilities-v1.json, 17 cbor + 9 set + 4 intersect + 15 message)
-
-CBOR canonical: `unsigned-argument-widths` (every shortest-form width
-in one array), `negative-and-simple`, `bytes-and-text`,
-`nested-arrays`, `map-key-order` (integer keys before text keys).
-
-CBOR decode rejects: `non-shortest-u8`, `non-shortest-u16`,
-`misordered-map-keys`, `duplicate-map-key`, `indefinite-array`,
-`tag`, `float`, `undefined`, `truncated-argument`, `trailing-bytes`,
-`invalid-utf8`, `nesting-too-deep`.
-
-Set round trips: `wire-default` (the hand-computed anchor),
-`full-house` (every key non-default, a foreign codec id carried),
-`unknown-key-preserved` (the unknown-key-ignored rule as bytes).
-Set lenient decode: `required-keys-only` (optional keys defaulted).
-Set decode rejects: `missing-video-codecs`, `wrong-type-minor`,
-`descending-id-list`, `ceiling-below-floor`, `not-a-map`.
-
-Intersects: `nominal-asymmetric` (full-house ∩ modest),
-`identical-idempotent` (the idempotence law as bytes),
-`disjoint-features` (empty feature agreement is fine),
-`unknown-entries-byte-equal-rule` (equal foreign values survive,
-differing ones drop).
-
-Message round trips: `declaration-wire-default`,
-`declaration-full-house`, `update-geometry-raise`, `ack-accepted`,
-`ack-rejected`. Message decode rejects: `declaration-truncated`,
-`declaration-bad-type`, `declaration-body-not-a-map`,
-`declaration-over-budget` (1025 B), `update-empty-map`,
-`update-text-key`, `update-non-canonical-body`, `ack-unknown-status`
-(0x03), `ack-zero-status`, `ack-truncated`.
-
 ## The stateless retry cookie (wire v1)
 
 The msg1-flood defense: LyteWire provides a stateless HMAC retry-cookie
 codec for the first handshake datagram, and the host shell decides when
 to demand it — QUIC Retry's shape without QUIC. Under a
-Noise msg1 flood the host escalates from HS-9's token bucket to cookie
-mode: each msg1 draws a RetryChallenge whose cookie is minted purely
+Noise msg1 flood the host escalates from its per-source token bucket to
+cookie mode: each msg1 draws a RetryChallenge whose cookie is minted purely
 from (client tuple, now, secret) — no per-client state — and only a
 resubmission whose cookie verifies against the tuple it actually
 arrived from gets to cost X25519.
@@ -997,28 +696,6 @@ decoded `cookieHex` (and `message1Hex` for handshake1); `error` names
 are `RetryMessageError` case names. Anchored against the hand-built
 bytes in `RetryCodecTests`.
 
-## Vector inventory (retry-v1.json, 12 cookie + 14 message)
-
-Cookie mint rows: `mint-nominal` (the reference bytes),
-`mint-verify-at-lifetime-edge` (closed-ended window), `mint-expired`
-(+1 ns past lifetime), `mint-future-stamp`, `mint-custom-lifetime`
-(1 ms honored), `mint-rotation-previous-secret`, `mint-rotated-out`.
-
-Cookie verify rows: `verify-foreign-tuple`, `verify-altered-message1`,
-`verify-tampered-mac`, `verify-tampered-timestamp`,
-`verify-truncated-cookie`.
-
-Message round trips: `challenge-nominal` (the hand-computed anchor),
-`challenge-min-cookie` (1 B), `challenge-max-cookie` (255 B),
-`handshake1-nominal` (96 B msg1, the structural minimum),
-`handshake1-real-msg1-shape` (122 B).
-
-Message decode rejects: `challenge-truncated-header`,
-`challenge-truncated-cookie`, `challenge-zero-cookie-len`,
-`challenge-trailing-byte`, `challenge-bad-type`,
-`handshake1-truncated-cookie`, `handshake1-zero-cookie-len`,
-`handshake1-msg1-too-short`, `handshake1-bad-type`.
-
 ## The Noise layer (wire v1)
 
 Suite: **`Noise_IK_25519_ChaChaPoly_SHA256`** — the IK pattern
@@ -1032,7 +709,7 @@ message 2 = `e(32) ‖ enc(payload)`. There is no ALPN (Lyte-UDP decision
 §8.3), so the first payload byte each way is the **wire major version**
 — mismatch aborts with `versionMismatch` before any transport key
 exists. The post-handshake transcript hash `h` is exposed as the
-handshake hash the W6 PAKE binds to (§8.2).
+handshake hash the pairing PAKE binds to (§8.2).
 
 Transport phase (the Lyte extension — this is NOT plain Noise transport
 nonce discipline): the envelope header (24 B + TLVs) rides as AAD; the
@@ -1086,11 +763,3 @@ ephemerals (counting-byte private keys, auditable by eye), freezes
 order: `seal` steps carry the envelope fields (whose `encode` output is
 the AAD) and the exact expected `wirePayloadHex`; `rekey` steps bump
 the named direction's epoch on both ends.
-
-## Vector inventory (noise-v1.json, 2 external + 1 pinned)
-
-`ik-transport-nominal` (pinned): CTRL and video both directions, a
-1112 B max-budget shard sealing to exactly 1128 B, the u16 seq wrap on
-chan 1 (anchored at 65534, walking 65535 → 0 → 1), a client→host rekey
-to epoch 1, and post-rekey sends both ways proving the epoch key change
-while host→client stays on epoch 0.

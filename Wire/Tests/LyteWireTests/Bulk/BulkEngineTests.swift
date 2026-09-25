@@ -4,7 +4,7 @@ import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-// The W10 transfer engines in virtual time: happy path, backpressure
+// The bulk transfer engines in virtual time: happy path, backpressure
 // under a stingy/slow receiver, teardown-resume completing sha-exact,
 // aborts from every seat, the whole remote-violation surface, and the
 // local-API misuse throws. The engines are event-driven by design (no
@@ -32,14 +32,6 @@ final class BulkEngineTests: XCTestCase {
             mimeHint: "application/octet-stream"
         )
         return (offer, payload)
-    }
-
-    private func chunkData(
-        _ offer: BulkOffer, _ payload: [UInt8], _ index: UInt64
-    ) -> [UInt8] {
-        let start = Int(index) * Int(offer.chunkByteCount)
-        let size = offer.byteCount(ofChunk: index)!
-        return Array(payload[start..<start + size])
     }
 
     private func emissions(
@@ -167,7 +159,7 @@ final class BulkEngineTests: XCTestCase {
             for index in requested {
                 chunkEmits += emissions(try sender.supplyChunk(
                     index: index,
-                    data: chunkData(offer, payload, index)
+                    data: offer.chunk(index, of: payload)
                 ))
             }
             for message in chunkEmits {
@@ -181,7 +173,7 @@ final class BulkEngineTests: XCTestCase {
                               "no ack before the store confirms")
                 for (index, data) in pendingStores {
                     XCTAssertEqual(
-                        data, chunkData(offer, payload, index)
+                        data, offer.chunk(index, of: payload)
                     )
                     storedOrder.append(index)
                     let after = try receiver.chunkStored(index: index)
@@ -235,7 +227,7 @@ final class BulkEngineTests: XCTestCase {
         var pendingConfirms: [UInt64] = []
         for index in reads(senderActions) {
             for message in emissions(try sender.supplyChunk(
-                index: index, data: chunkData(offer, payload, index)
+                index: index, data: offer.chunk(index, of: payload)
             )) {
                 let actions = receiver.ingest(message)
                 XCTAssertTrue(emissions(actions).isEmpty)
@@ -270,8 +262,7 @@ final class BulkEngineTests: XCTestCase {
     /// A stale grant (lower credit than already granted) never claws
     /// credit back.
     func testStaleCreditNeverRegresses() throws {
-        let (offer, payload) = makeFixture()
-        _ = payload
+        let (offer, _) = makeFixture()
         var sender = BulkSendEngine(offer: offer)
         _ = try sender.begin()
         _ = sender.ingest(.accept(try BulkAccept(
@@ -318,28 +309,6 @@ final class BulkEngineTests: XCTestCase {
         XCTAssertTrue(harness.resumeBook.isEmpty)
     }
 
-    /// A holed possession map (extras beyond the prefix): the sender
-    /// re-dispatches exactly the holes, never the held chunks.
-    func testResumeWithHolesDispatchesOnlyMissing() throws {
-        let (offer, payload) = makeFixture(
-            chunkCount: 8, finalChunkBytes: 4_096
-        )
-        var harness = BulkTransferHarness(
-            offer: offer, payload: payload, window: 16,
-            initialPossession: BulkPossession(
-                contiguousCount: 3, extras: [5, 6]
-            )
-        )
-        let result = try harness.runSession()
-        XCTAssertEqual(result.senderFinalState, .completed)
-        XCTAssertEqual(result.receiverFinalState, .completed)
-        let sentChunks = result.senderMessages.filter {
-            $0[0] == CtrlMessageType.bulkChunk
-        }
-        XCTAssertEqual(sentChunks.count, 3, "chunks 3, 4, 7 only")
-        XCTAssertEqual(harness.assembledDigest(), offer.sha256)
-    }
-
     /// Resume when possession is already complete (the teardown ate
     /// only the finish): no chunks travel; the digest still gates.
     func testResumeAlreadyCompleteVerifiesWithoutChunks() throws {
@@ -361,8 +330,7 @@ final class BulkEngineTests: XCTestCase {
     /// The identity quadruple must match WHOLE: same id, different
     /// digest = the file changed under the id → abort(resumeMismatch).
     func testResumeMismatchAborts() throws {
-        let (offer, payload) = makeFixture()
-        _ = payload
+        let (offer, _) = makeFixture()
         var receiver = BulkReceiveEngine(
             config: BulkTransferConfig(),
             resumeBook: [BulkResumeState(
@@ -415,8 +383,7 @@ final class BulkEngineTests: XCTestCase {
     }
 
     func testSenderCancelReachesReceiver() throws {
-        let (offer, payload) = makeFixture()
-        _ = payload
+        let (offer, _) = makeFixture()
         var sender = BulkSendEngine(offer: offer)
         var receiver = BulkReceiveEngine()
         _ = receiver.ingest(emissions(try sender.begin())[0])
@@ -445,7 +412,7 @@ final class BulkEngineTests: XCTestCase {
         }
         let index = reads(senderActions)[0]
         let chunkEmit = emissions(try sender.supplyChunk(
-            index: index, data: chunkData(offer, payload, index)
+            index: index, data: offer.chunk(index, of: payload)
         ))
         _ = receiver.ingest(chunkEmit[0])
         let failed = receiver.storageFailed()
@@ -471,7 +438,7 @@ final class BulkEngineTests: XCTestCase {
             senderActions += sender.ingest(message)
         }
         let chunkEmit = emissions(try sender.supplyChunk(
-            index: 0, data: chunkData(offer, payload, 0)
+            index: 0, data: offer.chunk(0, of: payload)
         ))
         let stored = receiver.ingest(chunkEmit[0])
         let confirm = try receiver.chunkStored(
@@ -535,7 +502,7 @@ final class BulkEngineTests: XCTestCase {
         _ = try receiver.accept()
         let chunk = try BulkChunk(
             transferId: offer.transferId, chunkIndex: 0,
-            data: chunkData(offer, payload, 0)
+            data: offer.chunk(0, of: payload)
         )
         let first = receiver.ingest(.chunk(chunk))
         _ = try receiver.chunkStored(index: stores(first)[0].index)
@@ -552,12 +519,12 @@ final class BulkEngineTests: XCTestCase {
         _ = try receiver.accept() // grant = 1
         _ = receiver.ingest(.chunk(try BulkChunk(
             transferId: offer.transferId, chunkIndex: 0,
-            data: chunkData(offer, payload, 0)
+            data: offer.chunk(0, of: payload)
         )))
         // A second chunk without a fresh grant breaks the contract.
         let actions = receiver.ingest(.chunk(try BulkChunk(
             transferId: offer.transferId, chunkIndex: 1,
-            data: chunkData(offer, payload, 1)
+            data: offer.chunk(1, of: payload)
         )))
         XCTAssertEqual(actions.first, .violated(.creditExceeded))
     }
@@ -583,7 +550,7 @@ final class BulkEngineTests: XCTestCase {
         // A session-start chunk is tolerated and immediately consumed.
         let tolerated = receiver.ingest(.chunk(try BulkChunk(
             transferId: offer.transferId, chunkIndex: 0,
-            data: chunkData(offer, payload, 0)
+            data: offer.chunk(0, of: payload)
         )))
         XCTAssertTrue(stores(tolerated).isEmpty)
 
@@ -591,18 +558,18 @@ final class BulkEngineTests: XCTestCase {
         // remaining slots while their stores wait.
         let firstPending = receiver.ingest(.chunk(try BulkChunk(
             transferId: offer.transferId, chunkIndex: 1,
-            data: chunkData(offer, payload, 1)
+            data: offer.chunk(1, of: payload)
         )))
         XCTAssertEqual(stores(firstPending).map(\.index), [1])
         let secondPending = receiver.ingest(.chunk(try BulkChunk(
             transferId: offer.transferId, chunkIndex: 2,
-            data: chunkData(offer, payload, 2)
+            data: offer.chunk(2, of: payload)
         )))
         XCTAssertEqual(stores(secondPending).map(\.index), [2])
 
         let exceeded = receiver.ingest(.chunk(try BulkChunk(
             transferId: offer.transferId, chunkIndex: 3,
-            data: chunkData(offer, payload, 3)
+            data: offer.chunk(3, of: payload)
         )))
         XCTAssertEqual(exceeded.first, .violated(.creditExceeded))
     }
@@ -651,6 +618,55 @@ final class BulkEngineTests: XCTestCase {
         )
     }
 
+    /// A message for another transfer, a completion before any chunk
+    /// could have moved, and an ack claiming chunks past the offer.
+    func testSenderViolationsForeignEarlyCompleteAndAckOverClaim() throws {
+        let (offer, _) = makeFixture() // 5 chunks
+        func offering() throws -> BulkSendEngine {
+            var sender = BulkSendEngine(offer: offer)
+            _ = try sender.begin()
+            return sender
+        }
+        var sender = try offering()
+        XCTAssertEqual(
+            sender.ingest(.complete(try BulkComplete(transferId: 0xDEAD))).first,
+            .violated(.foreignTransfer(0xDEAD))
+        )
+        sender = try offering()
+        XCTAssertEqual(
+            sender.ingest(.complete(try BulkComplete(
+                transferId: offer.transferId
+            ))).first,
+            .violated(.unexpectedMessage(type: CtrlMessageType.bulkComplete))
+        )
+        sender = try offering()
+        _ = sender.ingest(.accept(try BulkAccept(
+            transferId: offer.transferId, creditTotal: 2
+        )))
+        XCTAssertEqual(
+            sender.ingest(.ack(try BulkAck(
+                transferId: offer.transferId, creditTotal: 2,
+                possession: BulkChunkMap(contiguousCount: 6)
+            ))).first,
+            .violated(.possessionOverClaimed)
+        )
+    }
+
+    func testReceiverViolationAbortForAnotherTransfer() throws {
+        let (offer, _) = makeFixture()
+        var receiver = BulkReceiveEngine()
+        _ = receiver.ingest(.offer(offer))
+        XCTAssertEqual(
+            receiver.ingest(.abort(try BulkAbort(
+                transferId: 0xDEAD, reason: .cancelled
+            ))).first,
+            .violated(.foreignTransfer(0xDEAD))
+        )
+        XCTAssertEqual(
+            receiver.state, .aborted(.protocolViolation, byRemote: false)
+        )
+    }
+
     func testSenderViolationUnexpectedMessages() throws {
         let (offer, _) = makeFixture()
         var sender = BulkSendEngine(offer: offer)
@@ -693,7 +709,7 @@ final class BulkEngineTests: XCTestCase {
         // no store, no violation.
         let tolerated = receiver.ingest(.chunk(try BulkChunk(
             transferId: offer.transferId, chunkIndex: 0,
-            data: chunkData(offer, payload, 0)
+            data: offer.chunk(0, of: payload)
         )))
         XCTAssertTrue(stores(tolerated).isEmpty)
         XCTAssertFalse(tolerated.contains {
@@ -704,13 +720,13 @@ final class BulkEngineTests: XCTestCase {
         // Chunk 2 stores normally…
         let fresh = receiver.ingest(.chunk(try BulkChunk(
             transferId: offer.transferId, chunkIndex: 2,
-            data: chunkData(offer, payload, 2)
+            data: offer.chunk(2, of: payload)
         )))
         _ = try receiver.chunkStored(index: stores(fresh)[0].index)
         // …and its repeat is a true duplicate.
         let dup = receiver.ingest(.chunk(try BulkChunk(
             transferId: offer.transferId, chunkIndex: 2,
-            data: chunkData(offer, payload, 2)
+            data: offer.chunk(2, of: payload)
         )))
         XCTAssertEqual(dup.first, .violated(.duplicateChunk(2)))
     }
@@ -721,47 +737,27 @@ final class BulkEngineTests: XCTestCase {
         let (offer, payload) = makeFixture()
         var sender = BulkSendEngine(offer: offer)
         _ = try sender.begin()
-        XCTAssertThrowsError(try sender.begin()) {
-            XCTAssertEqual($0 as? BulkSendError, .notIdle)
-        }
-        XCTAssertThrowsError(
+        assertThrows(BulkSendError.notIdle) { try sender.begin() }
+        assertThrows(BulkSendError.chunkNotRequested(0)) {
             try sender.supplyChunk(index: 0, data: [1])
-        ) {
-            XCTAssertEqual(
-                $0 as? BulkSendError, .chunkNotRequested(0)
-            )
         }
         _ = sender.ingest(.accept(try BulkAccept(
             transferId: offer.transferId, creditTotal: 2
         )))
-        XCTAssertThrowsError(
-            try sender.supplyChunk(index: 0, data: [1, 2, 3])
+        assertThrows(
+            BulkSendError.wrongChunkByteCount(index: 0, expected: 4_096, actual: 3)
         ) {
-            XCTAssertEqual(
-                $0 as? BulkSendError,
-                .wrongChunkByteCount(index: 0, expected: 4_096,
-                                     actual: 3)
-            )
+            try sender.supplyChunk(index: 0, data: [1, 2, 3])
         }
 
         var receiver = BulkReceiveEngine()
-        XCTAssertThrowsError(try receiver.accept()) {
-            XCTAssertEqual($0 as? BulkReceiveError, .noOfferPending)
+        assertThrows(BulkReceiveError.noOfferPending) { try receiver.accept() }
+        assertThrows(BulkReceiveError.noOfferPending) { try receiver.decline() }
+        assertThrows(BulkReceiveError.storeNotPending(0)) {
+            try receiver.chunkStored(index: 0)
         }
-        XCTAssertThrowsError(try receiver.decline()) {
-            XCTAssertEqual($0 as? BulkReceiveError, .noOfferPending)
-        }
-        XCTAssertThrowsError(try receiver.chunkStored(index: 0)) {
-            XCTAssertEqual(
-                $0 as? BulkReceiveError, .storeNotPending(0)
-            )
-        }
-        XCTAssertThrowsError(
-            try receiver.verificationResult(
-                digest: Sha256.digest(payload)
-            )
-        ) {
-            XCTAssertEqual($0 as? BulkReceiveError, .notVerifying)
+        assertThrows(BulkReceiveError.notVerifying) {
+            try receiver.verificationResult( digest: Sha256.digest(payload) )
         }
     }
 
@@ -777,7 +773,7 @@ final class BulkEngineTests: XCTestCase {
         XCTAssertFalse(reads(actions).isEmpty)
         _ = sender.cancel()
         actions = try sender.supplyChunk(
-            index: 0, data: chunkData(offer, payload, 0)
+            index: 0, data: offer.chunk(0, of: payload)
         )
         XCTAssertTrue(actions.isEmpty)
     }
@@ -793,7 +789,7 @@ final class BulkEngineTests: XCTestCase {
         _ = try receiver.accept()
         let stores = receiver.ingest(.chunk(try BulkChunk(
             transferId: offer.transferId, chunkIndex: 0,
-            data: chunkData(offer, payload, 0)
+            data: offer.chunk(0, of: payload)
         )))
         XCTAssertEqual(stores.count, 1)
         _ = receiver.cancel()
@@ -857,22 +853,18 @@ final class BulkEngineTests: XCTestCase {
             sha256: [UInt8](repeating: 0, count: 32), name: "x"
         ).encode()
         for size: UInt32 in [0x8000_0000, 0xFFFF_FFFF] {
-            XCTAssertThrowsError(try BulkOffer(
-                transferId: 1, totalByteCount: 10, chunkByteCount: size,
-                sha256: [UInt8](repeating: 0, count: 32), name: "x"
-            )) {
-                XCTAssertEqual(
-                    $0 as? BulkMessageError, .chunkSizeOutOfBounds(size)
+            assertThrows(BulkMessageError.chunkSizeOutOfBounds(size)) {
+                try BulkOffer(
+                    transferId: 1, totalByteCount: 10, chunkByteCount: size,
+                    sha256: [UInt8](repeating: 0, count: 32), name: "x"
                 )
             }
             var wire = valid
             withUnsafeBytes(of: size.littleEndian) {
                 wire.replaceSubrange(17..<21, with: $0)
             }
-            XCTAssertThrowsError(try BulkOffer.decode(wire)) {
-                XCTAssertEqual(
-                    $0 as? BulkMessageError, .chunkSizeOutOfBounds(size)
-                )
+            assertThrows(BulkMessageError.chunkSizeOutOfBounds(size)) {
+                try BulkOffer.decode(wire)
             }
         }
     }

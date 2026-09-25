@@ -210,7 +210,7 @@ public enum ArqIgnoreReason: Hashable, Sendable {
     /// Reported by the segment that crossed the ceiling and by every
     /// later stream segment: the stream lost a message and can never
     /// deliver in order again, so this repeats for the endpoint's life;
-    /// the shell should end the session (`isOrderedStreamPoisoned`).
+    /// the shell should end the session.
     case orderedStreamPoisoned
 }
 
@@ -425,19 +425,14 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
         /// serial order (every buffered seq sits inside the window) and
         /// stops once each buffered segment is found.
         var ackBitmap: [UInt8] {
-            var bytes: [UInt8] = []
-            var found = 0
+            var offsets: [Int] = []
             var offset = 0
-            while found < buffered.count {
+            while offsets.count < buffered.count {
                 let seq = cumulative &+ 1 &+ UInt16(truncatingIfNeeded: offset)
-                if buffered[seq] != nil {
-                    while bytes.count <= offset / 8 { bytes.append(0) }
-                    bytes[offset / 8] |= 1 << (offset % 8)
-                    found += 1
-                }
+                if buffered[seq] != nil { offsets.append(offset) }
                 offset += 1
             }
-            return bytes
+            return wireCanonicalBitmap(offsets)
         }
     }
 
@@ -478,13 +473,6 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
     /// A quiescent endpoint polls to ([], nil) until new work arrives.
     public var isQuiescent: Bool {
         ackNeeded.isEmpty && sendGroups.values.allSatisfy(\.isDrained)
-    }
-
-    /// True once the ordered stream (group 0) has been poisoned by a
-    /// message over `maxMessageByteCount`. Permanent: the stream can
-    /// never again deliver in order, so the session should end.
-    public var isOrderedStreamPoisoned: Bool {
-        recvGroups[ArqGroupId.orderedStream.rawValue]?.poisoned ?? false
     }
 
     /// Sent-but-unacknowledged plus queued segment count, all groups.
@@ -863,11 +851,8 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
             for offset in 0...cumulativeOffset { retire(offset: offset) }
         }
         // Bitmap: seqs cumulative+1+n.
-        for (byteOffset, byte) in block.receivedBitmap.enumerated()
-        where byte != 0 {
-            for bit in 0..<8 where byte & (1 << bit) != 0 {
-                retire(offset: cumulativeOffset + 1 + byteOffset * 8 + bit)
-            }
+        for offset in wireBitmapOffsets(block.receivedBitmap) {
+            retire(offset: cumulativeOffset + 1 + offset)
         }
         let baseBefore = state.base
         if progressed {

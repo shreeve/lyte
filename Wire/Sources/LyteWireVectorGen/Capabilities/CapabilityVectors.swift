@@ -3,14 +3,14 @@
 // the typed capability set, the intersect algebra, and the CTRL message
 // codecs 0x0F/0x11/0x12.
 
-import Foundation
 import LyteWire
+import LyteWireTestKit
 
 /// One vector file: `Wire/Vectors/capabilities-v1.json`.
 public struct CapabilityVectorFile: FrozenVectorFile {
-    public var format: String
-    public var formatVersion: Int
-    public var wireVersion: Int
+    public var format = Self.expectedFormat
+    public var formatVersion = 1
+    public var wireVersion = 1
     public var cborVectors: [CapabilityCborVector]
     public var setVectors: [CapabilitySetVector]
     public var intersectVectors: [CapabilityIntersectVector]
@@ -22,25 +22,6 @@ public struct CapabilityVectorFile: FrozenVectorFile {
     public var vectorNameGroups: [[String]] {
         [cborVectors.map(\.name), setVectors.map(\.name), intersectVectors.map(\.name), messageVectors.map(\.name)]
     }
-
-    public init(
-        format: String,
-        formatVersion: Int,
-        wireVersion: Int,
-        cborVectors: [CapabilityCborVector],
-        setVectors: [CapabilitySetVector],
-        intersectVectors: [CapabilityIntersectVector],
-        messageVectors: [CapabilityMessageVector]
-    ) {
-        self.format = format
-        self.formatVersion = formatVersion
-        self.wireVersion = wireVersion
-        self.cborVectors = cborVectors
-        self.setVectors = setVectors
-        self.intersectVectors = intersectVectors
-        self.messageVectors = messageVectors
-    }
-
 }
 
 /// One CBOR-profile vector. `canonical`: `cborHex` must decode and
@@ -57,20 +38,6 @@ public struct CapabilityCborVector: Codable, Sendable {
     public enum Kind: String, Codable, Sendable {
         case canonical
         case decodeReject
-    }
-
-    public init(
-        name: String,
-        description: String,
-        kind: Kind,
-        cborHex: String,
-        error: String? = nil
-    ) {
-        self.name = name
-        self.description = description
-        self.kind = kind
-        self.cborHex = cborHex
-        self.error = error
     }
 }
 
@@ -148,22 +115,6 @@ public struct CapabilitySetVector: Codable, Sendable {
         case decodeLenient
         case decodeReject
     }
-
-    public init(
-        name: String,
-        description: String,
-        kind: Kind,
-        cborHex: String,
-        set: CapabilitySetFields? = nil,
-        error: String? = nil
-    ) {
-        self.name = name
-        self.description = description
-        self.kind = kind
-        self.cborHex = cborHex
-        self.set = set
-        self.error = error
-    }
 }
 
 /// One intersect vector: decoding `aHex` and `bHex` and intersecting in
@@ -174,20 +125,6 @@ public struct CapabilityIntersectVector: Codable, Sendable {
     public var aHex: String
     public var bHex: String
     public var agreedHex: String
-
-    public init(
-        name: String,
-        description: String,
-        aHex: String,
-        bHex: String,
-        agreedHex: String
-    ) {
-        self.name = name
-        self.description = description
-        self.aHex = aHex
-        self.bHex = bHex
-        self.agreedHex = agreedHex
-    }
 }
 
 /// One message-codec vector. `codec` names the codec under test;
@@ -211,21 +148,5 @@ public struct CapabilityMessageVector: Codable, Sendable {
         case declaration
         case update
         case updateAck
-    }
-
-    public init(
-        name: String,
-        description: String,
-        kind: Kind,
-        codec: Codec,
-        messageHex: String,
-        error: String? = nil
-    ) {
-        self.name = name
-        self.description = description
-        self.kind = kind
-        self.codec = codec
-        self.messageHex = messageHex
-        self.error = error
     }
 }

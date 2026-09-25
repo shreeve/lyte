@@ -1,6 +1,6 @@
 // "Frame number" is the envelope `frame` field, "sequence" is the
 // per-channel `seq` field, and timestamps are tagged by clock domain so
-// host-PipeWire µs and client µs can never meet in one expression.
+// host µs and client µs can never meet in one expression.
 
 /// The envelope `frame` field: per-channel u32 frame counter for video, the
 /// audio packet number for audio, and the FEC group id for both. At 60 fps
@@ -56,7 +56,7 @@ public struct ChannelSeq: RawRepresentable, Hashable, Comparable, Sendable {
 }
 
 /// Clock domains for `WireTimestamp`. The envelope timestamp is host
-/// PipeWire monotonic µs on host-sent datagrams and client monotonic µs on
+/// monotonic µs (CLOCK_MONOTONIC) on host-sent datagrams and client µs on
 /// client-sent ones; the beacon codec is the only sanctioned conversion
 /// point between the two.
 public enum HostClock {}

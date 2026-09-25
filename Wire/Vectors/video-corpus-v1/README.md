@@ -1,11 +1,9 @@
-# video-corpus-v1 — the W2 golden HEVC corpus
+# video-corpus-v1 — the golden HEVC corpus
 
-Real Annex-B HEVC access units captured from the H0a file-output host
+Real Annex-B HEVC access units captured from the host's file-output path
 (`lyte-host`: portal ScreenCast → PipeWire → hevc_nvenc, the plain
-non-ratchet path), published as first-class W2 artifacts (master plan
-§4.12): client CL-2 and host HS-5 code against these frames and the
-packetize/assembly vectors in `../video-v1.json` before either end sends
-a live datagram.
+non-ratchet path). `../video-v1.json` packetizes these frames and pins
+each by sha256.
 
 **Freeze policy** is the vector policy: committed corpus files never
 change. `video-v1.json` pins each referenced file by sha256 and the test
@@ -58,7 +56,6 @@ shapes live traffic produces at both regimes.
   reassembles as one byte-exact stream through a single channel with
   interleaving and loss.
 - `VideoVectorFileTests`: the sha256 pins in `../video-v1.json`.
-- Decode evidence (W-G3): `swift run lyte-wire-vectorgen video-roundtrip`
-  on the reassembled prefix, then `ffmpeg -f null -` on the host — clean
-  decode, zero errors. The same harness round-trips the full 301-frame
-  source capture byte-exact under ~21% injected loss.
+- Decode evidence: the reassembled prefix decoded clean under
+  `ffmpeg -f null -` on the host, zero errors, and the full 301-frame
+  source capture round-tripped byte-exact under ~21% injected loss.

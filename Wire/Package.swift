@@ -5,8 +5,8 @@ import PackageDescription
 // vocabulary types that consume bytes and emit bytes. No Foundation, no
 // sockets, no threads — Common's SansIOArchitectureTests enforces the import
 // allowlist and the IO-free vocabulary. LyteWireTestKit (which may use
-// Foundation for file IO) ships the vector-file models, their loaders and
-// the reusable wire test equipment any package's test suite may use.
+// Foundation for file IO) ships the vector-file loader and the reusable
+// wire test equipment any package's test suite may use.
 
 let package = Package(
     name: "LyteWire",
@@ -14,6 +14,7 @@ let package = Package(
     products: [
         .library(name: "LyteWire", targets: ["LyteWire"]),
         .library(name: "LyteWireTestKit", targets: ["LyteWireTestKit"]),
+        .library(name: "LyteWireVectorGen", targets: ["LyteWireVectorGen"]),
         .executable(
             name: "lyte-wire-vectorgen",
             targets: ["LyteWireVectorGenTool"]
@@ -49,9 +50,10 @@ let package = Package(
                 .product(name: "LyteCore", package: "Common"),
             ]
         ),
-        // The builders that author every Vectors/ file, in one registry.
-        // The suite fails unless each committed file is byte-for-byte its
-        // builder's output. See Vectors/README.md for the freeze policy.
+        // Every Vectors/ file's model and the builder that authors it, in
+        // one registry. The suite fails unless each committed file is
+        // byte-for-byte its builder's output. See Vectors/README.md for the
+        // freeze policy. Test targets may depend on it; production never.
         .target(
             name: "LyteWireVectorGen",
             dependencies: [

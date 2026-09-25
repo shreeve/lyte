@@ -42,21 +42,6 @@ public enum CursorWire {
     public static let headerByteCount = 9
 }
 
-// MARK: - The capability spine helper
-
-extension Capabilities {
-    /// True when this set carries `cursorShape: true` (key 13) — see
-    /// `declaresFlag(_:)`.
-    public var cursorShape: Bool {
-        declaresFlag(CapabilityKey.cursorShape)
-    }
-
-    /// A copy of this set declaring `cursorShape`.
-    public func declaringCursorShape() -> Capabilities {
-        declaringFlag(CapabilityKey.cursorShape)
-    }
-}
-
 // MARK: - The CTRL codec
 
 /// The host's cursor-shape announcement (type 0x24).

@@ -3,18 +3,14 @@
 // platform. TestKit may import Foundation; LyteWire may not.
 
 import LyteCore
-import Foundation
 import LyteWire
+import LyteWireTestKit
 
 /// One vector file: `Wire/Vectors/envelope-v1.json`.
 public struct EnvelopeVectorFile: FrozenVectorFile {
-    /// Always "lyte-wire-envelope-vectors"; guards against loading the
-    /// wrong vector kind.
-    public var format: String
-    /// Version of the vector file format itself.
-    public var formatVersion: Int
-    /// The wire major version these vectors pin.
-    public var wireVersion: Int
+    public var format = Self.expectedFormat
+    public var formatVersion = 1
+    public var wireVersion = 1
     public var vectors: [EnvelopeVector]
     /// The (chan, seq) serial-arithmetic contract, as data.
     public var seqComparisons: [SeqComparison]
@@ -25,21 +21,6 @@ public struct EnvelopeVectorFile: FrozenVectorFile {
     public var vectorNameGroups: [[String]] {
         [vectors.map(\.name)]
     }
-
-    public init(
-        format: String,
-        formatVersion: Int,
-        wireVersion: Int,
-        vectors: [EnvelopeVector],
-        seqComparisons: [SeqComparison]
-    ) {
-        self.format = format
-        self.formatVersion = formatVersion
-        self.wireVersion = wireVersion
-        self.vectors = vectors
-        self.seqComparisons = seqComparisons
-    }
-
 }
 
 /// One test vector. `kind` selects which fields apply:
@@ -72,26 +53,6 @@ public struct EnvelopeVector: Codable, Sendable {
         case payload
         case plaintextShard
     }
-
-    public init(
-        name: String,
-        description: String,
-        kind: Kind,
-        envelope: EnvelopeFields?,
-        encoder: Encoder?,
-        payloadHex: String?,
-        datagramHex: String?,
-        error: String?
-    ) {
-        self.name = name
-        self.description = description
-        self.kind = kind
-        self.envelope = envelope
-        self.encoder = encoder
-        self.payloadHex = payloadHex
-        self.datagramHex = datagramHex
-        self.error = error
-    }
 }
 
 /// The 24-byte header fields plus TLVs, in vector-file form. Timestamp and
@@ -110,32 +71,17 @@ public struct EnvelopeFields: Codable, Sendable {
         self.frame = envelope.frame.rawValue
         self.timestampHex = Hex.uint64String(envelope.timestamp)
         self.fecHex = Hex.uint64String(envelope.fec)
-        let tlvs = envelope.extensions.map {
-            TlvField(type: $0.type, valueHex: Hex.string($0.value))
-        }
-        self.tlvs = tlvs.isEmpty ? nil : tlvs
+        self.tlvs = tlvFields(envelope.extensions)
     }
 
     public func makeEnvelope() throws -> Envelope {
-        guard
-            let timestamp = Hex.uint64(timestampHex),
-            let fec = Hex.uint64(fecHex)
-        else {
-            throw VectorFileError.malformedField("timestampHex/fecHex")
-        }
-        let extensions = try (tlvs ?? []).map { tlv -> WireExtension in
-            guard let value = Hex.bytes(tlv.valueHex) else {
-                throw VectorFileError.malformedField("tlv valueHex")
-            }
-            return try WireExtension(type: tlv.type, value: value)
-        }
-        return Envelope(
+        Envelope(
             channel: ChannelId(rawValue: chan),
             seq: ChannelSeq(rawValue: seq),
             frame: FrameNumber(rawValue: frame),
-            timestamp: timestamp,
-            fec: fec,
-            extensions: extensions
+            timestamp: try vectorU64(timestampHex, "timestampHex"),
+            fec: try vectorU64(fecHex, "fecHex"),
+            extensions: try wireExtensions(tlvs)
         )
     }
 }
@@ -143,11 +89,6 @@ public struct EnvelopeFields: Codable, Sendable {
 public struct TlvField: Codable, Sendable {
     public var type: UInt8
     public var valueHex: String
-
-    public init(type: UInt8, valueHex: String) {
-        self.type = type
-        self.valueHex = valueHex
-    }
 }
 
 /// A serial-arithmetic expectation: `aBeforeB` is `ChannelSeq(a) <
@@ -157,13 +98,6 @@ public struct SeqComparison: Codable, Sendable {
     public var b: UInt16
     public var aBeforeB: Bool
     public var distance: Int16
-
-    public init(a: UInt16, b: UInt16, aBeforeB: Bool, distance: Int16) {
-        self.a = a
-        self.b = b
-        self.aBeforeB = aBeforeB
-        self.distance = distance
-    }
 }
 
 public enum VectorFileError: Error, Equatable, Sendable {

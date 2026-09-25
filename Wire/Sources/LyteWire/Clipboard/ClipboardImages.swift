@@ -76,29 +76,6 @@ public enum ClipboardImageWire {
     }
 }
 
-// MARK: - The capability spine helpers (key 12)
-
-extension Capabilities {
-    /// True when this set carries `clipboardImages: true` (key 12) — see
-    /// `declaresFlag(_:)`.
-    public var clipboardImages: Bool {
-        declaresFlag(CapabilityKey.clipboardImages)
-    }
-
-    /// A copy of this set declaring `clipboardImages`.
-    public func declaringClipboardImages() -> Capabilities {
-        declaringFlag(CapabilityKey.clipboardImages)
-    }
-
-    /// The full image gate: keys 10 ∧ 12 both survived intersection.
-    /// Key 11 (file-drop consent) is deliberately absent; an end with
-    /// this gate true runs chan-8 bulk machinery for clipboard cargo
-    /// regardless of key 11.
-    public var clipboardImagesAgreed: Bool {
-        clipboardText && clipboardImages
-    }
-}
-
 // MARK: - The cargo-marker codec (0x22)
 
 /// The clipboard-cargo marker (type 0x22), either direction: "the
@@ -148,26 +125,18 @@ public struct ClipboardImageCargo: Hashable, Sendable, SliceDecodable {
     public static func decode(
         _ payload: ArraySlice<UInt8>
     ) throws -> ClipboardImageCargo {
-        guard let first = payload.first else {
-            throw ClipboardImageCargoError.truncatedMessage
+        var reader = WireReader(
+            payload, truncated: ClipboardImageCargoError.truncatedMessage
+        )
+        let type = try reader.u8()
+        guard type == CtrlMessageType.clipboardImageCargo else {
+            throw ClipboardImageCargoError.unexpectedType(type)
         }
-        guard first == CtrlMessageType.clipboardImageCargo else {
-            throw ClipboardImageCargoError.unexpectedType(first)
-        }
-        let base = payload.startIndex + 1
-        guard payload.endIndex - base >= 9 else {
-            throw ClipboardImageCargoError.truncatedMessage
-        }
-        let transferId: UInt64 = wireReadLE(payload, at: base)
-        let mimeLen = Int(payload[base + 8])
-        let mimeStart = base + 9
-        guard mimeStart + mimeLen <= payload.endIndex else {
-            throw ClipboardImageCargoError.truncatedMessage
-        }
-        guard mimeStart + mimeLen == payload.endIndex else {
+        let transferId = try reader.u64()
+        let mimeSlice = try reader.bytes(Int(try reader.u8()))
+        guard reader.isAtEnd else {
             throw ClipboardImageCargoError.trailingBytes
         }
-        let mimeSlice = payload[mimeStart..<mimeStart + mimeLen]
         guard let mime = String(validating: mimeSlice, as: UTF8.self) else {
             throw ClipboardImageCargoError.invalidUtf8
         }
@@ -506,18 +475,15 @@ public struct ClipboardImageChannel: Sendable {
         }
         if receiveEngine?.offer?.transferId == id {
             let actions = receiveEngine!.ingest(message)
-            return pumpReceive(actions, makeHasher: makeHasher, book: &book)
+            return pumpReceive(actions, book: &book)
         }
         // A refused id's trailing messages (the offer racing our
         // abort) — swallowed, the lane already spoke. The offer is
         // the last thing a refused id can trail (chunks only flow
         // after an accept a refused transfer never got), so seeing
         // it retires the id.
-        if refusedIds.contains(id) {
-            if case .offer = message {
-                refusedIds.remove(id)
-            }
-            return []
+        if case .offer = message {
+            refusedIds.remove(id)
         }
         return []
     }
@@ -551,9 +517,8 @@ public struct ClipboardImageChannel: Sendable {
             case .completed:
                 counters.sharesCompleted += 1
                 book.noteShared(bytes: sendBookKey)
-                let engine = sendEngine
                 events.append(.shareCompleted(
-                    transferId: engine?.offer.transferId ?? 0,
+                    transferId: sendEngine?.offer.transferId ?? 0,
                     byteCount: sendBlob.count
                 ))
                 sendBlob = []
@@ -606,12 +571,11 @@ public struct ClipboardImageChannel: Sendable {
             actions = (try? engine.accept()) ?? []
         }
         receiveEngine = engine
-        return pumpReceive(actions, makeHasher: makeHasher, book: &book)
+        return pumpReceive(actions, book: &book)
     }
 
     private mutating func pumpReceive(
         _ actions: [BulkReceiveEngine.Action],
-        makeHasher: () -> any ClipboardImageHasher,
         book: inout ClipboardSyncBook
     ) -> [ClipboardImageEvent] {
         var events: [ClipboardImageEvent] = []
@@ -636,7 +600,7 @@ public struct ClipboardImageChannel: Sendable {
                 )) ?? []
                 queue.append(contentsOf: more)
             case .verify:
-                let digest = finishReceiveDigest(makeHasher)
+                let digest = finishReceiveDigest()
                 let more = (try? receiveEngine!.verificationResult(
                     digest: digest
                 )) ?? []
@@ -685,19 +649,12 @@ public struct ClipboardImageChannel: Sendable {
     }
 
     /// The assembled image's digest: every chunk is stored by now, so
-    /// the admitted hasher's prefix is the whole blob.
-    private mutating func finishReceiveDigest(
-        _ makeHasher: () -> any ClipboardImageHasher
-    ) -> [UInt8] {
-        if var hasher = receiveHasher {
-            receiveHasher = nil
-            return hasher.finish()
-        }
-        // Unreachable: admission always installs the hasher. Kept total
-        // rather than trapping on a lane-state bug.
-        var hasher = makeHasher()
-        hasher.absorb(receiveBuffer[...])
-        return hasher.finish()
+    /// the admitted hasher's prefix is the whole blob. Admission always
+    /// installs the hasher; without one the empty digest draws
+    /// `shaMismatch`.
+    private mutating func finishReceiveDigest() -> [UInt8] {
+        defer { receiveHasher = nil }
+        return receiveHasher?.finish() ?? []
     }
 
     private mutating func resetReceiveBuffer() {

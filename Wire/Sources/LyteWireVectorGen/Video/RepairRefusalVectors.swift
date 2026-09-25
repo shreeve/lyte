@@ -2,14 +2,14 @@
 // `Wire/Vectors/repair-refusal-v1.json` — the repair-refusal CTRL message
 // (0x23).
 
-import Foundation
 import LyteWire
+import LyteWireTestKit
 
 /// One vector file: `Wire/Vectors/repair-refusal-v1.json`.
 public struct RepairRefusalVectorFile: FrozenVectorFile {
-    public var format: String
-    public var formatVersion: Int
-    public var wireVersion: Int
+    public var format = Self.expectedFormat
+    public var formatVersion = 1
+    public var wireVersion = 1
     public var vectors: [RepairRefusalVector]
 
     public static let expectedFormat = "lyte-wire-repair-refusal-vectors"
@@ -18,19 +18,6 @@ public struct RepairRefusalVectorFile: FrozenVectorFile {
     public var vectorNameGroups: [[String]] {
         [vectors.map(\.name)]
     }
-
-    public init(
-        format: String,
-        formatVersion: Int,
-        wireVersion: Int,
-        vectors: [RepairRefusalVector]
-    ) {
-        self.format = format
-        self.formatVersion = formatVersion
-        self.wireVersion = wireVersion
-        self.vectors = vectors
-    }
-
 }
 
 /// One repair-refusal vector. Kinds match the session file; `error` is a
@@ -48,23 +35,5 @@ public struct RepairRefusalVector: Codable, Sendable {
     public enum Kind: String, Codable, Sendable {
         case roundtrip
         case decodeReject
-    }
-
-    public init(
-        name: String,
-        description: String,
-        kind: Kind,
-        messageHex: String,
-        frame: UInt32? = nil,
-        reason: UInt8? = nil,
-        error: String? = nil
-    ) {
-        self.name = name
-        self.description = description
-        self.kind = kind
-        self.messageHex = messageHex
-        self.frame = frame
-        self.reason = reason
-        self.error = error
     }
 }

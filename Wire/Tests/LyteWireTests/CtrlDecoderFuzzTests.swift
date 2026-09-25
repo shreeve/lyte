@@ -2,11 +2,11 @@ import XCTest
 import LyteWire
 import LyteWireTestKit
 
-// Never-trap sweeps for the peer-controlled decoders that had none: the
-// bulk sextet (and its dispatcher), the capability messages, the repair
-// refusal, the path pair and the IDR request. Each codec sees seeded
-// garbage (half of it behind the codec's own type byte, to get past the
-// type gate), every truncation of a valid message, and every
+// Never-trap sweeps for peer-controlled decoders: the envelope, ARQ
+// frames, the lifecycle pair, the bulk sextet's dispatcher, the capability
+// messages, the repair refusal, the path pair and the IDR request. Each
+// codec sees seeded garbage (half of it with the codec's gate byte set, to
+// get past it), every truncation of a valid message, and every
 // single-byte substitution of one. A decoder may throw or succeed; it may
 // never trap. A successful decode re-encodes to a fixpoint, and to exactly
 // the input where the encoding is canonical.
@@ -15,13 +15,16 @@ final class CtrlDecoderFuzzTests: XCTestCase {
 
     private struct Codec {
         let name: String
+        /// The gate byte garbage trials plant at `typeOffset`.
         let type: UInt8
+        var typeOffset = 0
         let samples: [[UInt8]]
         /// Decodes and re-encodes; throws on a refused input.
         let roundTrip: ([UInt8]) throws -> [UInt8]
-        /// False where decode accepts more than one spelling: the path
-        /// pair ignores its reserved flags byte, and a declaration may
-        /// omit the keys that default to "not supported".
+        /// False where decode accepts more than one spelling: the
+        /// envelope, ARQ frames and path pair ignore reserved flag bits,
+        /// and a declaration may omit the keys that default to "not
+        /// supported".
         var canonical = true
     }
 
@@ -52,19 +55,6 @@ final class CtrlDecoderFuzzTests: XCTestCase {
                 roundTrip: { try BulkMessage.decode($0[...]).encode() }
             )
         }
-        codecs += [
-            Codec(
-                name: "BulkOffer", type: CtrlMessageType.bulkOffer,
-                samples: [offer.encode()],
-                roundTrip: { try BulkOffer.decode($0[...]).encode() }
-            ),
-            Codec(
-                name: "BulkAck", type: CtrlMessageType.bulkAck,
-                samples: [bulk[3].encode()],
-                roundTrip: { try BulkAck.decode($0[...]).encode() }
-            ),
-        ]
-
         let capabilities = Capabilities.wireDefault.declaringFlag(
             CapabilityKey.clipboardText
         )
@@ -124,6 +114,47 @@ final class CtrlDecoderFuzzTests: XCTestCase {
                 roundTrip: { try IdrRequest.decode($0[...]).encode() }
             ),
         ]
+
+        let envelope = try Envelope(
+            channel: .ctrl, seq: ChannelSeq(rawValue: 0x0102),
+            frame: FrameNumber(rawValue: 0x0304_0506), timestamp: 7, fec: 9,
+            extensions: [WireExtension(type: 0x7F, value: [0xEE, 0xFF])]
+        ).encode(payload: [1, 2, 3, 4])
+        let segment = try ArqSegment(
+            group: ArqGroupId(rawValue: 3), seq: ArqSegmentSeq(rawValue: 9),
+            endOfMessage: true, body: [1, 2, 3, 4, 5]
+        )
+        let ack = try ArqAck(blocks: [ArqAck.Block(
+            channel: .ctrl, group: ArqGroupId(rawValue: 3),
+            cumulative: ArqSegmentSeq(rawValue: 8), receivedBitmap: [0xFF, 0x01]
+        )])
+        codecs += [
+            Codec(
+                name: "Envelope", type: 0x01, typeOffset: 1,
+                samples: [envelope],
+                roundTrip: {
+                    let (envelope, payload) = try Envelope.decode($0)
+                    return try envelope.encode(payload: payload)
+                },
+                canonical: false
+            ),
+            Codec(
+                name: "ArqFrame", type: CtrlMessageType.arqSegment,
+                samples: [ack.encode() + segment.encode()],
+                roundTrip: { try ArqFrame.decodeAll($0).flatMap { $0.encode() } },
+                canonical: false
+            ),
+            Codec(
+                name: "ModeTransition", type: CtrlMessageType.modeTransition,
+                samples: [ModeTransition(mode: .idle).encode()],
+                roundTrip: { try ModeTransition.decode($0).encode() }
+            ),
+            Codec(
+                name: "SessionTeardown", type: CtrlMessageType.sessionTeardown,
+                samples: [SessionTeardown(reason: .shuttingDown).encode()],
+                roundTrip: { try SessionTeardown.decode($0).encode() }
+            ),
+        ]
         return codecs
     }
 
@@ -150,7 +181,9 @@ final class CtrlDecoderFuzzTests: XCTestCase {
         for codec in try codecs() {
             for trial in 0..<600 {
                 var bytes = rng.bytes(rng.int(in: 0...1_300))
-                if !bytes.isEmpty, trial % 2 == 0 { bytes[0] = codec.type }
+                if bytes.count > codec.typeOffset, trial % 2 == 0 {
+                    bytes[codec.typeOffset] = codec.type
+                }
                 check(codec, bytes, "garbage trial \(trial)")
             }
         }

@@ -9,9 +9,6 @@ import LyteWireTestKit
 
 public func makeCapabilityVectorFile() throws -> CapabilityVectorFile {
     CapabilityVectorFile(
-        format: CapabilityVectorFile.expectedFormat,
-        formatVersion: 1,
-        wireVersion: 1,
         cborVectors: try makeCborVectors(),
         setVectors: try makeSetVectors(),
         intersectVectors: try makeIntersectVectors(),
@@ -219,61 +216,43 @@ private func makeSetVectors() throws -> [CapabilitySetVector] {
         set: CapabilitySetFields(try Capabilities.decodeCbor(lean))
     ))
 
-    func reject(_ name: String, _ description: String, _ hex: String, _ error: String) {
+    /// A map of registered keys to hand-picked values, in the order given.
+    func declaration(_ entries: [(UInt64, CborValue)]) throws -> String {
+        Hex.string(try Cbor.encode(.map(entries.map {
+            CborMapEntry(key: .unsigned($0.0), value: $0.1)
+        })))
+    }
+    let ids1: CborValue = .array([.unsigned(1)])
+    for (name, description, hex, error) in [
+        ("missing-video-codecs",
+         "wireMinor and chromaModes only — videoCodecs is required.",
+         try declaration([(1, .unsigned(0)), (3, ids1)]), "missingKey"),
+        ("wrong-type-minor",
+         "wireMinor as a text string — registered keys carry their "
+            + "registered types.",
+         try declaration([(1, .text("1")), (2, ids1), (3, ids1)]),
+         "wrongValueType"),
+        ("descending-id-list",
+         "chromaModes [2, 1] — id lists are strictly ascending.",
+         try declaration([
+            (1, .unsigned(0)), (2, ids1),
+            (3, .array([.unsigned(2), .unsigned(1)])),
+         ]),
+         "nonCanonicalIdList"),
+        ("ceiling-below-floor",
+         "maxDatagramBytes 1151 — below the 1152 B protocol floor.",
+         try declaration([
+            (1, .unsigned(0)), (2, ids1), (3, ids1), (8, .unsigned(1151)),
+         ]),
+         "datagramCeilingBelowFloor"),
+        ("not-a-map", "A top-level array — a declaration body is a map.",
+         "810a", "notAMap"),
+    ] {
         vectors.append(CapabilitySetVector(
             name: name, description: description, kind: .decodeReject,
             cborHex: hex, error: error
         ))
     }
-    reject(
-        "missing-video-codecs",
-        "wireMinor and chromaModes only — videoCodecs is required.",
-        Hex.string(try Cbor.encode(.map([
-            .init(key: .unsigned(1), value: .unsigned(0)),
-            .init(key: .unsigned(3), value: .array([.unsigned(1)])),
-        ]))),
-        "missingKey"
-    )
-    reject(
-        "wrong-type-minor",
-        "wireMinor as a text string — registered keys carry their"
-            + " registered types.",
-        Hex.string(try Cbor.encode(.map([
-            .init(key: .unsigned(1), value: .text("1")),
-            .init(key: .unsigned(2), value: .array([.unsigned(1)])),
-            .init(key: .unsigned(3), value: .array([.unsigned(1)])),
-        ]))),
-        "wrongValueType"
-    )
-    reject(
-        "descending-id-list",
-        "chromaModes [2, 1] — id lists are strictly ascending.",
-        Hex.string(try Cbor.encode(.map([
-            .init(key: .unsigned(1), value: .unsigned(0)),
-            .init(key: .unsigned(2), value: .array([.unsigned(1)])),
-            .init(
-                key: .unsigned(3),
-                value: .array([.unsigned(2), .unsigned(1)])
-            ),
-        ]))),
-        "nonCanonicalIdList"
-    )
-    reject(
-        "ceiling-below-floor",
-        "maxDatagramBytes 1151 — below the 1152 B protocol floor.",
-        Hex.string(try Cbor.encode(.map([
-            .init(key: .unsigned(1), value: .unsigned(0)),
-            .init(key: .unsigned(2), value: .array([.unsigned(1)])),
-            .init(key: .unsigned(3), value: .array([.unsigned(1)])),
-            .init(key: .unsigned(8), value: .unsigned(1151)),
-        ]))),
-        "datagramCeilingBelowFloor"
-    )
-    reject(
-        "not-a-map",
-        "A top-level array — a declaration body is a map.",
-        "810a", "notAMap"
-    )
     return vectors
 }
 
@@ -359,115 +338,76 @@ private func makeMessageVectors() throws -> [CapabilityMessageVector] {
         key: CapabilityKey.maxDatagramBytes, value: .unsigned(1500)
     )]
 
-    vectors.append(CapabilityMessageVector(
-        name: "declaration-wire-default",
-        description: "0x0F carrying Capabilities.wireDefault — the"
-            + " hand-computed anchor (CapabilityCodecTests).",
-        kind: .roundtrip, codec: .declaration,
-        messageHex: Hex.string(
-            try CapabilityDeclaration(capabilities: .wireDefault).encode()
-        )
-    ))
-    vectors.append(CapabilityMessageVector(
-        name: "declaration-full-house",
-        description: "0x0F carrying every v1 key at a non-default"
-            + " value.",
-        kind: .roundtrip, codec: .declaration,
-        messageHex: Hex.string(
-            try CapabilityDeclaration(capabilities: fullHouseSet()).encode()
-        )
-    ))
-    vectors.append(CapabilityMessageVector(
-        name: "update-geometry-raise",
-        description: "0x11 proposing maxDatagramBytes 1500 — the"
-            + " DPLPMTUD raise, v1's one renegotiable key.",
-        kind: .roundtrip, codec: .update,
-        messageHex: Hex.string(
-            try CapabilityUpdate(parameters: raiseParameters).encode()
-        )
-    ))
-    vectors.append(CapabilityMessageVector(
-        name: "ack-accepted",
-        description: "0x12 status 0x01, echoing the raise proposal"
-            + " verbatim.",
-        kind: .roundtrip, codec: .updateAck,
-        messageHex: Hex.string(try CapabilityUpdateAck(
+    for (name, description, codec, message) in [
+        ("declaration-wire-default",
+         "0x0F carrying Capabilities.wireDefault — the hand-computed anchor "
+            + "(CapabilityCodecTests).",
+         CapabilityMessageVector.Codec.declaration,
+         try CapabilityDeclaration(capabilities: .wireDefault).encode()),
+        ("declaration-full-house",
+         "0x0F carrying every v1 key at a non-default value.",
+         .declaration,
+         try CapabilityDeclaration(capabilities: fullHouseSet()).encode()),
+        ("update-geometry-raise",
+         "0x11 proposing maxDatagramBytes 1500 — the DPLPMTUD raise, v1's "
+            + "one renegotiable key.",
+         .update, try CapabilityUpdate(parameters: raiseParameters).encode()),
+        ("ack-accepted",
+         "0x12 status 0x01, echoing the raise proposal verbatim.",
+         .updateAck,
+         try CapabilityUpdateAck(
             status: .accepted, parameters: raiseParameters
-        ).encode())
-    ))
-    vectors.append(CapabilityMessageVector(
-        name: "ack-rejected",
-        description: "0x12 status 0x02 — a refused proposal, echoed.",
-        kind: .roundtrip, codec: .updateAck,
-        messageHex: Hex.string(try CapabilityUpdateAck(
+         ).encode()),
+        ("ack-rejected", "0x12 status 0x02 — a refused proposal, echoed.",
+         .updateAck,
+         try CapabilityUpdateAck(
             status: .rejected, parameters: raiseParameters
-        ).encode())
-    ))
+         ).encode()),
+    ] {
+        vectors.append(CapabilityMessageVector(
+            name: name, description: description, kind: .roundtrip,
+            codec: codec, messageHex: Hex.string(message)
+        ))
+    }
 
-    func reject(
-        _ name: String, _ description: String,
-        _ codec: CapabilityMessageVector.Codec,
-        _ hex: String, _ error: String
-    ) {
+    for (name, description, codec, hex, error) in [
+        ("declaration-truncated",
+         "The type byte alone — a declaration has a body.",
+         CapabilityMessageVector.Codec.declaration, "0f", "truncatedMessage"),
+        ("declaration-bad-type",
+         "An IDR-request type byte fed to the declaration decoder.",
+         .declaration, "10a0", "unexpectedType"),
+        ("declaration-body-not-a-map",
+         "A CBOR array where the capability map belongs.",
+         .declaration, "0f810a", "malformedBody"),
+        ("declaration-over-budget",
+         "1025 bytes — past the 1024 B capability-message ceiling, the "
+            + "anti-streaming stop, refused before any CBOR work.",
+         .declaration, "0f" + String(repeating: "00", count: 1024),
+         "messageOverBudget"),
+        ("update-empty-map",
+         "An empty proposal map — a no-op update is a bug, not a message.",
+         .update, "11a0", "emptyUpdate"),
+        ("update-text-key",
+         "{\"a\": 0} — parameter keys are registry numbers.",
+         .update, "11a1616100", "nonIntegerParameterKey"),
+        ("update-non-canonical-body",
+         "A proposal whose CBOR argument (23 in the u8 form) is not "
+            + "shortest-form — deterministic encoding is enforced end to end.",
+         .update, "11a1081817", "malformedBody"),
+        ("ack-unknown-status", "Status 0x03 — unassigned.",
+         .updateAck, "1203a1081905dc", "unknownStatus"),
+        ("ack-zero-status",
+         "Status 0x00 — the loud zero-fill bug, never a value.",
+         .updateAck, "1200a1081905dc", "unknownStatus"),
+        ("ack-truncated",
+         "The type byte alone — an ack has a status and a body.",
+         .updateAck, "12", "truncatedMessage"),
+    ] {
         vectors.append(CapabilityMessageVector(
             name: name, description: description, kind: .decodeReject,
             codec: codec, messageHex: hex, error: error
         ))
     }
-    reject(
-        "declaration-truncated",
-        "The type byte alone — a declaration has a body.",
-        .declaration, "0f", "truncatedMessage"
-    )
-    reject(
-        "declaration-bad-type",
-        "An IDR-request type byte fed to the declaration decoder.",
-        .declaration, "10a0", "unexpectedType"
-    )
-    reject(
-        "declaration-body-not-a-map",
-        "A CBOR array where the capability map belongs.",
-        .declaration, "0f810a", "malformedBody"
-    )
-    reject(
-        "declaration-over-budget",
-        "1025 bytes — past the 1024 B capability-message ceiling, the"
-            + " anti-streaming stop, refused before any CBOR work.",
-        .declaration, "0f" + String(repeating: "00", count: 1024),
-        "messageOverBudget"
-    )
-    reject(
-        "update-empty-map",
-        "An empty proposal map — a no-op update is a bug, not a"
-            + " message.",
-        .update, "11a0", "emptyUpdate"
-    )
-    reject(
-        "update-text-key",
-        "{\"a\": 0} — parameter keys are registry numbers.",
-        .update, "11a1616100", "nonIntegerParameterKey"
-    )
-    reject(
-        "update-non-canonical-body",
-        "A proposal whose CBOR argument (23 in the u8 form) is not"
-            + " shortest-form — deterministic encoding is enforced end"
-            + " to end.",
-        .update, "11a1081817", "malformedBody"
-    )
-    reject(
-        "ack-unknown-status",
-        "Status 0x03 — unassigned.",
-        .updateAck, "1203a1081905dc", "unknownStatus"
-    )
-    reject(
-        "ack-zero-status",
-        "Status 0x00 — the loud zero-fill bug, never a value.",
-        .updateAck, "1200a1081905dc", "unknownStatus"
-    )
-    reject(
-        "ack-truncated",
-        "The type byte alone — an ack has a status and a body.",
-        .updateAck, "12", "truncatedMessage"
-    )
     return vectors
 }

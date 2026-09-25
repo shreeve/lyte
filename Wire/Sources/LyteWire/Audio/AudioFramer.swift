@@ -7,7 +7,7 @@
 //
 // Wire layout:
 //
-//   • channel: ChannelId.audio (unreliable, WirePriority.audio).
+//   • channel: ChannelId.audio (unreliable).
 //   • One 5 ms Opus packet = one data shard = one datagram payload,
 //     verbatim. Under hard CBR all packets of a group are the same size,
 //     so the balanced split's shards ARE the packets. A mid-group size

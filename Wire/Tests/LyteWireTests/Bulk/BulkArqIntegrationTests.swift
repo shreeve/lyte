@@ -49,12 +49,6 @@ final class BulkArqIntegrationTests: XCTestCase {
                 resumeBook: resumeBook
             )
         }
-
-        func chunkData(_ index: UInt64) -> [UInt8] {
-            let start = Int(index) * Int(offer.chunkByteCount)
-            let size = offer.byteCount(ofChunk: index)!
-            return Array(payload[start..<start + size])
-        }
     }
 
     /// Runs `world` until both engines are terminal and both ARQ
@@ -88,7 +82,8 @@ final class BulkArqIntegrationTests: XCTestCase {
                     )
                 case .readChunk(let index):
                     try pumpSender(world.sender.supplyChunk(
-                        index: index, data: world.chunkData(index)
+                        index: index,
+                        data: world.offer.chunk(index, of: world.payload)
                     ), now: now)
                 case .completed, .aborted, .violated:
                     break

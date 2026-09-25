@@ -1,13 +1,12 @@
 import XCTest
 import LyteWire
 
-// The promoted control-plane codecs (the second codec-promotion slice:
-// IdleFrame 0x15, InputEvent 0x16, InputEcho 0x17, the lastInputSeq
-// TLV 0x03, AudioRoutingRequest/Status 0x18/0x19, capability key 9),
-// pinned against HAND-BUILT byte layouts — the same arrays the Host/
-// and root gate tests pinned while the codecs lived as end-side
-// mirrors, now the canonical anchor that keeps control-v1.json from
-// grading its own homework.
+// The control-plane codecs (IdleFrame 0x15, InputEvent 0x16, InputEcho
+// 0x17, the lastInputSeq TLV 0x03, the audio-routing pair 0x18/0x19,
+// AudioTrackState 0x25, VideoPostureState 0x26) pinned against
+// hand-built byte layouts — the anchors that keep control-v1.json and
+// postures-v1.json from grading their own homework. Round trips and
+// decode rejects live in those vector files.
 
 final class ControlCodecTests: XCTestCase {
 
@@ -30,31 +29,10 @@ final class ControlCodecTests: XCTestCase {
         XCTAssertEqual(try IdleFrame.decode(frame.encode()), frame)
     }
 
-    func testHostileIdleFrameBytesRejectAndNeverTrap() {
-        let good = IdleFrame(
-            frame: FrameNumber(rawValue: 7),
-            captureTimestampMicroseconds: 1,
-            annexB: [0xAA]
-        ).encode()
-        // Truncation at every length through the bare header (an empty
-        // frame body is a construction bug, not a message).
-        for length in 0...IdleFrame.headerByteCount {
-            XCTAssertThrowsError(
-                try IdleFrame.decode(Array(good.prefix(length))),
-                "truncation to \(length) bytes must reject"
-            )
-        }
-        // Foreign type byte rejects with what it found.
-        XCTAssertThrowsError(try IdleFrame.decode([0x16] + good.dropFirst())) {
-            XCTAssertEqual($0 as? IdleFrameError, .unexpectedType(0x16))
-        }
-    }
-
     // MARK: InputEvent (0x16) / InputEcho (0x17) / TLV 0x03
 
     func testInputEventCodecPinsBytes() throws {
-        // keyKeycode: KEY_A (30) pressed, seq 7, client µs 0x1122334455
-        // — the InputGateTests hand-built array, verbatim.
+        // keyKeycode: KEY_A (30) pressed, seq 7, client µs 0x1122334455.
         let key = InputEvent(
             seq: 7, clientMicroseconds: 0x11_2233_4455,
             body: .keyKeycode(keycode: 30, pressed: true)
@@ -83,20 +61,10 @@ final class ControlCodecTests: XCTestCase {
         }
         XCTAssertEqual(try move.encode(), expected)
         XCTAssertEqual(try InputEvent.decode(move.encode()), move)
-
-        // The remaining kinds round-trip.
-        for body: InputEvent.Body in [
-            .pointerMotionRelative(dx: -3.5, dy: 12.0),
-            .pointerButton(button: 0x110, pressed: false),
-            .pointerAxis(dx: 0, dy: -45.0, finish: true),
-        ] {
-            let event = InputEvent(seq: 99, clientMicroseconds: 1_000, body: body)
-            XCTAssertEqual(try InputEvent.decode(event.encode()), event)
-        }
     }
 
     func testInputEchoCodecPinsBytes() throws {
-        // Two tuples, hand-built layout — the InputGateTests array.
+        // Two tuples, hand-built layout.
         let echo = InputEcho(tuples: [
             InputEchoTuple(seq: 1, receivedMicroseconds: 0x0A,
                            injectedMicroseconds: 0x0B),
@@ -115,57 +83,8 @@ final class ControlCodecTests: XCTestCase {
         XCTAssertEqual(try InputEcho.decode(echo.encode()), echo)
     }
 
-    func testHostileInputBytesRejectAndNeverTrap() throws {
-        let good = try InputEvent(
-            seq: 1, clientMicroseconds: 2,
-            body: .keyKeycode(keycode: 30, pressed: true)
-        ).encode()
-
-        // Truncations at every length below the minimum.
-        for length in 0..<good.count {
-            XCTAssertThrowsError(
-                try InputEvent.decode(Array(good.prefix(length))),
-                "truncation to \(length) bytes must reject"
-            )
-        }
-        // Foreign type byte.
-        XCTAssertThrowsError(try InputEvent.decode([0x15] + good.dropFirst()))
-        // Unknown kind.
-        var badKind = good
-        badKind[13] = 0x77
-        XCTAssertThrowsError(try InputEvent.decode(badKind))
-        // Trailing junk (body length disagrees with the kind).
-        XCTAssertThrowsError(try InputEvent.decode(good + [0x00]))
-        // A flag byte that is neither 0 nor 1.
-        var badFlag = good
-        badFlag[18] = 2
-        XCTAssertThrowsError(try InputEvent.decode(badFlag))
-        // Reserved axis-flag bits.
-        var axis = try InputEvent(
-            seq: 1, clientMicroseconds: 2,
-            body: .pointerAxis(dx: 1, dy: 2, finish: false)
-        ).encode()
-        axis[axis.count - 1] = 0x82
-        XCTAssertThrowsError(try InputEvent.decode(axis))
-
-        // Echo: count 0, count/length mismatch, over-limit count.
-        XCTAssertThrowsError(try InputEcho.decode([0x17, 0]))
-        XCTAssertThrowsError(try InputEcho.decode([0x17, 1, 1, 2, 3]))
-        XCTAssertThrowsError(try InputEcho.decode(
-            [0x17, 33] + [UInt8](repeating: 0, count: 33 * 20)
-        ))
-
-        // The TLV: duplicate and malformed value.
-        let tlv = LastInputSeqTlv.wireExtension(seq: 5)
-        XCTAssertEqual(try LastInputSeqTlv.decode(extensions: [tlv]), 5)
-        XCTAssertThrowsError(
-            try LastInputSeqTlv.decode(extensions: [tlv, tlv])
-        )
-        XCTAssertThrowsError(try LastInputSeqTlv.decode(
-            extensions: [try WireExtension(
-                type: WireExtension.ReservedType.lastInputSeq, value: [1, 2]
-            )]
-        ))
+    /// No lastInputSeq TLV is "no claim", not an error.
+    func testAbsentLastInputSeqTlvIsNil() throws {
         XCTAssertNil(try LastInputSeqTlv.decode(extensions: []))
     }
 
@@ -195,11 +114,10 @@ final class ControlCodecTests: XCTestCase {
                 let bytes = InputEvent(
                     seq: 1, clientMicroseconds: 2, body: event
                 ).rawCoordinateBytes()
-                XCTAssertThrowsError(try InputEvent.decode(bytes)) {
-                    XCTAssertEqual(
-                        $0 as? InputMessageError,
-                        .nonFiniteCoordinate(bits), "\(event)"
-                    )
+                assertThrows(
+                    InputMessageError.nonFiniteCoordinate(bits), "\(event)"
+                ) {
+                    try InputEvent.decode(bytes)
                 }
             }
         }
@@ -218,280 +136,49 @@ final class ControlCodecTests: XCTestCase {
     func testEncodeRefusesNonFiniteCoordinatesInEverySlot() {
         for bits in Self.nonFiniteBits {
             for event in Self.coordinateBodies(Double(bitPattern: bits)) {
-                XCTAssertThrowsError(try InputEvent(
-                    seq: 1, clientMicroseconds: 2, body: event
-                ).encode()) {
-                    XCTAssertEqual(
-                        $0 as? InputMessageError,
-                        .nonFiniteCoordinate(bits), "\(event)"
-                    )
+                assertThrows(
+                    InputMessageError.nonFiniteCoordinate(bits), "\(event)"
+                ) {
+                    try InputEvent(
+                        seq: 1, clientMicroseconds: 2, body: event
+                    ).encode()
                 }
             }
         }
     }
 
-    // MARK: AudioRoutingRequest/Status (0x18/0x19)
+    // MARK: Two-byte status codecs (0x18, 0x19, 0x25) and 0x26
 
-    func testRoutingCodecsPinBytes() throws {
-        // The AudioRoutingGateTests hand-built pins, verbatim.
-        XCTAssertEqual(
-            AudioRoutingRequest(mode: .hostAudible).encode(), [0x18, 0x01]
-        )
-        XCTAssertEqual(
-            AudioRoutingRequest(mode: .hostMuted).encode(), [0x18, 0x02]
-        )
-        XCTAssertEqual(
-            AudioRoutingStatus(mode: .hostAudible).encode(), [0x19, 0x01]
-        )
-        XCTAssertEqual(
-            AudioRoutingStatus(mode: .hostMuted).encode(), [0x19, 0x02]
-        )
-        for mode in HostAudioRoutingMode.allCases {
-            XCTAssertEqual(
-                try AudioRoutingRequest.decode(
-                    AudioRoutingRequest(mode: mode).encode()
-                ).mode, mode
-            )
-            XCTAssertEqual(
-                try AudioRoutingStatus.decode(
-                    AudioRoutingStatus(mode: mode).encode()
-                ).mode, mode
-            )
-        }
-    }
-
-    func testHostileRoutingBytesRejectAndNeverTrap() {
-        // Truncation.
-        XCTAssertThrowsError(try AudioRoutingRequest.decode([0x18]))
-        XCTAssertThrowsError(try AudioRoutingStatus.decode([0x19]))
-        XCTAssertThrowsError(try AudioRoutingRequest.decode([]))
-        // Foreign type byte (each other's, and a stranger's).
-        XCTAssertThrowsError(try AudioRoutingRequest.decode([0x19, 0x01]))
-        XCTAssertThrowsError(try AudioRoutingStatus.decode([0x18, 0x01]))
-        XCTAssertThrowsError(try AudioRoutingRequest.decode([0x7F, 0x01]))
-        // Unknown modes: 0, 3, 255.
-        for mode: UInt8 in [0x00, 0x03, 0xFF] {
-            XCTAssertThrowsError(try AudioRoutingRequest.decode([0x18, mode]))
-            XCTAssertThrowsError(try AudioRoutingStatus.decode([0x19, mode]))
-        }
-        // Trailing bytes.
-        XCTAssertThrowsError(try AudioRoutingRequest.decode([0x18, 0x01, 0]))
-        XCTAssertThrowsError(try AudioRoutingStatus.decode([0x19, 0x02, 0]))
-    }
-
-    // MARK: Capability key 9 on the forward-compat spine
-
-    func testCapabilityKeyRidesTheSpineWithoutMovingFrozenBytes() throws {
-        let base = try Capabilities.wireDefault.encodeCbor()
-        // wireDefault is an 8-entry map — the frozen v1 shape.
-        XCTAssertEqual(base.first, 0xA8)
-
-        // The declaration is EXACTLY the frozen bytes plus one appended
-        // entry: map(9) head + trailing `09 F5` (key 9 sorts last in
-        // RFC 8949 bytewise order among keys 1–9). Nothing between
-        // moves — the "no frozen bytes" claim as data.
-        var expected = base
-        expected[0] = 0xA9
-        expected += [0x09, 0xF5]
-        let declared = Capabilities.wireDefault.declaringHostAudioRouting()
-        XCTAssertEqual(try declared.encodeCbor(), expected)
-
-        // Reads back as itself through the v1 decoder: key 9 lands in
-        // unknownEntries (a v1 build "ignores and preserves"), and the
-        // typed accessor sees it.
-        let decoded = try Capabilities.decodeCbor(declared.encodeCbor())
-        XCTAssertTrue(decoded.hostAudioRouting)
-        XCTAssertEqual(decoded, declared)
-        XCTAssertEqual(decoded.unknownEntries.count, 1)
-        XCTAssertFalse(Capabilities.wireDefault.hostAudioRouting)
-
-        // Idempotent declaration; encode stays canonical through the
-        // full 0x0F message codec.
-        XCTAssertEqual(declared.declaringHostAudioRouting(), declared)
-        let message = try CapabilityDeclaration(capabilities: declared).encode()
-        XCTAssertEqual(
-            try CapabilityDeclaration.decode(message).capabilities, declared
-        )
-    }
-
-    func testIntersectionEnablesOnlyOnMutualDeclaration() throws {
-        let declared = Capabilities.wireDefault.declaringHostAudioRouting()
-
-        // Both declare → survives (both argument orders — the W-G8
-        // algebra's commutativity applied to key 9).
-        XCTAssertTrue(declared.intersecting(declared).hostAudioRouting)
-
-        // One-sided → dropped, both orders.
-        XCTAssertFalse(
-            declared.intersecting(.wireDefault).hostAudioRouting
-        )
-        XCTAssertFalse(
-            Capabilities.wireDefault.intersecting(declared).hostAudioRouting
-        )
-
-        // A peer declaring key 9 FALSE is not byte-equal to true:
-        // absence and refusal are the same posture (the accessor's
-        // documented rule) and the intersection drops the entry.
-        var refusing = Capabilities.wireDefault
-        refusing.unknownEntries.append(CborMapEntry(
-            key: .unsigned(CapabilityKey.hostAudioRouting),
-            value: .bool(false)
-        ))
-        XCTAssertFalse(refusing.hostAudioRouting)
-        XCTAssertFalse(declared.intersecting(refusing).hostAudioRouting)
-    }
-
-    func testAudioStreamOffRidesTheSpineLikeKeyNine() throws {
-        // Key 14 (mute-at-source): declaration appends exactly one
-        // canonical entry, reads back through the v1 decoder, and
-        // survives intersection only on mutual declaration — the
-        // key-9 laws, fourteenth verse.
-        let declared = Capabilities.wireDefault.declaringAudioStreamOff()
-        XCTAssertTrue(declared.audioStreamOff)
-        XCTAssertFalse(Capabilities.wireDefault.audioStreamOff)
-        XCTAssertEqual(declared.declaringAudioStreamOff(), declared)
-
-        let decoded = try Capabilities.decodeCbor(declared.encodeCbor())
-        XCTAssertTrue(decoded.audioStreamOff)
-        XCTAssertEqual(decoded, declared)
-
-        XCTAssertTrue(declared.intersecting(declared).audioStreamOff)
-        XCTAssertFalse(declared.intersecting(.wireDefault).audioStreamOff)
-        XCTAssertFalse(
-            Capabilities.wireDefault.intersecting(declared).audioStreamOff
-        )
-
-        // The wire byte: streamOff is 0x04 — 0x03 is the tombstone
-        // the frozen routing-mode-unknown vector pinned.
-        XCTAssertEqual(HostAudioRoutingMode.streamOff.rawValue, 0x04)
-        XCTAssertEqual(
-            AudioRoutingRequest(mode: .streamOff).encode(), [0x18, 0x04]
-        )
-        XCTAssertEqual(
-            try AudioRoutingStatus.decode([0x19, 0x04]).mode, .streamOff
-        )
-    }
-
-    // MARK: Capability key 15 + the 0x25 track-state codec (tripwire)
-
-    func testAudioQuietPostureRidesTheSpineLikeKeyNine() throws {
-        // Key 15 (the tripwire's gate): the key-9 laws, fifteenth
-        // verse — one appended canonical entry, v1-decoder readback,
-        // intersection only on mutual declaration.
-        let declared = Capabilities.wireDefault.declaringAudioQuietPosture()
-        XCTAssertTrue(declared.audioQuietPosture)
-        XCTAssertFalse(Capabilities.wireDefault.audioQuietPosture)
-        XCTAssertEqual(declared.declaringAudioQuietPosture(), declared)
-
-        let decoded = try Capabilities.decodeCbor(declared.encodeCbor())
-        XCTAssertTrue(decoded.audioQuietPosture)
-        XCTAssertEqual(decoded, declared)
-
-        XCTAssertTrue(declared.intersecting(declared).audioQuietPosture)
-        XCTAssertFalse(declared.intersecting(.wireDefault).audioQuietPosture)
-        XCTAssertFalse(
-            Capabilities.wireDefault.intersecting(declared).audioQuietPosture
-        )
-    }
-
-    func testAudioTrackStateCodecPinsBytesAndRejectsHostiles() throws {
-        // The pinned images.
-        XCTAssertEqual(
-            AudioTrackState(state: .active).encode(), [0x25, 0x01]
-        )
-        XCTAssertEqual(
-            AudioTrackState(state: .quiet).encode(), [0x25, 0x02]
-        )
-        for state in AudioTrackState.State.allCases {
-            XCTAssertEqual(
-                try AudioTrackState.decode(
-                    AudioTrackState(state: state).encode()
-                ).state, state
-            )
-        }
-        // Truncation, foreign types, unknown states, trailing bytes.
-        XCTAssertThrowsError(try AudioTrackState.decode([]))
-        XCTAssertThrowsError(try AudioTrackState.decode([0x25]))
-        XCTAssertThrowsError(try AudioTrackState.decode([0x24, 0x01]))
-        XCTAssertThrowsError(try AudioTrackState.decode([0x7F, 0x01]))
-        for state: UInt8 in [0x00, 0x03, 0xFF] {
-            XCTAssertThrowsError(try AudioTrackState.decode([0x25, state]))
-        }
-        XCTAssertThrowsError(try AudioTrackState.decode([0x25, 0x01, 0]))
-    }
-
-    // MARK: Capability key 16 + the 0x26 video-posture codec
-
-    func testVideoQuietPostureRidesTheSpineLikeKeyNine() throws {
-        let declared = Capabilities.wireDefault.declaringVideoQuietPosture()
-        XCTAssertTrue(declared.videoQuietPosture)
-        XCTAssertFalse(Capabilities.wireDefault.videoQuietPosture)
-        XCTAssertEqual(declared.declaringVideoQuietPosture(), declared)
-
-        let decoded = try Capabilities.decodeCbor(declared.encodeCbor())
-        XCTAssertTrue(decoded.videoQuietPosture)
-        XCTAssertEqual(decoded, declared)
-
-        XCTAssertTrue(declared.intersecting(declared).videoQuietPosture)
-        XCTAssertFalse(declared.intersecting(.wireDefault).videoQuietPosture)
-        XCTAssertFalse(
-            Capabilities.wireDefault.intersecting(declared).videoQuietPosture
-        )
-    }
-
-    func testVideoPostureCodecPinsBytesAndRejectsHostiles() throws {
-        XCTAssertEqual(
-            VideoPostureState(posture: .active, keepaliveSeconds: 1).encode(),
-            [0x26, 0x01, 0x01]
-        )
+    func testShortCodecsPinBytes() throws {
+        XCTAssertEqual(AudioRoutingRequest(mode: .hostMuted).encode(), [0x18, 0x02])
+        XCTAssertEqual(AudioRoutingStatus(mode: .streamOff).encode(), [0x19, 0x04])
+        XCTAssertEqual(AudioTrackState(state: .quiet).encode(), [0x25, 0x02])
         XCTAssertEqual(
             VideoPostureState(posture: .quiet, keepaliveSeconds: 30).encode(),
             [0x26, 0x02, 0x1E]
         )
-        for posture in VideoPostureState.Posture.allCases {
-            for interval: UInt8 in [1, 2, 4, 8, 16, 30, 255] {
-                let decoded = try VideoPostureState.decode(
-                    VideoPostureState(
-                        posture: posture, keepaliveSeconds: interval
-                    ).encode())
-                XCTAssertEqual(decoded.posture, posture)
-                XCTAssertEqual(decoded.keepaliveSeconds, interval)
-            }
-        }
-        // A zero interval never travels (the init clamps) and never
-        // decodes (a hostile zero rejects).
+    }
+
+    /// A zero keepalive never travels: the initializer clamps it to 1 s
+    /// (the decoder rejects a hostile zero).
+    func testZeroKeepaliveClampsAtConstruction() {
         XCTAssertEqual(
             VideoPostureState(posture: .quiet, keepaliveSeconds: 0)
                 .keepaliveSeconds, 1)
-        XCTAssertThrowsError(try VideoPostureState.decode([0x26, 0x02, 0x00]))
-        // Truncation, foreign types, unknown postures, trailing bytes.
-        XCTAssertThrowsError(try VideoPostureState.decode([]))
-        XCTAssertThrowsError(try VideoPostureState.decode([0x26]))
-        XCTAssertThrowsError(try VideoPostureState.decode([0x26, 0x02]))
-        XCTAssertThrowsError(try VideoPostureState.decode([0x25, 0x01, 0x01]))
-        for posture: UInt8 in [0x00, 0x03, 0xFF] {
-            XCTAssertThrowsError(
-                try VideoPostureState.decode([0x26, posture, 0x01]))
-        }
-        XCTAssertThrowsError(
-            try VideoPostureState.decode([0x26, 0x01, 0x01, 0]))
     }
 
     // MARK: The registry itself
 
     func testPromotedRegistryNumbersAreThePinnedOnes() {
-        // The end-side pins carried verbatim — a registry typo here
-        // would be a silent wire break on both ends at once.
+        // A registry typo here would be a silent wire break on both ends
+        // at once.
         XCTAssertEqual(CtrlMessageType.idleFrame, 0x15)
         XCTAssertEqual(CtrlMessageType.inputEvent, 0x16)
         XCTAssertEqual(CtrlMessageType.inputEcho, 0x17)
         XCTAssertEqual(CtrlMessageType.audioRoutingRequest, 0x18)
         XCTAssertEqual(CtrlMessageType.audioRoutingStatus, 0x19)
         XCTAssertEqual(WireExtension.ReservedType.lastInputSeq, 0x03)
-        XCTAssertEqual(CapabilityKey.hostAudioRouting, 9)
         XCTAssertEqual(CtrlMessageType.audioTrackState, 0x25)
-        XCTAssertEqual(CapabilityKey.audioQuietPosture, 15)
         XCTAssertEqual(CtrlMessageType.videoPostureState, 0x26)
-        XCTAssertEqual(CapabilityKey.videoQuietPosture, 16)
     }
 }

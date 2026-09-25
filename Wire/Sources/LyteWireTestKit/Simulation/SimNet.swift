@@ -136,40 +136,30 @@ public struct SimNet: Sendable {
             lostCount += 1
             return
         }
-        admit(
-            direction: direction,
-            destination: 1 - source,
-            bytes: bytes,
-            now: now,
-            config: active
-        )
+        admit(direction: direction, bytes: bytes, now: now, config: active)
         if Double.random(in: 0..<1, using: &rng)
-            < max(0, min(active.duplicateRate, 1))
+            < max(0, min(active.duplicateRate, 1)),
+           admit(direction: direction, bytes: bytes, now: now, config: active)
         {
             duplicatedCount += 1
-            admit(
-                direction: direction,
-                destination: 1 - source,
-                bytes: bytes,
-                now: now,
-                config: active
-            )
         }
     }
 
+    /// Queues one copy toward the endpoint opposite `direction`; false
+    /// when the standing queue drops it.
+    @discardableResult
     private mutating func admit(
         direction: Int,
-        destination: Int,
         bytes: [UInt8],
         now: UInt64,
         config: SimNetConfig
-    ) {
+    ) -> Bool {
         reclaimQueue(direction: direction, at: now)
         let queuedBytes = queued[direction].reduce(0) { $0 + $1.byteCount }
         if let bound = config.maxQueueByteCount,
            bytes.count > max(bound, 0) - min(queuedBytes, max(bound, 0)) {
             queueDroppedCount += 1
-            return
+            return false
         }
 
         let completion: UInt64
@@ -195,12 +185,13 @@ public struct SimNet: Sendable {
             )
         }
         inFlight.append(Delivery(
-            destination: destination,
+            destination: 1 - direction,
             arrivalMicroseconds: completion &+ UInt64(max(delay, 0)),
             bytes: bytes
         ))
         tieBreakers.append(admitted)
         admitted &+= 1
+        return true
     }
 
     /// Bytes waiting for or occupying a direction's serializer at `now`.
