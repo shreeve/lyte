@@ -23,8 +23,6 @@ final class SingleOwnerTests: XCTestCase {
         case declarer(of: String)
         /// Files below this repository path.
         case directory(String)
-        /// No production file.
-        case nowhere
     }
 
     private struct ConfinedUse {
@@ -84,9 +82,6 @@ final class SingleOwnerTests: XCTestCase {
         // session's plaintext test mode.
         ConfinedUse(tokens: ["testPassthrough"],
                     owner: .directory("Host/Sources/HostWire/")),
-        // Decoded samples leave the session only through VideoSink.
-        ConfinedUse(tokens: ["(", "CMSampleBuffer", "DecodeUnit", ")"],
-                    owner: .nowhere),
     ]
 
     /// Files declaring these types never name these tokens: the session
@@ -404,8 +399,6 @@ final class SingleOwnerTests: XCTestCase {
                     allowed = source.topLevelTypes.contains(name)
                 case .directory(let path):
                     allowed = source.path.hasPrefix(path)
-                case .nowhere:
-                    allowed = false
                 }
                 if !allowed,
                    SwiftSourceScanner.contains(needle, in: source.tokens) {

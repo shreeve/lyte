@@ -17,9 +17,10 @@ final class BrowserPlayoutTests: XCTestCase {
         let (client, _) = try host.readyClient()
         let corpus = try Self.corpus()
 
-        var scheduled = try send(corpus[0], keyframe: true, capture: 0, host, client)
+        var scheduled = try host.sendFrame(corpus[0], keyframe: true, capture: 0, to: client)
         host.advance(microseconds: 5_000_000)
-        scheduled += try send(corpus[1], keyframe: false, capture: Self.beatMicros, host, client)
+        scheduled += try host.sendFrame(
+            corpus[1], keyframe: false, capture: Self.beatMicros, to: client)
 
         let late = try XCTUnwrap(scheduled.last)
         XCTAssertFalse(late.shouldPresent, "the second frame should arrive late")
@@ -45,15 +46,13 @@ final class BrowserPlayoutTests: XCTestCase {
         let (client, _) = try host.readyClient()
         let corpus = try Self.corpus()
 
-        var scheduled = try send(corpus[0], keyframe: true, capture: 0, host, client)
+        var scheduled = try host.sendFrame(corpus[0], keyframe: true, capture: 0, to: client)
         // Nothing is presented, so the 12-deep handoff overflows and every
         // later P-frame is refused until an IRAP.
         for index in 1..<40 {
             let frame = corpus[1 + (index - 1) % (corpus.count - 1)]
-            scheduled += try send(
-                frame, keyframe: false, capture: UInt64(index) * Self.beatMicros,
-                host, client
-            )
+            scheduled += try host.sendFrame(
+                frame, keyframe: false, capture: UInt64(index) * Self.beatMicros, to: client)
         }
         XCTAssertEqual(scheduled.count, 40)
         XCTAssertLessThanOrEqual(client.videoPresentationBacklog, 12)
@@ -113,7 +112,8 @@ final class BrowserPlayoutTests: XCTestCase {
             host.advance(microseconds: Self.beatMicros - 4_000)
             capture += Self.beatMicros
             let frame = keyframe ? corpus[0] : corpus[1 + index % (corpus.count - 1)]
-            let scheduled = try send(frame, keyframe: keyframe, capture: capture, host, client)
+            let scheduled = try host.sendFrame(
+                frame, keyframe: keyframe, capture: capture, to: client)
             XCTAssertEqual(scheduled.map(\.latenessMicroseconds), [0], "on time")
         }
         func requestDueIdr() {
@@ -157,15 +157,14 @@ final class BrowserPlayoutTests: XCTestCase {
         let corpus = try Self.corpus()
         let far: UInt64 = 1 << 40
 
-        _ = try send(corpus[0], keyframe: true, capture: 0, host, client)
+        _ = try host.sendFrame(corpus[0], keyframe: true, capture: 0, to: client)
         while client.popDueFrame(nowMicros: far) != nil {}
         // Frames arrive a few milliseconds apart for 16.7 ms of capture
         // each: fresh-burst debt accrues until the Conductor flushes.
         for index in 1..<40 {
             let frame = corpus[1 + (index - 1) % (corpus.count - 1)]
-            _ = try send(
-                frame, keyframe: false, capture: UInt64(index) * Self.beatMicros,
-                host, client)
+            _ = try host.sendFrame(
+                frame, keyframe: false, capture: UInt64(index) * Self.beatMicros, to: client)
             while client.popDueFrame(nowMicros: far) != nil {}
         }
         XCTAssertGreaterThan(
@@ -207,6 +206,71 @@ final class BrowserPlayoutTests: XCTestCase {
         XCTAssertNil(playout.idrRequestDue(nowMicros: far))
     }
 
+    /// One damage event is one verdict: a handoff overflow and a Conductor
+    /// flush each count once in the IDR request, naming the newest frame.
+    func testEachDamageEventCountsOnceInTheIdrRequest() throws {
+        let corpus = try Self.corpus()
+        let far: UInt64 = 1 << 40
+        for flush in [false, true] {
+            var playout = BrowserVideoPlayout()
+            var packetizer = VideoPacketizer()
+            // Nothing is presented. Overflow: the thirteenth on-time frame
+            // finds the 12-deep handoff full. Flush: 100 ms of capture a
+            // frame, arriving 1 ms apart, passes the 200 ms debt ceiling
+            // on the fourth.
+            let count = flush ? 4 : 13
+            for index in 0..<count {
+                let shards = try packetizer.packetize(
+                    frame: index == 0
+                        ? corpus[0] : corpus[1 + (index - 1) % (corpus.count - 1)],
+                    frameNumber: FrameNumber(rawValue: UInt32(index)),
+                    captureTimestamp: HostTimestamp(microseconds: 1_000_000
+                        + UInt64(index) * (flush ? 100_000 : Self.beatMicros)),
+                    isIDR: index == 0,
+                    regime: .clean)
+                let arrival = 1_000_000
+                    + UInt64(index) * (flush ? 1_000 : Self.beatMicros)
+                for shard in shards {
+                    _ = playout.ingestShard(
+                        envelope: shard.envelope, payload: shard.payload[...],
+                        arrivalMicroseconds: arrival)
+                }
+            }
+            let request = try XCTUnwrap(playout.idrRequestDue(nowMicros: far))
+            XCTAssertEqual(request.coalescedCount, 1, flush ? "flush" : "overflow")
+            XCTAssertEqual(request.frame.rawValue, UInt32(count - 1))
+        }
+    }
+
+    /// A page that stops presenting (a hidden tab) never drains abandoned
+    /// frames; every keyframe's chain overflowing the handoff abandons
+    /// another dozen, and the list must stay bounded, newest kept.
+    func testAbandonedFramesStayBoundedWhenThePageStopsPresenting() throws {
+        let corpus = try Self.corpus()
+        var playout = BrowserVideoPlayout()
+        var packetizer = VideoPacketizer()
+        let total = 13 * 13
+        for index in 0..<total {
+            let idr = index % 13 == 0
+            let shards = try packetizer.packetize(
+                frame: idr ? corpus[0] : corpus[1 + index % (corpus.count - 1)],
+                frameNumber: FrameNumber(rawValue: UInt32(index)),
+                captureTimestamp: HostTimestamp(
+                    microseconds: 1_000_000 + UInt64(index) * Self.beatMicros),
+                isIDR: idr,
+                regime: .clean)
+            for shard in shards {
+                _ = playout.ingestShard(
+                    envelope: shard.envelope, payload: shard.payload[...],
+                    arrivalMicroseconds: 1_000_000 + UInt64(index) * Self.beatMicros)
+            }
+        }
+        let abandoned = playout.takeAbandoned()
+        XCTAssertEqual(abandoned.count, BrowserVideoPlayout.decodeBacklogCapacity)
+        XCTAssertEqual(abandoned, abandoned.sorted())
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(abandoned.last), UInt32(total - 13))
+    }
+
     /// When the page stops taking decode input, the backlog is bounded; the
     /// evicted frame takes its dependents with it, so the page is never
     /// handed a frame whose reference is gone, and the loss asks for an IDR.
@@ -222,10 +286,9 @@ final class BrowserPlayoutTests: XCTestCase {
             // One frame per beat, each presented but never decoded.
             host.advance(microseconds: Self.beatMicros - 4_000)
             let annexB = index == 0 ? corpus[0] : corpus[1 + (index - 1) % (corpus.count - 1)]
-            frames += try send(
+            frames += try host.sendFrame(
                 annexB, keyframe: index == 0,
-                capture: UInt64(index) * Self.beatMicros, host, client
-            ).map(\.frameNumber)
+                capture: UInt64(index) * Self.beatMicros, to: client).map(\.frameNumber)
             while client.popDueFrame(nowMicros: far) != nil {}
             XCTAssertLessThanOrEqual(
                 client.videoDecodeBacklog, BrowserVideoPlayout.decodeBacklogCapacity)
@@ -255,18 +318,19 @@ final class BrowserPlayoutTests: XCTestCase {
                 now: host.hostMicros * 1_000
             )
             host.advance(microseconds: 5_000)
-            deliverAll(host, client)
+            var notes: [String] = []
+            host.deliver(host.drain(), to: client, notes: &notes)
         }
 
         XCTAssertEqual(client.audioPacketsAssembled, UInt64(sent))
-        XCTAssertEqual(client.audioPending, BrowserAudioPlayout.defaultCapacity)
+        XCTAssertEqual(client.audioPending, BrowserAudioPlayout.capacity)
         XCTAssertEqual(
             client.audioPacketsDroppedStale,
-            UInt64(sent - BrowserAudioPlayout.defaultCapacity)
+            UInt64(sent - BrowserAudioPlayout.capacity)
         )
         var numbers: [UInt32] = []
         while let packet = client.popAudioPacket() { numbers.append(packet.number) }
-        XCTAssertEqual(numbers.count, BrowserAudioPlayout.defaultCapacity)
+        XCTAssertEqual(numbers.count, BrowserAudioPlayout.capacity)
         XCTAssertEqual(numbers, numbers.sorted(), "oldest first")
         XCTAssertEqual(numbers.last.map { Int($0) }, sent - 1, "newest kept")
     }
@@ -275,38 +339,5 @@ final class BrowserPlayoutTests: XCTestCase {
 
     private static func corpus() throws -> [[UInt8]] {
         try VideoCorpus.frames()
-    }
-
-    /// Host ingests one frame; every shard crosses; returns what the
-    /// client's Conductor scheduled.
-    private func send(
-        _ annexB: [UInt8], keyframe: Bool, capture: UInt64,
-        _ host: BrowserHostPeer, _ client: BrowserControlSession
-    ) throws -> [BrowserVideoPlayout.ScheduledFrame] {
-        try host.session.ingestVideoFrame(
-            annexB, captureTimestampMicroseconds: capture,
-            isKeyframe: keyframe, now: host.hostMicros * 1_000
-        )
-        var scheduled: [BrowserVideoPlayout.ScheduledFrame] = []
-        for _ in 0..<200 {
-            host.advance(microseconds: 1_000)
-            scheduled += deliverAll(host, client)
-            if !scheduled.isEmpty { break }
-        }
-        return scheduled
-    }
-
-    @discardableResult
-    private func deliverAll(
-        _ host: BrowserHostPeer, _ client: BrowserControlSession
-    ) -> [BrowserVideoPlayout.ScheduledFrame] {
-        var scheduled: [BrowserVideoPlayout.ScheduledFrame] = []
-        var notes: [String] = []
-        for datagram in host.drain() {
-            let step = client.ingest(datagram: datagram, nowMicros: host.nowMicros)
-            scheduled += step.scheduled
-            host.deliver(step, notes: &notes)
-        }
-        return scheduled
     }
 }

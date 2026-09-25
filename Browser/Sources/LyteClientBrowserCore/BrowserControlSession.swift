@@ -148,7 +148,6 @@ public final class BrowserControlSession {
     public var videoPresentationBacklog: Int { video.presentationBacklogCount }
     public var audioPending: Int { audio.pendingCount }
     public var audioPacketsAssembled: UInt64 { audio.packetsAssembled }
-    public var audioPacketsPopped: UInt64 { audio.packetsPopped }
     public var audioPacketsDroppedStale: UInt64 { audio.packetsDroppedStale }
     public var clipboardNegotiated: Bool { control?.clipboardNegotiated ?? false }
     /// Input events captured but not yet on the reliable stream.
@@ -203,7 +202,7 @@ public final class BrowserControlSession {
         video.noteDropped(frameNumber: frameNumber)
     }
 
-    public func popAudioPacket() -> BrowserAudioPlayout.Packet? {
+    public func popAudioPacket() -> AudioPacket? {
         audio.popPacket()
     }
 
@@ -570,7 +569,7 @@ public final class BrowserControlSession {
                 scheduled: ingested.scheduled)
         case .audio:
             note(posture: control?.noteAudioEvidence(now: now))
-            for line in audio.ingestShard(envelope: envelope, payload: plaintext[...]) {
+            for line in audio.ingestShard(envelope: envelope, payload: plaintext) {
                 note(line)
             }
             return step(outbound: [])

@@ -1,15 +1,13 @@
-/// Every overlay gauge describes the last ~3 seconds, except roundtrip/jitter
-/// (10 seconds) and input latency (an event ring), documented at their sites.
-public let overlayGaugeWindowSeconds = 3.0
-
 /// A trailing-window rate from a monotonically growing counter. Feed the
 /// cumulative count at each overlay tick; the answer is anchored at the oldest
-/// retained sample in the shared gauge window.
+/// retained sample in the window. Every overlay gauge describes the last ~3
+/// seconds, except roundtrip/jitter (10 seconds) and input latency (an event
+/// ring), documented at their sites.
 public struct RateMeter: Sendable {
     private var history = Deque<(atMicroseconds: UInt64, count: UInt64)>()
     private let windowMicroseconds: UInt64
 
-    public init(windowSeconds: Double = overlayGaugeWindowSeconds) {
+    public init(windowSeconds: Double = 3.0) {
         windowMicroseconds = UInt64(windowSeconds * 1_000_000)
     }
 

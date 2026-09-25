@@ -1,7 +1,8 @@
 // Lightweight Swift lexical equipment for repository architecture tests.
-// It is deliberately not a compiler: it removes comments and strings, keeps
-// the identifiers/punctuation needed by structural ratchets, and recognizes
-// every supported spelling of an import declaration.
+// It is deliberately not a compiler: it removes comments and string text,
+// lexes interpolations as code, keeps the identifiers/punctuation needed by
+// structural ratchets, and recognizes every supported spelling of an import
+// declaration.
 
 public enum SwiftSourceScanner {
     public static func tokens(in source: String) -> [String] {
@@ -11,8 +12,10 @@ public enum SwiftSourceScanner {
         var index = 0
         var blockDepth = 0
         var inLineComment = false
-        var stringHashes: Int?
-        var stringQuotes = 0
+        // Open string literals, innermost last; each interpolation inside
+        // one is code again, closed by the `)` at its own paren depth.
+        var strings: [(hashes: Int, quotes: Int)] = []
+        var interpolationParens: [Int] = []
 
         func flush() {
             if !identifier.isEmpty {
@@ -43,19 +46,24 @@ public enum SwiftSourceScanner {
                 }
                 continue
             }
-            if let hashes = stringHashes {
-                if hashes == 0, character == "\\" {
-                    index = min(index + 2, characters.count)
-                    continue
-                }
-                if delimiter(
-                    quoteCount: stringQuotes,
+            if strings.count > interpolationParens.count,
+               let (hashes, quotes) = strings.last {
+                if character == "\\",
+                   delimiter(quoteCount: 0, hashCount: hashes,
+                             matches: characters, at: index + 1) {
+                    let escaped = index + 1 + hashes
+                    if escaped < characters.count, characters[escaped] == "(" {
+                        interpolationParens.append(0)
+                    }
+                    index = min(escaped + 1, characters.count)
+                } else if delimiter(
+                    quoteCount: quotes,
                     hashCount: hashes,
                     matches: characters,
                     at: index
                 ) {
-                    index += stringQuotes + hashes
-                    stringHashes = nil
+                    index += quotes + hashes
+                    strings.removeLast()
                 } else {
                     index += 1
                 }
@@ -82,15 +90,26 @@ public enum SwiftSourceScanner {
             if quoteIndex < characters.count,
                characters[quoteIndex] == "\"" {
                 flush()
-                stringHashes = hashes
-                stringQuotes = delimiter(
+                let quotes = delimiter(
                     quoteCount: 3,
                     hashCount: 0,
                     matches: characters,
                     at: quoteIndex
                 ) ? 3 : 1
-                index = quoteIndex + stringQuotes
+                strings.append((hashes, quotes))
+                index = quoteIndex + quotes
                 continue
+            }
+            if let depth = interpolationParens.last,
+               character == "(" || character == ")" {
+                flush()
+                if character == ")", depth == 0 {
+                    interpolationParens.removeLast()
+                    index += 1
+                    continue
+                }
+                interpolationParens[interpolationParens.count - 1] +=
+                    character == "(" ? 1 : -1
             }
             if character.isLetter || character.isNumber || character == "_" {
                 identifier.append(character)

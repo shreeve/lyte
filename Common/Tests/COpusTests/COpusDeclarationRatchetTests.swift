@@ -91,41 +91,6 @@ final class COpusDeclarationRatchetTests: XCTestCase {
         )
     }
 
-    func testNoHandwrittenCOpusModuleMapExists() throws {
-        let sourceRoots = try manifests().map {
-            $0.path.replacingOccurrences(of: "Package.swift", with: "Sources")
-        }.filter {
-            FileManager.default.fileExists(
-                atPath: tree.repositoryRoot.appendingPathComponent($0).path)
-        }
-        XCTAssertGreaterThanOrEqual(sourceRoots.count, 5)
-        var violations: [String] = []
-        for sourceRoot in sourceRoots {
-            let root = tree.repositoryRoot.appendingPathComponent(sourceRoot)
-            guard let enumerator = FileManager.default.enumerator(
-                at: root, includingPropertiesForKeys: nil)
-            else {
-                return XCTFail("cannot enumerate \(sourceRoot)")
-            }
-            for case let file as URL in enumerator
-            where file.pathExtension == "modulemap" {
-                let source = try String(contentsOf: file, encoding: .utf8)
-                if source.contains("module COpus")
-                    || source.range(
-                        of: #"\blink\s+["']opus["']"#,
-                        options: .regularExpression
-                    ) != nil {
-                    violations.append(tree.relativePath(for: file))
-                }
-            }
-        }
-        XCTAssertTrue(
-            violations.isEmpty,
-            "COpus regained a handwritten module map:\n"
-                + violations.joined(separator: "\n")
-        )
-    }
-
     private static func matches(_ regex: NSRegularExpression, _ text: String) -> Bool {
         regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
     }

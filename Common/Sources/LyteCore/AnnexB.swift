@@ -76,12 +76,11 @@ public struct AnnexBFrameClassification: Hashable, Sendable {
 /// runs one non-generic raw-buffer scan compiled inside LyteCore; only a
 /// non-contiguous collection is copied.
 public enum AnnexBCheck {
-    public static func nalUnits(in data: ArraySlice<UInt8>) -> [HevcNalUnit] {
-        data.withUnsafeBufferPointer(nalUnitsRaw)
-    }
-
-    public static func nalUnits(in data: [UInt8]) -> [HevcNalUnit] {
-        data.withUnsafeBufferPointer(nalUnitsRaw)
+    @inlinable
+    public static func nalUnits<C>(in data: C) -> [HevcNalUnit]
+    where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
+        data.withContiguousStorageIfAvailable(nalUnitsRaw)
+            ?? Array(data).withUnsafeBufferPointer(nalUnitsRaw)
     }
 
     public static func leadingStartCodeLength<C>(_ data: C) -> Int?
@@ -102,54 +101,34 @@ public enum AnnexBCheck {
         _ data: C
     ) -> AnnexBFrameClassification
     where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
-        if let classification = data.withContiguousStorageIfAvailable(
-            classifyRaw) {
-            return classification
-        }
-        return Array(data).withUnsafeBufferPointer(classifyRaw)
+        data.withContiguousStorageIfAvailable(classifyRaw)
+            ?? Array(data).withUnsafeBufferPointer(classifyRaw)
     }
 
-    public static func classifyFrame(_ data: [UInt8]) -> AnnexBFrameClassification {
-        data.withUnsafeBufferPointer(classifyRaw)
-    }
-
-    public static func isFrameShaped(_ data: ArraySlice<UInt8>) -> Bool {
+    @inlinable
+    public static func isFrameShaped<C>(_ data: C) -> Bool
+    where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
         classifyFrame(data).isFrameShaped
     }
 
-    public static func isFrameShaped(_ data: [UInt8]) -> Bool {
-        classifyFrame(data).isFrameShaped
-    }
-
-    public static func containsIrap(_ data: ArraySlice<UInt8>) -> Bool {
+    @inlinable
+    public static func containsIrap<C>(_ data: C) -> Bool
+    where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
         classifyFrame(data).containsIrap
     }
 
-    public static func containsIrap(_ data: [UInt8]) -> Bool {
-        classifyFrame(data).containsIrap
-    }
-
+    /// Whether the stream carries VPS, SPS, PPS and an IRAP, in any order.
     public static func startsWithParameterSetsAndIrap(_ data: [UInt8]) -> Bool {
-        var types = Set<UInt8>()
-        var hasIrap = false
-        data.withUnsafeBufferPointer { buffer in
-            walkNalUnits(in: buffer) { unit in
-                types.insert(unit.type)
-                hasIrap = hasIrap || HevcNalType.isIrap(unit.type)
-            }
-        }
-        return types.contains(HevcNalType.vps)
-            && types.contains(HevcNalType.sps)
-            && types.contains(HevcNalType.pps)
-            && hasIrap
+        let types = Set(nalUnits(in: data).map(\.type))
+        return [HevcNalType.vps, HevcNalType.sps, HevcNalType.pps]
+            .allSatisfy(types.contains)
+            && types.contains(where: HevcNalType.isIrap)
     }
 
-    public static func summary(of data: ArraySlice<UInt8>) -> String {
+    @inlinable
+    public static func summary<C>(of data: C) -> String
+    where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
         nalUnits(in: data).map { HevcNalType.name($0.type) }.joined(separator: " ")
-    }
-
-    public static func summary(of data: [UInt8]) -> String {
-        summary(of: data[...])
     }
 
     @usableFromInline
@@ -169,7 +148,8 @@ public enum AnnexBCheck {
         )
     }
 
-    private static func nalUnitsRaw(
+    @usableFromInline
+    static func nalUnitsRaw(
         _ data: UnsafeBufferPointer<UInt8>
     ) -> [HevcNalUnit] {
         var units: [HevcNalUnit] = []

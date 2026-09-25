@@ -8,224 +8,46 @@
     { "imports": { "@bjorn3/browser_wasi_shim": "./vendor/browser_wasi_shim/index.js" } }
   </script>
   <style>
-    :root {
-      color-scheme: light;
-      --ink: #141414;
-      --muted: #5c5c5c;
-      --pass: #0b6b2a;
-      --fail: #9b1c1c;
-      --band: #ece8e0;
-      --panel: rgba(255, 255, 255, 0.78);
-      --line: #d2ccc0;
-      --accent: #2f5d50;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: "IBM Plex Sans", "Source Sans 3", "Segoe UI", sans-serif;
-      background:
-        radial-gradient(1100px 520px at 8% -8%, #dfeadf 0%, transparent 55%),
-        radial-gradient(900px 480px at 100% 0%, #e7dcc8 0%, transparent 52%),
-        linear-gradient(180deg, #f4f0e8 0%, var(--band) 100%);
-      color: var(--ink);
-      min-height: 100vh;
-    }
-    .shell {
-      max-width: 64rem;
-      margin: 0 auto;
-      padding: 1.75rem 1.25rem 3rem;
-    }
-    header.brand {
-      display: flex;
-      align-items: baseline;
-      justify-content: space-between;
-      gap: 1rem;
-      margin-bottom: 1.25rem;
-    }
-    header.brand h1 {
-      margin: 0;
-      font-size: clamp(2rem, 4vw, 2.75rem);
-      font-weight: 700;
-      letter-spacing: -0.04em;
-      line-height: 1;
-    }
-    header.brand .tag {
-      color: var(--muted);
-      font-size: 0.85rem;
-    }
-    .layout {
-      display: grid;
-      grid-template-columns: minmax(14rem, 18rem) 1fr;
-      gap: 1rem;
-    }
-    @media (max-width: 800px) {
-      .layout { grid-template-columns: 1fr; }
-    }
-    .panel {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      backdrop-filter: blur(8px);
-      padding: 1rem 1.05rem;
-    }
-    .panel h2 {
-      margin: 0 0 0.75rem;
-      font-size: 0.78rem;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--muted);
-      font-weight: 600;
-    }
-    label {
-      display: block;
-      font-size: 0.78rem;
-      color: var(--muted);
-      margin: 0.55rem 0 0.2rem;
-    }
-    input {
-      width: 100%;
-      font: inherit;
-      padding: 0.45rem 0.55rem;
-      border: 1px solid var(--line);
-      background: #fff;
-      color: var(--ink);
-    }
-    .actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.5rem;
-      margin-top: 0.9rem;
-    }
-    button {
-      font: inherit;
-      padding: 0.45rem 0.85rem;
-      border: 1px solid #b8b2a6;
-      background: #fff;
-      cursor: pointer;
-      color: var(--ink);
-    }
-    button.primary {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: #fff;
-    }
-    button:disabled {
-      opacity: 0.45;
-      cursor: not-allowed;
-    }
-    button:hover:not(:disabled) { filter: brightness(1.03); }
-    .session-line {
-      font-family: "IBM Plex Mono", ui-monospace, monospace;
-      font-size: 0.78rem;
-      color: var(--muted);
-      line-height: 1.45;
-      margin-top: 0.75rem;
-      white-space: pre-wrap;
-    }
-    .stage {
-      background: #0d0d0f;
-      border: 1px solid var(--line);
-      min-height: 18rem;
-      position: relative;
-    }
-    #frame-canvas {
-      display: block;
-      width: 100%;
-      height: auto;
-      max-height: min(70vh, 36rem);
-      object-fit: contain;
-      background: #0d0d0f;
-      outline: none;
-    }
-    #frame-canvas:focus {
-      box-shadow: inset 0 0 0 2px var(--accent);
-    }
-    .stage-hint {
-      position: absolute;
-      left: 0.75rem;
-      bottom: 0.65rem;
-      color: rgba(255, 255, 255, 0.55);
-      font-size: 0.72rem;
-      pointer-events: none;
-    }
-    #status {
-      font-size: 1.6rem;
-      font-weight: 700;
-      letter-spacing: 0.04em;
-      margin: 0 0 0.65rem;
-      font-family: "IBM Plex Mono", ui-monospace, monospace;
-    }
-    #status.pass { color: var(--pass); }
-    #status.fail { color: var(--fail); }
-    #status.pending { color: var(--muted); }
-    pre {
-      background: #fff;
-      border: 1px solid var(--line);
-      padding: 0.85rem 0.95rem;
-      overflow-x: auto;
-      white-space: pre-wrap;
-      line-height: 1.5;
-      font-size: 0.78rem;
-      font-family: "IBM Plex Mono", ui-monospace, monospace;
-      margin: 0;
-      max-height: 22rem;
-    }
-    #meta {
-      color: var(--muted);
-      margin-top: 0.75rem;
-      font-size: 0.78rem;
-      font-family: "IBM Plex Mono", ui-monospace, monospace;
-      white-space: pre-wrap;
-    }
-    .note {
-      margin-top: 1.25rem;
-      color: var(--muted);
-      font-size: 0.78rem;
-      line-height: 1.5;
-    }
+    body { max-width: 64rem; margin: 0 auto; padding: 1rem; font-family: system-ui, sans-serif; }
+    .layout { display: grid; grid-template-columns: minmax(14rem, 18rem) 1fr; gap: 1rem; }
+    @media (max-width: 800px) { .layout { grid-template-columns: 1fr; } }
+    label { display: block; font-size: 0.8rem; margin: 0.5rem 0 0.2rem; }
+    input { width: 100%; box-sizing: border-box; font: inherit; }
+    .actions { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+    #frame-canvas { display: block; width: 100%; height: auto; max-height: 70vh; object-fit: contain; background: #000; }
+    #frame-canvas:focus { outline: 2px solid #2f5d50; }
+    #status { font: 700 1.5rem ui-monospace, monospace; margin-bottom: 0.5rem; }
+    #status.pass { color: #0b6b2a; }
+    #status.fail { color: #9b1c1c; }
+    #status.pending { color: #5c5c5c; }
+    pre, .session-line { font: 0.78rem/1.45 ui-monospace, monospace; white-space: pre-wrap; }
+    pre { max-height: 22rem; overflow: auto; }
   </style>
 </head>
 <body>
-  <div class="shell">
-    <header class="brand">
-      <h1>Lyte</h1>
-      <div class="tag">browser client · proof harness</div>
-    </header>
+  <h1>Lyte browser proof harness</h1>
+  <div class="layout">
+    <aside>
+      <label for="pin">PIN</label>
+      <input id="pin" name="pin" inputmode="numeric" autocomplete="one-time-code" placeholder="from control peer" />
+      <label for="host-key">Host static (hex)</label>
+      <input id="host-key" name="host-key" spellcheck="false" placeholder="64 hex chars" />
+      <label for="sidecar-url">WebTransport URL</label>
+      <input id="sidecar-url" name="sidecar-url" spellcheck="false" placeholder="https://127.0.0.1:…" />
+      <div class="actions">
+        <button type="button" id="connect" disabled>Connect</button>
+        <button type="button" id="rerun" disabled>Re-run proofs</button>
+      </div>
+      <div class="session-line" id="session-line">Loading WASM…</div>
+    </aside>
 
-    <div class="layout">
-      <aside class="panel" id="connect-panel">
-        <h2>Connect</h2>
-        <label for="pin">PIN</label>
-        <input id="pin" name="pin" inputmode="numeric" autocomplete="one-time-code" placeholder="from control peer" />
-        <label for="host-key">Host static (hex)</label>
-        <input id="host-key" name="host-key" spellcheck="false" placeholder="64 hex chars" />
-        <label for="sidecar-url">WebTransport URL</label>
-        <input id="sidecar-url" name="sidecar-url" spellcheck="false" placeholder="https://127.0.0.1:…" />
-        <div class="actions">
-          <button type="button" class="primary" id="connect" disabled>Connect</button>
-          <button type="button" id="rerun" disabled>Re-run proofs</button>
-        </div>
-        <div class="session-line" id="session-line">Loading WASM…</div>
-      </aside>
-
-      <section>
-        <div id="status" class="pending">LOADING</div>
-        <div class="stage">
-          <canvas id="frame-canvas" width="960" height="540" tabindex="0"
-            aria-label="Lyte video surface — click to focus for input"></canvas>
-          <div class="stage-hint">video surface · click to focus · mouse/keys → sealed InputEvent</div>
-        </div>
-        <pre id="log" style="margin-top: 0.85rem">Instantiating LyteClientBrowser.wasm…</pre>
-        <pre id="meta"></pre>
-      </section>
-    </div>
-
-    <p class="note">
-      Safari deferred. Native Lyte keeps custom UDP; browser Lyte uses
-      WebTransport. The sidecar never unseals. Standing host UDP 41151 is
-      never used. Media is Wire video-corpus-v1 + Opus tone via
-      lyte-control-peer (DRM-free). Wayland/GNOME host clipboard remains
-      blocked — peer clipboard is in-memory only.
-    </p>
+    <section>
+      <div id="status" class="pending">LOADING</div>
+      <canvas id="frame-canvas" width="960" height="540" tabindex="0"
+        aria-label="Lyte video surface — click to focus for input"></canvas>
+      <pre id="log">Instantiating LyteClientBrowser.wasm…</pre>
+      <pre id="meta"></pre>
+    </section>
   </div>
 
   <script type="module">
@@ -272,7 +94,7 @@
       globalThis.lyteSessionPassed = passed;
     }
 
-    function paintSession(peer, sidecar, clientKey) {
+    function paintSession(peer, clientKey) {
       const st = globalThis.lyteBrowser?.interactionStats?.() || {};
       sessionLine.textContent =
         `peer ${peer.bindHost}:${peer.listenPort}\n` +
@@ -307,7 +129,7 @@
             activeSink = sink;
           },
         });
-        paintSession(peer, sidecar, proof.clientStaticPublicKeyHex);
+        paintSession(peer, proof.clientStaticPublicKeyHex);
         setOutcome(
           proof.passed,
           proof.lines,
@@ -357,8 +179,8 @@
         `PIN prefilled from control-peer.json`;
       connectBtn.addEventListener("click", formRun);
       rerunBtn.addEventListener("click", harnessRun);
-      // The harness auto-runs once; serve.sh keeps lyte-control-peer
-      // serving sessions until it stops.
+      // The harness auto-runs once; `smoke.mjs --serve` keeps
+      // lyte-control-peer serving sessions until it stops.
       await harnessRun();
     } catch (error) {
       setOutcome(false, String(error?.stack || error));
