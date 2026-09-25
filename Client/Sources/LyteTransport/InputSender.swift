@@ -276,45 +276,6 @@ public final class InputSender: @unchecked Sendable {
     }
 }
 
-/// Queue-side timing owned by the ordered input hop.
-public final class InputSendTiming: @unchecked Sendable {
-    public struct Snapshot: Sendable {
-        public var queued: UInt64
-        public var sent: UInt64
-        public var failed: UInt64
-        public var queueWaitMicroseconds: Histogram<UInt64>
-    }
-
-    private let lock = NSLock()
-    private var queuedCount: UInt64 = 0
-    private var sentCount: UInt64 = 0
-    private var failedCount: UInt64 = 0
-    private var waits = Histogram<UInt64>(capacity: 360, retention: .rolling)
-
-    func queued() {
-        lock.lock(); queuedCount += 1; lock.unlock()
-    }
-
-    func sent(queueMicroseconds: UInt64) {
-        lock.lock()
-        sentCount += 1
-        waits.record(queueMicroseconds)
-        lock.unlock()
-    }
-
-    func failed() {
-        lock.lock(); failedCount += 1; lock.unlock()
-    }
-
-    public func snapshot() -> Snapshot {
-        lock.lock()
-        defer { lock.unlock() }
-        return Snapshot(
-            queued: queuedCount, sent: sentCount, failed: failedCount,
-            queueWaitMicroseconds: waits)
-    }
-}
-
 /// The app capture path's ordered hop, so ARQ/seal/socket work never runs
 /// on MainActor.
 public final class OrderedInputSender: @unchecked Sendable {
@@ -323,7 +284,6 @@ public final class OrderedInputSender: @unchecked Sendable {
     private let lock = NSLock()
     private var accepting = true
     private var cancelled = false
-    private let timing = InputSendTiming()
     private let send: @Sendable (InputEvent.Body, ClientTimestamp) throws -> Void
 
     public init(
@@ -346,23 +306,14 @@ public final class OrderedInputSender: @unchecked Sendable {
         }
         // Acceptance and queue insertion are one critical section, so
         // finishAndDrain never misses an accepted event.
-        timing.queued()
         queue.async { [self] in
             lock.lock()
             let maySend = !cancelled
             lock.unlock()
             guard maySend else { return }
-            let started = SystemMonotonicClock.nowNanoseconds
-            do {
-                try send(
-                    body,
-                    ClientTimestamp(
-                        microseconds: capturedNanoseconds / 1_000))
-                timing.sent(
-                    queueMicroseconds: (started &- capturedNanoseconds) / 1_000)
-            } catch {
-                timing.failed()
-            }
+            try? send(
+                body,
+                ClientTimestamp(microseconds: capturedNanoseconds / 1_000))
         }
         lock.unlock()
         return true
@@ -382,8 +333,6 @@ public final class OrderedInputSender: @unchecked Sendable {
         queue.sync {}
         lock.lock(); cancelled = true; lock.unlock()
     }
-
-    public var snapshot: InputSendTiming.Snapshot { timing.snapshot() }
 
     /// Deterministic gate seam; production never waits on input work.
     public func drainForTesting() {

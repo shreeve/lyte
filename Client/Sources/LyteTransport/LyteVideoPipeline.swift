@@ -53,7 +53,6 @@ public struct VideoPipelineStats: Sendable {
 }
 
 public struct VideoFrameBuildTelemetry: Sendable, Equatable {
-    public var frame: UInt32
     public var assemblyLockHoldMicroseconds: UInt64
     public var sampleBuildMicroseconds: UInt64
 }

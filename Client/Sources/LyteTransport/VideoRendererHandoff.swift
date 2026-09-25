@@ -209,15 +209,9 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
     public func beginRecovery(cause: VideoRecoveryCause, after frame: FrameNumber) {
         queue.async { [self] in
             guard isLive else { return }
-            let awaiting = policy.awaitingRandomAccess
-            recorder.recordRecoveryLifecycle(
-                kind: awaiting ? "handoffDamageOverlap" : "handoffDamageReceived",
-                frame: frame.rawValue,
-                cause: cause,
-                episode: activeRecoveryEpisode,
-                awaitingRandomAccess: awaiting,
-                randomAccessPending: policy.randomAccessPending,
-                pendingCount: policy.count)
+            trace(policy.awaitingRandomAccess
+                    ? "handoffDamageOverlap" : "handoffDamageReceived",
+                  frame: frame.rawValue, cause: cause)
             let outcome = policy.failEpisode()
             process(
                 outcome,
@@ -262,15 +256,9 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
         if pending.decision.shouldFlush || renderer.status == .failed {
             let cause: VideoRecoveryCause = pending.decision.shouldFlush
                 ? .freshPresentationDebt : .rendererFailure
-            recorder.recordRecoveryLifecycle(
-                kind: "handoffLocalDamage",
-                frame: pending.unit.frameNumber.rawValue,
-                cause: cause,
-                episode: activeRecoveryEpisode,
-                isRandomAccess: pending.unit.isIDR,
-                awaitingRandomAccess: policy.awaitingRandomAccess,
-                randomAccessPending: policy.randomAccessPending,
-                pendingCount: policy.count)
+            trace("handoffLocalDamage",
+                  frame: pending.unit.frameNumber.rawValue, cause: cause,
+                  isRandomAccess: pending.unit.isIDR)
             // An IRAP in hand answers the flush it trips.
             process(
                 policy.failEpisode(),
@@ -312,14 +300,8 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
         } else {
             return
         }
-        recorder.recordRecoveryLifecycle(
-            kind: kind,
-            frame: pending.unit.frameNumber.rawValue,
-            episode: activeRecoveryEpisode,
-            isRandomAccess: pending.unit.isIDR,
-            awaitingRandomAccess: policy.awaitingRandomAccess,
-            randomAccessPending: policy.randomAccessPending,
-            pendingCount: policy.count)
+        trace(kind, frame: pending.unit.frameNumber.rawValue,
+              isRandomAccess: pending.unit.isIDR)
     }
 
     private func armRenderer() {
@@ -415,16 +397,10 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
                 attachmentModeOut: nil) != nil
             if pending.unit.isIDR || activeRecoveryEpisode != nil
                 || forcedMetricsProbes > 0 {
-                recorder.recordRecoveryLifecycle(
-                    kind: pending.unit.isIDR
+                trace(pending.unit.isIDR
                         ? "rendererEnqueueIrap" : "rendererEnqueueNonIrap",
-                    frame: pending.unit.frameNumber.rawValue,
-                    episode: activeRecoveryEpisode,
-                    isRandomAccess: pending.unit.isIDR,
-                    resetDecoderBeforeDecoding: resetAttached,
-                    awaitingRandomAccess: policy.awaitingRandomAccess,
-                    randomAccessPending: policy.randomAccessPending,
-                    pendingCount: policy.count)
+                      frame: pending.unit.frameNumber.rawValue,
+                      isRandomAccess: pending.unit.isIDR, reset: resetAttached)
             }
             if PipelineWitness.isEnabled {
                 PipelineWitness.record("rendererEnqueueBegin", fields: [
@@ -447,15 +423,9 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
                     closesRecovery: closesRecovery)
                 if closesRecovery {
                     forcedMetricsProbes = 3
-                    recorder.recordRecoveryLifecycle(
-                        kind: "handoffRecoveryClosed",
-                        frame: pending.unit.frameNumber.rawValue,
-                        episode: activeRecoveryEpisode,
-                        isRandomAccess: true,
-                        resetDecoderBeforeDecoding: resetAttached,
-                        awaitingRandomAccess: policy.awaitingRandomAccess,
-                        randomAccessPending: policy.randomAccessPending,
-                        pendingCount: policy.count)
+                    trace("handoffRecoveryClosed",
+                          frame: pending.unit.frameNumber.rawValue,
+                          isRandomAccess: true, reset: resetAttached)
                     activeRecoveryEpisode = nil
                 }
             }
@@ -489,16 +459,10 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
             requesting = false
             let startedFlush = flushBarrier.begin()
             recorder.recordRecoveryCause(cause)
-            recorder.recordRecoveryLifecycle(
-                kind: startedFlush
+            trace(startedFlush
                     ? "rendererRecoveryFlushStarted"
                     : "rendererRecoveryFlushAlreadyPending",
-                frame: recoveryFrame.rawValue,
-                cause: cause,
-                episode: activeRecoveryEpisode,
-                awaitingRandomAccess: policy.awaitingRandomAccess,
-                randomAccessPending: policy.randomAccessPending,
-                pendingCount: policy.count)
+                  frame: recoveryFrame.rawValue, cause: cause)
             if startedFlush {
                 renderer.flush(removingDisplayedImage: false) { [weak self] in
                     self?.queue.async { [weak self] in
@@ -530,15 +494,29 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
     private func completeRecoveryFlush(frame: FrameNumber, cause: VideoRecoveryCause) {
         guard isLive else { return }
         flushBarrier.complete()
+        trace("rendererRecoveryFlushCompleted", frame: frame.rawValue,
+              cause: cause)
+        armRenderer()
+    }
+
+    /// One recovery-lifecycle record carrying the gate's current state.
+    private func trace(
+        _ kind: String,
+        frame: UInt32,
+        cause: VideoRecoveryCause? = nil,
+        isRandomAccess: Bool? = nil,
+        reset: Bool? = nil
+    ) {
         recorder.recordRecoveryLifecycle(
-            kind: "rendererRecoveryFlushCompleted",
-            frame: frame.rawValue,
+            kind: kind,
+            frame: frame,
             cause: cause,
             episode: activeRecoveryEpisode,
+            isRandomAccess: isRandomAccess,
+            resetDecoderBeforeDecoding: reset,
             awaitingRandomAccess: policy.awaitingRandomAccess,
             randomAccessPending: policy.randomAccessPending,
             pendingCount: policy.count)
-        armRenderer()
     }
 
     private func finish(

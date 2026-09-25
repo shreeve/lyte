@@ -35,7 +35,7 @@ final class ClientSessionLifecycleTests: XCTestCase {
         let frozen = lifecycle.advance(now: at(350))
         XCTAssertEqual(frozen.state, .frozen)
         XCTAssertEqual(frozen.stateChange, .frozen)
-        XCTAssertTrue(lifecycle.isFrozen)
+        XCTAssertEqual(lifecycle.state, .frozen)
 
         let recovered = lifecycle.advance(
             .mediaPathEvidence,
@@ -43,7 +43,7 @@ final class ClientSessionLifecycleTests: XCTestCase {
         )
         XCTAssertEqual(recovered.state, .active)
         XCTAssertEqual(recovered.stateChange, .active)
-        XCTAssertFalse(lifecycle.isFrozen)
+        XCTAssertNotEqual(lifecycle.state, .frozen)
         XCTAssertNil(lifecycle.advance(now: at(352)).stateChange)
     }
 

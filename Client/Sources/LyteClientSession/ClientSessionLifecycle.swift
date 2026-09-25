@@ -97,7 +97,6 @@ public struct ClientSessionLifecycle: Sendable {
 
     public var state: SessionState { machine.state }
     public var wireMode: SessionWireMode { machine.wireMode }
-    public var isFrozen: Bool { machine.state == .frozen }
 
     /// Decodes and applies the two reliable words that mutate client lifecycle
     /// state. Other control words remain unclaimed for their owning organ.

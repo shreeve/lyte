@@ -438,8 +438,6 @@ final class InputPathGateTests: XCTestCase {
         }
         sender.drainForTesting()
         XCTAssertEqual(delivered.all, Array(0..<100))
-        XCTAssertEqual(sender.snapshot.queued, 100)
-        XCTAssertEqual(sender.snapshot.sent, 100)
 
         sender.stop()
         sender.enqueue(
@@ -477,10 +475,8 @@ final class InputPathGateTests: XCTestCase {
         sender.drainForTesting()
 
         XCTAssertEqual(Set(delivered.all), Set(accepted.all))
-        XCTAssertEqual(delivered.all.count, accepted.all.count)
-        XCTAssertEqual(
-            sender.snapshot.sent, UInt64(accepted.all.count),
-            "every event admitted before the finish gate must drain")
+        XCTAssertEqual(delivered.all.count, accepted.all.count,
+                       "every event admitted before the finish gate must drain")
         XCTAssertFalse(sender.enqueue(
             .keyKeycode(keycode: 999, pressed: true)))
     }

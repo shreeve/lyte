@@ -220,14 +220,6 @@ public struct ClientControlSession: Sendable {
         lifecycle.advance(input, now: now)
     }
 
-    @discardableResult
-    public mutating func reconfigure(
-        _ config: SessionMachineConfig,
-        now: ClientTimestamp
-    ) -> Bool {
-        lifecycle.reconfigure(config, now: now)
-    }
-
     /// Routes every reliable word currently owned by client-control policy.
     /// `nil` leaves media and feature words to their narrower organs.
     /// - Throws: only `ClientCapabilitySession.receive`'s contract break;

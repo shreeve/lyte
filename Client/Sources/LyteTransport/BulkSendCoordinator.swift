@@ -164,7 +164,7 @@ public final class BulkSendCoordinator: @unchecked Sendable {
             if !entries.isEmpty {
                 awaitingReconnect = true
             }
-            active.closeReaderForTeardown()
+            active.closeReader()
         }
         lock.unlock()
         onChange()

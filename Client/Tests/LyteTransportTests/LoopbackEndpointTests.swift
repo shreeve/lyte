@@ -118,8 +118,6 @@ final class LoopbackEndpointTests: XCTestCase {
         XCTAssertEqual(video.seqHighest, 4)
         XCTAssertEqual(video.seqMissing, 1, "the skipped seq 3 must count as a gap")
         XCTAssertEqual(video.seqDuplicates, 0)
-        XCTAssertEqual(video.firstFrame, 0)
-        XCTAssertEqual(video.maxFrame, 2)
 
         guard let audio = endpoint.demux.stats(forChannel: ChannelId.audio.rawValue) else {
             return XCTFail("no audio stats")

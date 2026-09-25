@@ -25,10 +25,6 @@ public final class VideoRenderFactory {
 
     public init() {}
 
-    /// Whether the IDR/parameter-set bootstrap has happened — before the
-    /// first IDR every P-frame's sample is withheld (returns nil).
-    public var hasFormatDescription: Bool { formatDescription != nil }
-
     /// Builds a ready-to-enqueue sample buffer; IDRs refresh the format
     /// description. Returns nil for a P-frame before the first IDR.
     public func makeSampleBuffer(from unit: DecodeUnit) throws -> CMSampleBuffer? {

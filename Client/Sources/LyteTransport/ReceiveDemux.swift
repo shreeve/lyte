@@ -1,6 +1,6 @@
 // The (chan, seq) demux: every received datagram funnels through
 // `ingest` — envelope decode via LyteWire, reserved-channel drop, the
-// TransportCrypto unseal, then per-channel seq/frame/timestamp accounting.
+// TransportCrypto unseal, then per-channel seq accounting.
 // Thread-safe: the endpoint's receive thread writes, anyone may snapshot.
 
 import Foundation
@@ -23,29 +23,15 @@ public enum IngestOutcome: Sendable {
 public struct ChannelStats: Sendable {
     public var datagrams: UInt64 = 0
     public var payloadBytes: UInt64 = 0
-
-    public var seqHighest: UInt16?
-    /// Datagrams still missing: gaps detected minus the late arrivals
-    /// that filled them. Already net of `seqLateFilled` — subtracting
-    /// that again double-counts every reordered datagram.
-    public var seqMissing: UInt64 = 0
-    public var seqDuplicates: UInt64 = 0
-    public var seqLateFilled: UInt64 = 0
-    public var seqBeyondWindow: UInt64 = 0
-    public var seqWrapEvents: UInt64 = 0
-
-    public var firstFrame: UInt32?
-    public var lastFrame: UInt32?
-    public var maxFrame: UInt32?
-    /// Consecutive-arrival frame-number changes (approximates frames seen).
-    public var frameTransitions: UInt64 = 0
-
-    /// Sender-clock µs delta between the last two datagrams.
-    public var lastTimestampDeltaMicros: Int64?
-    /// Arrival-clock (kernel-stamp preferred) µs delta between the last two.
-    public var lastArrivalDeltaMicros: Int64?
-
     public var unsealFailures: UInt64 = 0
+    public var seq = SeqGapTracker()
+
+    public var seqHighest: UInt16? { seq.highest?.rawValue }
+    /// Datagrams still missing: gaps detected minus the late arrivals
+    /// that filled them. Already net of late fills — subtracting those
+    /// again double-counts every reordered datagram.
+    public var seqMissing: UInt64 { seq.datagramsMissing }
+    public var seqDuplicates: UInt64 { seq.duplicates }
 }
 
 /// Demux totals across channels, including everything that never reached one.
@@ -71,7 +57,7 @@ public final class ReceiveDemux: @unchecked Sendable {
 
     private let crypto: TransportCrypto
     private let lock = NSLock()
-    private var channels: [UInt8: ChannelAccount] = [:]
+    private var channels: [UInt8: ChannelStats] = [:]
     private var totals = DemuxTotals()
     private var arrivals: [ArrivalSample] = []
 
@@ -113,8 +99,8 @@ public final class ReceiveDemux: @unchecked Sendable {
             lock.lock()
             totals.datagrams += 1
             totals.unsealFailures += 1
-            channels[failure.envelope.channel.rawValue, default: ChannelAccount()]
-                .stats.unsealFailures += 1
+            channels[failure.envelope.channel.rawValue, default: ChannelStats()]
+                .unsealFailures += 1
             lock.unlock()
             return .unsealFailed(failure.underlying)
         } catch {
@@ -130,9 +116,8 @@ public final class ReceiveDemux: @unchecked Sendable {
         defer { lock.unlock() }
         totals.datagrams += 1
         totals.accepted += 1
-        channels[envelope.channel.rawValue, default: ChannelAccount()]
-            .record(envelope, payloadByteCount: plaintext.count,
-                    arrivalMicroseconds: arrivalMicroseconds)
+        channels[envelope.channel.rawValue, default: ChannelStats()]
+            .record(envelope.seq, payloadByteCount: plaintext.count)
         if arrivals.count < Self.maxRetainedArrivalSamples {
             arrivals.append(ArrivalSample(
                 channel: envelope.channel,
@@ -164,13 +149,13 @@ public final class ReceiveDemux: @unchecked Sendable {
     public func snapshotChannels() -> [(channel: UInt8, stats: ChannelStats)] {
         lock.lock()
         defer { lock.unlock() }
-        return channels.sorted { $0.key < $1.key }.map { ($0.key, $0.value.stats) }
+        return channels.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }
     }
 
     public func stats(forChannel channel: UInt8) -> ChannelStats? {
         lock.lock()
         defer { lock.unlock() }
-        return channels[channel]?.stats
+        return channels[channel]
     }
 }
 
@@ -178,45 +163,10 @@ public final class ReceiveDemux: @unchecked Sendable {
 private struct ReservedChannel: Error { var envelope: Envelope }
 private struct UnsealFailure: Error { var envelope: Envelope; var underlying: Error }
 
-/// One channel's live accounting: the gap tracker plus last-seen state the
-/// snapshot derives deltas from.
-private struct ChannelAccount {
-    var stats = ChannelStats()
-    private var tracker = SeqGapTracker()
-    private var lastTimestamp: UInt64?
-    private var lastArrival: UInt64?
-
-    mutating func record(
-        _ envelope: Envelope,
-        payloadByteCount: Int,
-        arrivalMicroseconds: UInt64
-    ) {
-        tracker.record(envelope.seq)
-        stats.datagrams += 1
-        stats.payloadBytes += UInt64(payloadByteCount)
-        stats.seqHighest = tracker.highest?.rawValue
-        stats.seqMissing = tracker.datagramsMissing
-        stats.seqDuplicates = tracker.duplicates
-        stats.seqLateFilled = tracker.lateFilled
-        stats.seqBeyondWindow = tracker.beyondWindow
-        stats.seqWrapEvents = tracker.wrapEvents
-
-        let frame = envelope.frame.rawValue
-        if stats.firstFrame == nil {
-            stats.firstFrame = frame
-        } else if stats.lastFrame != frame {
-            stats.frameTransitions += 1
-        }
-        stats.lastFrame = frame
-        stats.maxFrame = max(stats.maxFrame ?? frame, frame)
-
-        if let last = lastTimestamp {
-            stats.lastTimestampDeltaMicros = Int64(bitPattern: envelope.timestamp &- last)
-        }
-        lastTimestamp = envelope.timestamp
-        if let last = lastArrival {
-            stats.lastArrivalDeltaMicros = Int64(bitPattern: arrivalMicroseconds &- last)
-        }
-        lastArrival = arrivalMicroseconds
+extension ChannelStats {
+    mutating func record(_ seq: ChannelSeq, payloadByteCount: Int) {
+        self.seq.record(seq)
+        datagrams += 1
+        payloadBytes += UInt64(payloadByteCount)
     }
 }

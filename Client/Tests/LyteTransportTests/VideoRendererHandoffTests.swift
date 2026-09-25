@@ -316,7 +316,7 @@ final class VideoRendererHandoffTests: XCTestCase {
         XCTAssertEqual(rig.renderer.plainFlushes, 1)
         XCTAssertEqual(rig.renderer.recoveryFlushes, 0)
         XCTAssertEqual(rig.peer.recoveryRequests.count, 0)
-        XCTAssertFalse(rig.recorder.recentFrames().contains { $0.rendererDropped },
+        XCTAssertFalse(rig.recorder.frames(after: 0).contains { $0.rendererDropped },
                        "a teardown discard is not a renderer verdict")
     }
 

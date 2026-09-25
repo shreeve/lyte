@@ -330,10 +330,7 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         resetDecoderBeforeDecoding: Bool? = nil,
         awaitingRandomAccess: Bool? = nil,
         randomAccessPending: Bool? = nil,
-        pendingCount: Int? = nil,
-        corruptedFrames: Int? = nil,
-        corruptedDelta: Int? = nil,
-        rendererTotalFrames: Int? = nil
+        pendingCount: Int? = nil
     ) {
         lock.lock()
         recoveryEventSequence &+= 1
@@ -348,10 +345,7 @@ public final class VideoFlightRecorder: @unchecked Sendable {
             resetDecoderBeforeDecoding: resetDecoderBeforeDecoding,
             awaitingRandomAccess: awaitingRandomAccess,
             randomAccessPending: randomAccessPending,
-            pendingCount: pendingCount,
-            corruptedFrames: corruptedFrames,
-            corruptedDelta: corruptedDelta,
-            rendererTotalFrames: rendererTotalFrames))
+            pendingCount: pendingCount))
         lock.unlock()
     }
 
@@ -434,12 +428,6 @@ public final class VideoFlightRecorder: @unchecked Sendable {
             recoveryLifecycle: Array(recoveryLifecycle),
             rendererMetrics: rendererMetrics,
             recentRendererMetrics: recentRendererMetricDelta())
-    }
-
-    public func recentFrames() -> [FrameObservation] {
-        lock.lock()
-        defer { lock.unlock() }
-        return Array(ring)
     }
 
     /// The retained frames newer than `ordinal`, in recording order — a

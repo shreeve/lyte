@@ -349,7 +349,6 @@ final class VideoPipelineTests: XCTestCase {
         // A P-frame ahead of any IDR is withheld: no format description
         // exists yet, and present-ASAP never shows garbage.
         let factory = VideoRenderFactory()
-        XCTAssertFalse(factory.hasFormatDescription)
         let pFirst = try factory.makeSampleBuffer(from: DecodeUnit(
             frameNumber: FrameNumber(rawValue: 0),
             timestamp: HostTimestamp(microseconds: 0),
@@ -364,7 +363,6 @@ final class VideoPipelineTests: XCTestCase {
             timestamp: HostTimestamp(microseconds: 16_667),
             isIDR: true,
             annexB: frames[0]))
-        XCTAssertTrue(factory.hasFormatDescription)
         let sample = try XCTUnwrap(idrSample)
 
         let description = try XCTUnwrap(CMSampleBufferGetFormatDescription(sample))
