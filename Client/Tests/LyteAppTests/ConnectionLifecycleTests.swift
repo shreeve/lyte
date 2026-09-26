@@ -40,7 +40,7 @@ final class ConnectionLifecycleTests: XCTestCase {
         let model = ConnectionModel(services: harness.services)
         let row = try XCTUnwrap(
             harness.savedPins.unsighted(excluding: []).first)
-        await model.connectLyte(row)
+        try await harness.connect(model, to: row)
         XCTAssertNotNil(model.lyteSession)
         XCTAssertEqual(model.hostAddress, "10.9.9.9")
     }
@@ -57,6 +57,7 @@ final class ConnectionLifecycleTests: XCTestCase {
         model.disconnect()
         harness.resolveStart(0, with: .success(()))
         await connect.value
+        try await harness.settle()
 
         guard case .pickHost = model.phase else {
             return XCTFail("a dial that finished after disconnect streamed: \(model.phase)")
@@ -84,6 +85,7 @@ final class ConnectionLifecycleTests: XCTestCase {
 
         harness.resolveStart(0, with: .failure(TransportEndpointError.cancelled))
         await connect.value
+        try await harness.settle()
         XCTAssertEqual(harness.endings(of: harness.started[0]), [.goodbye],
                        "the cancelled dial was ended a second time")
         guard case .pickHost = model.phase else {
@@ -98,7 +100,7 @@ final class ConnectionLifecycleTests: XCTestCase {
         let harness = LifecycleHarness()
         harness.startPlan = [.succeed, .hold]
         let model = ConnectionModel(services: harness.services)
-        await model.connectLyte(harness.host)
+        try await harness.connect(model)
         OpenConnections.shared.insert(model)
 
         model.reconnectNow()
@@ -129,6 +131,7 @@ final class ConnectionLifecycleTests: XCTestCase {
         }
         harness.resolveStart(0, with: .failure(harness.silence))
         await connect.value
+        try await harness.settle()
         guard case .pickHost = model.phase else {
             return XCTFail("a cancelled dial's failure resurfaced: \(model.phase)")
         }
@@ -144,7 +147,7 @@ final class ConnectionLifecycleTests: XCTestCase {
         try await harness.waitUntil { harness.identityWaiting }
         model.disconnect()
 
-        await model.connectLyte(harness.host)
+        try await harness.connect(model)
         let live = try XCTUnwrap(model.lyteSession)
         XCTAssertEqual(harness.started.count, 1)
 
@@ -171,7 +174,7 @@ final class ConnectionLifecycleTests: XCTestCase {
             name: "pup", address: "10.9.9.10", port: 41_999, wireVersion: nil,
             publicKeyHash: harness.host.publicKeyHash)]
         let model = ConnectionModel(services: harness.services)
-        await model.connectLyte(harness.host)
+        try await harness.connect(model)
         XCTAssertEqual(model.hostAddress, "10.9.9.10")
 
         model.reconnectNow()
@@ -192,7 +195,7 @@ final class ConnectionLifecycleTests: XCTestCase {
             .succeed,
         ]
         let model = ConnectionModel(services: harness.services)
-        await model.connectLyte(harness.host)
+        try await harness.connect(model)
         defer { model.disconnect() }
 
         guard case .streaming = model.phase else {
@@ -210,7 +213,7 @@ final class ConnectionLifecycleTests: XCTestCase {
             host: "10.9.9.9", port: 41_999, counters: .init()))]
         harness.browseResult = [harness.reinstalledHost]
         let model = ConnectionModel(services: harness.services)
-        await model.connectLyte(harness.host)
+        try await harness.connect(model)
 
         guard case .failed(.ordinary(let message)) = model.phase else {
             return XCTFail("a replaced host kept the hunt going: \(model.phase)")
@@ -223,7 +226,7 @@ final class ConnectionLifecycleTests: XCTestCase {
         let harness = LifecycleHarness()
         harness.startPlan = [.succeed, .hold]
         let model = ConnectionModel(services: harness.services)
-        await model.connectLyte(harness.host)
+        try await harness.connect(model)
 
         harness.browseResult = [harness.reinstalledHost]
         model.reconnectNow()
@@ -279,6 +282,7 @@ final class ConnectionLifecycleTests: XCTestCase {
         harness.resolveStart(0, with: .success(()))
         await connect.value
         defer { model.disconnect() }
+        try await harness.waitUntil { model.lyteSession != nil }
 
         XCTAssertTrue(model.lyteSession === harness.started[0])
         XCTAssertEqual(model.hostAudioPosture, .hostMuted,
@@ -297,7 +301,7 @@ final class ConnectionLifecycleTests: XCTestCase {
         harness.consentToClipboard()
         harness.startPlan = [.succeed, .hold]
         let model = ConnectionModel(services: harness.services)
-        await model.connectLyte(harness.host)
+        try await harness.connect(model)
         model.handleLyteEvent(.capabilitiesAgreed(harness.agreement))
         defer { model.disconnect() }
 
@@ -328,7 +332,7 @@ final class ConnectionLifecycleTests: XCTestCase {
         harness.resolveStart(0, with: .success(()))
         await stale.value
 
-        await model.connectLyte(harness.host)
+        try await harness.connect(model)
         defer { model.disconnect() }
         XCTAssertTrue(model.lyteSession === harness.started[1])
         XCTAssertEqual(model.negotiated, .none)
@@ -356,11 +360,11 @@ final class ConnectionLifecycleTests: XCTestCase {
         model.handleLyteEvent(.closed(.localTeardown(.shuttingDown)))
         harness.resolveStart(0, with: .success(()))
         await connect.value
+        try await harness.waitForStarts(2)
 
         XCTAssertFalse(model.lyteSession === harness.started[0],
                        "a session that failed its agreement was adopted")
         XCTAssertEqual(model.chromaTier, .good)
-        try await harness.waitForStarts(2)
         XCTAssertNotEqual(model.roamingStatus, .attached)
     }
 
@@ -375,6 +379,10 @@ final class ConnectionLifecycleTests: XCTestCase {
         model.handleLyteEvent(.closed(.localTeardown(.shuttingDown)))
         harness.resolveStart(0, with: .success(()))
         await connect.value
+        try? await harness.waitUntil {
+            if case .failed = model.phase { return true }
+            return false
+        }
 
         guard case .failed = model.phase else {
             return XCTFail("a dead session streamed: \(model.phase)")
@@ -391,7 +399,7 @@ final class ConnectionLifecycleTests: XCTestCase {
         let harness = LifecycleHarness()
         harness.startPlan = [.succeed, .hold, .hold]
         let model = ConnectionModel(services: harness.services)
-        await model.connectLyte(harness.host)
+        try await harness.connect(model)
         defer { model.disconnect() }
 
         model.reconnectNow()
@@ -410,15 +418,106 @@ final class ConnectionLifecycleTests: XCTestCase {
 
     func testFailedDialReleasesItsSession() async throws {
         let harness = LifecycleHarness()
-        harness.startPlan = [.fail(TransportCryptoError.handshakeFailed(
-            "message 1 refused (harness)"))]
+        let refusal = TransportCryptoError.handshakeFailed(
+            "message 1 refused (harness)")
+        harness.startPlan = [.fail(refusal)]
         let model = ConnectionModel(services: harness.services)
-        await model.connectLyte(harness.host)
+        try await harness.connect(model)
 
-        guard case .failed = model.phase else {
-            return XCTFail("a refused dial did not fail: \(model.phase)")
-        }
+        XCTAssertEqual(harness.failureMessage(model),
+                       "Lyte-UDP connect: \(refusal)",
+                       "a refused first dial fails at once, naming the error")
         XCTAssertEqual(harness.endings(of: harness.started[0]), [.silent])
+        XCTAssertEqual(harness.started.count, 1)
+        XCTAssertEqual(harness.streamsEnded, 0,
+                       "a window that never streamed releases no helper hold")
+    }
+
+    // MARK: - The first connect's hunt
+
+    /// A silent first dial is a host restarting: the window says so and
+    /// keeps dialing instead of failing.
+    func testSilentFirstDialSaysTheHostMayBeRestartingAndKeepsDialing() async throws {
+        let harness = LifecycleHarness()
+        harness.startPlan = [
+            .fail(HandshakeExhausted(
+                host: "10.9.9.9", port: 41_999, counters: .init())),
+            .hold,
+        ]
+        let model = ConnectionModel(services: harness.services)
+
+        let connect = Task { await model.connectLyte(harness.host) }
+        try await harness.waitForStarts(2, timeout: .seconds(5))
+        guard case .connecting(let line) = model.phase else {
+            return XCTFail("a silent host ended the connect: \(model.phase)")
+        }
+        XCTAssertEqual(line,
+            "pup isn't answering — it may be restarting; still trying…")
+        XCTAssertEqual(harness.endings(of: harness.started[0]), [.silent])
+
+        model.disconnect()
+        harness.resolveStart(1, with: .failure(TransportEndpointError.cancelled))
+        await connect.value
+    }
+
+    /// The hunt has a budget: silence past it ends the window with the
+    /// last dial's error, and no stream was ever begun or ended.
+    func testFirstConnectBudgetEndsTheWindowWithTheLastDialError() async throws {
+        let harness = LifecycleHarness()
+        harness.startPlan = [
+            .fail(HandshakeExhausted(
+                host: "10.9.9.9", port: 41_999, counters: .init())),
+            .hold,
+        ]
+        let model = ConnectionModel(services: harness.services)
+        let connect = Task { await model.connectLyte(harness.host) }
+        try await harness.waitForStarts(2, timeout: .seconds(5))
+
+        harness.advanceClock(
+            microseconds: ConnectionModel.freshConnectBudgetMicroseconds)
+        let last = HandshakeExhausted(
+            host: "10.9.9.9", port: 41_999, counters: .init(),
+            lastRejection: "budget (harness)")
+        harness.resolveStart(1, with: .failure(last))
+        await connect.value
+        try await harness.waitUntil { harness.failureMessage(model) != nil }
+
+        XCTAssertEqual(harness.failureMessage(model),
+                       "Lyte-UDP connect: \(last)")
+        try await harness.settle()
+        XCTAssertEqual(harness.started.count, 2,
+                       "an expired hunt dialed again")
+        XCTAssertFalse(model.canReconnect)
+        XCTAssertEqual(harness.streamsBegan, 0)
+        XCTAssertEqual(harness.streamsEnded, 0)
+    }
+
+    /// macOS Local Network privacy refusing the socket is not silence:
+    /// the window shows the Settings route at once.
+    func testLocalNetworkRefusalEndsTheConnectWithItsOwnScreen() async throws {
+        let harness = LifecycleHarness()
+        harness.startPlan = [
+            .fail(TransportEndpointError.socketFailed(errno: EHOSTUNREACH)),
+        ]
+        let model = ConnectionModel(services: harness.services)
+        try await harness.connect(model)
+
+        guard case .failed(.localNetwork(let problem, _)) = model.phase else {
+            return XCTFail("a Local Network refusal read as: \(model.phase)")
+        }
+        XCTAssertEqual(problem, .routeOrPermissionUnavailable)
+        XCTAssertEqual(harness.started.count, 1)
+        XCTAssertEqual(harness.endings(of: harness.started[0]), [.silent])
+    }
+
+    func testAnUnpairedHostIsNeverDialed() async throws {
+        let harness = LifecycleHarness()
+        let model = ConnectionModel(services: harness.services)
+        try await harness.connect(model, to: harness.reinstalledHost)
+
+        XCTAssertEqual(harness.failureMessage(model),
+                       "pup is not paired — use Pair… first")
+        XCTAssertTrue(harness.started.isEmpty)
     }
 
     // MARK: - Roaming fencing
@@ -427,7 +526,7 @@ final class ConnectionLifecycleTests: XCTestCase {
         let harness = LifecycleHarness()
         harness.startPlan = [.succeed, .hold]
         let model = ConnectionModel(services: harness.services)
-        await model.connectLyte(harness.host)
+        try await harness.connect(model)
 
         model.reconnectNow()
         try await harness.waitForStarts(2)
@@ -442,12 +541,12 @@ final class ConnectionLifecycleTests: XCTestCase {
         let harness = LifecycleHarness()
         harness.startPlan = [.succeed, .hold, .succeed]
         let model = ConnectionModel(services: harness.services)
-        await model.connectLyte(harness.host)
+        try await harness.connect(model)
 
         model.reconnectNow()
         try await harness.waitForStarts(2)
         model.disconnect()
-        await model.connectLyte(harness.host)
+        try await harness.connect(model)
         let fresh = try XCTUnwrap(model.lyteSession)
         XCTAssertTrue(fresh === harness.started[2])
 
@@ -464,12 +563,12 @@ final class ConnectionLifecycleTests: XCTestCase {
         let harness = LifecycleHarness()
         harness.startPlan = [.succeed, .hold, .succeed]
         let model = ConnectionModel(services: harness.services)
-        await model.connectLyte(harness.host)
+        try await harness.connect(model)
 
         model.reconnectNow()
         try await harness.waitForStarts(2)
         model.disconnect()
-        await model.connectLyte(harness.host)
+        try await harness.connect(model)
 
         harness.resolveStart(1, with: .failure(harness.silence))
         try await harness.settle()
@@ -485,7 +584,7 @@ final class ConnectionLifecycleTests: XCTestCase {
         let harness = LifecycleHarness()
         harness.startPlan = [.succeed, .hold]
         let model = ConnectionModel(services: harness.services)
-        await model.connectLyte(harness.host)
+        try await harness.connect(model)
         let first = try XCTUnwrap(model.lyteSession)
 
         model.handleLyteEvent(.closed(.peerTeardown(.shuttingDown)))
@@ -505,7 +604,7 @@ final class ConnectionLifecycleTests: XCTestCase {
         let harness = LifecycleHarness()
         harness.startPlan = [.succeed]
         let model = ConnectionModel(services: harness.services)
-        await model.connectLyte(harness.host)
+        try await harness.connect(model)
 
         model.handleLyteEvent(.closed(.peerTeardown(.takenOver)))
 
@@ -527,7 +626,7 @@ final class ConnectionLifecycleTests: XCTestCase {
         let harness = LifecycleHarness()
         harness.startPlan = [.succeed, .succeed, .succeed]
         let model = ConnectionModel(services: harness.services)
-        await model.connectLyte(harness.host)
+        try await harness.connect(model)
         defer { model.disconnect() }
 
         harness.poison(model)
@@ -552,7 +651,7 @@ final class ConnectionLifecycleTests: XCTestCase {
         let harness = LifecycleHarness()
         harness.startPlan = [.succeed, .succeed, .succeed]
         let model = ConnectionModel(services: harness.services)
-        await model.connectLyte(harness.host)
+        try await harness.connect(model)
         defer { model.disconnect() }
 
         harness.poison(model)
@@ -766,8 +865,31 @@ final class LifecycleHarness: @unchecked Sendable {
         model.handleLyteEvent(.closed(.localTeardown(.shuttingDown)))
     }
 
-    func waitForStarts(_ count: Int) async throws {
-        try await waitUntil { self.started.count >= count }
+    /// Connects and waits until the window leaves its connecting screen:
+    /// streaming, or ended. A silent first dial is retried after the
+    /// roaming ladder's 2 s floor, hence the longer wait.
+    @MainActor
+    func connect(
+        _ model: ConnectionModel, to target: DiscoveredLyteHost? = nil
+    ) async throws {
+        await model.connectLyte(target ?? host)
+        try await waitUntil(timeout: .seconds(5)) {
+            if case .connecting = model.phase { return false }
+            return true
+        }
+    }
+
+    /// The phase's failure line, nil for any other phase.
+    @MainActor
+    func failureMessage(_ model: ConnectionModel) -> String? {
+        guard case .failed(let failure) = model.phase else { return nil }
+        return failure.diagnosticDescription
+    }
+
+    func waitForStarts(
+        _ count: Int, timeout: Duration = .seconds(2)
+    ) async throws {
+        try await waitUntil(timeout: timeout) { self.started.count >= count }
     }
 
     /// Polls a MainActor condition, yielding to the tasks under test.
