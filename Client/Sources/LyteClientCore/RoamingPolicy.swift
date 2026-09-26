@@ -4,11 +4,9 @@
 // overlays of the session machine; its 30 s liveness clock closes a dead
 // session.
 //
-// The first connect: `connect` dials the target at once. Until a session
-// establishes, the policy stands where a lost session does — a silent
-// dial starts the scan ladder and the probe-dial ladder — inside one
-// establishment budget (45 s: a full host restart with margin). Past it
-// the policy gives up (`.expired`) instead of dialing again.
+// Before any session, `connect` dials at once and a silent dial climbs
+// the ladders below as a lost session does, inside the establishment
+// budget; past it the policy gives up (`.expired`).
 //
 // The detection ladder:
 //   1. A short gap is the machine's FROZEN; this policy only starts its
@@ -32,11 +30,12 @@
 // so a dead path is observably FROZEN at expiry) before escalating, and
 // the same-address re-dial is allowed at once.
 //
-// Once established there is no give-up: backoff ladders are capped (scan 1 s → 15 s,
-// dial 2 s → 30 s); Disconnect is the exit and Reconnect resets every
-// ladder. While scanning is wanted, a scan is always in flight, scheduled,
-// or waiting on the one dial in flight; a sighting that lands mid-dial is
-// held and dialed the moment that dial fails.
+// Once established there is no give-up: backoff ladders are capped
+// (scan 1 s → 15 s, dial 2 s → 30 s); Disconnect is the exit and
+// Reconnect resets every ladder. While scanning is wanted, a scan is
+// always in flight, scheduled, or waiting on the one dial in flight; a
+// sighting that lands mid-dial is held and dialed the moment that dial
+// fails.
 //
 // Sans-IO: a struct fed inputs with an injected monotonic `now` (µs),
 // returning actions; `nextDeadline` tells the driver (ConnectionModel)
