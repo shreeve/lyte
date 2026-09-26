@@ -83,8 +83,10 @@ GPU that drives the display. Build and install it with
    local network, choose **Allow**. From then on reconnects need nothing.
 2. **After that**, hosts on your network appear in the connection window
    by name; a paired host the network does not advertise appears as
-   "last seen at address:port". Beyond the LAN, use Tailscale or a port
-   forward; Lyte runs no relay service.
+   "last seen at address:port". To reach a host the network does not
+   advertise, type its name or IPv4 address (optionally `:port`; 41151
+   by default) in the connection window. Beyond the LAN, use Tailscale or
+   a port forward; Lyte runs no relay service.
 3. **In the stream window**, click to type and point on the host.
 
 | Shortcut | What it does |

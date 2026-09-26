@@ -198,7 +198,7 @@ browser path proves today.
 | Host session loop | `HostCore/HostServiceLoop.swift`, `lyte-host/HostApplication.swift` |
 | Host paths and identity | `HostIO/HostPaths.swift`; runbook in [OPERATIONS.md](OPERATIONS.md) |
 | Client initiator | `LyteClientSession` (native and browser) |
-| Roaming | `LyteClientCore/RoamingPolicy.swift`, `Lyte/ConnectionModel+Roaming.swift` |
+| Connect and roaming dials | `LyteClientCore/RoamingPolicy.swift`, `Lyte/ConnectionModel+Roaming.swift`; typed addresses in `Lyte/ConnectAddress.swift` |
 | Input forwarding | `Lyte/InputForwardingPolicy.swift` (⌘-letter as Ctrl, held-key release, lone-Super suppression); local shortcuts in `Lyte/LyteInputCapture.swift` |
 | Pairing PIN | `LyteWire` `PairingPin.normalize` (exactly six ASCII digits) |
 | Sans-IO law | `Common/Tests/LyteTestKitTests/SansIOArchitectureTests.swift` |

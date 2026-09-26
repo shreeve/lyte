@@ -166,6 +166,13 @@ why they hold and how the tools enforce them.
   eye and is safe beside the service.
 - **Hand-run binaries.** `/tmp` is mounted `nosuid`, which strips file
   capabilities, so a hand-run host lives under the home build tree.
+- **`lyte-uinput-check` reaches the desktop.** Its virtual devices join
+  seat0, so on a host with a live session it types `a`, clicks and moves
+  the pointer there. For the run, keep them off the seat with a udev rule
+  (`ACTION=="add", SUBSYSTEM=="input", ATTRS{name}=="Lyte Virtual *",
+  ENV{ID_SEAT}="seat-lytecheck"` in `/etc/udev/rules.d/`, then
+  `udevadm control --reload`), and remove it afterwards: the service's own
+  devices use the same names.
 - **Ambient `CAP_SYS_ADMIN` (accepted risk).** The unit runs a seat-user
   symlink into seat-user-owned versions, with arguments from the user's
   `host.conf`, ambient `CAP_SYS_ADMIN` and `Restart=always`; treat the seat

@@ -4,6 +4,31 @@ User-visible changes to the Lyte macOS app and the Linux host, newest
 first. Each release's section is its GitHub release notes and the notes
 Sparkle shows in the update window (`Scripts/release.sh`).
 
+## Unreleased
+
+- **Type a host address.** The connection window takes a host name or
+  IPv4 address, with an optional port (41151 by default), for a host on a
+  routed or mDNS-less network. A paired host connects at once; an address
+  no pin knows asks which paired host lives there, or pairs a new one with
+  its key and PIN as an unadvertised host does. Connecting to a restarting
+  host retries on the reconnect schedule within the same 45 s, and
+  Disconnect works while connecting.
+- **The pointer lands on the pixel under it.** Absolute moves landed one
+  pixel up and left of the cursor on nearly every pixel of the host
+  screen; clicks and hovers now hit the exact pixel.
+- **Rate recovery on a quiet screen.** After a Wi-Fi collapse, a still
+  desktop returns to its pre-collapse video rate within seconds once the
+  air clears, instead of starting the next motion under a low cap for
+  minutes; fresh loss or queueing takes the restored rate back at once.
+- **Audio from a slow host clock.** A host whose audio clock runs slower
+  than the Mac's no longer degrades into concealment after a minute or
+  two: a packet that arrives just after its slot was concealed now plays.
+- **Waking from quiet.** The sound that ends an announced audio quiet
+  plays from its first packet, also when those packets arrive out of
+  order, and the host's shorter wake burst (100 ms) no longer makes the
+  Mac discard its head. Announced quiet no longer counts as underrun in
+  the stats.
+
 ## 0.7.0 — 2026-09-26
 
 - **⌘ shortcuts reach Linux as Ctrl (breaking).** In a stream, ⌘ plus a
