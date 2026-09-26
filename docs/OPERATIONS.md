@@ -16,9 +16,11 @@ section applies to any installed host. Fresh-machine installation is in
 
 The standing host is `lyte-host.service` on UDP **41151**, advertised over
 mDNS on the interface named by `--advertise-interface` in its `host.conf`.
-When that interface is down, discovery finds nothing. `Lyte.app` finds
-hosts only through mDNS (it has no manual address entry), so point
-`--advertise-interface` at a live interface and restart the service:
+When that interface is down, discovery finds nothing: `Lyte.app` still
+lists a paired host as "last seen at address:port" and dials that pinned
+address, but an unpaired host is reachable only by mDNS or `lyte-cli`.
+Point `--advertise-interface` at a live interface and restart the
+service:
 
 ```sh
 ssh pup "sed -i 's/--advertise-interface [^ ]*/--advertise-interface <iface>/' ~/.config/lyte/host.conf && sudo systemctl restart lyte-host"
@@ -26,6 +28,8 @@ ssh pup "sed -i 's/--advertise-interface [^ ]*/--advertise-interface <iface>/' ~
 
 `lyte-cli wire-view 0 --host <address> --host-port 41151 --host-key <key>`
 dials an address directly without discovery (`0` binds a free local port).
+The key is the 64-hex-digit line `noise: host static public key …` that
+`lyte-host` logs at start; once paired, `--host-key` can be omitted.
 
 **Agents on the Mac:** a sandboxed agent shell cannot reach pup: `ssh pup`
 fails with `No route to host` because macOS Local Network privacy blocks
@@ -49,6 +53,7 @@ The `LD_LIBRARY_PATH` shim exists only for Swift 6.1.2's build tools, which
 want `libxml2.so.2` where Ubuntu 26.04 ships `.so.16`:
 
 ```sh
+mkdir -p ~/.local/lib/swift-compat
 ln -sf /usr/lib/x86_64-linux-gnu/libxml2.so.16 ~/.local/lib/swift-compat/libxml2.so.2
 ```
 
@@ -93,9 +98,10 @@ A deploy copies `.build/release/lyte-host` (and `lyte-audio-check` when
 built) into `versions/<first 12 hex of its sha256>/` and swaps
 `~/.local/bin/lyte-host` in one rename; it never rewrites a version in
 place, and redeploying the active binary is a no-op. The newest five
-versions (`--keep N`) plus the active and previous ones are kept. Without
-`--restart` the running process keeps its open executable until the next
-restart.
+versions (`--keep N`) plus the active and previous ones are kept.
+`--restart` runs `sudo -n systemctl restart lyte-host`, so it needs
+passwordless sudo for that command; without it the running process keeps
+its open executable until the next restart.
 
 Verify a restart:
 
@@ -134,62 +140,49 @@ writes the same pinned-host store and Keychain identity the app uses:
 .build/debug/lyte-cli wire-pair <address> --port 41151 --pin - --host-key <host key>   # PIN on stdin
 ```
 
-The client leaves without a teardown as soon as the PIN exchange
-completes; the `--pair` host sees its path go silent and exits within
-about a second. Afterwards remove the capability and start the service as
-above.
+The client sends a `shuttingDown` teardown as soon as the PIN exchange
+completes, and the `--pair` host exits on it. Afterwards remove the
+capability and start the service as above.
 
 The standing conf does not pass `--require-paired`, so the service admits
 any client that knows the host's public key (deferred: [TODO.md](../TODO.md)).
 
 ## Safety
 
-These rules protect the owner's live rig. They are repository law
-([AGENTS.md](../AGENTS.md#safety)); this is the operational detail.
+The rules are repository law ([AGENTS.md](../AGENTS.md#safety)); this is
+why they hold and how the tools enforce them.
 
-- **Identity.** Never modify or delete `~/.config/lyte/noise_static.key`,
-  `~/.config/lyte/paired_clients` or `~/.config/lyte/host.conf` on pup.
-  Record their SHA-256 before and verify after any run that comes near
-  identity state; the pup gate does this automatically. Losing the key
-  unpairs every client, with no undo.
-- **The standing port.** Never displace UDP 41151. Test hosts take a fresh
-  41xxx port and `--no-advertise`. A listener on a port another socket
-  holds refuses to start, so a stray host on 41151 fails rather than
-  sharing the service's traffic.
-- **One Direct Eye.** Do not start a second Direct Eye (`lyte-host`,
-  `lyte-eye`) while the service holds the DRM seat: parallel eyes black the
-  interactive screen. `lyte-control-peer` has no eye and is safe beside the
-  service.
-- **Accepted risk: ambient `CAP_SYS_ADMIN` on a user-writable path.** The
-  unit runs `~/.local/bin/lyte-host` — a symlink the seat user owns, into
-  `~/.local/share/lyte/versions/`, which the seat user also owns — with
-  ambient `CAP_SYS_ADMIN` and `Restart=always`, and `host.conf` (also the
-  user's) supplies its arguments and environment. Any code running as the
-  seat user can re-point the symlink, rewrite a version or set
-  `LD_PRELOAD` in `host.conf`, kill the host (signals are permitted by
-  UID), and systemd re-executes it with `CAP_SYS_ADMIN`, which is
-  effectively root. The owner accepts this for now; the pre-1.0 hardening
-  (a root-owned executable and root-owned knobs) is in
-  [TODO.md](../TODO.md). Treat the seat account as root-equivalent on a
-  host running the service.
-- **Hand-run binaries.** Keep them under the home build tree, not `/tmp`
-  (`nosuid` strips file capabilities), `setcap cap_sys_admin+ep` the exact
-  binary, and remove the capability afterwards.
-- **netem.** Use only `Scripts/netem/port-netem.sh`, which shapes one
-  `(source port, destination /32)` flow and removes only the qdisc it
-  installed. `Scripts/benchmark-netem.sh` arms cleanup before the apply,
-  refuses to run if its qdisc is already present, and refuses a port that
+- **Identity.** Losing `~/.config/lyte/noise_static.key` unpairs every
+  client, with no undo. The pup gate and the benchmark's handshake leg
+  fingerprint the identity, `host.conf`, `/etc/lyte/lyte-host.conf`, the
+  pre-XDG copies, the unit and the deployed link before and after
+  (`Scripts/lib/pup-side.sh`) and fail on any change or unreadable file.
+- **The standing port.** A listener on a port another socket holds
+  refuses to start, so a stray host on 41151 fails rather than sharing the
+  service's traffic.
+- **One Direct Eye.** A second eye on the DRM seat (a hand-run
+  `lyte-host`) blacks the interactive screen. `lyte-control-peer` has no
+  eye and is safe beside the service.
+- **Hand-run binaries.** `/tmp` is mounted `nosuid`, which strips file
+  capabilities, so a hand-run host lives under the home build tree.
+- **Ambient `CAP_SYS_ADMIN` (accepted risk).** The unit runs a seat-user
+  symlink into seat-user-owned versions, with arguments from the user's
+  `host.conf`, ambient `CAP_SYS_ADMIN` and `Restart=always`; treat the seat
+  account as root-equivalent on a host running the service. The analysis
+  and the pre-1.0 hardening are in [TODO.md](../TODO.md).
+- **netem.** `Scripts/netem/port-netem.sh` shapes one `(source port,
+  destination /32)` flow and removes only the qdisc it installed.
+  `Scripts/benchmark-netem.sh` arms cleanup before the apply, refuses to
+  run if its qdisc is already present, and refuses a port that
   `lyte-host.service` does not own; 41151 additionally needs
   `LYTE_BENCHMARK_ALLOW_STANDING_PORT=1`.
 - **Benchmarks.** `Scripts/benchmark-app.sh` publishes its diagnostic
-  build to the owner's `.build/Lyte.app`, under the same bundle identity
-  (`dev.shreeve.lyte`), refuses to start while any Lyte process runs, and
-  rebuilds the plain app when it exits (a failed restore prints the
-  `Scripts/make-app.sh release` to run). Live benchmarks and netem runs
-  need the owner's go-ahead.
-- **The pup gate** (`Scripts/CI/test-all-pup.sh`) builds in
-  `~/src/lyte-gates/deterministic/` and never deploys or restarts the
-  service.
+  build to the owner's `.build/Lyte.app` under the same bundle identity,
+  refuses to start while any Lyte process runs, and restores the plain
+  app when it exits ([TESTING.md](TESTING.md#live-benchmarks-pup)). Its
+  `handshake-only` leg restarts the standing service.
+- **The pup gate** builds in `~/src/lyte-gates/deterministic/` and never
+  deploys or restarts the service.
 
 ## Pre-XDG leftovers
 

@@ -24,12 +24,11 @@ final class SyntheticMotionReferenceTests: XCTestCase {
         XCTAssertNil(source.marker(in: frame))
     }
 
-    // The cross-language pin: these SHA-256 digests are computed from
-    // MotionFrames in Scripts/motion-presenter.py (the numpy twin of the
-    // GTK canvas) and asserted verbatim by
-    // Scripts/Tests/test_analyze_app_benchmark.py. If either renderer drifts
-    // from the authored frame, exactly one side of the pin moves and
-    // both suites fail.
+    // The cross-language pin: Scripts/Tests/test_analyze_app_benchmark.py
+    // asserts these same SHA-256 digests of the frames MotionFrames paints
+    // in Scripts/motion-presenter.py, from the shape list the presenter's
+    // GTK canvas paints on the glass. A Swift or Python painter that
+    // drifts from the authored frame fails its own suite.
     func testTwinRenderersAgreeByteForByte() {
         let source = SyntheticMotionReference(width: 1024, height: 640)
         let pins: [(frameID: UInt32, sha256: String)] = [

@@ -14,18 +14,19 @@ specification.
 | [AGENTS.md](../AGENTS.md) | Repository law: ownership, doctrine, safety, change discipline |
 | [HANDOFF.md](../HANDOFF.md) | Current branch, live rig state, next work |
 | [TODO.md](../TODO.md) | Deferred work |
+| [CHANGELOG.md](../CHANGELOG.md) | User-visible changes per release; `Scripts/release.sh` publishes each section as release notes |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Packages, targets, dependency graph, data flow, threads |
 | [PROTOCOL.md](PROTOCOL.md) | The current Lyte-UDP contract, section by section, with its vector files |
 | [TESTING.md](TESTING.md) | Every gate and the exact commands |
 | [OPERATIONS.md](OPERATIONS.md) | The pup rig, an installed host's layout, deploy and rollback, pairing, uninstall, safety runbook |
 | [BROWSER.md](BROWSER.md) | The browser client: what the proof covers, how to run it |
-| [DESIGN.md](DESIGN.md) | Product and interaction decisions, shipping vs directional |
+| [DESIGN.md](DESIGN.md) | Product and interaction decisions (including the keyboard), shipping vs directional |
 | [COMPARISON.md](COMPARISON.md) | Lyte against other remote-display products |
 | [MACOS-SIGNING.md](MACOS-SIGNING.md) | Signing, hardened runtime, the helper's security surface |
 | [RELEASING.md](RELEASING.md) | Homebrew install, Sparkle updates, cutting and verifying a release |
 | [THIRD-PARTY.md](THIRD-PARTY.md) | Dependency licenses and notices |
 | [GLOSSARY.md](GLOSSARY.md) | Slice ids, Conductor terms, Direct Eye, postures |
-| [Wire/Vectors/README.md](../Wire/Vectors/README.md) | Normative byte layouts and the vector inventory |
+| [Wire/Vectors/README.md](../Wire/Vectors/README.md) | Normative byte layouts, the vector files and their freeze and authoring rules |
 | [Host/README.md](../Host/README.md) | Host package: testing it and running `lyte-host` by hand |
 | [Host/INSTALL.md](../Host/INSTALL.md) | Installing the host on a fresh machine |
 | [Scripts/netem/README.md](../Scripts/netem/README.md) | The netem helper and the impairment gate |
@@ -67,7 +68,7 @@ reasoning and measurements, not for current behavior.
 | [Video quality probe (Q-1)](history/20260728-164746-lyte-video-quality-probe.md) | 2026-07-28 | Historical measurement | [TESTING.md](TESTING.md) |
 | [Video supremacy plan](history/20260728-165538-lyte-video-supremacy-plan.md) | 2026-07-28 | Historical plan | [ARCHITECTURE.md](ARCHITECTURE.md) |
 | [Wire v2 study](history/20260728-175200-lyte-wire-v2-study.md) | 2026-07-28 | Banked, unscheduled | [PROTOCOL.md](PROTOCOL.md) |
-| [V-3 corpus harness](history/20260729-032500-lyte-v3-corpus-harness.md) | 2026-07-29 | Historical; the goldens live in `Client/Tests/LyteCorpusTests/Fixtures/Goldens/` | [TESTING.md](TESTING.md) |
+| [V-3 corpus harness](history/20260729-032500-lyte-v3-corpus-harness.md) | 2026-07-29 | Historical; its pipeline and goldens were deleted in `23d329c` | [TESTING.md](TESTING.md) |
 | [pup scan-stall study](history/20260801-075746-lyte-pup-scan-stall-study.md) | 2026-08-01 | Closed investigation | [OPERATIONS.md](OPERATIONS.md) |
 | [Direct Eye plan](history/20260801-105800-direct-eye-plan.md) | 2026-08-01 | Complete (E5, `self-hosted` tag); its damage premise is corrected by the pixel-observation record | [ARCHITECTURE.md](ARCHITECTURE.md) |
 | [E5 readiness audit](history/20260802-004559-e5-readiness-audit.md) | 2026-08-02 | Closed | [ARCHITECTURE.md](ARCHITECTURE.md) |

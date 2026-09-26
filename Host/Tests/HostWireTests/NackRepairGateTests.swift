@@ -15,7 +15,7 @@ import LyteWireTestKit
 //     the client owns coalesced 0x10 recovery) while the IDR itself
 //     stays repairable; a NACK whose SRTT + retransmit serialization no
 //     longer fit the cadence-derived freeze budget is refused (0x23)
-//     without arming a host IDR — the client's IdrRequester escalates;
+//     without arming a host IDR — the client's IDR episode escalates;
 //     no RTT evidence means no honest promise, so the gate refuses; an
 //     evicted frame is unavailable and likewise refuses without a host
 //     IDR arm; one attempt per shard, ever — no retransmission of

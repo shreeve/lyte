@@ -15,8 +15,8 @@ The intended product model resolves streaming policy from **intent × network**:
 - **Network — Local or Remote.** Lyte derives this from address and measured
   path behavior; location is evidence, not a user mode.
 
-An earlier Work/Play/Away sketch was rejected because Away confused network
-location with intent. The current client connects directly to a host and keeps
+Location is never an intent: "away" is the network axis, not a third mode.
+The current client connects directly to a host and keeps
 its explicit controls narrow: feature consent, audio routing, and a
 hardware-backed Chroma posture. A future Work/Play surface must earn its place
 by driving real policy rather than exposing placeholder presets.
@@ -78,13 +78,9 @@ warning when its own repair and Conductor successfully absorbed the event.
 
 *Status: shipping architecture.*
 
-- All Lyte-authored code is MIT-licensed. Third-party leaves retain their
-  upstream licenses and notices.
-- Protocol, policy and IO live in separate targets, and every client
-  shell shares one sans-IO initiator; who owns what:
+- All Lyte-authored code is MIT-licensed and speaks only Lyte-UDP; the
+  rules and the layout are in [AGENTS.md](../AGENTS.md) and
   [ARCHITECTURE.md](ARCHITECTURE.md#targets).
-- The product speaks only Lyte-UDP. No GameStream, Sunshine, or Moonlight
-  source remains in the shipping system.
 - The macOS shell uses SwiftUI/AppKit, VideoToolbox through
   `AVSampleBufferDisplayLayer`, AVAudioEngine plus pinned Opus,
   Network.framework, and a narrowly authenticated ServiceManagement helper.
@@ -93,8 +89,6 @@ warning when its own repair and Conductor successfully absorbed the event.
   syscall leaf.
 - The browser client is Swift compiled to WebAssembly behind a thin
   JavaScriptKit bridge; page JavaScript owns only browser IO.
-- Swift Crypto is the only external Swift dependency of `LyteWire` and remains
-  confined to its crypto leaf.
 
 ## D6. The window is the app
 
@@ -105,9 +99,11 @@ There is no separate launcher or hosts application. One window owns one
 connection and moves through connect, pair, stream, failure, and reconnect
 states.
 
-- **Launch → connection window.** A new window discovers Lyte hosts. An
-  unpaired host opens the PIN sheet; a paired host connects directly to its
-  desktop. There is no intervening host-app catalog.
+- **Launch → connection window.** A new window lists the Lyte hosts
+  discovery sees, plus paired hosts it does not see as "last seen at
+  address:port" (dialed at the pinned address). An unpaired host opens the
+  PIN sheet; a paired host connects directly to its desktop. There is no
+  intervening host-app catalog.
 - **The empty state is the gate.** Discovery, pairing, Local Network recovery,
   and retry all live inside the same window that becomes the stream.
 - **The control strip is a whisper.** It auto-hides around the stream and owns
@@ -121,11 +117,18 @@ states.
 - **Future relaunch behavior.** Remembering and automatically resuming prior
   windows is product direction, not current shipping behavior.
 
-## Origin
+## D7. The keyboard is the host's, with Mac habits
 
-Lyte began with a poorly behaving Sunshine/Moonlight session on a hybrid-GPU
-Linux laptop and a Mac client. The investigation exposed four durable product
-inputs: preserve native geometry, make hardware selection truthful, treat
-network jitter as measured evidence, and keep cursor ownership explicit. Lyte
-now owns both endpoints and its protocol; the origin explains these decisions
-but is not an architectural dependency.
+*Status: shipping.*
+
+- In a stream, ⌘ plus a letter reaches the host as Ctrl plus the letter the
+  layout types (⌘S saves, ⌘⇧Z redoes); a layout that types no a–z letter
+  sends Super. ⌘ alone is never forwarded as a lone Super press.
+- An enabled app shortcut stays on the Mac (⌘R, ⌘D, ⌘N, ⌘W, ⌘Q, ⌘H, ⌘M,
+  ⇧⌘M, ⇧⌘H, ⌥⌘I, ⌥⌘C); the physical Ctrl key reaches the host for those
+  chords.
+- A Linux terminal reads ⌘C as Ctrl+C (interrupt), so its copy and paste
+  are ⌘⇧C and ⌘⇧V; Share Clipboard is ⌥⌘C so those stay the host's.
+- Secure Keyboard Entry (Actions menu, off by default) holds macOS secure
+  input while a stream window is key, at the cost of password-manager
+  autotype and text expanders.

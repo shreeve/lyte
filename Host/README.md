@@ -38,7 +38,7 @@ holds refuses to start) or beside the standing service's Direct Eye; see
 the safety rules in [docs/OPERATIONS.md](../docs/OPERATIONS.md#safety).
 
 ```sh
-# File mode: capture the scanout to an Annex-B file (--chroma 444 for
+# From Host/. File mode: capture the scanout to an Annex-B file (--chroma 444 for
 # Main 4:4:4 where the encoder offers it).
 ./.build/release/lyte-host --out /tmp/lyte-host.hevc --seconds 5
 ffprobe /tmp/lyte-host.hevc                        # hevc, the panel's resolution
@@ -70,8 +70,8 @@ clients never get the radio's address), and `--cookie-enter N` /
 retry-cookie demand on and off, default 20 and 5). Clipboard and file
 capabilities are declared only when their leaf comes up. Either mode takes
 `--drm-device PATH` (the card to capture; by default the first card whose
-primary plane scans out, and the render node is that GPU's own). `lyte-host --help` prints the one-line
-summary. The host self-checks that its first encoded packet starts with
+primary plane scans out, and the render node is that GPU's own).
+`lyte-host --help` prints the flag summary. The host self-checks that its first encoded packet starts with
 VPS/SPS/PPS and an IDR.
 
 How capture, encode and the service loop behave:

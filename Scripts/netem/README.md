@@ -28,8 +28,10 @@ not the receiver's destination port.
 
 The real-client impairment SLO leg. It uploads `port-netem.sh` to pup,
 shapes host→client egress for `LYTE_BENCHMARK_PORT`, runs one
-`benchmark-app.sh motion` leg against that same port, and judges the
-impairment SLOs. Feedback toward the host is not shaped; bidirectional
+`benchmark-app.sh --no-build motion` leg against that same port, and
+judges the JSONL that leg names against the impairment SLOs. The leg
+reuses the published app, so build the diagnostic bundle first
+(`Scripts/make-app.sh --diagnostics release`) and the plain one after. Feedback toward the host is not shaped; bidirectional
 impairment needs an ingress/ifb design and is a separate future gate.
 
 The impaired port and the benchmarked port are one value, and both scripts

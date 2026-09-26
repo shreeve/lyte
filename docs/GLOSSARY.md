@@ -28,8 +28,9 @@ planning unit, not a current contract; the code and
 | `#<n>` | Pull request number on `main` | |
 
 Section references such as "master plan §4.6", "core plan §5" or "host
-build plan §6" point into retired planning documents; recover them with
-the commands in [Retired references](#retired-references).
+build plan §6" point into retired planning documents; the
+[docs catalog](README.md#retired-records) lists the command that recovers
+each.
 
 ## Protocol and session
 
@@ -47,7 +48,7 @@ the commands in [Retired references](#retired-references).
 | NACK | Client request for specific missing shards of a frame |
 | repair refusal | Host's explicit "that repair will not come" (CTRL 0x23) |
 | ACTIVE / IDLE | The two wire session modes |
-| FROZEN / RECOVERY | Local path-loss overlays: FROZEN after 350 ms of media silence, RECOVERY while it returns; never on the wire |
+| FROZEN / RECOVERY | Local path-loss overlays: on the client, FROZEN after 2.5 s of media silence (350 ms once audio flows), RECOVERY while it returns; never on the wire |
 | liveness timeout | 30 s without authenticated evidence ends a session |
 | teardown | Typed goodbye (0x0A): `takenOver` or `shuttingDown` |
 | roaming | The client re-acquiring a host that moved or restarted, keeping the window |
@@ -111,9 +112,3 @@ Decision record: [postures](decisions/20260802-013946-postures-design.md).
 | sidecar | `lyte-wt-sidecar`: relays opaque datagrams between WebTransport and UDP |
 | control peer | `lyte-control-peer`: a DRM-free `HostWire.Session` serving the browser proof |
 | session proof | The page's scripted run whose PASS lines the Chrome smoke checks |
-
-## Retired references
-
-Dated records and plans cited by older comments and records that no longer
-exist in the tree. The [docs catalog](README.md#retired-records) lists the
-recovery command for each.

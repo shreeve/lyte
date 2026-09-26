@@ -34,11 +34,13 @@ live state: [HANDOFF.md](HANDOFF.md).
   that can sign with the owner's development identity (which signs without
   a prompt) still passes, and a window remains between validation and
   `register()`. A root-owned install under `/Applications` closes both.
-- **Secure event input while streaming (owner call).** The stream window
-  never calls `EnableSecureEventInput`, so keystrokes typed into remote
-  password prompts are visible to other processes' event taps. Enabling
-  it while the window is key (and balancing it on resign and stop) also
-  blocks password-manager autotype system-wide while streaming.
+- **Sign the update feed (next release).** `Scripts/release.sh` signs
+  each enclosure (`sparkle:edSignature`) but publishes an unsigned
+  `appcast.xml`. Sign the feed itself (`generate_appcast` with the `lyte`
+  EdDSA key), verify the published feed carries its signature, and only
+  then add `SURequireSignedFeed` and `SUVerifyUpdateBeforeExtraction` to
+  `SPARKLE_KEYS` in `Scripts/make-app.sh` for the following release: a
+  bundle that requires a signed feed must never meet an unsigned one.
 - **Noise message-1 freshness (wire-v2 decision).** A captured message 1
   replayed in a later host run can open one unconfirmed handshake per run —
   a delay for a dialing client, not a lockout. A timestamp in the message-1
@@ -61,16 +63,6 @@ live state: [HANDOFF.md](HANDOFF.md).
   one priority-inheriting lock. Direction: a single-owner sender thread
   that alone touches `Session`, with capture, audio and shell work posted
   through mailboxes.
-- **Listener-scoped handshake admission.** `HandshakeGate` lives inside
-  each `HostWire.Session`, so its token bucket, flood detector and
-  admitted-cookie ring reset whenever `SessionWire` makes a new awaiting
-  session (after each served client, after an unconfirmed discard).
-  Admission is a listener concept: move the gate, the initiation parse and
-  the superseding logic into a `HandshakeAcceptor` in `HostSession`, owned
-  by `SessionWire` for the process, which hands `Session` an authenticated
-  `NoiseSession` and its tuple. That deletes `Session`'s pre-handshake
-  branch (the `phase == .established` checks at 11 sites) and the
-  duplicated 0x05/0x14 parse.
 - **RS parity after the data shards.** `Session.prepareVideoFrame` computes
   a frame's whole RS parity before any shard can leave, though the code is
   systematic and data shards are plain slices of the Annex-B: about 41 µs
@@ -79,82 +71,38 @@ live state: [HANDOFF.md](HANDOFF.md).
   not-ready parity tokens in the pacer (seqs stay contiguous in
   shard-index order, so wire bytes are unchanged), an off-lock parity
   phase, and repair enqueue deferred while a frame's parity is pending.
-- **Opening-IDR repair exemption after loss.** `SessionRepairBudgetBook`
-  takes client glass evidence only from a feedback block whose cumulative
-  chan-2 `missing` is 0, which never holds again after any loss, so the
-  opening exemption stays open for every later IDR until its cap
-  (`openingRepairMaxAttempts` 4, `openingRepairMaxBytes` 2 MiB) is spent.
-  Difference the counters from the opening IDR's send point instead.
-- **DRM card discovery.** `lyte-host` captures `/dev/dri/card1` unless
-  `--drm-device PATH` names another card (the render node follows the
-  card); pup works because simpledrm takes card0. Wanted: pick the card
-  whose primary plane is active, so a host without simpledrm or with
-  several GPUs needs no flag.
 - **Absolute pointer pixel centre.** `lyte_uinput_move_abs`
   (`Host/Sources/CInputUinput/uinput.c`) truncates `x / width * 65535`, so
   each pixel maps back about 0.03 px short and roughly half the pixels
-  hit-test one pixel up or left. Mapping the centre
-  (`lround((x + 0.5) / width * 65535)`) should fix it, but libinput's
-  rounding must be verified live on the host first; `lyte-uinput-check`
-  pins the current scale and changes with it.
-- **Delete `--wire-out` (owner go-ahead).** `lyte-host --wire-out
-  HOST:PORT` has no user in the repository (no script, doc, test or client
-  mode), accepts only IPv4 literals, and carries its own peer filter,
-  kernel-port listener branch and 120 s timeout. Without it
-  `SessionWire.init` always takes a `HostListener`.
-- **Handshake witness per session.** Each session re-creates, and so
-  truncates, the host's `LYTE_HANDSHAKE_WITNESS_JSONL` file. Append if a
-  multi-session witness is wanted.
+  hit-test one pixel up or left. Candidate: `v = min(65535,
+  ceil(x · 65536 / W))`, adopted only after a live `libinput
+  debug-events` check on the host shows it lands every pixel; then
+  `lyte-uinput-check`'s centre expectation moves from 32767 to 32768.
 
 ## Client
 
-- **Native IDR that trips a flush.** `VideoRendererHandoff.accept()` fails
-  the episode and requests recovery before offering the IDR that tripped
-  the flush, which may send one extra recovery request. The browser
-  playout already answers the flush with that IDR.
-- **⌘ chords in a stream (owner decision).** ⌘C, ⌘V, ⌘X, ⌘Z, ⌘⇧Z and ⌘A
-  do nothing today: SwiftUI's Edit menu claims them as local shortcuts
-  (`LyteInputCapture.isLocalShortcut`), and the video view implements none
-  of those actions. Options: drop the pasteboard and undo command groups
-  so they reach the host as Super+key (GNOME binds Super+V and Super+A);
-  translate ⌘→Ctrl for exactly those chords (a terminal's Ctrl+C then
-  interrupts); or translate only while clipboard sharing is on.
-- **Manual host entry.** `Lyte.app` lists only hosts mDNS advertises now
-  (`ConnectView`), so a paired host on a routed or mDNS-less network is
-  unreachable from the UI although its pin stores the address and port.
-  Wanted: unsighted pinned hosts as "last seen at address:port" rows that
-  dial the pinned address, and a typed address for a first connect.
-- **Pairing teardown.** The pairing client (`LytePairing.run` in
-  `LyteTransport/LytePairingSession.swift`, behind the app's PIN sheet and
-  `lyte-cli wire-pair`) ends without a typed 0x0A teardown, so the host
-  learns it left only when its path goes silent (about a second for a
-  `--pair` host). Send `shuttingDown` once the PIN exchange completes.
-- **Audio books on a quiet LAN session.** A 30 s `lyte-cli wire-view
-  --audio` against pup reports about 17k underrun frames, 3 recenters
-  and a jitter-buffer skew pinned at +500 ppm, identically against the
-  pre-revamp host, so the cause is client-side (`AudioJitterBuffer`,
-  `AudioReceiver`, `LyteAudioPlayer`). Find why the skew sits at its
-  clamp and whether the underruns are start-up only.
-- **One home for the detector numbers.** The browser repeats the native
-  2.5 s / 350 ms blackout-detector values from `LyteUdpSessionTypes`;
-  name them once in `LyteClientSession`.
-- **Media keys.** The browser forwards media volume keys and the native
-  client drops them; pick one behavior for both shells.
-
-- **Sparkle under the self-signed fallback (untested).** `Lyte.app` now
-  embeds `Sparkle.framework`, re-signed with the app's identity. Under the
-  hardened runtime, library validation accepts a framework only from the
-  app's own team, and the contributor fallback identity "Lyte Dev"
-  (`Scripts/setup-dev-signing.sh`) has none, so such a build may refuse to
-  load the framework at launch. Only the Apple Development and Developer
-  ID paths have been built and verified. Check on a Mac with only the
-  fallback; if it fails, sign fallback builds with
-  `com.apple.security.cs.disable-library-validation` (development only).
+- **Typed host address.** `Lyte.app` lists hosts mDNS advertises plus
+  paired hosts as "last seen at address:port", but a first connect to a
+  host on a routed or mDNS-less network still needs `lyte-cli`. Wanted: a
+  typed address in the connection window.
+- **First connect as a roaming dial.** `ConnectionModel`'s first connect
+  runs its own silence hunt (45 s budget, re-browses, address following,
+  replaced-identity check) beside `RoamingPolicy`'s ladders: two dial
+  drivers, two adoption paths, two fence sets. Start the policy at connect
+  in a never-established state whose budget ends the window on expiry, and
+  let the first dial be a roaming dial.
+- **Audio books on a quiet LAN session.** Open: slow-sender underruns
+  whose skew hides behind the ±500 ppm detrend clamp; the underrun metric
+  counts announced-quiet silence as underrun; one recenter per wake,
+  because the 40-packet pre-roll exceeds the 24-packet hard cap. Next: one
+  live `lyte-cli wire-view --audio` read against pup to separate the
+  three.
+- **Reordered onset after announced quiet.** When the first two packets
+  after an announced audio quiet arrive reordered (n+1 before n), n is
+  still dropped as late and the onset loses its first 5 ms.
 
 ## Wire
 
-- Add a capability-spine vector for key 14 (`audioStreamOff`), in a new
-  file.
 - **Unknown teardown reasons (wire v2).** An unknown
   `SessionTeardownReason` fails the whole 0x0A decode
   (`lifecycle-v1.json` pins the refusal), so an older client ignores a
@@ -163,43 +111,37 @@ live state: [HANDOFF.md](HANDOFF.md).
 
 ## Browser
 
-- **Daily-driver browser client.** The Chrome proof runs against
-  `lyte-control-peer` with corpus video. The peer still widens its
-  blackout detector to 30 s for corpus runs; now that the browser sends
-  feedback, run it on the default lifecycle so the smoke proves more.
-  Remaining: live Direct Eye against
-  the standing host, a persistent interactive session, Safari, real host
-  clipboard where the platform allows it, and product composition
-  (`LyteBrowserApp`). Do not scaffold empty `Applications/` stubs before
-  composition earns them.
-- **Gate the browser core on pup.** pup's Swift 6.1.2 cannot resolve
-  JavaScriptKit's 6.2 manifest, so the pup gate mirrors only Browser's
-  manifest and `Sources/` (for Common's lints) and tests nothing there.
-  Upgrade pup's toolchain, or keep only `LyteClientBrowserCore`
-  and its suite off macOS in `Browser/Package.swift` (as Client's manifest
-  does), then mirror Browser and add `run_package_tests Browser` to
-  `Scripts/CI/test-all-pup.sh`.
+- **Daily-driver browser client.** The Chrome proof runs only against
+  `lyte-control-peer` with corpus video, whose blackout detector is
+  widened to 30 s. Remaining: a relay to a real host (or WebTransport on
+  the host itself), live Direct Eye in Chrome, a persistent interactive
+  session, Safari, real host clipboard where the platform allows it, and
+  product composition (`LyteBrowserApp`). Do not scaffold empty
+  `Applications/` stubs before composition earns them.
 
 ## Gates
 
-- **SystemTests on the exported host kit.** `SystemHostSession` and the
-  NACK gate harness in `SystemTests/` hand-roll what the exported
-  `HostWireTestKit.HostSessionHarness` provides; move them onto it.
-- **Source size.** The second revamp pass grew hand-written source by
-  about 3.4k lines (new behavior and safeguards). A behavior-preserving
-  shrink pass, like the first revamp's, should start with
-  `LyteClientSession`, `Lyte` (app), `lyte-host` and `HostWire`.
+- **Source size.** <!-- size -->
 - **Enforce the gates.** No hosted CI runs them, so "always green" rests
   on whoever lands a PR running `Scripts/CI/test-all-macos.sh` and
   `test-all-pup.sh` by hand. A self-hosted runner on pup (Linux leg) plus
   the owner's Mac (macOS leg), or a pre-merge hook, would make it a check.
-- Add a release-mode leg (`-c release`) for the Wire property tests and
-  the corpus gates, run `LYTE_ARQ_TRIALS=25000` in a pre-merge or pup
-  gate, and add an optional `LYTE_HARDWARE_TESTS=1` leg on the owner's
-  Mac.
-- Finish splitting `Scripts/benchmark-app.sh` (handshake and fresh-host
-  libraries, one JSON provenance updater, a protected-state fingerprint
-  shared with the pup gate).
+- Add a release-mode leg (`-c release`) for the Wire property tests, run
+  `LYTE_ARQ_TRIALS=25000` in a pre-merge or pup gate, and add an optional
+  `LYTE_HARDWARE_TESTS=1` leg on the owner's Mac.
+- **Benchmark cleanup after a restart.** A handshake leg that dies after
+  `start_fresh_host` restarted the service (app deadline, signal) is
+  restored by `cleanup` in `Scripts/benchmark-app.sh`, which never
+  compares `FRESH_HOST_PROTECTED_STATE` again. Re-fingerprint there and
+  fail loudly on a mismatch or an unreadable file.
+- **`pup_run` stdin.** `Scripts/lib/pup.sh` feeds its script to `bash -s`,
+  which reads as it runs, so a command that reads stdin would swallow the
+  lines after it. Wrap the body (`{ …; } </dev/null`) so it is parsed
+  whole first.
+- **A video-quality gate with a host encode leg.** The orphaned corpus
+  pipeline (`corpus-gen`, `corpus-gate`, `decode-probe`, the text goldens)
+  was deleted in `23d329c`; recover it from `23d329c^` if a gate that
+  encodes on the host and scores on the client is rebuilt.
 - **netem reordering (owner decision).** `Scripts/netem/port-netem.sh`
   applies `delay 20ms 10ms` with no rate or distribution, so netem reorders
   packets freely under jitter and the moderate SLO is judged against more
