@@ -160,6 +160,102 @@ final class VideoRendererHandoffTests: XCTestCase {
         XCTAssertEqual(core.idrStats.requestsSent, 1)
     }
 
+    /// A decoder that loses a reference fails every dependent sample while
+    /// the renderer's status stays `.rendering`; AVFoundation says so only
+    /// by notification, once per failed sample. The first failure voids the
+    /// episode and asks for an IRAP naming the newest sample the renderer
+    /// holds; the failures of samples enqueued behind it join that one
+    /// recovery; the IRAP heals the decoder and closes both gates.
+    func testADecodeFailureWithTheStatusStillRenderingAsksForAnIrap() throws {
+        let rig = Rig()
+        let core = rig.bindCore()
+        try rig.submit(frame: 1, idr: true, bytes: corpus[0])
+        try rig.submit(frame: 2, idr: false, bytes: corpus[1])
+        rig.barrier()
+
+        rig.renderer.referenceLost = true
+        rig.queue.suspend()
+        try rig.submit(frame: 3, idr: false, bytes: corpus[2])
+        try rig.submit(frame: 4, idr: false, bytes: corpus[3])
+        rig.queue.resume()
+        rig.barrier()
+        XCTAssertEqual(rig.renderer.decodeFailures, 2)
+        XCTAssertEqual(rig.peer.recoveryRequests.map(\.frame), [4])
+        XCTAssertEqual(rig.peer.recoveryRequests.map(\.cause), [.rendererFailure])
+        XCTAssertEqual(rig.renderer.recoveryFlushes, 1)
+        XCTAssertTrue(core.idrStats.recoveryOutstanding)
+        XCTAssertEqual(core.idrStats.requestsSent, 1)
+
+        try rig.submit(frame: 5, idr: false, bytes: corpus[4])
+        try rig.submit(frame: 6, idr: true, bytes: corpus[0])
+        try rig.submit(frame: 7, idr: false, bytes: corpus[1])
+        rig.barrier()
+        XCTAssertEqual(rig.renderer.enqueuedFrames(), [1, 2, 3, 4, 6, 7])
+        XCTAssertEqual(rig.peer.gateClosingIraps, [6])
+        XCTAssertEqual(rig.renderer.decodeFailures, 2)
+        XCTAssertEqual(rig.peer.recoveryRequests.count, 1)
+        XCTAssertFalse(core.idrStats.recoveryOutstanding)
+    }
+
+    /// The recovery IRAP's own chain breaks again: a decode failure after
+    /// a gate-closing IRAP opens a fresh episode, never a stall.
+    func testADecodeFailureAfterTheRecoveryIrapAsksAgain() throws {
+        let rig = Rig()
+        let core = rig.bindCore()
+        try rig.submit(frame: 1, idr: true, bytes: corpus[0])
+        rig.barrier()
+        rig.renderer.referenceLost = true
+        try rig.submit(frame: 2, idr: false, bytes: corpus[1])
+        rig.barrier()
+        try rig.submit(frame: 3, idr: true, bytes: corpus[0])
+        rig.barrier()
+        XCTAssertEqual(rig.peer.gateClosingIraps, [3])
+        XCTAssertFalse(core.idrStats.recoveryOutstanding)
+
+        rig.renderer.referenceLost = true
+        try rig.submit(frame: 4, idr: false, bytes: corpus[1])
+        rig.barrier()
+        XCTAssertEqual(rig.peer.recoveryRequests.map(\.frame), [2, 4])
+        XCTAssertEqual(rig.renderer.recoveryFlushes, 2)
+        let stats = core.idrStats
+        XCTAssertTrue(stats.recoveryOutstanding)
+        XCTAssertEqual(stats.episodesStarted, 2)
+        XCTAssertEqual(stats.requestsSent, 2)
+    }
+
+    /// AVFoundation's own renderer: an inter frame whose reference never
+    /// arrived fails to decode, and the handoff asks for an IRAP.
+    func testARealRendererMissingAReferenceAsksForAnIrap() throws {
+        let layer = AVSampleBufferDisplayLayer()
+        let peer = RecordingPeer()
+        let handoff = VideoRendererHandoff(
+            renderer: layer.sampleBufferRenderer,
+            queue: DispatchQueue(label: "test.video.real-renderer"),
+            books: VideoDeliveryBooks(),
+            recorder: VideoFlightRecorder(nowMicroseconds: {
+                UInt64(DispatchTime.now().uptimeNanoseconds / 1_000)
+            }))
+        handoff.bind(peer)
+        defer { handoff.stop(flushingRenderer: true) }
+        let factory = VideoRenderFactory()
+        for (frame, index) in [(1, 0), (2, 1), (4, 3), (5, 4)] {
+            let unit = DecodeUnit(
+                frameNumber: FrameNumber(rawValue: UInt32(frame)),
+                timestamp: HostTimestamp(microseconds: UInt64(frame) * 16_667),
+                isIDR: index == 0,
+                annexB: corpus[index])
+            handoff.submit(
+                sample: try XCTUnwrap(try factory.makeSampleBuffer(from: unit)),
+                unit: unit)
+        }
+
+        let deadline = Date().addingTimeInterval(5)
+        while peer.recoveryRequests.isEmpty, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertEqual(peer.recoveryRequests.first?.cause, .rendererFailure)
+    }
+
     /// A P-frame that trips the flush asks once, the handoff's own demand
     /// is not echoed back into it, and the next IRAP closes both gates.
     func testAPFrameThatTripsAFlushAsksOnceAndTheNextIrapHeals() throws {
@@ -414,7 +510,7 @@ private final class Rig {
             isIDR: idr,
             annexB: bytes)
         let sample = try XCTUnwrap(try factory.makeSampleBuffer(from: unit))
-        renderer.register(sample, frame: frame)
+        renderer.register(sample, frame: frame, isRandomAccess: idr)
         handoff.submit(sample: sample, unit: unit)
     }
 
@@ -468,6 +564,7 @@ private final class RecordingPeer: VideoRecoveryPeer, @unchecked Sendable {
 private final class ScriptedRenderer: VideoRendererPort, @unchecked Sendable {
     private let lock = NSLock()
     private var framesByData: [ObjectIdentifier: UInt32] = [:]
+    private var randomAccessData: Set<ObjectIdentifier> = []
     private var enqueued: [CMSampleBuffer] = []
     private var request: (DispatchQueue, @Sendable () -> Void)?
     private var heldFlush: (@Sendable () -> Void)?
@@ -476,7 +573,13 @@ private final class ScriptedRenderer: VideoRendererPort, @unchecked Sendable {
     private var _plainFlushes = 0
     private var _failed = false
     private var _failsDecoding = false
+    private var _referenceLost = false
+    private var _decodeFailures = 0
     var holdRecoveryFlush = false
+
+    /// AVFoundation's notification for a sample that failed to decode.
+    static let didFailToDecode = Notification.Name(
+        "AVSampleBufferVideoRendererDidFailToDecodeNotification")
 
     /// Reports `.failed` until the next recovery flush, as AVFoundation does.
     var failed: Bool {
@@ -484,11 +587,21 @@ private final class ScriptedRenderer: VideoRendererPort, @unchecked Sendable {
         set { lock.withLock { _failed = newValue } }
     }
 
-    /// Every enqueued sample fails to decode.
+    /// Every enqueued sample puts the renderer in `.failed`, as when
+    /// decoder resources are withdrawn.
     var failsDecoding: Bool {
         get { lock.withLock { _failsDecoding } }
         set { lock.withLock { _failsDecoding = newValue } }
     }
+
+    /// The decoder lost a reference, as AVFoundation models it: every
+    /// non-IRAP sample fails to decode and posts `didFailToDecode` while
+    /// `status` stays `.rendering`; the next IRAP heals it.
+    var referenceLost: Bool {
+        get { lock.withLock { _referenceLost } }
+        set { lock.withLock { _referenceLost = newValue } }
+    }
+    var decodeFailures: Int { lock.withLock { _decodeFailures } }
 
     var ready: Bool {
         get { lock.withLock { _ready } }
@@ -504,9 +617,12 @@ private final class ScriptedRenderer: VideoRendererPort, @unchecked Sendable {
             attachmentModeOut: nil) != nil
     }
 
-    func register(_ sample: CMSampleBuffer, frame: UInt32) {
+    func register(_ sample: CMSampleBuffer, frame: UInt32, isRandomAccess: Bool) {
         guard let buffer = CMSampleBufferGetDataBuffer(sample) else { return }
-        lock.withLock { framesByData[ObjectIdentifier(buffer)] = frame }
+        lock.withLock {
+            framesByData[ObjectIdentifier(buffer)] = frame
+            if isRandomAccess { randomAccessData.insert(ObjectIdentifier(buffer)) }
+        }
     }
 
     /// Frames of the enqueued samples, in order. A retimed copy shares its
@@ -544,9 +660,20 @@ private final class ScriptedRenderer: VideoRendererPort, @unchecked Sendable {
     var error: (any Error)? { nil }
 
     func enqueue(_ sampleBuffer: CMSampleBuffer) {
-        lock.withLock {
+        let failedToDecode = lock.withLock { () -> Bool in
             enqueued.append(sampleBuffer)
             if _failsDecoding { _failed = true }
+            if _referenceLost,
+               let buffer = CMSampleBufferGetDataBuffer(sampleBuffer),
+               randomAccessData.contains(ObjectIdentifier(buffer)) {
+                _referenceLost = false
+            }
+            if _referenceLost { _decodeFailures += 1 }
+            return _referenceLost
+        }
+        if failedToDecode {
+            NotificationCenter.default.post(
+                name: Self.didFailToDecode, object: self)
         }
     }
 
