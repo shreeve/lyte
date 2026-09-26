@@ -34,7 +34,14 @@
 //     - post-FEC loss > 2% falls ×0.85 (not held: FEC did not absorb it);
 //     - rises need fresh delivery evidence, pre-FEC < 2%, post-FEC ≤ 2%,
 //       1 s after any fall: ≤10%/s toward the PROBE ceiling
-//       min(ceiling, belief × probeHeadroomFactor). The rate may sit
+//       min(ceiling, belief × probeHeadroomFactor) — or, while the rate
+//       sits under 90% of the rate an overuse fall left behind (for 10 s;
+//       any fall after that climb began cancels it),
+//       `recoveryUpshiftPerSecond` back toward it. A crash (belief
+//       demoted below half the rate) arms no probe cadence: it located
+//       no wall. The probe ceiling still bounds every step to what
+//       the latest trains proved, so a path that stayed low parks the
+//       climb exactly as before. The rate may sit
 //       above the delivery max: paced sends self-limit the measurement
 //       to ≈ the rate, so a max-derived cap would spiral to the floor.
 //       Only post-FEC < 0.5% (the clean column) updates lastGoodRate;
@@ -220,6 +227,21 @@ extension RateEstimator {
     /// the climb stays continuous.
     static let probeCadenceNS: UInt64 = 10_000_000_000
 
+    /// A fall whose demoted belief is below this fraction of the standing
+    /// rate is a CRASH, not a failed probe: the rate was nowhere near a
+    /// located wall, so it arms no cadence.
+    static let crashDemotionFraction: Double = 0.5
+
+    /// The recovery climb: while the rate sits under
+    /// `recoveryTargetFraction` of the rate an overuse fall left behind,
+    /// rises run at this per-second budget instead of `upshiftPerSecond`
+    /// (1.0 ≈ ×2.7 per second compounded at the report cadence), still
+    /// capped per step by the probe ceiling.
+    static let recoveryUpshiftPerSecond: Double = 1.0
+    static let recoveryTargetFraction: Double = 0.9
+    /// How long a fall's pre-fall rate stays a recovery target.
+    static let recoveryTargetWindowNS: UInt64 = 10_000_000_000
+
     /// No upshift this long after a downshift (queue drain time).
     static let upshiftHoldAfterDownshiftNS: UInt64 = 1_000_000_000
 
@@ -283,6 +305,8 @@ public struct RateEstimatorStats: Equatable, Sendable {
     public var upshiftsDamped = 0
     /// Rises held by the probe cadence.
     public var upshiftsCadenceHeld = 0
+    /// Rises taken at the recovery budget toward a pre-fall rate.
+    public var recoveryUpshifts = 0
     /// Climbs admitted while post-FEC sat between the clean column and
     /// rung 3.
     public var upshiftsUnderMildPostFec = 0
@@ -453,6 +477,13 @@ public final class RateEstimator {
     private var recentHonestDeliveries = Deque<(at: UInt64, rate: Double)>()
     /// When the current overuse streak opened (invariant 2's clock).
     private var inflatedStreakSinceNS: UInt64?
+    /// The rate an overuse fall left behind, and until when the climb
+    /// may recover toward it at the recovery budget. Cleared on arrival,
+    /// on expiry, and by any fall after the recovery climb began (the
+    /// path pushed back).
+    private var recoveryTargetBits: Double?
+    private var recoveryTargetUntilNS: UInt64 = 0
+    private var recoveryClimbStarted = false
 
     private struct DelaySample {
         var at: UInt64
@@ -764,6 +795,8 @@ public final class RateEstimator {
         lastFullTrainAt = nil
         cadenceHoldUntilNS = 0
         cadenceBandFloorBits = .infinity
+        recoveryTargetBits = nil
+        recoveryClimbStarted = false
     }
 
     /// The burst-budget window B = min(2/fps, 25 ms) in ns, shared with
@@ -1366,12 +1399,16 @@ public final class RateEstimator {
                     streakAgeNS: inflatedStreakSinceNS.map { now &- $0 }
                 )
                 // A fall inside the belief's headroom band is a failed
-                // probe: arm the cadence.
+                // probe: arm the cadence. A crash located no wall.
                 let bandFloor = demoted / Self.probeHeadroomFactor
-                if Double(rateBitsPerSecond) >= bandFloor {
+                let crash = demoted
+                    < Double(rateBitsPerSecond) * Self.crashDemotionFraction
+                if Double(rateBitsPerSecond) >= bandFloor, !crash {
                     cadenceHoldUntilNS = now &+ Self.probeCadenceNS
                     cadenceBandFloorBits = bandFloor
                 }
+                noteFallForRecovery(from: rateBitsPerSecond, now: now,
+                                    armsTarget: true)
                 rateBitsPerSecond = clamp(min(
                     Int(demoted * Self.downshiftFactor),
                     Int(Double(rateBitsPerSecond) * Self.downshiftFactor)
@@ -1410,6 +1447,8 @@ public final class RateEstimator {
                 lastAdjustAt = now
                 return nil
             }
+            noteFallForRecovery(from: rateBitsPerSecond, now: now,
+                                armsTarget: false)
             // GCC's loss response: rate × (1 − loss/2) — a 20% loss
             // window falls 10%, a 50% catastrophe falls 25% per beat.
             rateBitsPerSecond = clamp(Int(
@@ -1429,6 +1468,8 @@ public final class RateEstimator {
                 lastAdjustAt = now
                 return nil
             }
+            noteFallForRecovery(from: rateBitsPerSecond, now: now,
+                                armsTarget: false)
             // Rung 3: loss FEC could not absorb, so no hold band.
             rateBitsPerSecond = clamp(Int(
                 Double(rateBitsPerSecond) * Self.downshiftFactor
@@ -1478,8 +1519,18 @@ public final class RateEstimator {
         }
         let elapsedSeconds = Double(now &- lastAdjustAt) / 1e9
         guard elapsedSeconds > 0 else { return nil }
-        let factor = 1 + Self.upshiftPerSecond * min(elapsedSeconds, 1)
-        let wanted = Int(Double(rateBitsPerSecond) * factor)
+        let recoveryTarget = activeRecoveryTarget(now: now)
+        let gain = recoveryTarget == nil
+            ? Self.upshiftPerSecond : Self.recoveryUpshiftPerSecond
+        let factor = 1 + gain * min(elapsedSeconds, 1)
+        var wanted = Int(Double(rateBitsPerSecond) * factor)
+        if let recoveryTarget {
+            // The recovery budget returns to the pre-fall rate, never
+            // past it; above it the ordinary probe resumes.
+            wanted = min(wanted, Int(recoveryTarget))
+            recoveryClimbStarted = true
+            stats.recoveryUpshifts += 1
+        }
         if wanted > probeCeiling, probeCeiling < config.ceilingBitsPerSecond {
             stats.upshiftsDamped += 1
         }
@@ -1488,6 +1539,38 @@ public final class RateEstimator {
         stats.upshifts += 1
         if mildPostFec { stats.upshiftsUnderMildPostFec += 1 }
         return .evidence
+    }
+
+    /// Every executing fall passes through here. A fall after the
+    /// recovery climb began means the path pushed back: the target is
+    /// dropped. Otherwise an overuse fall arms (or keeps) the target at
+    /// the highest pre-fall rate of the episode.
+    private func noteFallForRecovery(
+        from rateBefore: Int, now: UInt64, armsTarget: Bool
+    ) {
+        if recoveryClimbStarted {
+            recoveryTargetBits = nil
+            recoveryClimbStarted = false
+            return
+        }
+        guard armsTarget else { return }
+        let alive = activeRecoveryTarget(now: now) ?? 0
+        recoveryTargetBits = max(alive, Double(rateBefore))
+        recoveryTargetUntilNS = now &+ Self.recoveryTargetWindowNS
+    }
+
+    /// The live recovery target, or nil (none armed, expired, or the
+    /// rate is back within `recoveryTargetFraction` of it — which
+    /// retires it).
+    private func activeRecoveryTarget(now: UInt64) -> Double? {
+        guard let target = recoveryTargetBits else { return nil }
+        if now >= recoveryTargetUntilNS
+            || Double(rateBitsPerSecond) >= target * Self.recoveryTargetFraction {
+            recoveryTargetBits = nil
+            recoveryClimbStarted = false
+            return nil
+        }
+        return target
     }
 
     /// The FEC regime step law (see the header). Returns the new regime

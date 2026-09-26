@@ -2971,6 +2971,103 @@ final class RateEstimatorGateTests: XCTestCase {
                 \(outcome.recoveryNS.map { "\($0 / Self.ms) ms" } ?? "never")
                 """)
     }
+
+    /// A GENUINE dip: the path really delivers 5 Mbps for 1.5 s under a
+    /// standing queue, then the air clears back to 50 Mbps. The fall
+    /// must still land on measured delivery (the safeguard), and once
+    /// the air clears the rate must be back at ≥ 90% within 4 s — a
+    /// crash is not a failed probe, and the climb back to a rate the
+    /// path carried moments ago need not creep at 10%/s.
+    func testGenuineWifiDipFallsThenRecoversWithinSeconds() {
+        let estimator = makeEstimator { $0.ceilingBitsPerSecond = 50_000_000 }
+        let driver = EstimatorDriver(self, estimator)
+        driver.prime(bottleneckMbps: 50, beats: 40)
+        let pre = estimator.rateBitsPerSecond
+        var minimum = pre
+        for _ in 0..<60 {
+            driver.beat(bottleneckMbps: 5, extraDelayMicros: 40_000,
+                        backlogBytes: 19_558)
+            minimum = min(minimum, estimator.rateBitsPerSecond)
+        }
+        XCTAssertLessThanOrEqual(minimum, Int(5e6),
+            "a genuine 1.5 s dip to 5 Mbps must fall to measured delivery")
+        let clearedAt = driver.now
+        var recovered: UInt64?
+        for _ in 0..<1_200 where recovered == nil {
+            driver.beat(bottleneckMbps: 50)
+            if estimator.rateBitsPerSecond * 10 >= pre * 9 {
+                recovered = driver.now - clearedAt
+            }
+        }
+        XCTAssertLessThanOrEqual(recovered ?? .max, 4_000 * Self.ms,
+            """
+                back to ≥ 90% \
+                \(recovered.map { "\($0 / Self.ms) ms" } ?? "never") after \
+                the air cleared
+                """)
+    }
+
+    /// A spike that is still RISING when invariant 2's clock expires
+    /// (40 → 230 ms over 500 ms, trains at 3.9 Mbps) is, at that
+    /// instant, indistinguishable from a real squeeze and falls. The
+    /// queue then drains in 100 ms and the air is clean again: the rate
+    /// must be back at ≥ 90% within 5 s of the spike opening (the
+    /// spike, the 1 s drain hold every fall owes, then the climb).
+    func testRisingSpikeFallsButRecoversWithinSeconds() {
+        let estimator = makeEstimator { $0.ceilingBitsPerSecond = 50_000_000 }
+        let driver = EstimatorDriver(self, estimator)
+        driver.prime(bottleneckMbps: 50, beats: 40)
+        let pre = estimator.rateBitsPerSecond
+        let opened = driver.now
+        var fell = false
+        for step in 0..<24 {
+            let delay = UInt64(40_000 + step * 8_000)
+            let verdict = driver.beat(
+                bottleneckMbps: 3.9, extraDelayMicros: delay,
+                backlogBytes: 19_558)
+            fell = fell || verdict.change == .overuse
+        }
+        XCTAssertTrue(fell, "a queue rising for 600 ms is a squeeze until proven otherwise")
+        for delay: UInt64 in [180_000, 120_000, 60_000, 10_000] {
+            driver.beat(bottleneckMbps: 50, extraDelayMicros: delay)
+        }
+        var recovered: UInt64?
+        for _ in 0..<1_200 where recovered == nil {
+            driver.beat(bottleneckMbps: 50)
+            if estimator.rateBitsPerSecond * 10 >= pre * 9 {
+                recovered = driver.now - opened
+            }
+        }
+        XCTAssertLessThanOrEqual(recovered ?? .max, 5_000 * Self.ms,
+            """
+                back to ≥ 90% \
+                \(recovered.map { "\($0 / Self.ms) ms" } ?? "never") after \
+                the spike opened
+                """)
+    }
+
+    /// The fast climb's safeguard: when the path STAYS low after a
+    /// crash, trains keep measuring it, the belief stays there, and the
+    /// climb parks at belief × headroom — it never races back toward the
+    /// pre-crash rate on the strength of a memory.
+    func testRecoveryClimbParksWhenThePathStaysLow() {
+        let estimator = makeEstimator { $0.ceilingBitsPerSecond = 50_000_000 }
+        let driver = EstimatorDriver(self, estimator)
+        driver.prime(bottleneckMbps: 50, beats: 40)
+        let fall = driver.beatUntilFall(
+            bottleneckMbps: 5, extraDelayMicros: 40_000,
+            backlogBytes: 19_558)
+        XCTAssertEqual(fall.change, .overuse)
+        // The queue clears (we now send below the path) but the path
+        // still delivers only 5 Mbps: every train measures ≤ 5.
+        for _ in 0..<400 {
+            let paceMbps = Double(estimator.rateBitsPerSecond) / 1e6
+            driver.beat(bottleneckMbps: min(paceMbps, 5))
+            XCTAssertLessThanOrEqual(estimator.rateBitsPerSecond,
+                Int(5e6 * 1.10) + 100_000,
+                "the climb outran what the path proved")
+        }
+    }
 }
 
 private func XCTAssertEqual(
