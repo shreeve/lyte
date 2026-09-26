@@ -115,11 +115,12 @@ This will:
 1. Create a 20-year self-signed code-signing cert (`CN=Lyte Dev`) in
    `~/.config/lyte-signing/` if absent. The PKCS#12 is exported with
    `-legacy` because macOS `security` cannot verify the MAC that OpenSSL 3
-   writes by default.
+   writes by default (`SecKeychainItemImport: MAC verification failed`).
 2. Create the `lyte-signing` keychain, add it to the user search list, and
    import the identity trusted only for `/usr/bin/codesign`.
 3. Run `security set-key-partition-list -S apple-tool:,apple:,codesign:` so
-   `codesign` may use the private key without an interactive prompt.
+   `codesign` may use the private key without an interactive prompt (a
+   prompt separate from the pairing key's).
 
 Then build, sign, and run each distinct executable that accesses the pairing
 identity against a host once. Click **Always Allow** separately for Lyte.app
@@ -150,11 +151,8 @@ Scripts/launch-app.sh
 
 Only `Scripts/make-app.sh --diagnostics release` builds a bundle whose
 signed Info.plist enables the diagnostic entry points (autoconnect, the
-benchmark driver); `LYTE_APP_DIAGNOSTICS` in the environment is ignored.
-`Scripts/benchmark-app.sh` builds that bundle at `.build/Lyte.app` itself —
-there is only ever one physical copy — and rebuilds the plain bundle when
-it exits. If that restore fails it prints a WARNING; run
-`Scripts/make-app.sh release` before using the app again.
+benchmark driver); how the benchmark builds and restores it is in
+[TESTING.md](TESTING.md#live-benchmarks-pup).
 
 `make-app.sh` refuses to replace the bundle while any `Lyte` process is
 running, including its helper. Assembly and scripted launch share one
@@ -192,12 +190,13 @@ The bundle identifier is part of the DR, so it must be stable per target:
 - `*.app` → `dev.shreeve.lyte`
 - anything else → `dev.shreeve.<basename>` (e.g. `dev.shreeve.lyte-cli`)
 
-It selects the sole Apple Development identity, an exact name or hash override,
-or the explicit Lyte Dev fallback. It signs using the identity **by SHA-1
-hash** and verifies the identifier, team consistency, and matching Apple-anchor
-or certificate-root requirement. If selection is absent or ambiguous it fails
-closed; an ad-hoc Keychain client would invalidate the ACL invariant and Local
-Network identity.
+It selects an exact name or hash override, else the sole Apple Development
+identity, else the Lyte Dev fallback automatically. It signs using the
+identity **by SHA-1 hash** and verifies the identifier, team consistency, and
+matching Apple-anchor or certificate-root requirement. With several Apple
+Development identities and no override, or with no identity at all, it fails
+closed rather than sign ad hoc: an ad-hoc Keychain client would invalidate
+the ACL invariant and Local Network identity.
 
 ## Hardened runtime
 
@@ -307,7 +306,7 @@ operations.
 Deriving from the helper rather than hard-coding a certificate preserves the
 exact signer selected by `sign-dev.sh`: the Apple Development anchor and leaf
 identity in the preferred path, or the Lyte Dev certificate root in the
-explicit fallback. Startup fails closed if the running code is invalid, its
+fallback. Startup fails closed if the running code is invalid, its
 requirement has an unexpected shape (anything but one identifier clause, a
 pinned signer, and no `or` alternative), or the rewritten requirement cannot
 be compiled.
@@ -329,12 +328,6 @@ Apple platform binary (wrong identity) fail it.
   (`CSSMERR_TP_NOT_TRUSTED`), so fallback lookup uses plain `find-identity`
   against only the dedicated keychain. `codesign` signs by hash regardless of
   chain trust.
-- **PKCS#12 import fails without `-legacy`.** `SecKeychainItemImport: MAC
-  verification failed` — export the `.p12` with `openssl pkcs12 -export
-  -legacy`.
-- **Partition list is required.** Without `set-key-partition-list`, `codesign`
-  itself triggers a keychain prompt to *use* the signing key — separate from
-  the pairing-key prompt. Setup handles this.
 - **Every signing key is dev-machine only.** The private key is never committed
   (`~/.config/lyte-signing/`). This is throwaway local-dev material, unrelated
   to the Developer ID that signs releases.

@@ -79,7 +79,7 @@ Behavior the proof exercises today:
   pump beat; key and button edges leave at once and wait, in order,
   through a full reliable queue rather than being dropped; non-finite
   coordinates are refused. Ctrl, Alt and Shift are forwarded; Meta stays
-  local. A drag that leaves the canvas is clamped to the stream's edge,
+  local, and volume keys are not forwarded (as in the native client). A drag that leaves the canvas is clamped to the stream's edge,
   chorded buttons are reconciled from `PointerEvent.buttons`, and held
   keys and buttons are released on blur. The peer echoes input but
   injects nothing.
@@ -152,9 +152,8 @@ the carrier opaque (its AEAD would fail otherwise). The page requires an
 unreliable transport (no HTTP/2 fallback) and sets 100 ms incoming and
 outgoing datagram max-age; the relay drops what its writer refuses and
 anything that waited past 50 ms. The session keeps Lyte's 1152 B budget;
-Chrome reports `maxDatagramSize` 1024, the smoke carries near-budget video
-shards inbound, and an earlier echo probe measured 1214 B usable. A
-per-session ceiling measurement does not exist.
+Chrome reports `maxDatagramSize` 1024 and the smoke carries near-budget
+video shards inbound; a per-session ceiling measurement does not exist.
 
 ## Intended shape
 
@@ -212,9 +211,9 @@ control peer's corpus replay, not against a real desktop.
 | B-5 | Sealed corpus video, FEC-assembled and presented on the Conductor's clock | smoke: `conductor-video/*` (paced, none early); native `BrowserPlayoutTests` |
 | B-6 | Input, clipboard text, Opus to AudioWorklet | smoke: `session-input/echo`, `clipboard/*`, `audio/*`, `audio-worklet/ring` (samples played); native `BrowserInputTests`; DOM input rules in `page.test.mjs`, not driven by the headless smoke |
 
-Next, toward a usable client ([TODO.md](../TODO.md)): live Direct Eye
-against a real host, a persistent interactive session, Safari, and product
-composition (`LyteBrowserApp`).
+Next, toward a usable client ([TODO.md](../TODO.md)): a relay to a real
+host (or WebTransport on the host), live Direct Eye in Chrome, a persistent
+interactive session, Safari, and product composition (`LyteBrowserApp`).
 
 The original research, measurements and rejected alternatives are in the
 [bridge consult](history/20260720-184200-browser-client-caddy-bridge.md)

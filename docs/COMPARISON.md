@@ -10,13 +10,11 @@ remote desktop, and the convenience features expected from both. It does not
 yet match mature products in platform coverage, WAN traversal, deployment, or
 multi-user infrastructure.
 
-The Lyte figures below are dated commissioning evidence, not a matched current
-release benchmark. They came from the July 2026 J-G1, H1/H2, and Beauty Bar
-runs at 2048×1280 over a LAN with Noise encryption enabled. The quality runs
-used pup's former NVENC seat; the shipping direct-eye path now uses native
-Intel VAAPI while preserving Lyte's capture, bitstream, transport, and glass
-contracts. Competitor descriptions are qualitative product-shape comparisons,
-not laboratory measurements.
+The Lyte figures below are dated commissioning evidence from July 2026
+runs at 2048×1280 over a LAN with Noise encryption on, on an earlier
+encoder seat; they are not a current release benchmark. Competitor
+descriptions are qualitative product-shape comparisons, not laboratory
+measurements.
 
 ## Measured Lyte baseline
 
@@ -28,8 +26,7 @@ not laboratory measurements.
 - Five-millisecond Opus emission held p50 4.999 ms and p99 5.978 ms through
   IDR pressure and a 90-second video squeeze.
 - Sustained motion decoded at 61 fps p50 with no lost frames during one
-  150-second Beauty Bar leg. The quality ratchet converged static text to
-  52 dB luma PSNR and then became quiet.
+  150-second motion leg.
 - HEVC 4:4:4 produced a measured 22 dB text improvement over 4:2:0 in its
   commissioning race. A host offers that posture only after its current
   hardware probe proves the complete path.
@@ -79,8 +76,7 @@ recovery policy it owns end to end.
 ## Honest gaps
 
 The shipping combination is a macOS client and a Linux host (GNOME/Mutter
-with an Intel GPU). Native packaging, the macOS host role, Windows and Linux
-role shells, printing and managed remote reach are future work. The browser
+with an Intel GPU). The macOS host role, Windows and Linux role shells, printing and managed remote reach are future work. The browser
 client is a Chrome proof harness against a test peer, not yet a product
 client ([BROWSER.md](BROWSER.md)). Hosts do not yet require pairing by
 default ([TODO.md](../TODO.md)).
