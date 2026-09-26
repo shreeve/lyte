@@ -55,6 +55,10 @@ public protocol VideoRecoveryPeer: AnyObject, Sendable {
 ///   failure discards the whole episode, flushes the renderer, and awaits
 ///   an IRAP instead of dropping an arbitrary P-frame. No sample dequeues
 ///   while that flush is outstanding.
+/// - Renderer failure is either a `.failed` status or a sample that failed
+///   to decode. The latter leaves the status `.rendering` and is reported
+///   only by notification; every dependent sample fails after it until a
+///   flush and an IRAP, so the first one voids the episode.
 /// - Every sample is retimed to the Conductor's presentation beat.
 /// - Delivery books and the flight recorder see every frame's fate.
 /// - After `stop()` the handoff is inert: nothing more reaches the
@@ -86,6 +90,7 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
     private let dimensions = Mutex<(width: Int32, height: Int32)>((0, 0))
     private let peer = Mutex(WeakPeer())
     private let stopped = Atomic<Bool>(false)
+    private var decodeFailureObserver: (any NSObjectProtocol)?
 
     // Queue-confined.
     private var policy: BoundedRendererHandoff<Pending>
@@ -102,6 +107,15 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
     /// No compressed sample dequeues while the renderer's asynchronous
     /// recovery flush is in progress.
     private var flushInProgress = false
+    /// The newest sample handed to the renderer: a decode failure names it.
+    private var lastEnqueuedFrame = FrameNumber(rawValue: 0)
+
+    /// AVFoundation's notification for a sample that failed to decode
+    /// (`AVSampleBufferVideoRenderer.didFailToDecodeNotification`, spelled
+    /// out because the Swift constant is deprecated in favor of the
+    /// synchronizer receiver's enqueue result).
+    private static let didFailToDecode = Notification.Name(
+        "AVSampleBufferVideoRendererDidFailToDecodeNotification")
 
     public init(
         renderer: any VideoRendererPort,
@@ -122,6 +136,18 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
         self.recorder = recorder
         self.onDimensionsChanged = onDimensionsChanged
         self.playout = Mutex(VideoBeatConductor(config: playoutConfig))
+        decodeFailureObserver = NotificationCenter.default.addObserver(
+            forName: Self.didFailToDecode, object: renderer, queue: nil
+        ) { [weak self] _ in
+            guard let self else { return }
+            queue.async { [weak self] in self?.rendererFailedToDecode() }
+        }
+    }
+
+    deinit {
+        if let decodeFailureObserver {
+            NotificationCenter.default.removeObserver(decodeFailureObserver)
+        }
     }
 
     /// Points `layer` at the host time clock, rate 1: the handoff retimes
@@ -412,6 +438,7 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
                 ])
             }
             renderer.enqueue(timed)
+            lastEnqueuedFrame = pending.unit.frameNumber
             if PipelineWitness.isEnabled {
                 PipelineWitness.record("rendererEnqueueCompleted", fields: [
                     "frame": String(pending.unit.frameNumber.rawValue),
@@ -452,6 +479,25 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
             requesting = false
         }
         armExpiry()
+    }
+
+    /// A sample failed to decode, and every one that depends on it will.
+    /// While a flush is outstanding or the gate still awaits its IRAP,
+    /// nothing has reached the renderer since the flush: the failure is of
+    /// a discarded sample, and the open episode already answers it.
+    private func rendererFailedToDecode() {
+        guard isLive else { return }
+        guard !flushInProgress, !policy.awaitingRandomAccess else {
+            trace("rendererDecodeFailureDuringRecovery",
+                  frame: lastEnqueuedFrame.rawValue, cause: .rendererFailure)
+            return
+        }
+        trace("rendererDecodeFailed",
+              frame: lastEnqueuedFrame.rawValue, cause: .rendererFailure)
+        process(
+            policy.failEpisode(),
+            recoveryFrame: lastEnqueuedFrame,
+            cause: .rendererFailure)
     }
 
     private func process(
