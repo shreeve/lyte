@@ -102,6 +102,25 @@ final class AudioDeclickGateTests: XCTestCase {
                        UInt64(1_050))
     }
 
+    // MARK: An announced quiet's silence is not an underrun
+
+    func testAnnouncedQuietSilenceIsNotAnUnderrun() {
+        let ring = AudioPcmRing()
+        ring.write(sine(0..<240))
+        ring.noteAnnouncedQuiet()
+        for _ in 0..<8 { _ = render(ring, wanted: 128) }
+        XCTAssertEqual(ring.underrunFrames.load(ordering: .relaxed), 0,
+            "the host said the stream is quiet: silence is contract")
+        XCTAssertEqual(ring.framesRendered.load(ordering: .relaxed), 240,
+            "the content written before the notice still plays")
+
+        // The next write ends the quiet: starvation counts again.
+        ring.write(sine(240..<480))
+        for _ in 0..<3 { _ = render(ring, wanted: 128) }
+        XCTAssertEqual(ring.underrunFrames.load(ordering: .relaxed),
+                       UInt64(3 * 128 - 240))
+    }
+
     // MARK: Recovery crossfades in, then passes through exact
 
     func testRecoveryFadesInThenPassesThroughByteExact() {
