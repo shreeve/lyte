@@ -39,8 +39,8 @@ Client never depends on Host and Host never depends on Client. Only
 
 | Target | Kind | Owns |
 |---|---|---|
-| `LyteCore` | sans-IO | Conductor (`VideoBeatConductor`, `ConductorPrimitives`), renderer-handoff policy, Annex-B/HEVC bit helpers, `Sha256`, `Histogram`, `Deque`/`BoundedRing`, hex, `WireTos` |
-| `LyteIO` | adapter | `SystemMonotonicClock` and other shared OS adapters |
+| `LyteCore` | sans-IO | Conductor (`VideoBeatConductor`, `ScoreBeat`), renderer-handoff policy, `VideoDeliveryGauge`, Annex-B/HEVC bit helpers, `Sha256`, `Histogram`, `Deque`/`BoundedRing`, hex, `WireTos` |
+| `LyteIO` | adapter | `SystemMonotonicClock`, `CBuffer` |
 | `COpus` | C leaf | Opus 1.6.1, pinned source ([UPSTREAM.md](../Common/Sources/COpus/UPSTREAM.md)) |
 | `LyteTestKit` | test kit | `RepositorySourceTree`, `SwiftSourceScanner`, the lints' equipment |
 
@@ -50,25 +50,25 @@ Client never depends on Host and Host never depends on Client. Only
 |---|---|---|
 | `LyteWire` | sans-IO | Envelope, channels, CTRL registry, FEC, ARQ, Noise, CPace pairing, retry cookie, capabilities, lifecycle, beacon/feedback, video packetizer/assembler, audio framer/depacketizer, bulk and clipboard engines |
 | `CNanorsWire` | C leaf | Reed-Solomon GF(2⁸) (nanors), reached only through `Fec/NanorsBackend.swift` |
-| `LyteWireTestKit` | test kit | Vector loaders, `SimNet`, `SplitMix64`, `SealedCtrlPeer`, transfer harnesses |
-| `LyteWireVectorGen` / `LyteWireVectorGenTool` | builders / CLI | Every `Wire/Vectors/*.json` builder; the `lyte-wire-vectorgen` product |
+| `LyteWireTestKit` | test kit | The vector-file loader (`FrozenVectorFile`, `WireVectors`), `SimNet`, `SplitMix64`, `SealedCtrlPeer`, `NoisePair`, ARQ and bulk-transfer harnesses |
+| `LyteWireVectorGen` | test library | Every `Wire/Vectors/*.json` file's model and builder, in one `vectorFileBuilders` registry; test targets only |
+| `LyteWireVectorGenTool` | CLI | `lyte-wire-vectorgen`: writes one builder's file |
 
 **Host** (targets marked Linux build only on Linux)
 
 | Target | Kind | Owns |
 |---|---|---|
 | `HostCore` | sans-IO | HEVC parameter-set and slice-header writers ("pens"), `Pacer`, kernel-pressure governor, `HostServiceLoop`, audio tripwire, quiet-video pacer, screen sampling cadence |
-| `HostSession` | sans-IO | Responder policy: `HandshakeGate` (rate limit, retry cookies), lifecycle lane, path validation |
+| `HostSession` | sans-IO | Responder policy: `HandshakeAcceptor` (the process's handshake admission and its memory of answered message 1s) over `HandshakeGate` (rate limit, retry cookies), lifecycle lane, path validation |
 | `HostWire` | sans-IO | `Session` (Noise responder, sealing, ARQ lanes, beacons), `VideoChannel` (packetize, FEC, repair store), `RateEstimator`, `SocketOutbox`, `VideoAdmissionGate`, encoder VBV/HRD policy, pairing responder, client keystore |
-| `HostWireTestKit` | test kit | `HostSessionHarness`: a shipping `Session` in virtual time for the gate tests |
+| `HostWireTestKit` | test kit | `HostSessionHarness` and `PeerBackedClient`: a shipping `Session` in virtual time for the gate tests and SystemTests |
 | `HostIO` | adapter | `HostPaths` (XDG layout, legacy identity adoption), `SecretFile`, `HostLog` (in-process log rotation), `BulkFileStore` |
 | `HostAudio` | policy | 5 ms hard-CBR Opus over `COpus` |
 | `HostEye` | Linux | Direct Eye: DRM scanout import, GPU pixel fingerprint, NV12/AYUV EGL blit, VAAPI encoder seat, cursor plane |
 | `CDRM` `CGBM` `CEGL` `CVA` `CPipeWire` `CDBus` | Linux module maps | System libraries |
 | `CPipeWireAudio` `CNetIO` `CInputUinput` | Linux C leaves | Default-sink monitor capture; UDP sockets (`sendmmsg`/`recvmmsg`, TOS, timestamps); uinput devices |
-| `lyte-host` | Linux exe | The host composition root (`HostApplication`): `SessionWire` (the session's socket, lock and threads), `DirectEyeLeg`, audio, input, clipboard, Avahi |
+| `lyte-host` | Linux exe | The host composition root (`HostApplication`): `HostListener` (the listening socket and the process's `HandshakeAcceptor`), `SessionWire` (a session's lock and threads), `DirectEyeLeg`, audio, input, clipboard, Avahi |
 | `lyte-control-peer` | exe (macOS + Linux) | DRM-free `HostWire.Session` peer for the browser proof |
-| `lyte-eye` | Linux exe | Standalone Direct Eye probe |
 | `lyte-netio-check`, `lyte-pace-check`, `lyte-audio-check`, `lyte-uinput-check` | Linux exe | On-host verification harnesses |
 
 **Client**
@@ -76,21 +76,21 @@ Client never depends on Host and Host never depends on Client. Only
 | Target | Kind | Owns |
 |---|---|---|
 | `LyteClientCore` | sans-IO | Client policy over `LyteCore` and `LyteWire`: `RoamingPolicy`, `RadioHoldPolicy`, `MacEvdevKeyMap`, `LinkHealthMeter`, `AudioJitterBuffer`, `SeqGapTracker`, `ChromaTier`, `HevcSpsChroma` |
-| `LyteClientSession` | sans-IO | The initiator shared by native and browser shells: handshake and its retry schedules (`ClientHandshakeInitiator`), pairing, capabilities, lifecycle and the blackout-detector posture, IDR recovery and the render gate, NACK repair (`ClientNackPolicy`), feedback report content (`ClientFeedbackReporter`), the host-clock fit (`ClientHostClock`), beacon echo, exempt CTRL (`ClientExemptControl`: beacon, path challenge, repair refusal), carriage and conn-id books, clipboard/cursor/audio-routing/media-posture sessions |
-| `LyteTransport` | macOS IO | `LyteUdpSession` (shell) and `LyteUdpSessionCore` (locked core), UDP endpoint, demux, ARQ endpoints, video pipeline, renderer handoff, audio receiver and player, input, the feedback cadence, the locks around the session's shared values (`HostClockModel`, `NackPolicy`, `IdrRequester`), pairing, discovery, identity, stats formatter |
-| `LyteCorpus` | diagnostic | Corpus frames and gates, PSNR/SSIM, readback tap, synthetic motion reference |
+| `LyteClientSession` | sans-IO | The initiator shared by native and browser shells: handshake and its retry schedules (`ClientHandshakeInitiator`), pairing, capabilities, lifecycle and the blackout-detector posture, the IDR episode and render gate (`ClientIdrRecovery`), NACK repair (`ClientNackPolicy`), feedback report content (`ClientFeedbackReporter`), the host-clock fit (`ClientHostClock`), beacon echo, exempt CTRL (`ClientExemptControl`: beacon, path challenge, repair refusal), carriage and conn-id books, clipboard/cursor/audio-routing/media-posture sessions |
+| `LyteTransport` | macOS IO | `LyteUdpSession` (shell) and `LyteUdpSessionCore` (locked core), UDP endpoint, demux, ARQ endpoints, video pipeline, renderer handoff, audio receiver and player, input, the feedback cadence, the locks around the session's shared values (`HostClockModel`; the IDR episode and NACK book each in its own `Mutex` inside the core), pairing, discovery, pinned-host store, identity, stats formatter |
+| `LyteCorpus` | diagnostic | The diagnostic benchmark's scoring: PSNR/SSIM (`CorpusGates`), GPU readback (`VideoQualityReadback`), the synthetic motion reference |
 | `LyteUI` | AppKit shims | Control-strip policy, pasteboard sync, video layer view, menu-bar glyph |
 | `LyteHelperProtocol` / `LyteHelperSecurity` | helper | XPC contract; code-requirement derivation |
 | `LyteClientTestKit` | test kit | Client test equipment (`ScriptedHost`, `ClientCoreHarness`) |
 | `Lyte` | app | SwiftUI app: `ConnectionModel`, windows, input capture, diagnostics |
-| `lyte-cli` | exe | `wire-view`, `wire-pair`, `wire-discover`, corpus and decode probes |
+| `lyte-cli` | exe | `wire-view` (dial and stream with stats) and `wire-pair` |
 | `lyte-helperd` | exe | Root launchd helper that holds `awdl0` down while streaming |
 
 **Browser**
 
 | Target | Kind | Owns |
 |---|---|---|
-| `LyteClientBrowserCore` | sans-IO | `BrowserControlSession` over `LyteClientSession`, `BrowserVideoPlayout`, `BrowserAudioPlayout`, frozen-contract checks |
+| `LyteClientBrowserCore` | sans-IO | `BrowserControlSession` over `LyteClientSession`, `BrowserVideoPlayout`, `BrowserAudioPlayout`, `BrowserInputQueue` |
 | `LyteClientBrowser` | WASM exe | `BrowserBridge`: the `globalThis.lyteBrowser` JS↔WASM API (JavaScriptKit) |
 
 Page JavaScript (`Browser/Page/`) owns WebTransport IO, WebCodecs decode,
@@ -130,8 +130,9 @@ session's encoder opens; a 4:4:4 agreement that arrives later takes effect
 at the next reconnect.
 
 Without `--seconds` or `--pair`, `lyte-host --wire-listen` is a service: it
-serves sessions in turn in one process. The listening socket, Avahi
-advertisement, uinput devices, clipboard leaf and the EGL/DRM context stay
+serves sessions in turn in one process. The listening socket and its
+handshake acceptor (flood gate, cookie mode and answered message 1s span
+every session), Avahi advertisement, uinput devices, clipboard leaf and the EGL/DRM context stay
 up; each client gets a fresh `SessionWire`, `AudioWire` and encoder stream
 (first frame an IDR), and the process ID stays the same across sessions. A
 failed session or a display mode change exits the process and systemd
@@ -145,7 +146,7 @@ UdpReceiveEndpoint (receive thread, SO_TIMESTAMP_MONOTONIC)
   └─► ReceiveDemux: Envelope.openDatagram (decode + unseal)
         ├─ chan 0/8 ─► ReliableCtrlEndpoint (ARQ) ─► LyteClientSession decisions
         ├─ chan 0   ─► ClientExemptControl: beacon echo, PathResponse, repair refusal
-        ├─ chan 2   ─► LyteVideoPipeline: VideoAssembler ─► NackPolicy / IdrRequester
+        ├─ chan 2   ─► LyteVideoPipeline: VideoAssembler ─► NACK book / IDR episode
         │                 └─► sampleQueue: CMSampleBuffer ─► VideoRendererHandoff
         │                       (VideoBeatConductor schedules on the submitting thread)
         │                       └─► delivery queue ─► AVSampleBufferVideoRenderer
@@ -198,7 +199,7 @@ browser path proves today.
 | Host paths and identity | `HostIO/HostPaths.swift`; runbook in [OPERATIONS.md](OPERATIONS.md) |
 | Client initiator | `LyteClientSession` (native and browser) |
 | Roaming | `LyteClientCore/RoamingPolicy.swift`, `Lyte/ConnectionModel+Roaming.swift` |
-| Input forwarding | `Lyte/InputForwardingPolicy.swift` (held-key release, ⌘ lone-Super suppression) |
+| Input forwarding | `Lyte/InputForwardingPolicy.swift` (⌘-letter as Ctrl, held-key release, lone-Super suppression); local shortcuts in `Lyte/LyteInputCapture.swift` |
 | Pairing PIN | `LyteWire` `PairingPin.normalize` (exactly six ASCII digits) |
 | Sans-IO law | `Common/Tests/LyteTestKitTests/SansIOArchitectureTests.swift` |
 

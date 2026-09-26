@@ -33,7 +33,6 @@ import LyteWire
 /// SCHED_RR → per-thread nice −10 → default CFS (said once). Unprivileged
 /// runs need an rtprio rlimit; the host must run fine without one.
 func elevateCurrentThread(_ label: String, rtPriority: Int32) {
-    #if os(Linux)
     var param = sched_param()
     param.sched_priority = rtPriority
     if pthread_setschedparam(pthread_self(), Int32(SCHED_RR), &param) == 0 {
@@ -53,19 +52,19 @@ func elevateCurrentThread(_ label: String, rtPriority: Int32) {
         sched: \(label) thread NOT elevated (unprivileged, no \
         RLIMIT_NICE) — running at default CFS priority
         """)
-    #endif
 }
 
 /// The listening service's socket, bound once and never connected, so a
-/// client that dials between sessions is heard by the next one.
+/// client that dials between sessions is heard by the next one, and its
+/// handshake admission, which outlives every session.
 final class HostListener {
     let netio: OpaquePointer
-    /// Message 1s any session of this process answered; a replay or stale
-    /// retransmit is dropped unread. Touched only by `awaitClient` under
-    /// the waiting wire's lock (one session waits at a time).
-    var answeredHandshakes = AnsweredHandshakeMemory()
+    /// Touched only by `awaitClient` under the waiting wire's lock (one
+    /// session waits at a time) and read after the session ends.
+    var acceptor: HandshakeAcceptor
 
-    init(port: UInt16) throws {
+    init(port: UInt16, acceptor: HandshakeAcceptor.Config) throws {
+        self.acceptor = HandshakeAcceptor(config: acceptor)
         var err = [CChar](repeating: 0, count: 256)
         guard let n = lyte_netio_new_listener(
             "0.0.0.0", port, &err, err.count
@@ -92,23 +91,13 @@ final class SessionWire {
     /// (message 1, a migrated client's new path) and carries every
     /// explicitly addressed datagram.
     private let listenNetio: OpaquePointer
-    /// The listening socket's owner: the service's shared listener, or a
-    /// private one on a kernel-assigned port for a wire-out run.
+    /// The listening socket's owner, shared by every session of the run.
     private let listener: HostListener
     /// The media sockets (SO_REUSEPORT members of the listening port,
     /// connected to the client's primary tuple; nil until it is known):
     /// video at SO_PRIORITY 4, control and audio at 6.
     private var videoNetio: OpaquePointer?
     private var latencyNetio: OpaquePointer?
-    /// wire-out mode: only this peer may complete a handshake.
-    private let requiredPeer: (host: String, port: UInt16)?
-    private let handshakeWitness: FileHandle? = {
-        guard let path = ProcessInfo.processInfo.environment[
-            "LYTE_HANDSHAKE_WITNESS_JSONL"] else { return nil }
-        _ = FileManager.default.createFile(atPath: path, contents: nil)
-        return FileHandle(forWritingAtPath: path)
-    }()
-    private var awaitPrimaryDatagrams = 0
     /// Unconfirmed handshakes a newer authenticated message 1 replaced.
     private(set) var handshakesSuperseded = 0
     /// Answered handshakes discarded unconfirmed.
@@ -120,9 +109,9 @@ final class SessionWire {
     private let rateBitsPerSecond: Int
     /// What this host declares in the capability exchange.
     private let capabilities: Capabilities
-    /// Non-nil = only these client statics may complete message 1.
-    private let allowedClientStatics: [[UInt8]]?
-    private let handshakeGateConfig: HandshakeGate.Config
+    /// RetryChallenges owed to the tuples that asked, sent after the wait
+    /// pass's released datagrams.
+    private var pendingChallenges: [(datagram: [UInt8], to: FourTuple)] = []
     /// Non-nil = pairing mode: the service consumes the pairing CTRL
     /// types off the reliable stream; replies ride sendReliable.
     private let pairing: PairingResponderService?
@@ -239,8 +228,6 @@ final class SessionWire {
     /// Key 13 was agreed: the next service pass sends the standing shape.
     private var cursorAnnounceOwed = false
 
-    /// Most recent admitted frame, for the encoder callback's telemetry.
-    private var lastFrameForTelemetry: FrameNumber?
     /// The audio thread's publications, in capture order.
     private enum AudioMailboxEntry {
         case packet(bytes: [UInt8], captureMicros: UInt64, offeredAtNS: UInt64)
@@ -358,8 +345,8 @@ final class SessionWire {
         var lastInputActivityNS: UInt64
         /// A rate-control move the encoder must apply before its next frame.
         var directive: EncoderRateDirective?
-        /// A forced IDR owed on the next encode, with its causes.
-        var demand: FreshKeyframeDemand
+        /// A forced IDR is owed on the next encode.
+        var idrOwed: Bool
     }
 
     func takeLegSnapshot() -> LegSnapshot {
@@ -380,7 +367,7 @@ final class SessionWire {
             videoQuietPostureAgreed: posture.videoQuiet,
             lastInputActivityNS: inputNS,
             directive: takeEncoderRateDirectiveLocked(),
-            demand: session?.takeFreshKeyframeDemand() ?? [])
+            idrOwed: session?.takeFreshKeyframeDemand().isEmpty == false)
     }
 
     var counters: VideoChannelCounters { session.videoCounters }
@@ -396,8 +383,6 @@ final class SessionWire {
     var agreedChromaModes: [UInt64]? {
         withConfigLock { _agreedPosture.chromaModes }
     }
-    /// Whether the flood dial currently demands a retry cookie.
-    var handshakeCookieMode: Bool { session?.handshakeCookieMode ?? false }
     var clock: SessionClockStats { session.clock }
     var pacerTelemetry: PacerTelemetry { session.pacerTelemetry }
     var lifecycleState: SessionState? { session?.lifecycleState }
@@ -435,37 +420,23 @@ final class SessionWire {
     /// The derived freeze budget in force (ms).
     var repairBudgetMS: UInt64 { session.repairFreezeBudgetNS / 1_000_000 }
 
-    /// - Parameters:
-    ///   - listener: the service's listening socket (nil = open one on a
-    ///     kernel-assigned port, requires `peer`).
-    ///   - peer: optional pre-connected far end; Noise message 1 must
-    ///     still arrive from it before the session is established.
     init(
-        listener: HostListener?,
-        peer: (host: String, port: UInt16)?,
+        listener: HostListener,
         rateBitsPerSecond: Int,
         capabilities: Capabilities = .wireDefault,
-        allowedClientStatics: [[UInt8]]? = nil,
-        handshakeGateConfig: HandshakeGate.Config = HandshakeGate.Config(),
         pairing: PairingResponderService? = nil,
         onPairingEvent: @escaping (PairingResponderService.Event) -> Void
             = { _ in }
     ) throws {
-        precondition(listener != nil || peer != nil,
-                     "a session needs a port to listen on or a peer")
         // Nothing may throw past thread.start() below: the drain thread
         // would be left holding a deinit'd `self`.
         self.rateBitsPerSecond = rateBitsPerSecond
         self.capabilities = capabilities
-        self.allowedClientStatics = allowedClientStatics
-        self.handshakeGateConfig = handshakeGateConfig
         self.pairing = pairing
         self.onPairingEvent = onPairingEvent
 
-        self.requiredPeer = peer
-        let listening = try listener ?? HostListener(port: 0)
-        self.listener = listening
-        listenNetio = listening.netio
+        self.listener = listener
+        listenNetio = listener.netio
         wakeFd = lyte_netio_wake_new()
         guard wakeFd >= 0 else {
             throw HostError("sender wake eventfd failed (errno \(errno))")
@@ -487,9 +458,6 @@ final class SessionWire {
             slots.append(slot)
         }
         recvSlots = slots
-        if let peer {
-            try connectMedia(host: peer.host, port: peer.port)
-        }
 
         // The sender thread comes up parked and holds `self` until
         // stopped (shutdown does). SessionWire is cross-thread by design
@@ -525,7 +493,6 @@ final class SessionWire {
         lock.lock()
         closeSessionDescriptors()
         lock.unlock()
-        try? handshakeWitness?.close()
     }
 
     private func closeSessionDescriptors() {
@@ -541,20 +508,6 @@ final class SessionWire {
         }
         close(wakeFd)
         wakeFd = -1
-    }
-
-    private func traceHandshake(
-        _ event: String, fields: [String: String] = [:]
-    ) {
-        guard let handshakeWitness else { return }
-        var object = fields
-        object["event"] = event
-        object["monotonicNanoseconds"] = String(SystemMonotonicClock.nowNanoseconds)
-        guard let data = try? JSONSerialization.data(
-            withJSONObject: object, options: [.sortedKeys])
-        else { return }
-        handshakeWitness.write(data)
-        handshakeWitness.write(Data([0x0A]))
     }
 
     /// Opens the media sockets on first use, else re-connects them.
@@ -593,22 +546,28 @@ final class SessionWire {
         }
     }
 
-    private func makeSession(crypto: SessionCryptoMode, clientTuple: FourTuple) {
-        session = Session(
-            config: SessionConfig(
-                crypto: crypto,
-                rateBitsPerSecond: rateBitsPerSecond,
-                allowedClientStaticPublicKeys: allowedClientStatics,
-                handshakeGate: handshakeGateConfig,
-                capabilities: capabilities
-            ),
-            clientTuple: clientTuple,
-            now: SystemMonotonicClock.nowNanoseconds,
-            rng: SystemRandomNumberGenerator(),
-            sendAccounting: .socketConfirmed
-        ) { [weak self] datagram in
-            self?.outbox.enqueue(
-                datagram, now: SystemMonotonicClock.nowNanoseconds)
+    /// Requires `lock`. Answers an authenticated message 1 with a new
+    /// session and executes its opening events.
+    private func answer(_ handshake: AuthenticatedHandshake) {
+        do {
+            let (answered, events) = try Session.answer(
+                handshake,
+                config: SessionConfig(
+                    rateBitsPerSecond: rateBitsPerSecond,
+                    capabilities: capabilities
+                ),
+                now: SystemMonotonicClock.nowNanoseconds,
+                hostMicroseconds: SystemMonotonicClock.nowMicroseconds,
+                rng: SystemRandomNumberGenerator(),
+                sendAccounting: .socketConfirmed
+            ) { [weak self] datagram in
+                self?.outbox.enqueue(
+                    datagram, now: SystemMonotonicClock.nowNanoseconds)
+            }
+            session = answered
+            for event in events { execute(event) }
+        } catch {
+            emit("noise: answering message 1 failed: \(error)")
         }
     }
 
@@ -687,31 +646,26 @@ final class SessionWire {
     /// `timeoutSeconds` (nil = forever). Call before capture opens.
     ///
     /// Answering commits nothing — Noise IK message 1 carries no
-    /// freshness. A message 1 this process already answered is dropped
-    /// unread; a newer one that authenticates replaces an unconfirmed
-    /// session; an unconfirmed session whose lifecycle closes is
-    /// discarded. So no replayed, spoofed or abandoned message 1 can lock
-    /// out the next client. A wire-out host accepts only its peer.
+    /// freshness. The listener's acceptor admits every other message 1
+    /// (it refuses one this process already answered); one that
+    /// authenticates replaces an unconfirmed session; an unconfirmed
+    /// session whose lifecycle closes is discarded. So no replayed,
+    /// spoofed or abandoned message 1 can lock out the next client.
     ///
     /// `idle` runs off the lock once per wait pass: every 10 ms while no
     /// handshake is answered, every 2 ms while an answered one's timers
     /// run, and at once when a datagram arrives.
     func awaitClient(
-        hostStatic: NoiseKeyPair,
         timeoutSeconds: Double?,
         stopRequested: () -> Bool = { false },
         idle: () -> Void = {}
     ) throws -> ClientAwaitOutcome {
-        print(
-            "noise: host static public key \(Hex.string(hostStatic.publicKey))")
+        let hostKey = Hex.string(listener.acceptor.hostStaticPublicKey)
+        print("noise: host static public key \(hostKey)")
         print("""
             noise: awaiting client handshake on port \
             \(lyte_netio_local_port(listenNetio)) …
             """)
-        traceHandshake("awaitClientBegin", fields: [
-            "pid": String(getpid()),
-            "primaryLocalPort": String(lyte_netio_local_port(listenNetio)),
-        ])
 
         let deadline = timeoutSeconds.map {
             SystemMonotonicClock.nowNanoseconds + UInt64($0 * 1e9)
@@ -723,9 +677,9 @@ final class SessionWire {
             lock.lock()
             do {
                 try receiveFromAll { [weak self] datagram, tuple in
-                    self?.awaitDatagram(datagram, from: tuple, hostStatic: hostStatic)
+                    self?.awaitDatagram(datagram, from: tuple)
                 }
-                if let session, session.phase == .established {
+                if let session {
                     // The answered session's timers run here until it is
                     // confirmed; the sender thread takes over after.
                     for event in session.advance(
@@ -746,12 +700,12 @@ final class SessionWire {
                         discardUnconfirmedSession()
                     }
                 }
-                // Pre-establishment pump: carries 0x13 RetryChallenges
-                // under flood, message 2 and the opening words.
+                // Message 2 and the opening words, then the challenges.
                 if let session {
                     pumpForSocketState(session)
                 }
                 try flushOutbox()
+                sendPendingChallenges()
             } catch {
                 lock.unlock()
                 flushLogLines()
@@ -771,11 +725,8 @@ final class SessionWire {
         if stopRequested() {
             return .terminationRequested
         }
-        throw HostError("""
-            no client handshake within \(Int(timeoutSeconds ?? 0))s \
-            — is lyte-cli wire-view pointed at this host and holding \
-            the printed static key?
-            """)
+        throw HostError(
+            "no client handshake within \(timeoutSeconds ?? 0) s")
     }
 
     /// Waits, off the lock, until a socket this wire reads is readable or
@@ -790,78 +741,68 @@ final class SessionWire {
             fds, events, &revents, Int32(fds.count), timeoutNS)
     }
 
-    /// Requires `lock`. One datagram while awaiting a confirmed client.
-    private func awaitDatagram(
-        _ datagram: [UInt8], from tuple: FourTuple, hostStatic: NoiseKeyPair
-    ) {
-        let message1 = Session.handshakeMessage1(in: datagram)
-        guard message1 != nil || session?.phase == .established else {
-            // Before an answer only an initiation matters: a relaunched
-            // host also hears the old session's feedback.
-            traceAwaitDatagram(datagram, from: tuple, accepted: false)
-            return
-        }
-        if let message1 {
-            // Shape check, not trust: the gate still authenticates.
-            let plausible = admitsPeer(tuple)
-                && (message1 == session?.answeredMessage1
-                    || !listener.answeredHandshakes.contains(message1: message1))
-            traceAwaitDatagram(datagram, from: tuple, accepted: plausible)
-            guard plausible else { return }
-        }
-        if session == nil {
-            makeSession(crypto: .noise(hostStatic: hostStatic), clientTuple: tuple)
-        }
-        let wasConfirmed = session.isPeerConfirmed
-        for event in session.receive(
-            datagram, from: tuple,
-            now: SystemMonotonicClock.nowNanoseconds,
-            hostMicroseconds: SystemMonotonicClock.nowMicroseconds
-        ) {
-            execute(event)
-        }
-        if let superseding = session.takeSupersedingHandshake() {
-            handshakesSuperseded += 1
-            emit("""
-                noise: a newer handshake from \
-                \(superseding.clientTuple.remoteAddress):\
-                \(superseding.clientTuple.remotePort) replaces the \
-                unconfirmed one
-                """)
-            discardUnconfirmedSession()
-            makeSession(
-                crypto: .noise(hostStatic: hostStatic),
-                clientTuple: superseding.clientTuple)
-            for event in session.completeSupersedingHandshake(
-                superseding,
+    /// Requires `lock`. One datagram while awaiting a confirmed client:
+    /// an answered session reads it first (its confirming datagram, a
+    /// verbatim message-1 repeat); anything else is the acceptor's.
+    private func awaitDatagram(_ datagram: [UInt8], from tuple: FourTuple) {
+        if let session {
+            let wasConfirmed = session.isPeerConfirmed
+            var initiation = false
+            for event in session.receive(
+                datagram, from: tuple,
                 now: SystemMonotonicClock.nowNanoseconds,
                 hostMicroseconds: SystemMonotonicClock.nowMicroseconds
             ) {
-                execute(event)
+                if event == .initiationWhileUnconfirmed {
+                    initiation = true
+                } else {
+                    execute(event)
+                }
             }
+            if !wasConfirmed, session.isPeerConfirmed {
+                emit("noise: client confirmed — it holds the session keys")
+            }
+            guard initiation else { return }
         }
-        if let answered = session.answeredMessage1 {
-            listener.answeredHandshakes.record(message1: answered)
+        let decision = listener.acceptor.accept(
+            datagram[...], from: tuple,
+            now: SystemMonotonicClock.nowNanoseconds)
+        if let requireCookie = decision.cookieModeChangedTo {
+            emit("handshake: require-cookie \(requireCookie ? "ENGAGED" : "cleared")")
         }
-        if !wasConfirmed, session.isPeerConfirmed {
-            emit("noise: client confirmed — it holds the session keys")
+        // A flood would print per datagram; the stats line carries the
+        // acceptor's counts instead.
+        switch decision.verdict {
+        case .notInitiation, .refused(.answeredBefore), .refused(.throttled),
+             .refused(.cookieInvalid):
+            break
+        case .refused(let refusal):
+            emitLimited("drop: handshakeFailed", "drop: \(refusal)")
+        case .challenge(let challenge):
+            pendingChallenges.append((challenge, tuple))
+        case .authenticated(let handshake):
+            if session != nil {
+                handshakesSuperseded += 1
+                emit("""
+                    noise: a newer handshake from \
+                    \(tuple.remoteAddress):\(tuple.remotePort) replaces \
+                    the unconfirmed one
+                    """)
+                discardUnconfirmedSession()
+            }
+            answer(handshake)
         }
     }
 
-    private func traceAwaitDatagram(
-        _ datagram: [UInt8], from tuple: FourTuple, accepted: Bool
-    ) {
-        awaitPrimaryDatagrams += 1
-        guard handshakeWitness != nil else { return }
-        let payloadType: UInt8? = (try? Envelope.decode(datagram[...]))?.1.first
-        traceHandshake("primaryDatagram", fields: [
-            "ordinal": String(awaitPrimaryDatagrams),
-            "bytes": String(datagram.count),
-            "remoteAddress": tuple.remoteAddress,
-            "remotePort": String(tuple.remotePort),
-            "shapeAccepted": String(accepted),
-            "payloadType": payloadType.map(String.init) ?? "",
-        ])
+    /// Requires `lock`. Each challenge leaves unsealed from the listening
+    /// socket to the tuple that asked. A challenge is best effort: the
+    /// client retransmits, so a refused send is not recorded.
+    private func sendPendingChallenges() {
+        let tos = WireTos.byte(for: .control)
+        for (datagram, tuple) in pendingChallenges {
+            _ = sendFromListener(datagram, tos: tos, to: tuple)
+        }
+        pendingChallenges.removeAll(keepingCapacity: true)
     }
 
     /// Requires `lock`. Drops an unconfirmed session and its queue; the
@@ -876,13 +817,6 @@ final class SessionWire {
 
     /// The session port (the kernel's pick when bound to port 0).
     var localPort: UInt16 { lyte_netio_local_port(listenNetio) }
-
-    /// wire-out mode admits only its configured peer.
-    private func admitsPeer(_ tuple: FourTuple) -> Bool {
-        guard let requiredPeer else { return true }
-        return tuple.remoteAddress == requiredPeer.host
-            && tuple.remotePort == requiredPeer.port
-    }
 
     /// One receive batch from every socket, or only from the sockets in
     /// `readable` (fds that polled readable; nil = all). A closed session
@@ -931,8 +865,7 @@ final class SessionWire {
     /// Requires `lock`. A non-nil directive must reach the encoder before
     /// the next frame is sent.
     private func takeEncoderRateDirectiveLocked() -> EncoderRateDirective? {
-        guard let vbvPolicy, let session, session.phase == .established
-        else { return nil }
+        guard let vbvPolicy, let session else { return nil }
         guard let directive = vbvPolicy.note(
             frameByteCeiling: session.frameByteCeiling(
                 fps: vbvPolicy.config.fps),
@@ -1049,16 +982,12 @@ final class SessionWire {
         drainAudioMailboxLocked()
         do {
             if let context, let prepared {
-                let shards = try session.commitPreparedVideoFrame(
+                _ = try session.commitPreparedVideoFrame(
                     prepared,
                     context: context,
                     captureTimestampMicroseconds: captureMicros,
                     now: SystemMonotonicClock.nowNanoseconds
                 )
-                lastFrameForTelemetry = shards > 0
-                    ? session.lastAdmittedVideoFrameNumber : nil
-            } else {
-                lastFrameForTelemetry = nil
             }
         } catch {
             lock.unlock()
@@ -1077,17 +1006,6 @@ final class SessionWire {
         )
         lock.unlock()
         signalDrain()
-    }
-
-    func annotateLastVideoFrame(
-        averageQP: Int?, idrCauses: [String]
-    ) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let frame = lastFrameForTelemetry else { return }
-        session.annotateVideoFrameTelemetry(
-            frame: frame, averageQP: averageQP, idrCauses: idrCauses
-        )
     }
 
     /// VideoAdmissionGate's inputs — queued video wire time and the
@@ -1135,7 +1053,7 @@ final class SessionWire {
         // blocks, and the audio thread never does console I/O.
         if lock.try() {
             drainAudioMailboxLocked()
-            if let session, session.phase == .established, !peerGone {
+            if let session, !peerGone {
                 pumpForSocketState(session)
                 do {
                     try flushOutbox()
@@ -1158,7 +1076,7 @@ final class SessionWire {
         guard !pending.isEmpty else { return }
 
         for entry in pending {
-            guard let session, session.phase == .established, !peerGone else {
+            guard let session, !peerGone else {
                 if case .packet = entry { audioPacketsDroppedPreSession += 1 }
                 continue
             }
@@ -1466,7 +1384,7 @@ final class SessionWire {
         lock.lock()
         defer { lock.unlock() }
         before()
-        guard let session, session.phase == .established else { return }
+        guard let session else { return }
         for event in note(
             session, SystemMonotonicClock.nowNanoseconds,
             SystemMonotonicClock.nowMicroseconds
@@ -1791,10 +1709,6 @@ final class SessionWire {
             let client = session.validator.primary.tuple
             do {
                 try connectMedia(host: client.remoteAddress, port: client.remotePort)
-                traceHandshake("mediaSocketsConnected", fields: [
-                    "remoteAddress": client.remoteAddress,
-                    "remotePort": String(client.remotePort),
-                ])
             } catch {
                 emit("""
                     session: \(error) — sending addressed from the \
@@ -1840,8 +1754,6 @@ final class SessionWire {
                 ctrl-arq: message group \(group.rawValue) (\(message.count) B, \
                 type \(Hex.string(message.first ?? 0, prefix: true)))
                 """)
-        case .reliableOneShotAcknowledged(let group):
-            emit("ctrl-arq: one-shot group \(group.rawValue) acknowledged")
         case .arqIgnored(let reason):
             // A poisoned ordered stream repeats its reason for every
             // segment until the session ends; each reason is limited on
@@ -1865,25 +1777,8 @@ final class SessionWire {
                     emit("path: rebind failed: \(error)")
                 }
             }
-        case .handshakeCookieModeChanged(let requireCookie):
-            emit(requireCookie
-                ? """
-                    handshake: FLOOD — require-cookie mode ENGAGED \
-                    (msg1 rate crossed the enter threshold; \
-                    un-cookied msg1s now answered with 0x13, no Noise)
-                    """
-                : """
-                    handshake: pressure cleared — require-cookie mode \
-                    DISENGAGED (back to the token-bucket posture)
-                    """)
-        // A flood would print per datagram; the final stats line carries
-        // these counts instead.
-        case .handshakeChallenged:
-            break
-        case .dropped(.handshakeThrottled):
-            break
-        case .dropped(.handshakeCookieInvalid):
-            break
+        case .initiationWhileUnconfirmed:
+            break // awaitDatagram hands it to the acceptor
         case .dropped(let reason):
             emitLimited("drop: \(Self.caseName(reason))", "drop: \(reason)")
         case .sendFailed(let what):
@@ -1914,11 +1809,6 @@ final class SessionWire {
                 capabilities: NO WORKABLE INTERSECTION (\(why)) — \
                 typed teardown follows
                 """)
-        case .capabilityUpdateAcknowledged(let accepted):
-            emit("""
-                capabilities: update \
-                \(accepted ? "accepted" : "rejected") by the client
-                """)
         case .modeTransitionSent(let mode):
             emit("""
                 mode: → \(mode == .idle ? "IDLE" : "ACTIVE") \
@@ -1927,21 +1817,8 @@ final class SessionWire {
         case .teardownSent(let reason):
             emit("session: teardown 0x0A queued (\(reason))")
         case .lifecycleChanged(let state):
-            switch state {
-            case .frozen:
-                emit("""
-                    lifecycle: FROZEN — 350 ms of media-path silence; \
-                    datagram video suspended, CTRL stays alive
-                    """)
-            case .recovery:
-                emit("""
-                    lifecycle: RECOVERY — evidence returned; fresh IDR \
-                    at the half-stale rate, sends resume
-                    """)
-            case .active, .idle:
+            if state != .closed { // .sessionClosed carries the reason
                 emit("lifecycle: \(state)")
-            case .closed:
-                break // .sessionClosed carries the reason
             }
         case .sessionClosed(let reason):
             emit("session: CLOSED (\(reason))")
@@ -2044,19 +1921,12 @@ final class SessionWire {
         case .clipboardSetReceived(let text):
             // The core's gate and echo book already ran. Buffer only: the
             // apply runs off-lock in service(). Never logs the payload.
-            if clipboardApplyHandler != nil {
-                emit("""
-                    clipboard: 0x1A set received (\(text.utf8.count) B) — \
-                    applying to the host clipboard
-                    """)
-                pendingClipboardApplies.append(text)
-            } else {
-                // Defensive: a leafless shell never declares key 10.
-                emit("""
-                    clipboard: 0x1A set received (\(text.utf8.count) B) — no \
-                    clipboard leaf, ignored
-                    """)
-            }
+            let leaf = clipboardApplyHandler != nil
+            emit("""
+                clipboard: set received (\(text.utf8.count) B)\
+                \(leaf ? "" : " — no leaf, ignored")
+                """)
+            if leaf { pendingClipboardApplies.append(text) }
         case .clipboardAnnounceSent(let byteCount):
             emit("clipboard: announce sent (\(byteCount) B, 0x1B)")
         case .clipboardAnnounceSuppressed(let reason):
@@ -2076,50 +1946,37 @@ final class SessionWire {
             // Buffered for the off-lock shell pass; silent, since chunks
             // arrive by the hundred.
             pendingBulkMessages.append(message)
-        case .clipboardImageReceived(let data, let mime):
+        case .clipboardImage(.applyImage(let data, let mime)):
             // Sha-verified; buffered for the off-lock apply. Never logs
             // the payload.
-            if clipboardImageApplyHandler != nil {
-                emit("""
-                    clipboard: image received (\(data.count) B, \
-                    \(mime)) — applying to the host clipboard
-                    """)
-                pendingClipboardImageApplies.append(data)
-            } else {
-                // Defensive: an imageless shell never declares key 12.
-                emit("""
-                    clipboard: image received (\(data.count) B) — \
-                    no image leaf, ignored
-                    """)
-            }
-        case .clipboardImageShareStarted(let byteCount):
+            let leaf = clipboardImageApplyHandler != nil
             emit("""
-                clipboard: image share started (\(byteCount) B as chan-8 cargo)
+                clipboard: image received (\(data.count) B, \(mime))\
+                \(leaf ? "" : " — no image leaf, ignored")
                 """)
-        case .clipboardImageShareCompleted(let byteCount):
-            emit("""
-                clipboard: image share completed (\(byteCount) B, \
-                sha-verified by the client)
-                """)
-        case .clipboardImageShareAborted(let reason, let byRemote):
+            if leaf { pendingClipboardImageApplies.append(data) }
+        case .clipboardImage(.shareStarted(_, let byteCount)):
+            emit("clipboard: image share started (\(byteCount) B)")
+        case .clipboardImage(.shareCompleted(_, let byteCount)):
+            emit("clipboard: image share completed (\(byteCount) B)")
+        case .clipboardImage(.shareAborted(let reason, let byRemote)):
             emit("""
                 clipboard: image share aborted (\(reason), \
                 \(byRemote ? "remote" : "local"))
                 """)
-        case .clipboardImageReceiveAborted(let reason, let byRemote):
+        case .clipboardImage(.receiveAborted(let reason, let byRemote)):
             emit("""
                 clipboard: image receive aborted (\(reason), \
                 \(byRemote ? "remote" : "local"))
                 """)
-        case .clipboardImageSuppressed(let reason):
+        case .clipboardImage(.suppressed(let reason)):
             emit("clipboard: image suppressed (\(reason))")
-        case .clipboardImageRefused(let reason):
+        case .clipboardImage(.refused(let reason)):
             emit("clipboard: image refused (\(reason))")
-        case .clipboardImageViolation(let violation):
-            emit("""
-                clipboard: image lane protocol violation \
-                (\(violation)) — aborted
-                """)
+        case .clipboardImage(.violated(let violation)):
+            emit("clipboard: image lane violation (\(violation)) — aborted")
+        case .clipboardImage(.send):
+            break // the session sends these itself
         }
     }
 
@@ -2249,19 +2106,26 @@ final class SessionWire {
     private func sendOffPrimary(
         _ datagram: VideoChannelDatagram, to destination: FourTuple
     ) -> SocketWriteResult {
-        let rc = datagram.bytes.withUnsafeBufferPointer { buf -> Int32 in
+        let rc = sendFromListener(
+            datagram.bytes, tos: WireTos.byte(for: datagram.pacerClass),
+            to: destination)
+        // The unconnected listening socket reports refusals for any tuple
+        // it sent to; once the media sockets carry the primary, those are
+        // other tuples'.
+        return writeResult(rc, onPrimaryPath: videoNetio == nil)
+    }
+
+    private func sendFromListener(
+        _ bytes: [UInt8], tos: UInt8, to destination: FourTuple
+    ) -> Int32 {
+        bytes.withUnsafeBufferPointer { buf in
             var pkt = lyte_netio_pkt(
-                data: buf.baseAddress, len: buf.count,
-                tos: WireTos.byte(for: datagram.pacerClass))
+                data: buf.baseAddress, len: buf.count, tos: tos)
             return lyte_netio_send_to(
                 listenNetio, &pkt,
                 destination.remoteAddress, destination.remotePort,
                 &sendError, sendError.count)
         }
-        // The unconnected listening socket reports refusals for any tuple
-        // it sent to; once the media sockets carry the primary, those are
-        // other tuples'.
-        return writeResult(rc, onPrimaryPath: videoNetio == nil)
     }
 
     /// One lane's batch staged into `scratch`, each datagram with its

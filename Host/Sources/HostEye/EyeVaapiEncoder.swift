@@ -14,8 +14,6 @@
 // next frame: no reset and no IDR. The HRD buffer is four frames of the
 // cap unless the caller bounds it (HostWire.EncoderHrd).
 
-#if os(Linux)
-
 import CVA
 import Foundation
 import Glibc
@@ -38,10 +36,7 @@ public final class EyeVaapiEncoder {
     public let qp: Int32
     /// The Best tier: Rext Main 4:4:4 on packed AYUV surfaces.
     public let chroma444: Bool
-    /// True when the driver demanded GPB (BI_NOT_EMPTY). No pen writes
-    /// plain P slices, so open() refuses anything else.
-    public private(set) var gpb = true
-    /// The GL blit's render targets, exported via `exportSurface`.
+    /// The GL blit's render targets, exported via `exportLayers`.
     public private(set) var inputSurfaces: [VASurfaceID] = []
 
     private let drmFd: Int32
@@ -83,17 +78,27 @@ public final class EyeVaapiEncoder {
         guard vaInitialize(display, &major, &minor)
             == VA_STATUS_SUCCESS else { return false }
         defer { vaTerminate(display) }
+        return (try? encodeEntrypoints(display, VAProfileHEVCMain444))?
+            .isEmpty == false
+    }
+
+    /// The HEVC encode entrypoints (EncSlice, EncSliceLP) `display`
+    /// offers for `profile`.
+    private static func encodeEntrypoints(
+        _ display: VADisplay, _ profile: VAProfile
+    ) throws -> Set<VAEntrypoint> {
         var entrypoints = [VAEntrypoint](
             repeating: VAEntrypointVLD,
             count: Int(vaMaxNumEntrypoints(display))
         )
         var count: Int32 = 0
-        guard vaQueryConfigEntrypoints(
-            display, VAProfileHEVCMain444, &entrypoints, &count
-        ) == VA_STATUS_SUCCESS else { return false }
-        return entrypoints.prefix(Int(count)).contains {
-            $0 == VAEntrypointEncSlice || $0 == VAEntrypointEncSliceLP
+        let status = vaQueryConfigEntrypoints(
+            display, profile, &entrypoints, &count)
+        guard status == VA_STATUS_SUCCESS else {
+            throw EyeVaapiError("vaQueryConfigEntrypoints(HEVC)", status)
         }
+        return Set(entrypoints.prefix(Int(count)))
+            .intersection([VAEntrypointEncSlice, VAEntrypointEncSliceLP])
     }
 
     public init(
@@ -139,23 +144,11 @@ public final class EyeVaapiEncoder {
         let profile = chroma444 ? VAProfileHEVCMain444 : VAProfileHEVCMain
 
         // EncSlice preferred, LP accepted (some silicon is VDENC-only).
-        var entrypoints = [VAEntrypoint](
-            repeating: VAEntrypointVLD,
-            count: Int(vaMaxNumEntrypoints(display))
-        )
-        var entrypointCount: Int32 = 0
-        try check(vaQueryConfigEntrypoints(
-            display, profile, &entrypoints, &entrypointCount
-        ), "vaQueryConfigEntrypoints(HEVC)")
-        let available = Set(entrypoints.prefix(Int(entrypointCount)))
-        let entrypoint: VAEntrypoint
-        if available.contains(VAEntrypointEncSlice) {
-            entrypoint = VAEntrypointEncSlice
-        } else if available.contains(VAEntrypointEncSliceLP) {
-            entrypoint = VAEntrypointEncSliceLP
-        } else {
-            throw EyeVaapiError(
-                "no HEVC encode entrypoint (have \(available))")
+        let available = try Self.encodeEntrypoints(display, profile)
+        guard let entrypoint = [VAEntrypointEncSlice, VAEntrypointEncSliceLP]
+            .first(where: available.contains)
+        else {
+            throw EyeVaapiError("no HEVC encode entrypoint")
         }
 
         // GPB (VA 1.9+): BI_NOT_EMPTY is the only dialect the slice pen
@@ -164,11 +157,10 @@ public final class EyeVaapiEncoder {
             type: VAConfigAttribPredictionDirection, value: 0)
         _ = vaGetConfigAttributes(
             display, profile, entrypoint, &prediction, 1)
-        if prediction.value != VA_ATTRIB_NOT_SUPPORTED {
-            gpb = prediction.value
+        guard prediction.value == VA_ATTRIB_NOT_SUPPORTED
+            || prediction.value
                 & UInt32(VA_PREDICTION_DIRECTION_BI_NOT_EMPTY) != 0
-        }
-        guard gpb else {
+        else {
             throw EyeVaapiError("""
                 driver wants plain P slices — the \
                 slice pen only speaks the iHD GPB dialect yet
@@ -283,9 +275,11 @@ public final class EyeVaapiEncoder {
     // MARK: Surface export (the imported VADRMPRIMESurfaceDescriptor
     // drops its anonymous-struct arrays, so bytes are read by offset)
 
-    public func exportSurface(
-        _ id: VASurfaceID
-    ) throws -> (y: ExportedPlane, uv: ExportedPlane) {
+    /// The first `count` layers of surface `id`: two (Y, UV) for NV12,
+    /// one for packed AYUV. The caller owns the returned fds.
+    public func exportLayers(
+        _ id: VASurfaceID, count: Int
+    ) throws -> [ExportedPlane] {
         let descriptor = UnsafeMutableRawPointer.allocate(
             byteCount: 512, alignment: 8)
         defer { descriptor.deallocate() }
@@ -320,13 +314,13 @@ public final class EyeVaapiEncoder {
                 pitch: u32(base + 40)
             )
         }
-        guard u32(80) >= 2 else {
+        guard u32(80) >= count else {
             closeExportedObjects(descriptor, keeping: [])
             throw EyeVaapiError(
-                "expected 2 exported layers, got \(u32(80))")
+                "expected \(count) exported layers, got \(u32(80))")
         }
-        let planes = (layer(0), layer(1))
-        closeExportedObjects(descriptor, keeping: [planes.0.fd, planes.1.fd])
+        let planes = (0..<count).map(layer)
+        closeExportedObjects(descriptor, keeping: Set(planes.map(\.fd)))
         return planes
     }
 
@@ -346,46 +340,6 @@ public final class EyeVaapiEncoder {
             else { continue }
             close(fd)
         }
-    }
-
-    /// The 4:4:4 variant: a packed AYUV surface exports as one layer.
-    public func exportSurfacePacked(
-        _ id: VASurfaceID
-    ) throws -> ExportedPlane {
-        let descriptor = UnsafeMutableRawPointer.allocate(
-            byteCount: 512, alignment: 8)
-        defer { descriptor.deallocate() }
-        descriptor.initializeMemory(
-            as: UInt8.self, repeating: 0, count: 512)
-        let status = vaExportSurfaceHandle(
-            display, id,
-            UInt32(VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2),
-            UInt32(VA_EXPORT_SURFACE_WRITE_ONLY)
-                | UInt32(VA_EXPORT_SURFACE_SEPARATE_LAYERS),
-            descriptor
-        )
-        try check(status, "vaExportSurfaceHandle(\(id))")
-        func u32(_ offset: Int) -> UInt32 {
-            descriptor.load(fromByteOffset: offset, as: UInt32.self)
-        }
-        func u64(_ offset: Int) -> UInt64 {
-            descriptor.load(fromByteOffset: offset, as: UInt64.self)
-        }
-        guard u32(80) >= 1 else {
-            closeExportedObjects(descriptor, keeping: [])
-            throw EyeVaapiError(
-                "expected 1 exported layer, got \(u32(80))")
-        }
-        let objectIndex = Int(u32(84 + 8))
-        let plane = ExportedPlane(
-            fourcc: u32(84),
-            modifier: u64(16 + objectIndex * 16 + 8),
-            fd: Int32(bitPattern: u32(16 + objectIndex * 16)),
-            offset: u32(84 + 24),
-            pitch: u32(84 + 40)
-        )
-        closeExportedObjects(descriptor, keeping: [plane.fd])
-        return plane
     }
 
     // MARK: The per-frame drive
@@ -698,5 +652,3 @@ public final class EyeVaapiEncoder {
         return id
     }
 }
-
-#endif

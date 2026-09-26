@@ -350,16 +350,7 @@ public struct BulkSendEngine: Sendable {
     /// in flight; terminal states swallow.
     public mutating func cancel() -> [Action] {
         if isTerminal { return [] }
-        let wasIdle = (state == .idle)
-        state = .aborted(.cancelled, byRemote: false)
-        var actions: [Action] = []
-        if !wasIdle, let abort = try? BulkAbort(
-            transferId: offer.transferId, reason: .cancelled
-        ) {
-            actions.append(.emit(.abort(abort)))
-        }
-        actions.append(.aborted(.cancelled, byRemote: false))
-        return actions
+        return abortLocally(.cancelled, emit: state != .idle)
     }
 
     public var isTerminal: Bool {
@@ -443,14 +434,22 @@ public struct BulkSendEngine: Sendable {
     private mutating func violate(
         _ violation: BulkTransferViolation
     ) -> [Action] {
-        state = .aborted(.protocolViolation, byRemote: false)
-        var actions: [Action] = [.violated(violation)]
-        if let abort = try? BulkAbort(
-            transferId: offer.transferId, reason: .protocolViolation
+        [.violated(violation)] + abortLocally(.protocolViolation)
+    }
+
+    /// Ends the transfer on a local verdict, emitting the abort unless
+    /// the offer never went out.
+    private mutating func abortLocally(
+        _ reason: BulkAbortReason, emit: Bool = true
+    ) -> [Action] {
+        state = .aborted(reason, byRemote: false)
+        var actions: [Action] = []
+        if emit, let abort = try? BulkAbort(
+            transferId: offer.transferId, reason: reason
         ) {
             actions.append(.emit(.abort(abort)))
         }
-        actions.append(.aborted(.protocolViolation, byRemote: false))
+        actions.append(.aborted(reason, byRemote: false))
         return actions
     }
 }
@@ -617,15 +616,7 @@ public struct BulkReceiveEngine: Sendable {
         guard case .offered = state, let offer else {
             throw BulkReceiveError.noOfferPending
         }
-        state = .aborted(.declined, byRemote: false)
-        var actions: [Action] = []
-        if let abort = try? BulkAbort(
-            transferId: offer.transferId, reason: .declined
-        ) {
-            actions.append(.emit(.abort(abort)))
-        }
-        actions.append(.aborted(.declined, byRemote: false))
-        return actions
+        return abortLocally(.declined, transferId: offer.transferId)
     }
 
     /// The shell durably stored a requested chunk. Advances
@@ -660,15 +651,7 @@ public struct BulkReceiveEngine: Sendable {
             ) else { return [.completed] }
             return [.emit(.complete(message)), .completed]
         }
-        state = .aborted(.shaMismatch, byRemote: false)
-        var actions: [Action] = []
-        if let abort = try? BulkAbort(
-            transferId: offer.transferId, reason: .shaMismatch
-        ) {
-            actions.append(.emit(.abort(abort)))
-        }
-        actions.append(.aborted(.shaMismatch, byRemote: false))
-        return actions
+        return abortLocally(.shaMismatch, transferId: offer.transferId)
     }
 
     /// The shell's disk said no (full, write error).
@@ -680,30 +663,16 @@ public struct BulkReceiveEngine: Sendable {
             return []
         }
         guard let offer else { return [] }
-        state = .aborted(.storageFailure, byRemote: false)
-        var actions: [Action] = []
-        if let abort = try? BulkAbort(
-            transferId: offer.transferId, reason: .storageFailure
-        ) {
-            actions.append(.emit(.abort(abort)))
-        }
-        actions.append(.aborted(.storageFailure, byRemote: false))
-        return actions
+        return abortLocally(.storageFailure, transferId: offer.transferId)
     }
 
     /// A human cancelled.
     public mutating func cancel() -> [Action] {
         if isTerminal { return [] }
-        let hadTransfer = (offer != nil && state != .awaitingOffer)
-        state = .aborted(.cancelled, byRemote: false)
-        var actions: [Action] = []
-        if hadTransfer, let offer, let abort = try? BulkAbort(
-            transferId: offer.transferId, reason: .cancelled
-        ) {
-            actions.append(.emit(.abort(abort)))
-        }
-        actions.append(.aborted(.cancelled, byRemote: false))
-        return actions
+        return abortLocally(
+            .cancelled,
+            transferId: state == .awaitingOffer ? nil : offer?.transferId
+        )
     }
 
     // MARK: internals
@@ -722,18 +691,9 @@ public struct BulkReceiveEngine: Sendable {
             guard persisted.matches(incoming) else {
                 // The file changed under the id — refuse loudly; the
                 // sender's recovery is a fresh id.
-                state = .aborted(.resumeMismatch, byRemote: false)
-                var actions: [Action] = []
-                if let abort = try? BulkAbort(
-                    transferId: incoming.transferId,
-                    reason: .resumeMismatch
-                ) {
-                    actions.append(.emit(.abort(abort)))
-                }
-                actions.append(
-                    .aborted(.resumeMismatch, byRemote: false)
+                return abortLocally(
+                    .resumeMismatch, transferId: incoming.transferId
                 )
-                return actions
             }
             possession = persisted.possession
         } else {
@@ -823,15 +783,23 @@ public struct BulkReceiveEngine: Sendable {
     private mutating func violate(
         _ violation: BulkTransferViolation
     ) -> [Action] {
-        let abortId = offer?.transferId
-        state = .aborted(.protocolViolation, byRemote: false)
-        var actions: [Action] = [.violated(violation)]
-        if let abortId, let abort = try? BulkAbort(
-            transferId: abortId, reason: .protocolViolation
+        [.violated(violation)]
+            + abortLocally(.protocolViolation, transferId: offer?.transferId)
+    }
+
+    /// Ends the transfer on a local verdict, emitting the abort when
+    /// there is a transfer id to name.
+    private mutating func abortLocally(
+        _ reason: BulkAbortReason, transferId: UInt64?
+    ) -> [Action] {
+        state = .aborted(reason, byRemote: false)
+        var actions: [Action] = []
+        if let transferId, let abort = try? BulkAbort(
+            transferId: transferId, reason: reason
         ) {
             actions.append(.emit(.abort(abort)))
         }
-        actions.append(.aborted(.protocolViolation, byRemote: false))
+        actions.append(.aborted(reason, byRemote: false))
         return actions
     }
 }

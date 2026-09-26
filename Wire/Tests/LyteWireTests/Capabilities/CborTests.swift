@@ -105,9 +105,7 @@ final class CborTests: XCTestCase {
             .init(key: .unsigned(1), value: .unsigned(2)),
             .init(key: .unsigned(1), value: .unsigned(3)),
         ])
-        XCTAssertThrowsError(try Cbor.encode(duplicated)) { error in
-            XCTAssertEqual(error as? CborError, .duplicateMapKey)
-        }
+        assertThrows(CborError.duplicateMapKey) { try Cbor.encode(duplicated) }
     }
 
     // MARK: - Deterministic-encoding and profile rejects
@@ -162,11 +160,7 @@ final class CborTests: XCTestCase {
         ]
         for (rawHex, expected) in rejects {
             let cleaned = rawHex.filter { !$0.isWhitespace }
-            XCTAssertThrowsError(
-                try Cbor.decode(hex(cleaned)), cleaned
-            ) { error in
-                XCTAssertEqual(error as? CborError, expected, cleaned)
-            }
+            assertThrows(expected, cleaned) { try Cbor.decode(hex(cleaned)) }
         }
     }
 

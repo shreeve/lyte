@@ -16,50 +16,39 @@ the vectors in `Wire/Vectors/`; the dated pillar documents are history.
 
 ## Package ownership
 
-Six SwiftPM packages, Swift tools version 6.0, Swift 6 language mode.
+Six SwiftPM packages, Swift tools version 6.0, Swift 6 language mode. Who
+owns which concept, target by target, is
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#targets); these are the rules.
 
 - **`Common/` — `LyteCommon`:** `LyteCore` owns shared sans-IO policy and
-  injected-time utilities (including the Conductor); `LyteIO` owns shared
-  OS adapters; `COpus` is the one pinned, statically linked libopus source
-  leaf (BSD, separate from Lyte's MIT license); `LyteTestKit` owns shared
-  test equipment and the repository lints' scanners. Adapters never own
-  policy.
-- **`Wire/` — `LyteWire`:** sans-IO protocol codecs, cryptography, FEC,
-  ARQ, state machines, vocabulary and the frozen vectors. `CNanorsWire` is
-  the vendored Reed-Solomon leaf; `LyteWireTestKit` owns reusable wire test
-  equipment; `LyteWireVectorGen` owns every vector builder. Swift Crypto is
-  the only external dependency, and `import Crypto` is confined to
-  `Sources/LyteWire/Crypto/`.
-- **`Host/` — `LyteHost`:** `HostCore` owns pure host policy and the HEVC
-  bitstream pens; `HostSession` owns responder policy with injected time
-  and randomness; `HostWire` executes session decisions (packetize, FEC,
-  pace, seal) and is itself sans-IO; `HostIO` owns the host's file and path
-  adapters; `HostAudio` owns Opus policy over `COpus`; `HostEye` and the C
-  leaves are Linux-only behind `#if os(Linux)` in the manifest. Pure
-  targets build and test on macOS too.
-- **`Client/` — `Lyte`:** `LyteClientCore` owns dependency-free client
-  policy; `LyteClientSession` owns the sans-IO initiator that every client
-  shell shares (handshake, retry, pairing, capabilities, lifecycle, IDR
-  recovery, beacon echo, carriage); `LyteTransport` owns the macOS protocol,
-  media and IO stack; `LyteCorpus` owns diagnostic and benchmark machinery;
-  `LyteUI` owns shared AppKit shims; `LyteHelperProtocol`,
-  `LyteHelperSecurity` and `lyte-helperd` own the privileged AWDL helper;
-  `LyteClientTestKit` owns client test equipment. Production streaming code
-  never depends on corpus or harness code. The named exception: the `Lyte`
-  app target links `LyteCorpus` for its diagnostic benchmark. Only a
-  diagnostic bundle (`Scripts/make-app.sh --diagnostics`, which
-  writes Info.plist `LyteDiagnosticEntryPoints`) obeys the benchmark and
-  witness environment; every other bundle ignores it. Sparkle (in-app
-  updates, [docs/RELEASING.md](docs/RELEASING.md)) is the app target's
-  only third-party dependency, embedded by `Scripts/make-app.sh`; nothing
-  below the app imports it, and only a release bundle starts it.
-- **`Browser/` — `LyteClientBrowser`:** `LyteClientBrowserCore` is the
-  browser's sans-IO core over `LyteWire`, `LyteCore`, `LyteClientCore`
-  and `LyteClientSession`; `LyteClientBrowser` owns the JS↔WASM boundary
-  (JavaScriptKit). Page JavaScript owns WebTransport IO, WebCodecs,
-  WebGPU, the AudioWorklet ring and DOM input, and never reimplements
-  protocol or Conductor policy. `Host` is a test-only dependency. Current
-  status: [docs/BROWSER.md](docs/BROWSER.md).
+  injected-time utilities, the Conductor included; `LyteIO` owns shared OS
+  adapters, which never own policy; `COpus` is the one pinned, statically
+  linked libopus leaf (BSD, separate from Lyte's MIT license).
+- **`Wire/` — `LyteWire`:** sans-IO codecs, cryptography, FEC, ARQ, state
+  machines, vocabulary and the frozen vectors. Swift Crypto is the only
+  external dependency, and `import Crypto` is confined to
+  `Sources/LyteWire/Crypto/`. The `LyteWireVectorGen` library owns every
+  vector file's model and builder: test targets may depend on it,
+  production never does. `LyteWireTestKit` owns the vector loader and
+  reusable wire test equipment.
+- **`Host/` — `LyteHost`:** `HostCore`, `HostSession` and `HostWire` are
+  sans-IO (`HostWire` executes session decisions without doing IO).
+  `HostEye` and the C leaves are Linux-only behind `#if os(Linux)` in the
+  manifest; every pure target builds and tests on macOS too.
+- **`Client/` — `Lyte`:** every client shell shares the one sans-IO
+  initiator in `LyteClientSession`. Production streaming code never
+  depends on corpus or harness code; the named exception is the `Lyte`
+  app linking `LyteCorpus` for its diagnostic benchmark, and only a
+  diagnostic bundle (`Scripts/make-app.sh --diagnostics`, Info.plist
+  `LyteDiagnosticEntryPoints`) obeys the benchmark and witness
+  environment. Sparkle ([docs/RELEASING.md](docs/RELEASING.md)) is the app
+  target's only third-party dependency: nothing below the app imports it,
+  and only a release bundle starts it.
+- **`Browser/` — `LyteClientBrowser`:** `LyteClientBrowserCore` is sans-IO
+  over the shared cores. Page JavaScript owns browser IO (WebTransport,
+  WebCodecs, WebGPU, the AudioWorklet ring, DOM input) and never
+  reimplements protocol or Conductor policy. `Host` is a test-only
+  dependency.
 - **`SystemTests/` — `LyteSystemTests`:** tests that compose the exported
   Client and Host libraries. It owns no production code and does not
   justify a dependency between Client and Host.
@@ -69,8 +58,10 @@ Client never imports Host and Host never imports Client. Every package uses
 own tests; a suite that composes several targets is named for what it
 composes (`LyteClientHostTests`, `LyteHostIntegrationTests`). Reusable test
 equipment is named `<Domain>TestKit` and lives under `Sources/`; only test
-targets, other TestKits and the vector builders (`LyteWireVectorGen`,
-`LyteWireVectorGenTool`) depend on it.
+targets, other TestKits and the vector builders depend on it, and no
+shipping target in any package imports XCTest, a TestKit or
+`LyteWireVectorGen`. Common's `RoleBoundaryTests` and `SingleOwnerTests`
+enforce both boundaries.
 
 ## Architecture doctrine
 
@@ -198,5 +189,6 @@ Operational detail and the reasons behind each rule:
 | `AGENTS.md` | Repository law (this file) |
 | `HANDOFF.md` | Current branch, live rig state, next work; at most 40 lines |
 | `TODO.md` | Deferred work only; never completed narrative |
+| `CHANGELOG.md` | User-visible changes per release; `Scripts/release.sh` publishes each version's section |
 | `LICENSE` | Legal terms; never paraphrase or consolidate it |
 | `docs/README.md` | Catalog of living docs, binding decisions and history, with status |

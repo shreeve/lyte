@@ -3,11 +3,11 @@ import XCTest
 import LyteWire
 import LyteWireTestKit
 
-// The W-G7 gate legs for PairingPake: a full pairing run derives one
-// ISK on both ends; wrong PIN aborts cleanly with nothing pinnable and
-// nothing offline-testable; the transcript binding (tampered Noise
-// handshake hash, swapped statics) fails the same way; low-order
-// shares abort before any tag math; the state machines refuse misuse.
+// PairingPake: a full pairing run derives one ISK on both ends; a wrong
+// PIN aborts cleanly with nothing pinnable and nothing offline-testable;
+// the transcript binding (tampered Noise handshake hash, swapped statics)
+// fails the same way; low-order shares abort before any tag math; the
+// state machines refuse misuse.
 
 final class PairingPakeTests: XCTestCase {
 
@@ -40,9 +40,12 @@ final class PairingPakeTests: XCTestCase {
 
     // MARK: Secret hygiene
 
-    /// Byte arrays anywhere in a value's stored state (one level deep).
+    /// Byte arrays anywhere in a value's stored state, at any depth.
     private func storedByteArrays(_ value: Any) -> [[UInt8]] {
-        Mirror(reflecting: value).children.compactMap { $0.value as? [UInt8] }
+        Mirror(reflecting: value).children.flatMap { child in
+            (child.value as? [UInt8]).map { [$0] }
+                ?? storedByteArrays(child.value)
+        }
     }
 
     /// Once the scalar has been used against the peer share, neither
@@ -67,12 +70,17 @@ final class PairingPakeTests: XCTestCase {
         try responder.receiveConfirm(try initiator.receiveShareB(shareB))
         XCTAssertFalse(storedByteArrays(initiator).contains(scalarA))
         XCTAssertNotNil(initiator.result)
-        // The responder keeps only public 32-byte values — the session
-        // id, the client static to pin, its own share — never the
-        // PIN-derived generator.
-        XCTAssertEqual(
-            storedByteArrays(responder).filter { $0.count == 32 }.count, 3
+        // Neither role keeps the PIN-derived generator.
+        let generator = CPace.calculateGenerator(
+            prs: Self.pin,
+            ci: CPace.lvCat(
+                Array("lyte-pairing-v1".utf8), Self.clientStatic,
+                Self.hostStatic
+            ),
+            sid: Self.handshakeHash
         )
+        XCTAssertFalse(storedByteArrays(initiator).contains(generator))
+        XCTAssertFalse(storedByteArrays(responder).contains(generator))
     }
 
     /// Printing a pairing result or a key pair never prints the secret.
@@ -99,8 +107,8 @@ final class PairingPakeTests: XCTestCase {
 
     func testFullPairingRunAgreesOnIskAndPins() throws {
         var (initiator, responder) = try makePair()
-        // Byte round trips through the codecs, the way HS-9/CL-6 will
-        // actually carry the messages.
+        // Byte round trips through the codecs, the way the ends carry
+        // the messages.
         let shareA = try PairingShareA.decode(
             try initiator.makeShareA().encode()
         )
@@ -164,115 +172,54 @@ final class PairingPakeTests: XCTestCase {
         XCTAssertNotEqual(try run(hash: hashOne), try run(hash: hashTwo))
     }
 
-    // MARK: Wrong PIN — the offline-attack gate leg
+    // MARK: Wrong PIN and transcript binding
 
-    func testWrongPinFailsAtTheInitiator() throws {
-        var (initiator, responder) = try makePair(
-            responderPin: Array("482914".utf8)
-        )
-        let shareB = try responder.receiveShareA(
-            initiator.makeShareA()
-        )
-        XCTAssertThrowsError(
-            try initiator.receiveShareB(shareB)
-        ) { error in
-            XCTAssertEqual(
-                error as? PairingPakeError, .confirmationFailed
-            )
-        }
-        XCTAssertNil(initiator.result, "a failed run must expose no key")
-        // The machine is dead after failure — no retry with the same
-        // scalars, which would let an attacker test PINs one by one
-        // against a single transcript.
-        XCTAssertThrowsError(try initiator.receiveShareB(shareB)) {
-            XCTAssertEqual($0 as? PairingPakeError, .invalidState)
-        }
-        // EVERY entry point is dead, not just the one that failed: a
-        // failed initiator cannot even re-emit its share A (which would
-        // let a shell accidentally restart the run with burned scalars).
-        XCTAssertThrowsError(try initiator.makeShareA()) {
-            XCTAssertEqual($0 as? PairingPakeError, .invalidState)
-        }
-    }
-
-    func testWrongPinFailsAtTheResponder() throws {
-        var (initiator, responder) = try makePair(
-            responderPin: Array("000000".utf8)
-        )
-        let shareB = try responder.receiveShareA(
-            initiator.makeShareA()
-        )
-        // The initiator refuses first (Tb is wrong for it)…
-        XCTAssertThrowsError(try initiator.receiveShareB(shareB))
-        // …and a forged confirm cannot rescue the responder side: only
-        // the true Ta (derived from the PIN it doesn't share) verifies.
-        let forged = PairingConfirm(
-            confirmationTag: [UInt8](
-                repeating: 0xAB, count: CPace.tagByteCount
-            )
-        )
-        XCTAssertThrowsError(
-            try responder.receiveConfirm(forged)
-        ) { error in
-            XCTAssertEqual(
-                error as? PairingPakeError, .confirmationFailed
-            )
-        }
-        XCTAssertNil(responder.result)
-        XCTAssertThrowsError(try responder.receiveConfirm(forged)) {
-            XCTAssertEqual($0 as? PairingPakeError, .invalidState)
-        }
-        // And a failed responder is dead to a fresh share A too — no
-        // revival path from any state.
-        XCTAssertThrowsError(
-            try responder.receiveShareA(
-                PairingShareA(share: [UInt8](repeating: 1, count: 32))
-            )
-        ) {
-            XCTAssertEqual($0 as? PairingPakeError, .invalidState)
-        }
-    }
-
-    // MARK: Transcript binding — the §8.2 negative tests
-
-    func testTamperedHandshakeHashFails() throws {
-        // Same PIN both ends, but the two ends saw different Noise
-        // sessions — the MITM shape. Must fail exactly like wrong PIN.
+    /// A wrong PIN, a different Noise session (the MITM shape) and a
+    /// mismatched client static all fail the same way: the initiator
+    /// refuses Tb, a forged confirm cannot rescue the responder, and
+    /// every entry point of both machines is dead afterwards — no retry
+    /// with burned scalars, so no PIN can be tested against one
+    /// transcript.
+    func testEveryDivergenceFailsAndKillsBothRoles() throws {
         var tamperedHash = Self.handshakeHash
         tamperedHash[0] ^= 0x01
-        var (initiator, responder) = try makePair(
-            responderHash: tamperedHash
-        )
-        let shareB = try responder.receiveShareA(
-            initiator.makeShareA()
-        )
-        XCTAssertThrowsError(
-            try initiator.receiveShareB(shareB)
-        ) { error in
-            XCTAssertEqual(
-                error as? PairingPakeError, .confirmationFailed
-            )
-        }
-        XCTAssertNil(initiator.result)
-    }
-
-    func testMismatchedStaticsFail() throws {
-        // The host believes a different client static than the client
-        // holds — CI diverges, the generator diverges, pairing fails.
         var otherClientStatic = Self.clientStatic
         otherClientStatic[31] ^= 0xFF
-        var (initiator, responder) = try makePair(
-            responderClientStatic: otherClientStatic
+        let divergent = [
+            ("wrong PIN", try makePair(responderPin: Array("482914".utf8))),
+            ("other session", try makePair(responderHash: tamperedHash)),
+            ("other static", try makePair(
+                responderClientStatic: otherClientStatic)),
+        ]
+        let forged = PairingConfirm(
+            confirmationTag: [UInt8](repeating: 0xAB, count: CPace.tagByteCount)
         )
-        let shareB = try responder.receiveShareA(
-            initiator.makeShareA()
-        )
-        XCTAssertThrowsError(
-            try initiator.receiveShareB(shareB)
-        ) { error in
-            XCTAssertEqual(
-                error as? PairingPakeError, .confirmationFailed
-            )
+        for (name, pair) in divergent {
+            var (initiator, responder) = pair
+            let shareB = try responder.receiveShareA(initiator.makeShareA())
+            assertThrows(PairingPakeError.confirmationFailed, name) {
+                try initiator.receiveShareB(shareB)
+            }
+            XCTAssertNil(initiator.result, name)
+            assertThrows(PairingPakeError.invalidState, name) {
+                try initiator.receiveShareB(shareB)
+            }
+            assertThrows(PairingPakeError.invalidState, name) {
+                try initiator.makeShareA()
+            }
+
+            assertThrows(PairingPakeError.confirmationFailed, name) {
+                try responder.receiveConfirm(forged)
+            }
+            XCTAssertNil(responder.result, name)
+            assertThrows(PairingPakeError.invalidState, name) {
+                try responder.receiveConfirm(forged)
+            }
+            assertThrows(PairingPakeError.invalidState, name) {
+                try responder.receiveShareA(
+                    PairingShareA(share: [UInt8](repeating: 1, count: 32))
+                )
+            }
         }
     }
 
@@ -292,27 +239,19 @@ final class PairingPakeTests: XCTestCase {
         for share in lowOrderShares {
             var (initiator, responder) = try makePair()
             // Into the responder as share A…
-            XCTAssertThrowsError(
+            assertThrows(PairingPakeError.invalidPeerShare) {
                 try responder.receiveShareA(PairingShareA(share: share))
-            ) { error in
-                XCTAssertEqual(
-                    error as? PairingPakeError, .invalidPeerShare
-                )
             }
             // …and into the initiator as share B (any tag: the abort
             // must fire before the tag is even looked at).
             _ = try initiator.makeShareA()
-            XCTAssertThrowsError(
+            assertThrows(PairingPakeError.invalidPeerShare) {
                 try initiator.receiveShareB(PairingShareB(
                     share: share,
                     confirmationTag: [UInt8](
                         repeating: 0, count: CPace.tagByteCount
                     )
                 ))
-            ) { error in
-                XCTAssertEqual(
-                    error as? PairingPakeError, .invalidPeerShare
-                )
             }
             XCTAssertNil(initiator.result)
             XCTAssertNil(responder.result)
@@ -324,20 +263,18 @@ final class PairingPakeTests: XCTestCase {
     func testStateMachineRefusesMisuse() throws {
         var (initiator, responder) = try makePair()
         // Confirm before share A.
-        XCTAssertThrowsError(
+        assertThrows(PairingPakeError.invalidState) {
             try responder.receiveConfirm(PairingConfirm(
                 confirmationTag: [UInt8](
                     repeating: 0, count: CPace.tagByteCount
                 )
             ))
-        ) {
-            XCTAssertEqual($0 as? PairingPakeError, .invalidState)
         }
         // A second share A after the first.
         let shareA = try initiator.makeShareA()
         _ = try responder.receiveShareA(shareA)
-        XCTAssertThrowsError(try responder.receiveShareA(shareA)) {
-            XCTAssertEqual($0 as? PairingPakeError, .invalidState)
+        assertThrows(PairingPakeError.invalidState) {
+            try responder.receiveShareA(shareA)
         }
         // A completed initiator refuses another share B.
         var (initiator2, responder2) = try makePair()
@@ -345,47 +282,41 @@ final class PairingPakeTests: XCTestCase {
             initiator2.makeShareA()
         )
         _ = try initiator2.receiveShareB(shareB2)
-        XCTAssertThrowsError(try initiator2.receiveShareB(shareB2)) {
-            XCTAssertEqual($0 as? PairingPakeError, .invalidState)
+        assertThrows(PairingPakeError.invalidState) {
+            try initiator2.receiveShareB(shareB2)
         }
     }
 
     func testInvalidInputsReject() {
         // Empty PIN.
-        XCTAssertThrowsError(
+        assertThrows(PairingPakeError.invalidInput) {
             try PairingPakeInitiator(
                 pin: [],
                 clientStaticPublicKey: Self.clientStatic,
                 hostStaticPublicKey: Self.hostStatic,
                 noiseHandshakeHash: Self.handshakeHash
             )
-        ) {
-            XCTAssertEqual($0 as? PairingPakeError, .invalidInput)
         }
         // Mis-sized static.
-        XCTAssertThrowsError(
+        assertThrows(PairingPakeError.invalidInput) {
             try PairingPakeResponder(
                 pin: Self.pin,
                 clientStaticPublicKey: [1, 2, 3],
                 hostStaticPublicKey: Self.hostStatic,
                 noiseHandshakeHash: Self.handshakeHash
             )
-        ) {
-            XCTAssertEqual($0 as? PairingPakeError, .invalidInput)
         }
         // Mis-sized handshake hash.
-        XCTAssertThrowsError(
+        assertThrows(PairingPakeError.invalidInput) {
             try PairingPakeInitiator(
                 pin: Self.pin,
                 clientStaticPublicKey: Self.clientStatic,
                 hostStaticPublicKey: Self.hostStatic,
                 noiseHandshakeHash: [0xAA]
             )
-        ) {
-            XCTAssertEqual($0 as? PairingPakeError, .invalidInput)
         }
         // Mis-sized injected scalar.
-        XCTAssertThrowsError(
+        assertThrows(PairingPakeError.invalidInput) {
             try PairingPakeInitiator(
                 pin: Self.pin,
                 clientStaticPublicKey: Self.clientStatic,
@@ -393,15 +324,13 @@ final class PairingPakeTests: XCTestCase {
                 noiseHandshakeHash: Self.handshakeHash,
                 fixedScalar: [1, 2, 3]
             )
-        ) {
-            XCTAssertEqual($0 as? PairingPakeError, .invalidInput)
         }
     }
 
     // MARK: Composition with the real Noise handshake
 
     func testPairingBoundToARealNoiseSession() throws {
-        // The full W6 story in one test: a real IK handshake (TOFU
+        // The whole story in one test: a real IK handshake (TOFU
         // statics), then pairing bound to its handshake hash; both ends
         // pin the statics the session actually used.
         let clientStatic = NoiseKeyPair.generate()

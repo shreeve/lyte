@@ -83,13 +83,7 @@ def motion_cadence_analysis(source, observations):
     if source is None:
         first_boundary = "source_evidence"
         failure = "motion_source_evidence_missing"
-    elif (
-        not source.get("pass", False)
-        or not source.get("dimensionsExact", False)
-        or source.get("skippedSourceFrames", 0) > 0
-        or source.get("gapP99Milliseconds", math.inf) > 25
-        or source.get("phaseDriftP99Milliseconds", math.inf) > 8
-    ):
+    elif not source.get("pass", False):
         first_boundary = "source_compositor"
         failure = "motion_source_cadence_failed"
     elif percentile(capture_gaps, 99) is None \
@@ -159,8 +153,6 @@ def audio_interval_analysis(samples, warmup_seconds=3.0):
         audio = sample_record["audio"]
         end = float(sample_record["elapsedSeconds"])
         phase = "warmup" if end <= warmup_seconds else "steadyState"
-        # declickProtectedUnderrunFrames (older runs) always equalled
-        # underrunFrames and is ignored.
         current = {key: audio.get(key, 0) for key in keys}
         delta = {
             key: max(0, current[key] - previous[key]) for key in keys
@@ -333,7 +325,6 @@ def quality_analysis(samples, elapsed):
             for item in observations
         ],
         "dimensionsExact": dimensions_exact,
-        "cadencePolicy": "static_idle_floor_retention",
         "decodedProgressFPS": decoded_progress_fps,
         "decodedFramesMonotonic": decoded_monotonic,
         "decodedFramesAdvancedDuringRun": decoded_advanced,

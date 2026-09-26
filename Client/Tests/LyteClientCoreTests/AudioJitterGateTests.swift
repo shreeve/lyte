@@ -93,7 +93,7 @@ final class AudioJitterGateTests: XCTestCase {
             recovered: recovered)
     }
 
-    // MARK: Leg 1 — steady cadence: silence-free, minimal delay
+    // MARK: Steady cadence: silence-free, minimal delay
 
     func testSteadyTraceZeroPlcZeroUnderrunTightTarget() {
         let buffer = AudioJitterBuffer()
@@ -219,12 +219,12 @@ final class AudioJitterGateTests: XCTestCase {
         XCTAssertEqual(buffer.targetPackets, beforeLate + 1)
     }
 
-    // MARK: Leg 2 — bursty ±15 ms delay variance (the dominant
+    // MARK: Bursty ±15 ms delay variance (the dominant
     // impairment per the audio-continuity verdict)
 
     func testBurstyJitterAdaptsTargetAndStaysContinuous() {
         let buffer = AudioJitterBuffer()
-        var rng = SplitMix64(seed: 0xC111)   // "CL-11"
+        var rng = SplitMix64(seed: 0xC111)
         let count = 2_000
         let arrivals = (0..<count).map { n -> (UInt64, AudioPacket) in
             let jitter = Int64(rng.next() % 30_001) - 15_000
@@ -282,7 +282,7 @@ final class AudioJitterGateTests: XCTestCase {
             "decay is gradual, never an eager collapse")
     }
 
-    // MARK: Leg 4 — a true gap (loss beyond FEC) → PLC, exactly sized
+    // MARK: A true gap (loss beyond FEC) → PLC, exactly sized
 
     func testTrueGapConcealsExactlyTheMissingSlots() {
         let buffer = AudioJitterBuffer()
@@ -335,6 +335,71 @@ final class AudioJitterGateTests: XCTestCase {
         XCTAssertEqual(buffer.snapshotStats().packetsDroppedInRecenter, 0)
     }
 
+    /// An announced quiet is not a blackout: no PLC runs while it lasts,
+    /// and the host's wake burst (numbered on from the last packet sent)
+    /// re-primes playout, so none of it is late and none of it raises the
+    /// target. PLC that ran before the notice arrived does not push the
+    /// resume behind the playhead.
+    func testAnnouncedQuietConcealsNothingAndTheWakeBurstPlays() {
+        let buffer = AudioJitterBuffer()
+        for n in UInt32(0)..<10 {
+            buffer.insert(packet(n), arrivalMicroseconds: UInt64(n) * 5_000)
+        }
+        for n in UInt32(0)..<10 {
+            XCTAssertEqual(buffer.pull(nowMicroseconds: 50_000, urgent: true),
+                           .packet(packet(n)))
+        }
+        for _ in 0..<3 {
+            guard case .conceal = buffer.pull(nowMicroseconds: 60_000, urgent: true)
+            else { return XCTFail("before the notice a gap conceals") }
+        }
+        buffer.noteAnnouncedQuiet()
+        for _ in 0..<25 {
+            XCTAssertEqual(buffer.pull(nowMicroseconds: 100_000, urgent: true), .starved)
+        }
+        // The pre-roll's quiet head goes to the hard-cap recenter; its
+        // newest packets (the sound that tripped the wire) survive.
+        for n in UInt32(10)..<50 {
+            buffer.insert(packet(n), arrivalMicroseconds: 3_000_000)
+        }
+        XCTAssertEqual(buffer.pull(nowMicroseconds: 3_000_000, urgent: true),
+                       .packet(packet(30)))
+        for n in UInt32(50)..<150 {
+            let at = 3_000_000 + UInt64(n - 49) * 5_000
+            buffer.insert(packet(n), arrivalMicroseconds: at)
+            _ = buffer.pull(nowMicroseconds: at, urgent: true)
+        }
+        let stats = buffer.snapshotStats()
+        XCTAssertEqual(stats.plcInvocations, 3)
+        XCTAssertEqual(stats.latePacketsDropped, 0)
+        XCTAssertEqual(stats.targetPackets, 5)
+    }
+
+    /// Only a wire-carried packet ahead of the last one played wakes an
+    /// announced quiet: a late FEC-recovered or replayed packet arriving
+    /// first neither rewinds playout nor ends the quiet.
+    func testAnOldPacketAfterAnAnnouncedQuietNeitherReplaysNorWakesIt() {
+        let buffer = AudioJitterBuffer()
+        for n in UInt32(0)..<10 {
+            buffer.insert(packet(n), arrivalMicroseconds: UInt64(n) * 5_000)
+        }
+        for n in UInt32(0)..<10 {
+            XCTAssertEqual(buffer.pull(nowMicroseconds: 50_000, urgent: true),
+                           .packet(packet(n)))
+        }
+        buffer.noteAnnouncedQuiet()
+        buffer.insert(packet(7, recovered: true), arrivalMicroseconds: 100_000)
+        buffer.insert(packet(8), arrivalMicroseconds: 100_000)
+        XCTAssertEqual(buffer.pull(nowMicroseconds: 100_000, urgent: true), .starved,
+                       "nothing replays, and the quiet still conceals nothing")
+        for n in UInt32(10)..<15 {
+            buffer.insert(packet(n), arrivalMicroseconds: 200_000)
+        }
+        XCTAssertEqual(buffer.pull(nowMicroseconds: 200_000, urgent: true),
+                       .packet(packet(10)))
+        XCTAssertEqual(buffer.snapshotStats().plcInvocations, 0)
+    }
+
     /// Before playout starts nothing orders the pending packets by
     /// distance, and serial order is ambiguous across 2^31. A packet far
     /// from those already pending re-primes from itself, so playout never
@@ -355,7 +420,7 @@ final class AudioJitterGateTests: XCTestCase {
                        "the outliers left no stale packets behind")
     }
 
-    // MARK: Leg 5 — late-packet discipline
+    // MARK: Late-packet discipline
 
     func testLatePacketIsDroppedNotReplayed() {
         let buffer = AudioJitterBuffer()
@@ -380,9 +445,9 @@ final class AudioJitterGateTests: XCTestCase {
         XCTAssertEqual(result.played, result.played.sorted())
     }
 
-    // MARK: Leg 6 — stall + burst: bounded depth, re-centered latency
+    // MARK: Stall + burst: bounded depth, re-centered latency
 
-    func testStallBurstRecentersInsteadOfGrowingLatencyForever() {
+    func testStallBurstRecentersInsteadOfGrowingLatencyForever() throws {
         let buffer = AudioJitterBuffer()
         var arrivals: [(UInt64, AudioPacket)] = []
         // 100 steady packets…
@@ -410,12 +475,11 @@ final class AudioJitterGateTests: XCTestCase {
         XCTAssertGreaterThan(stats.packetsDroppedInRecenter, 0)
         // After the re-center the buffer sits at/below target + slack.
         let config = AudioJitterConfig()
-        if let depthMax = stats.depthPackets.maxValue {
-            XCTAssertLessThanOrEqual(
-                Int(depthMax),
-                config.maxTargetPackets + config.slackPackets,
-                "pending depth stays bounded through the burst")
-        }
+        let depthMax = try XCTUnwrap(stats.depthPackets.maxValue)
+        XCTAssertLessThanOrEqual(
+            Int(depthMax),
+            config.maxTargetPackets + config.slackPackets,
+            "pending depth stays bounded through the burst")
         // The tail plays contiguously (post-recenter numbers ordered).
         XCTAssertEqual(result.played, result.played.sorted())
         XCTAssertTrue(result.played.contains(259), "the stream resumed")

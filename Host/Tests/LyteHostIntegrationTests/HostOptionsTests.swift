@@ -1,3 +1,4 @@
+import HostCore
 import HostSession
 @testable import lyte_host
 import LyteWire
@@ -32,9 +33,27 @@ final class HostOptionsTests: XCTestCase {
         XCTAssertTrue(challenged, "a flood meets the cookie challenge")
     }
 
+    /// The standing service's own line, as the unit word-splits it.
+    func testTheStandingServiceLineParsesAsTheService() throws {
+        let opts = try Options.parse(["lyte-host"]
+            + "--wire-listen 41151 --clipboard=images --advertise-interface wlp0s20f3"
+                .split(separator: " ").map(String.init))
+        XCTAssertEqual(opts.wireListen, 41151)
+        XCTAssertTrue(opts.clipboard)
+        XCTAssertTrue(opts.clipboardImages)
+        XCTAssertEqual(opts.advertiseInterface, "wlp0s20f3")
+        XCTAssertTrue(opts.advertise)
+        XCTAssertFalse(opts.acceptFiles)
+        XCTAssertFalse(opts.pair)
+        XCTAssertFalse(opts.requirePaired)
+        XCTAssertNil(opts.drmDevice)
+        XCTAssertEqual(HostServiceLoop.posture(
+            secondsGiven: opts.secondsGiven, pairing: opts.pair,
+            seconds: opts.seconds), .service)
+    }
+
     func testTheCapturedCardCanBeNamed() throws {
-        XCTAssertEqual(
-            try Options.parse(["lyte-host"]).drmDevice, "/dev/dri/card1")
+        XCTAssertNil(try Options.parse(["lyte-host"]).drmDevice)
         XCTAssertEqual(
             try Options.parse(["lyte-host", "--drm-device", "/dev/dri/card0"])
                 .drmDevice,
@@ -59,10 +78,42 @@ final class HostOptionsTests: XCTestCase {
 
     func testTheCookieThresholdsMustLeaveHysteresis() {
         XCTAssertThrowsError(try Options.parse([
-            "lyte-host", "--cookie-enter", "10", "--cookie-exit", "10",
+            "lyte-host", "--wire-listen", "41999",
+            "--cookie-enter", "10", "--cookie-exit", "10",
         ]))
         XCTAssertNoThrow(try Options.parse([
-            "lyte-host", "--cookie-enter", "10", "--cookie-exit", "9",
+            "lyte-host", "--wire-listen", "41999",
+            "--cookie-enter", "10", "--cookie-exit", "9",
         ]))
+    }
+
+    /// Without a listener there is no session: a session flag there would
+    /// be silently ignored while the run captures to a file.
+    func testSessionFlagsNeedAListener() {
+        for flags in [
+            ["--pair"], ["--require-paired"], ["--clipboard"],
+            ["--clipboard=images"], ["--accept-files"],
+            ["--accept-files=/srv/drop"], ["--host-audio", "muted"],
+            ["--cookie-enter", "30"], ["--no-audio"], ["--input", "off"],
+        ] {
+            XCTAssertThrowsError(
+                try Options.parse(["lyte-host"] + flags), "\(flags)")
+            XCTAssertNoThrow(try Options.parse(
+                ["lyte-host", "--wire-listen", "41999"] + flags), "\(flags)")
+        }
+    }
+
+    /// A kbps value whose bps overflows Int32 used to trap the host.
+    func testTheAudioBitrateIsBoundedBeforeItScales() throws {
+        for value in ["0", "513", "3000000"] {
+            XCTAssertThrowsError(try Options.parse([
+                "lyte-host", "--wire-listen", "41999",
+                "--audio-bitrate-kbps", value,
+            ]), value)
+        }
+        XCTAssertEqual(try Options.parse([
+            "lyte-host", "--wire-listen", "41999",
+            "--audio-bitrate-kbps", "96",
+        ]).audioBitrate, 96_000)
     }
 }

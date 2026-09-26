@@ -6,14 +6,13 @@
 // frame), rate directives (no reset), the agreed chroma posture, the quiet
 // video posture, and pre-encode admission against the latency budget.
 
-#if os(Linux)
-
 import LyteIO
 import Foundation
 import Glibc
 import HostCore
 import HostEye
 import HostWire
+import LyteCore
 import LyteWire
 
 /// The eye that outlives sessions: the GL context and the pipeline open
@@ -59,8 +58,6 @@ final class WarmEye {
 
 final class DirectEyeLeg {
     struct Config {
-        /// The card node observed unless --drm-device names another.
-        static let defaultDevice = "/dev/dri/card1"
         /// The leg's wall-clock bound; `.infinity` for a service session.
         var seconds: Double
         var qp: Int32 = 24
@@ -70,6 +67,8 @@ final class DirectEyeLeg {
         /// The opening VBV (bits): the one-FEC-group frame ceiling the
         /// encoder's HRD buffer must not exceed. Nil = no guard (file mode).
         var vbvBits: Int?
+        /// File mode's chroma; a session's is the client's declaration.
+        var fileChroma: ChromaPosture = .yuv420
     }
 
     private let config: Config
@@ -86,8 +85,6 @@ final class DirectEyeLeg {
     /// An IDR is owed; on a static screen it is served by re-encoding
     /// the retained surface.
     private var staticIdrWanted = false
-    /// The owed IDR's cause tags, attached to the keyframe that leaves.
-    private var pendingCauses: [String] = []
     /// Frames the session refused. Never leg-fatal: the session's own
     /// end stops the leg.
     private(set) var deliveryFailures = 0
@@ -100,10 +97,7 @@ final class DirectEyeLeg {
     /// Quiet-desktop heartbeat: one retained re-encode per second keeps
     /// the clock model fed and the wire warm.
     static let keepaliveSeconds = 1.0
-    /// The screen beat and the encoder's frame rate.
-    static let fps = 60
-    /// The cursor plane's poll period: one 60 Hz beat.
-    static let cursorPollMicroseconds: UInt64 = 16_667
+    static let fps = EyePipeline.fps
     /// How often a running session's janitor bounds host.log.
     static let logCheckIntervalMicros: UInt64 = 60_000_000
     private var lastDeliverySeconds = 0.0
@@ -190,9 +184,20 @@ final class DirectEyeLeg {
 
     /// Opens the scanout before the session exists, so its geometry
     /// reaches the input injector before the first client event can.
-    static func openScreen(device: String) throws -> DirectScreenSource {
+    /// Nil discovers the card that scans out.
+    static func openScreen(device named: String?) throws -> DirectScreenSource {
+        guard let device = named ?? DirectScreenSource.discoverCard() else {
+            throw HostError("""
+                direct: no card under /dev/dri has an active primary \
+                plane — the display must be lit; --drm-device names a card
+                """)
+        }
         do {
             let screen = try DirectScreenSource(device: device)
+            print("""
+                direct: capturing \(device) (\(screen.driver), \
+                \(named == nil ? "discovered" : "--drm-device"))
+                """)
             if screen.renderNodeIsFallback {
                 print("""
                     direct: \(device) names no render node — using \
@@ -210,7 +215,10 @@ final class DirectEyeLeg {
         } catch DirectScreenSourceError.openDevice(let path, let code) {
             throw HostError("direct: open(\(path)) errno \(code)")
         } catch DirectScreenSourceError.noActivePrimaryPlane {
-            throw HostError("direct: no active primary plane")
+            throw HostError("""
+                direct: no active primary plane on \(device) — the display \
+                must be lit
+                """)
         } catch DirectScreenSourceError.initialTicketDenied {
             throw HostError("""
                 direct: GETFB2 refused — the direct backend \
@@ -328,7 +336,7 @@ final class DirectEyeLeg {
                 staticIdrWanted = false
                 let served: Void? = try pipeline.encodeRetained(forceIDR: true) {
                     bytes, keyframe in
-                    deliverTakingCauses(
+                    deliverRearmingIdr(
                         bytes, keyframe: keyframe,
                         captureUs: lastEncodedCaptureUs)
                 }
@@ -366,7 +374,7 @@ final class DirectEyeLeg {
                    >= keepaliveInterval {
                 let served: Void? = try pipeline.encodeRetained(forceIDR: false) {
                     bytes, keyframe in
-                    _ = deliver(bytes, keyframe: keyframe, causes: [],
+                    _ = deliver(bytes, keyframe: keyframe,
                                 captureUs: lastEncodedCaptureUs)
                 }
                 if served != nil {
@@ -408,7 +416,7 @@ final class DirectEyeLeg {
             }
             // The cursor plane is read on the 60 Hz grid, not every poll.
             let cursorStart = SystemMonotonicClock.nowMicroseconds
-            if cursorStart &- lastCursorPollUs >= Self.cursorPollMicroseconds {
+            if cursorStart &- lastCursorPollUs >= ScoreBeat.periodMicroseconds {
                 lastCursorPollUs = cursorStart
                 pollCursor(cursorWatcher)
                 lastStages.cursorUs =
@@ -450,9 +458,7 @@ final class DirectEyeLeg {
             // Demands are taken every poll so recovery on a static desktop
             // never waits for damage; the retained surface is re-encoded
             // with its ORIGINAL capture time (not a network-late frame).
-            let demand = snapshot?.demand ?? []
-            if !demand.isEmpty {
-                pendingCauses += demand.names
+            if snapshot?.idrOwed == true {
                 staticIdrWanted = true
             }
 
@@ -542,7 +548,6 @@ final class DirectEyeLeg {
 
             let forceIdr = frames == 0 || staticIdrWanted
             staticIdrWanted = false
-            if frames == 0 { pendingCauses.append("opening") }
 
             do {
                 // 1-in-1-out: keyframe truth rides on the packet.
@@ -551,7 +556,7 @@ final class DirectEyeLeg {
                     bytes, keyframe in
                     deliverStart = SystemMonotonicClock.nowMicroseconds
                     lastEncodedCaptureUs = captureUs
-                    deliverTakingCauses(
+                    deliverRearmingIdr(
                         bytes, keyframe: keyframe, captureUs: captureUs)
                 }
                 lastStages.blitUs = pipeline.lastBlitMicroseconds
@@ -567,6 +572,9 @@ final class DirectEyeLeg {
         }
 
         // No drain: the encoder is 1-in-1-out.
+        serviceLock.lock()
+        let serviceMaxUs = serviceMaxMicroseconds
+        serviceLock.unlock()
         print("""
             direct: eye closed — \(frames) frames, \(bytes) bytes, \
             \(keyframes) IDRs, missed_grabs=\(missedGrabs), \
@@ -574,25 +582,17 @@ final class DirectEyeLeg {
             static_idrs=\(staticIdrsServed), \
             keepalives=\(keepalivesSent), \
             observations=\(observations), \
+            skip_events=\(observationSkipEvents), \
+            beats_skipped=\(skippedObservationBeats), \
             framebuffer_transitions=\(framebufferTransitions), \
             pixel_changes=\(changedObservations), \
-            observation_beats_skipped=\(skippedObservationBeats), \
             posture_announcements=\(postureAnnouncements), \
             delivery_failures=\(deliveryFailures), \
             admission_skips=\(admission.skipped), \
             cursor_shapes=\(cursorShapesSeen), \
-            hotspot_corrections=\(cursorHotspotCorrections)
-            """)
-        serviceLock.lock()
-        let serviceMaxUs = serviceMaxMicroseconds
-        serviceLock.unlock()
-        print("""
-            direct: observation-book — beats=\(observations), \
-            skip_events=\(observationSkipEvents), \
-            beats_skipped=\(skippedObservationBeats), \
-            pixel_changes=\(changedObservations), \
+            hotspot_corrections=\(cursorHotspotCorrections), \
             stage_max[\(maxStages.described())] ms, \
-            service_max=\(StageClocks.ms(serviceMaxUs)) ms (janitor thread)
+            service_max=\(StageClocks.ms(serviceMaxUs)) ms
             """)
     }
 
@@ -694,9 +694,9 @@ final class DirectEyeLeg {
     }
 
     /// The agreed chroma posture, or 4:2:0 when no declaration lands
-    /// within the opening wait or there is no session (file mode).
+    /// within the opening wait; file mode takes its configured posture.
     private func awaitOpeningChroma() -> ChromaPosture {
-        guard let wire else { return .yuv420 }
+        guard let wire else { return config.fileChroma }
         let start = SystemMonotonicClock.nowNanoseconds
         while true {
             if let posture = ChromaPosture.opening(
@@ -709,16 +709,12 @@ final class DirectEyeLeg {
         }
     }
 
-    /// Delivers one access unit, attaching the owed causes to a keyframe.
-    /// A refused keyframe leaves the IDR (and its causes) owed.
-    private func deliverTakingCauses(
+    /// Delivers one access unit; a refused keyframe leaves the IDR owed.
+    private func deliverRearmingIdr(
         _ packet: UnsafeRawBufferPointer, keyframe: Bool, captureUs: UInt64
     ) {
-        let causes = keyframe ? pendingCauses : []
-        if keyframe { pendingCauses.removeAll() }
-        if !deliver(packet, keyframe: keyframe, causes: causes,
-                    captureUs: captureUs), keyframe {
-            pendingCauses = causes + pendingCauses
+        if !deliver(packet, keyframe: keyframe, captureUs: captureUs),
+           keyframe {
             staticIdrWanted = true
         }
     }
@@ -726,7 +722,7 @@ final class DirectEyeLeg {
     /// One encoded access unit, borrowed from the encoder's coded buffer
     /// for the duration of the call. False when the session refused it.
     private func deliver(_ packet: UnsafeRawBufferPointer, keyframe: Bool,
-                         causes: [String], captureUs: UInt64) -> Bool {
+                         captureUs: UInt64) -> Bool {
         guard let base = packet.baseAddress?.assumingMemoryBound(
             to: UInt8.self) else { return false }
         if firstPacket.isEmpty {
@@ -737,11 +733,6 @@ final class DirectEyeLeg {
                 try wire.sendFrame(
                     data: base, size: packet.count,
                     isKeyframe: keyframe, captureMicros: captureUs)
-                wire.annotateLastVideoFrame(
-                    averageQP: nil,
-                    idrCauses: keyframe
-                        ? (causes.isEmpty ? ["spontaneous"] : causes)
-                        : [])
             } catch {
                 deliveryFailures += 1
                 lastDeliveryFailureSeconds = SystemMonotonicClock.nowSeconds
@@ -761,5 +752,3 @@ final class DirectEyeLeg {
         return true
     }
 }
-
-#endif

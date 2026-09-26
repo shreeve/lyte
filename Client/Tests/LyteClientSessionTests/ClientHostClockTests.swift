@@ -2,13 +2,12 @@ import XCTest
 import LyteClientSession
 import LyteWire
 
-// THE CL-10 GATE (client plan: "min-filtered offset + regression skew over
-// 30 s window from beacon echoes; residual < 1 ms after 30 s"). Synthetic
-// traces built from the LIVE-RUN facts: min RTT 5–10 ms with offsets
-// stable to ~±1 µs at the min edge; Wi-Fi power-save RTT spikes of
-// 55–100 ms whose offsets are polluted by tens of ms of one-sided
-// queuing; CLOCK_MONOTONIC epochs differing by boot time, so offsets are
-// ~10¹¹ µs and the fit must stay exact anyway.
+// Min-filtered offset plus regression skew over a 30 s window of beacon
+// echoes, residual under 1 ms after 30 s. Synthetic traces follow measured
+// behavior: min RTT 5–10 ms with offsets stable to ~±1 µs at the min edge;
+// Wi-Fi power-save RTT spikes of 55–100 ms whose offsets carry tens of ms
+// of one-sided queuing; CLOCK_MONOTONIC epochs differing by boot time, so
+// offsets are ~10¹¹ µs and the fit must stay exact anyway.
 
 final class ClientHostClockTests: XCTestCase {
 

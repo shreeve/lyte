@@ -45,22 +45,14 @@ public enum HevcSpsChroma {
     ) -> Bool {
         guard reader.skip(bits: 88 + 8) else { return false }
         guard maxSubLayersMinus1 > 0 else { return true }
-        var profilePresent: [Bool] = []
-        var levelPresent: [Bool] = []
+        var subLayerBits = 0
         for _ in 0..<maxSubLayersMinus1 {
             guard let p = reader.read(bits: 1),
                   let l = reader.read(bits: 1) else { return false }
-            profilePresent.append(p == 1)
-            levelPresent.append(l == 1)
+            subLayerBits += (p == 1 ? 88 : 0) + (l == 1 ? 8 : 0)
         }
         // reserved_zero_2bits pads the flag block to 8 sub-layers.
-        guard reader.skip(bits: (8 - maxSubLayersMinus1) * 2)
-        else { return false }
-        for i in 0..<maxSubLayersMinus1 {
-            if profilePresent[i], !reader.skip(bits: 88) { return false }
-            if levelPresent[i], !reader.skip(bits: 8) { return false }
-        }
-        return true
+        return reader.skip(bits: (8 - maxSubLayersMinus1) * 2 + subLayerBits)
     }
 
 }

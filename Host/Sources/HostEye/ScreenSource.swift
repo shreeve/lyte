@@ -1,6 +1,5 @@
-#if os(Linux)
-
 import CDRM
+import Foundation
 import Glibc
 import HostCore
 import LyteIO
@@ -66,14 +65,15 @@ public enum DirectScreenSourceError: Error, CustomStringConvertible {
     }
 }
 
-/// The one DRM/KMS screen source used by both the production direct eye and
-/// the standalone capture witness.
+/// The direct eye's DRM/KMS screen source.
 public final class DirectScreenSource: ScreenSource {
     public let width: Int32
     public let height: Int32
     public let fileDescriptor: Int32
     /// The card node this source observes.
     public let device: String
+    /// The card's kernel driver (i915, nvidia-drm, …).
+    public let driver: String
     /// The render node of the same GPU, which imports, blits and
     /// encodes this card's scanout.
     public let renderNode: String
@@ -119,6 +119,9 @@ public final class DirectScreenSource: ScreenSource {
 
         fileDescriptor = fd
         self.device = device
+        let version = drmGetVersion(fd)
+        driver = version?.pointee.name.map { String(cString: $0) } ?? "?"
+        drmFreeVersion(version)
         let named = HostEye.renderNode(forCard: fd)
         renderNode = named ?? Self.fallbackRenderNode
         renderNodeIsFallback = named == nil
@@ -166,6 +169,37 @@ public final class DirectScreenSource: ScreenSource {
         grabTicket(
             fd: fileDescriptor, fbId: observation.framebufferIdentity)
     }
-}
 
-#endif
+    /// The first card node under `directory`, in numeric order, whose
+    /// primary plane scans out; nil when none does. Each card is opened
+    /// without taking master (a compositor holds it) and closed again.
+    public static func discoverCard(in directory: String = "/dev/dri") -> String? {
+        let entries = (try? FileManager.default.contentsOfDirectory(
+            atPath: directory)) ?? []
+        return discoverCard(entries: entries, in: directory) { path in
+            var keptMaster = false
+            let fd = openCardWithoutMaster(path, keptMaster: &keptMaster)
+            guard fd >= 0 else { return false }
+            defer { close(fd) }
+            drmSetClientCap(fd, UInt64(DRM_CLIENT_CAP_UNIVERSAL_PLANES), 1)
+            return findActivePlanes(fd: fd) != nil
+        }
+    }
+
+    /// `discoverCard` over directory `entries` with an injected probe:
+    /// only `card<N>` entries are probed, lowest N first.
+    static func discoverCard(
+        entries: [String], in directory: String,
+        scansOut: (String) -> Bool
+    ) -> String? {
+        entries
+            .compactMap { name -> Int? in
+                guard name.hasPrefix("card") else { return nil }
+                return Int(name.dropFirst("card".count))
+            }
+            .sorted()
+            .lazy
+            .map { "\(directory)/card\($0)" }
+            .first(where: scansOut)
+    }
+}

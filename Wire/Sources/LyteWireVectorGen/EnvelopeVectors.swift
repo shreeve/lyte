@@ -1,0 +1,105 @@
+// The envelope vector-file model and loader. Vector files under
+// Wire/Vectors/ are the frozen wire contract, verified byte-exact on every
+// platform. TestKit may import Foundation; LyteWire may not.
+
+import LyteCore
+import LyteWire
+import LyteWireTestKit
+
+/// One vector file: `Wire/Vectors/envelope-v1.json`.
+public struct EnvelopeVectorFile: FrozenVectorFile {
+    public var format = Self.expectedFormat
+    public var formatVersion = 1
+    public var wireVersion = 1
+    public var vectors: [EnvelopeVector]
+    /// The (chan, seq) serial-arithmetic contract, as data.
+    public var seqComparisons: [SeqComparison]
+
+    public static let expectedFormat = "lyte-wire-envelope-vectors"
+    public static let fileName = "envelope-v1.json"
+
+    public var vectorNameGroups: [[String]] {
+        [vectors.map(\.name)]
+    }
+}
+
+/// One test vector. `kind` selects which fields apply:
+/// - `roundtrip`: envelope + payloadHex encode to exactly datagramHex, and
+///   datagramHex decodes back to envelope + payloadHex.
+/// - `decodeLenient`: datagramHex decodes to envelope + payloadHex, but a
+///   canonical re-encode differs (reserved flag bits, non-canonical TLV
+///   presence) — decode-only.
+/// - `encodeReject`: encoding envelope + payloadHex throws `error`;
+///   `encoder` says which entry point ("payload" or "plaintextShard").
+/// - `decodeReject`: decoding datagramHex throws `error`.
+public struct EnvelopeVector: Codable, Sendable {
+    public var name: String
+    public var description: String
+    public var kind: Kind
+    public var envelope: EnvelopeFields?
+    public var encoder: Encoder?
+    public var payloadHex: String?
+    public var datagramHex: String?
+    public var error: String?
+
+    public enum Kind: String, Codable, Sendable {
+        case roundtrip
+        case decodeLenient
+        case encodeReject
+        case decodeReject
+    }
+
+    public enum Encoder: String, Codable, Sendable {
+        case payload
+        case plaintextShard
+    }
+}
+
+/// The 24-byte header fields plus TLVs, in vector-file form. Timestamp and
+/// fec are hex strings because u64 does not survive JSON number precision.
+public struct EnvelopeFields: Codable, Sendable {
+    public var chan: UInt8
+    public var seq: UInt16
+    public var frame: UInt32
+    public var timestampHex: String
+    public var fecHex: String
+    public var tlvs: [TlvField]?
+
+    public init(from envelope: Envelope) {
+        self.chan = envelope.channel.rawValue
+        self.seq = envelope.seq.rawValue
+        self.frame = envelope.frame.rawValue
+        self.timestampHex = Hex.uint64String(envelope.timestamp)
+        self.fecHex = Hex.uint64String(envelope.fec)
+        self.tlvs = tlvFields(envelope.extensions)
+    }
+
+    public func makeEnvelope() throws -> Envelope {
+        Envelope(
+            channel: ChannelId(rawValue: chan),
+            seq: ChannelSeq(rawValue: seq),
+            frame: FrameNumber(rawValue: frame),
+            timestamp: try vectorU64(timestampHex, "timestampHex"),
+            fec: try vectorU64(fecHex, "fecHex"),
+            extensions: try wireExtensions(tlvs)
+        )
+    }
+}
+
+public struct TlvField: Codable, Sendable {
+    public var type: UInt8
+    public var valueHex: String
+}
+
+/// A serial-arithmetic expectation: `aBeforeB` is `ChannelSeq(a) <
+/// ChannelSeq(b)`, `distance` is the signed serial distance a→b.
+public struct SeqComparison: Codable, Sendable {
+    public var a: UInt16
+    public var b: UInt16
+    public var aBeforeB: Bool
+    public var distance: Int16
+}
+
+public enum VectorFileError: Error, Equatable, Sendable {
+    case malformedField(String)
+}

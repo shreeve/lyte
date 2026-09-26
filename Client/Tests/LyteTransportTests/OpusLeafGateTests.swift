@@ -3,18 +3,14 @@ import COpus
 import LyteTransport
 import LyteWire
 
-// THE GATE (CL-11, decode leaf): the client's libopus wrapper decodes
-// real Opus packets — generated here with libopus' own encoder in the
-// host's mode (48 kHz stereo RESTRICTED_LOWDELAY, 5 ms frames; the
-// loop-decode discipline the HostAudio harness established) —
-// and its PLC entry point conceals without crashing or going hard
-// silent mid-stream. This is the capability the system AudioConverter
-// never had, which is why the leaf exists.
+// The client's libopus wrapper decodes real Opus packets (encoded here in
+// the host's mode: 48 kHz stereo RESTRICTED_LOWDELAY, 5 ms frames), and its
+// PLC entry point conceals without crashing or going hard silent.
 
 final class OpusLeafGateTests: XCTestCase {
 
     /// One 5 ms block of a 440 Hz sine at −24 dBFS (amplitude ≈ 0.0631),
-    /// interleaved stereo — HS-15's tone-verification pattern.
+    /// interleaved stereo — the tone-verification pattern.
     private func toneBlock(startFrame: Int) -> [Float] {
         let amplitude: Float = 0.0631
         var pcm = [Float]()
@@ -30,7 +26,7 @@ final class OpusLeafGateTests: XCTestCase {
     }
 
     func testToneRoundTripsThroughDecoderAtExpectedLevelAndPitch() throws {
-        let encoder = makeEncoderOrFail()
+        let encoder = try makeEncoderOrFail()
         defer { opus_encoder_destroy(encoder) }
         let decoder = try OpusStreamDecoder()
 
@@ -83,7 +79,7 @@ final class OpusLeafGateTests: XCTestCase {
     }
 
     func testPlcConcealsAndRecoversWithoutHardSilence() throws {
-        let encoder = makeEncoderOrFail()
+        let encoder = try makeEncoderOrFail()
         defer { opus_encoder_destroy(encoder) }
         let decoder = try OpusStreamDecoder()
 
@@ -119,12 +115,11 @@ final class OpusLeafGateTests: XCTestCase {
         XCTAssertEqual(decoder.decodeFailures, 1)
     }
 
-    private func makeEncoderOrFail() -> OpaquePointer {
+    private func makeEncoderOrFail() throws -> OpaquePointer {
         var status: Int32 = 0
         let encoder = opus_encoder_create(
             48_000, 2, OPUS_APPLICATION_RESTRICTED_LOWDELAY, &status)
-        precondition(encoder != nil && status == OPUS_OK,
-                     "libopus encoder unavailable (\(status))")
-        return encoder!
+        return try XCTUnwrap(status == OPUS_OK ? encoder : nil,
+                             "libopus encoder unavailable (\(status))")
     }
 }

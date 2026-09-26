@@ -5,43 +5,26 @@
 
 import LyteIO
 import LyteCore
-import CNetIO // lyte_stdout_linebuf
+import CNetIO
 import Foundation
 import HostWire
 
-func sniffMain(_ args: [String]) -> Never {
-    var port: UInt16 = 0
+func sniff(_ args: [String]) throws {
+    var port: UInt16?
     var seconds = 0.0 // 0 = run until the count is met (or forever)
     var count = 0     // 0 = unlimited
 
-    var i = 0
-    while i < args.count {
-        switch args[i] {
+    var cursor = ArgumentCursor(args[...])
+    while let flag = cursor.next() {
+        switch flag {
         case "--port":
-            i += 1
-            guard i < args.count, let v = UInt16(args[i]), v > 0 else {
-                FileHandle.standardError.write(
-                    Data("lyte-host sniff: --port needs 1–65535\n".utf8))
-                exit(1)
-            }
-            port = v
+            port = try cursor.port(flag)
         case "--seconds":
-            i += 1
-            guard i < args.count, let v = Double(args[i]), v > 0,
-                  v.isFinite else {
-                FileHandle.standardError.write(
-                    Data("lyte-host sniff: --seconds needs a positive number\n".utf8))
-                exit(1)
-            }
-            seconds = v
+            seconds = try cursor.positive(flag)
         case "--count":
-            i += 1
-            guard i < args.count, let v = Int(args[i]), v > 0 else {
-                FileHandle.standardError.write(
-                    Data("lyte-host sniff: --count needs a positive integer\n".utf8))
-                exit(1)
+            count = try cursor.value(flag, "a positive integer") {
+                Int($0).flatMap { $0 > 0 ? $0 : nil }
             }
-            count = v
         case "--help", "-h":
             print("""
             usage: lyte-host sniff --port PORT [--seconds N] [--count N]
@@ -50,31 +33,21 @@ func sniffMain(_ args: [String]) -> Never {
             opaque). Stops after --count datagrams or --seconds, else
             runs until interrupted.
             """)
-            exit(0)
+            return
         default:
-            FileHandle.standardError.write(
-                Data("lyte-host sniff: unknown argument \(args[i])\n".utf8))
-            exit(1)
+            throw HostError("sniff: unknown argument \(flag)")
         }
-        i += 1
     }
-    guard port > 0 else {
-        FileHandle.standardError.write(
-            Data("lyte-host sniff: --port is required\n".utf8))
-        exit(1)
-    }
+    guard let port else { throw HostError("sniff: --port is required") }
 
-    lyte_stdout_linebuf()
     var err = [CChar](repeating: 0, count: 256)
     // A port another socket holds (the standing service) is refused:
     // SO_REUSEPORT would otherwise share that service's traffic.
     guard let rx = lyte_netio_new_listener(
         "0.0.0.0", port, &err, err.count
     ) else {
-        FileHandle.standardError.write(Data(
-            "lyte-host sniff: bind 0.0.0.0:\(port) failed: \(String(cBuffer: err))\n"
-                .utf8))
-        exit(1)
+        throw HostError(
+            "sniff: bind 0.0.0.0:\(port) failed: \(String(cBuffer: err))")
     }
     print("sniff: listening on 0.0.0.0:\(port)")
 
@@ -97,9 +70,7 @@ func sniffMain(_ args: [String]) -> Never {
         let got = lyte_netio_recv_batch(rx, &slots, Int32(LYTE_NETIO_MAX_BATCH),
                                         &err, err.count)
         if got < 0 {
-            FileHandle.standardError.write(Data(
-                "lyte-host sniff: recv failed: \(String(cBuffer: err))\n".utf8))
-            exit(1)
+            throw HostError("sniff: recv failed: \(String(cBuffer: err))")
         }
         if got == 0 {
             usleep(1000)
@@ -114,10 +85,9 @@ func sniffMain(_ args: [String]) -> Never {
             seen += 1
             if count > 0, seen >= count {
                 print("sniff: \(seen) datagrams")
-                exit(0)
+                return
             }
         }
     }
     print("sniff: \(seen) datagrams in \(seconds)s")
-    exit(0)
 }

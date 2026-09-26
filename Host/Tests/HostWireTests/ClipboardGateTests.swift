@@ -6,23 +6,18 @@ import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (CL-15, the host half — the Wayland/portal clipboard leaf
-// itself is Linux-only follow-up work; the ScriptedClipboardLeaf here
-// drives the exact seam it will). Pinned behaviors:
+// The host half of text clipboard sync; the ScriptedClipboardLeaf drives
+// the same seam the Linux clipboard leaf does (the 0x1A/0x1B codecs and
+// key 10 are Wire's ClipboardCodecTests):
 //
-//   • the 0x1A/0x1B codecs answer the SAME hand-built arrays
-//     ClipboardCodecTests anchors in Wire/ (the cross-pin) and never
-//     trap on hostile bytes;
-//   • capability key 10 rides the W7 forward-compat spine exactly as
-//     key 9 did — the declaration is the local set's bytes plus one
-//     canonical `0A F5` entry, surviving intersection only on mutual
-//     byte-equal declaration;
+//   • the leaf reads text flavors in preference order and refuses
+//     non-text;
 //   • in vivo: a negotiated client's 0x1A surfaces exactly once as
 //     .clipboardSetReceived, the scripted leaf's echo of that very
 //     apply is SUPPRESSED (the boomerang proof — nothing returns on
 //     the wire), a genuine host copy reaches the client as a
 //     byte-exact 0x1B, and an identical re-copy dedupes;
-//   • the rule-3 gate holds: an unnegotiated 0x1A drops loud
+//   • the capability gate holds: an unnegotiated 0x1A drops loud
 //     (.clipboardNotNegotiated), announces are never volunteered to a
 //     client that never declared the key, and a 0x1B arriving AT the
 //     host drops as role confusion;
@@ -38,70 +33,9 @@ final class ClipboardGateTests: XCTestCase {
         remoteAddress: "10.0.0.23", remotePort: 61_000
     )
 
-    // MARK: Leg 1 — the 0x1A/0x1B bytes, pinned (the Wire cross-pin)
-
-    func testClipboardCodecsPinBytes() throws {
-        // "hello" = 68 65 6C 6C 6F — the same hand-computed arrays as
-        // Wire's ClipboardCodecTests.
-        XCTAssertEqual(
-            try ClipboardSet(text: "hello").encode(),
-            [0x1A, 0x68, 0x65, 0x6C, 0x6C, 0x6F]
-        )
-        XCTAssertEqual(
-            try ClipboardAnnounce(text: "hello").encode(),
-            [0x1B, 0x68, 0x65, 0x6C, 0x6C, 0x6F]
-        )
-        XCTAssertEqual(
-            try ClipboardSet.decode(
-                [0x1A, 0x68, 0x65, 0x6C, 0x6C, 0x6F]
-            ).text, "hello"
-        )
-        XCTAssertEqual(
-            try ClipboardAnnounce.decode(
-                [0x1B, 0x68, 0x65, 0x6C, 0x6C, 0x6F]
-            ).text, "hello"
-        )
-        // Hostile bytes reject, never trap.
-        XCTAssertThrowsError(try ClipboardSet.decode([]))
-        XCTAssertThrowsError(try ClipboardSet.decode([0x1A]))
-        XCTAssertThrowsError(try ClipboardSet.decode([0x1B, 0x61]))
-        XCTAssertThrowsError(try ClipboardAnnounce.decode([0x1A, 0x61]))
-        XCTAssertThrowsError(try ClipboardSet.decode([0x1A, 0xFF]))
-        XCTAssertThrowsError(try ClipboardSet.decode(
-            [0x1A] + [UInt8](repeating: 0x61,
-                             count: ClipboardWire.maxTextByteCount + 1)
-        ))
-        print("""
-            CL-15 gate (codec): 0x1A/0x1B pinned byte-exact against \
-            the Wire arrays
-            """)
-    }
-
-    // MARK: Leg 2 — key 10 on the spine, mutual-only intersection
-
-    func testCapabilityKeyTenRidesTheSpineAndIntersectsMutualOnly() throws {
-        let base = try Capabilities.wireDefault.encodeCbor()
-        XCTAssertEqual(base.first, 0xA8)
-        var expected = base
-        expected[0] = 0xA9
-        expected += [0x0A, 0xF5]
-        let declared = Capabilities.wireDefault.declaringClipboardText()
-        XCTAssertEqual(try declared.encodeCbor(), expected)
-
-        XCTAssertTrue(declared.intersecting(declared).clipboardText)
-        XCTAssertFalse(declared.intersecting(.wireDefault).clipboardText)
-        XCTAssertFalse(
-            Capabilities.wireDefault.intersecting(declared).clipboardText
-        )
-        print("""
-            CL-15 gate (spine): declaration = local bytes + `0A F5`, \
-            mutual-only survival
-            """)
-    }
-
-    // MARK: Leg 2b — the leaf's text-flavor policy (HS-19), pinned
-    // everywhere: the Linux leaf itself compiles only on Linux, but
-    // the flavor it reads and the flavors it offers are pure policy.
+    // MARK: - The leaf's text-flavor policy
+    // The Linux leaf itself compiles only on Linux, but the flavor it
+    // reads and the flavors it offers are pure policy.
 
     func testTextMimeReadPreferenceOrder() {
         // Explicit UTF-8 wins over everything else offered.
@@ -128,10 +62,6 @@ final class ClipboardGateTests: XCTestCase {
             ClipboardTextMime.pickForRead(fromOffered: ["text/plain"]),
             "text/plain"
         )
-        print("""
-            HS-19 gate (mime): read preference \
-            utf-8 → UTF8_STRING → text/plain, case-insensitive
-            """)
     }
 
     func testTextMimeRefusesNonTextAndOffersFaithfulFirst() {
@@ -147,10 +77,9 @@ final class ClipboardGateTests: XCTestCase {
         XCTAssertEqual(ClipboardTextMime.offered,
                        [ClipboardTextMime.utf8, "text/plain",
                         "UTF8_STRING"])
-        print("HS-19 gate (mime): non-text refused, offer list faithful-first")
     }
 
-    // MARK: The scripted leaf (the seam the portal leaf will drive)
+    // MARK: The scripted leaf
 
     /// An in-memory OS clipboard: `apply` stores the text and fires
     /// the change signal — exactly the echo shape the portal's
@@ -170,7 +99,7 @@ final class ClipboardGateTests: XCTestCase {
             onLocalChange?(text)
         }
 
-        /// P-1's image half of the seam — this text-only gate never
+        /// The image half of the seam — this text-only gate never
         /// exercises it beyond conformance; the image gate has its
         /// own file.
         func apply(imageData: [UInt8]) {
@@ -198,7 +127,6 @@ final class ClipboardGateTests: XCTestCase {
     ) throws -> (host: HostSessionHarness, client: SealedCtrlPeer<ClientClock>) {
         let host = HostSessionHarness(
             config: SessionConfig(
-                crypto: .noise(hostStatic: NoiseKeyPair.generate()),
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: 1 << 62,
                 capabilities: .wireDefault.declaringClipboardText()
@@ -207,11 +135,10 @@ final class ClipboardGateTests: XCTestCase {
             rng: SplitMix64(seed: 0x1A1B)
         )
         let client = try host.connectClient(declaring: clientCapabilities)
-        XCTAssertEqual(host.session.phase, .established)
         return (host, client)
     }
 
-    // MARK: Leg 3 — the negotiated round trip + the boomerang proof
+    // MARK: - The negotiated round trip and the boomerang proof
 
     func testGateSetAppliesEchoSuppressesAndGenuineCopyAnnounces() throws {
         let (host, clientValue) = try establish(
@@ -227,7 +154,7 @@ final class ClipboardGateTests: XCTestCase {
         }
         XCTAssertEqual(agreed?.clipboardText, true,
                        "mutual key-10 declaration must survive intersection")
-        XCTAssertTrue(session.agreedClipboardText)
+        XCTAssertEqual(session.agreedCapabilities?.clipboardText, true)
         _ = client.take(type: CtrlMessageType.capabilityDeclaration)
 
         // The shell wiring this gate proves: the scripted leaf stands
@@ -303,14 +230,9 @@ final class ClipboardGateTests: XCTestCase {
         XCTAssertEqual(client.take(type: CtrlMessageType.clipboardAnnounce), [])
         XCTAssertEqual(suppressions, [.loopEcho, .duplicate])
         XCTAssertEqual(session.counters.clipboardAnnouncesSent, 1)
-
-        print("""
-            CL-15 gate (in vivo): 0x1A → apply → echo suppressed \
-            (no boomerang); genuine copy → byte-exact 0x1B; dedupe holds
-            """)
     }
 
-    // MARK: Leg 4 — the rule-3 gate against the unnegotiated
+    // MARK: - The capability gate against the unnegotiated
 
     func testGateUnnegotiatedSetRefusedLoudAndAnnounceStaysSilent() throws {
         // A v1 client: declares, but never key 10.
@@ -326,7 +248,7 @@ final class ClipboardGateTests: XCTestCase {
             if case .capabilitiesAgreed(let set) = $0 { agreed = set }
         }
         XCTAssertEqual(agreed?.clipboardText, false)
-        XCTAssertFalse(session.agreedClipboardText)
+        XCTAssertNotEqual(session.agreedCapabilities?.clipboardText, true)
         _ = client.take(type: CtrlMessageType.capabilityDeclaration)
 
         // It sets anyway (hostile or buggy): dropped loud, no event,
@@ -367,14 +289,9 @@ final class ClipboardGateTests: XCTestCase {
             if case .dropped(.unexpectedCtrlType(0x1B)) = $0 { confused += 1 }
         }
         XCTAssertEqual(confused, 1)
-
-        print("""
-            CL-15 gate (rule 3): unnegotiated 0x1A refused loud, \
-            0x1B never volunteered, role confusion dropped
-            """)
     }
 
-    // MARK: Leg 5 — the ceiling is weather, not an error
+    // MARK: - The ceiling is weather, not an error
 
     func testGateOverCeilingHostCopySuppressedNeverSent() throws {
         let (host, clientValue) = try establish(
@@ -384,7 +301,7 @@ final class ClipboardGateTests: XCTestCase {
         let session = host.session
         var t: UInt64 = 1_000
         try host.settle(&client, t: &t)
-        XCTAssertTrue(session.agreedClipboardText)
+        XCTAssertEqual(session.agreedCapabilities?.clipboardText, true)
         _ = client.take(type: CtrlMessageType.capabilityDeclaration)
 
         let huge = String(
@@ -422,10 +339,5 @@ final class ClipboardGateTests: XCTestCase {
             client.take(type: CtrlMessageType.clipboardAnnounce),
             [try ClipboardAnnounce(text: atCeiling).encode()]
         )
-
-        print("""
-            CL-15 gate (ceiling): one-over suppressed as weather, \
-            the exact ceiling flows
-            """)
     }
 }

@@ -121,21 +121,13 @@ enum BrowserBridge {
             let counters = session?.videoCounters ?? BrowserVideoPlayout.Counters()
             return [
                 "assembled": Double(counters.framesAssembled).jsValue,
-                "presented": Double(counters.framesPresented).jsValue,
                 "skippedLate": Double(counters.framesSkippedLate).jsValue,
-                "notPresentable": Double(counters.framesNotPresentable).jsValue,
-                "undecodable": Double(counters.framesUndecodable).jsValue,
-                "decodeBacklogEvicted": Double(counters.decodeBacklogEvicted).jsValue,
-                "fecImpossible": Double(counters.fecImpossible).jsValue,
-                "shardsDropped": Double(counters.shardsDropped).jsValue,
             ].jsValue
         }
         expose("audioPopPacket") { _ in
             guard let packet = session?.popAudioPacket() else { return .null }
             return [
-                "number": Double(packet.number).jsValue,
                 "captureMicroseconds": Double(packet.captureMicroseconds).jsValue,
-                "recovered": packet.recovered.jsValue,
                 "bytes": JSTypedArray<UInt8>(packet.bytes).jsValue,
             ].jsValue
         }
@@ -145,9 +137,7 @@ enum BrowserBridge {
             stats["inputEchoes"] = Double(session?.inputEchoes ?? 0).jsValue
             stats["clipboardSent"] = Double(session?.clipboardSent ?? 0).jsValue
             stats["clipboardReceived"] = Double(session?.clipboardReceived ?? 0).jsValue
-            stats["clipboardNegotiated"] = (session?.clipboardNegotiated ?? false).jsValue
             stats["audioAssembled"] = Double(session?.audioPacketsAssembled ?? 0).jsValue
-            stats["audioPopped"] = Double(session?.audioPacketsPopped ?? 0).jsValue
             stats["audioDroppedStale"] = Double(session?.audioPacketsDroppedStale ?? 0).jsValue
             stats["lastClipboardText"] = session?.lastClipboardText.map(\.jsValue) ?? .null
             return stats.jsValue
@@ -234,7 +224,6 @@ enum BrowserBridge {
             return [
                 "ok": true.jsValue,
                 "clientStaticPublicKeyHex": opened.clientStaticPublicKeyHex.jsValue,
-                "hostStaticPublicKeyHex": opened.hostStaticPublicKeyHex.jsValue,
             ].jsValue
         } catch {
             session = nil
@@ -259,10 +248,7 @@ enum BrowserBridge {
             "capabilitiesAgreed": session.capabilitiesAgreed.jsValue,
             "clipboardNegotiated": session.clipboardNegotiated.jsValue,
             "reliableQuiescent": session.isReliableQuiescent.jsValue,
-            "closeReason": session.closeReason.map { String(describing: $0).jsValue } ?? .null,
-            "undecodableDatagrams": Double(counters.undecodableDatagrams).jsValue,
             "unsealFailures": Double(counters.unsealFailures).jsValue,
-            "message1Transmissions": Double(counters.message1Transmissions).jsValue,
             "idrRequestsSent": Double(counters.idrRequestsSent).jsValue,
             "feedbackReportsSent": Double(counters.feedbackReportsSent).jsValue,
         ].jsValue
@@ -278,13 +264,9 @@ enum BrowserBridge {
         [
             "outbound": step.outbound.isEmpty
                 ? JSValue.null : JSTypedArray<UInt8>(pack(step.outbound)).jsValue,
-            "outboundCount": Double(step.outbound.count).jsValue,
             "events": step.events.joined(separator: "\n").jsValue,
             "status": step.status.rawValue.jsValue,
             "detail": step.detail.jsValue,
-            "passed": step.passed.jsValue,
-            "ready": (step.status == .ready).jsValue,
-            "closed": (step.status == .closed).jsValue,
             "failed": (step.status == .failed).jsValue,
             "scheduled": step.scheduled.map(scheduledFrameToJS).jsValue,
         ].jsValue
@@ -293,13 +275,9 @@ enum BrowserBridge {
     private static func failureStep(_ detail: String) -> JSValue {
         [
             "outbound": JSValue.null,
-            "outboundCount": 0.jsValue,
             "events": "FAIL  \(detail)".jsValue,
             "status": "failed".jsValue,
             "detail": detail.jsValue,
-            "passed": false.jsValue,
-            "ready": false.jsValue,
-            "closed": false.jsValue,
             "failed": true.jsValue,
             "scheduled": [JSValue]().jsValue,
         ].jsValue
@@ -311,15 +289,8 @@ enum BrowserBridge {
         [
             "frameNumber": Double(frame.frameNumber).jsValue,
             "presentationMicroseconds": Double(frame.presentationMicroseconds).jsValue,
-            "cueMicroseconds": Double(frame.cueMicroseconds).jsValue,
-            "pathDelayMicroseconds": Double(frame.pathDelayMicroseconds).jsValue,
-            "reserveMicroseconds": Double(frame.reserveMicroseconds).jsValue,
-            "latenessMicroseconds": Double(frame.latenessMicroseconds).jsValue,
             "isRandomAccess": frame.isRandomAccess.jsValue,
             "shouldPresent": frame.shouldPresent.jsValue,
-            "annexBByteCount": Double(frame.annexBByteCount).jsValue,
-            "sourceCaptureMicroseconds": Double(frame.sourceCaptureMicroseconds).jsValue,
-            "arrivalMicroseconds": Double(frame.arrivalMicroseconds).jsValue,
         ].jsValue
     }
 

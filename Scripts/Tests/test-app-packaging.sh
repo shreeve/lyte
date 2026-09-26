@@ -66,6 +66,10 @@ sparkle="$app/Contents/Frameworks/Sparkle.framework"
 [[ -d "$sparkle" ]] || fail "no embedded Sparkle.framework"
 [[ ! -e "$sparkle/Versions/B/XPCServices" ]] \
     || fail "Sparkle's XPC services are embedded"
+for binary in Sparkle Autoupdate Updater.app/Contents/MacOS/Updater; do
+    [[ "$(lipo -archs "$sparkle/Versions/B/$binary")" == arm64 ]] \
+        || fail "Sparkle's $binary is not arm64-only"
+done
 [[ "$(plutil -extract SUEnableInstallerLauncherService raw -o - "$plist")" == false ]] \
     || fail "SUEnableInstallerLauncherService is not false"
 codesign --verify --strict "$sparkle" || fail "Sparkle.framework does not verify"
@@ -129,14 +133,26 @@ helper_requirement="$(codesign -d -r- \
 hardened_runtime='^CodeDirectory .*flags=0x[[:xdigit:]]+\([^)]*runtime'
 grep -Eq "$hardened_runtime" <<< "$app_signature"
 grep -Eq "$hardened_runtime" <<< "$helper_signature"
-for signed in "$app" "$app/Contents/MacOS/lyte-helperd"; do
-    entitlements="$(codesign -d --entitlements - --xml "$signed" 2>/dev/null)"
-    if grep -Fq 'get-task-allow' <<< "$entitlements"; then
-        fail "$signed permits task-port attach (get-task-allow)"
-    fi
-done
+app_entitlements="$(codesign -d --entitlements - --xml "$app" 2>/dev/null)"
+helper_entitlements="$(codesign -d --entitlements - --xml \
+    "$app/Contents/MacOS/lyte-helperd" 2>/dev/null)"
+if grep -Fq 'get-task-allow' <<< "$app_entitlements$helper_entitlements"; then
+    fail "a signed executable permits task-port attach (get-task-allow)"
+fi
+# Only a Lyte Dev app may skip library validation: its self-signed leaf has
+# no Team ID to match the embedded Sparkle.framework's.
+library_validation=com.apple.security.cs.disable-library-validation
+if grep -Fq "$library_validation" <<< "$helper_entitlements"; then
+    fail "the helper disables library validation"
+fi
+app_skips_library_validation=0
+if grep -Fq "$library_validation" <<< "$app_entitlements"; then
+    app_skips_library_validation=1
+fi
 case "$authority" in
     "Apple Development: "*)
+        (( ! app_skips_library_validation )) \
+            || fail "an Apple-signed app disables library validation"
         team_identifier="$(awk -F= '/^TeamIdentifier=/{print $2; exit}' \
             <<< "$app_signature")"
         helper_team_identifier="$(awk -F= '/^TeamIdentifier=/{print $2; exit}' \
@@ -157,6 +173,8 @@ case "$authority" in
     "Developer ID Application: "*)
         # A release: the team anchors the requirement, so updates signed by
         # the same team keep the app's identity (Local Network, the helper).
+        (( ! app_skips_library_validation )) \
+            || fail "a Developer ID app disables library validation"
         team_identifier="$(awk -F= '/^TeamIdentifier=/{print $2; exit}' \
             <<< "$app_signature")"
         [[ "$team_identifier" =~ ^[A-Z0-9]{10}$ ]] \
@@ -167,6 +185,8 @@ case "$authority" in
             <<< "$requirement" || fail "the release requirement does not name team $team_identifier"
         ;;
     "Lyte Dev")
+        (( app_skips_library_validation )) \
+            || fail "a Lyte Dev app cannot load Sparkle with library validation on"
         grep -Fq 'certificate root = H"' <<< "$requirement"
         grep -Fq 'certificate root = H"' <<< "$helper_requirement"
         ;;

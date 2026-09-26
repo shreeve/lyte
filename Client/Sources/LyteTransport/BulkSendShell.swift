@@ -329,17 +329,13 @@ public final class BulkSendShell: @unchecked Sendable {
         }
     }
 
-    private func closeReader() {
+    /// Also the teardown release: the transfer lives on in the
+    /// coordinator's resume entry.
+    func closeReader() {
         lock.lock()
         let alreadyClosed = readerClosed
         readerClosed = true
         lock.unlock()
         if !alreadyClosed { reader.close() }
-    }
-
-    /// Releases the file handle without an abort: the transfer lives on
-    /// in the coordinator's resume entry.
-    func closeReaderForTeardown() {
-        closeReader()
     }
 }

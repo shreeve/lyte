@@ -25,7 +25,8 @@ extension SealedCtrlPeer: HostSessionClient where ClockDomain == ClientClock {
     public var progressMark: Int { received.count }
 }
 
-/// A shipping `HostWire.Session` with UDP replaced by an outbox and time
+/// A shipping `HostWire.Session` behind a `HandshakeAcceptor`, as the
+/// listening shell composes them, with UDP replaced by an outbox and time
 /// by the caller's virtual microseconds (session `now` = µs × 1000 ns,
 /// `hostMicroseconds` = µs). Datagrams reach the client only through
 /// `deliver`, which advances the `forwarded` cursor over `sent`.
@@ -34,33 +35,39 @@ public final class HostSessionHarness {
         var datagrams: [VideoChannelDatagram] = []
     }
 
-    public let session: Session
-    public let tuple: FourTuple
-    private let outbox: Outbox
+    /// Nil until a client's message 1 is answered.
+    public private(set) var currentSession: Session?
+    /// The answered session; a gate reads it only after connecting.
+    public var session: Session { currentSession! }
+    /// The listener's admission, shared by every session answered here.
+    public var acceptor: HandshakeAcceptor
+    /// Where client datagrams arrive from; a gate moves it to roam.
+    public var tuple: FourTuple
+    /// The RetryChallenges the acceptor minted, in order.
+    public private(set) var challenges: [[UInt8]] = []
+    private let config: SessionConfig
+    private let rng: any RandomNumberGenerator
+    private let sendAccounting: SessionSendAccounting
+    private let outbox = Outbox()
     /// How many of `sent` have been delivered to the client.
     public var forwarded = 0
 
     public init(
         config: SessionConfig,
+        acceptor: HandshakeAcceptor.Config = HandshakeAcceptor.Config(
+            hostStatic: .generate()),
         tuple: FourTuple,
-        now: UInt64 = 0,
         rng: some RandomNumberGenerator,
         sendAccounting: SessionSendAccounting = .pacerRelease
     ) {
-        let outbox = Outbox()
-        self.outbox = outbox
+        self.config = config
+        self.acceptor = HandshakeAcceptor(config: acceptor)
         self.tuple = tuple
-        self.session = Session(
-            config: config,
-            clientTuple: tuple,
-            now: now,
-            rng: rng,
-            sendAccounting: sendAccounting,
-            send: { outbox.datagrams.append($0) }
-        )
+        self.rng = rng
+        self.sendAccounting = sendAccounting
     }
 
-    /// Every datagram the session released, in pacer order.
+    /// Every datagram the sessions released, in pacer order.
     public var sent: [VideoChannelDatagram] { outbox.datagrams }
 
     /// Delivers the client's message 1 at instant 0 and pumps the
@@ -70,15 +77,10 @@ public final class HostSessionHarness {
         _ client: inout SealedCtrlPeer<ClientClock>,
         clientMicros: UInt64 = 500
     ) throws -> [SessionEvent] {
-        let events = session.receive(
-            try client.message1Datagram(timestamp: clientMicros),
-            from: tuple, now: 0, hostMicroseconds: 0
-        )
-        session.pump(now: 0)
-        return events
+        receive(try client.message1Datagram(timestamp: clientMicros), at: 0)
     }
 
-    /// A client dialing this session's Noise static, connected; when
+    /// A client dialing the acceptor's Noise static, connected; when
     /// `declaring` is set, its capability declaration is queued at 1 ms. Opens
     /// only CTRL unless `openChannels` says otherwise.
     public func connectClient(
@@ -86,11 +88,8 @@ public final class HostSessionHarness {
         openChannels: Set<ChannelId>? = [.ctrl],
         arqConfig: ArqConfig = ArqConfig()
     ) throws -> SealedCtrlPeer<ClientClock> {
-        guard case .noise(let hostStatic) = session.config.crypto else {
-            preconditionFailure("connectClient needs a Noise session")
-        }
         var client = try SealedCtrlPeer<ClientClock>(
-            initiatorTo: hostStatic.publicKey, arqConfig: arqConfig
+            initiatorTo: acceptor.hostStaticPublicKey, arqConfig: arqConfig
         )
         client.openChannels = openChannels
         try connect(&client)
@@ -100,22 +99,88 @@ public final class HostSessionHarness {
         return client
     }
 
-    /// One client datagram in at virtual µs `t`, then a pump.
+    /// One client datagram in from `tuple` at virtual µs `t`, then a
+    /// pump. An answered session reads first; anything else is the
+    /// acceptor's, and an authenticated message 1 replaces an unconfirmed
+    /// session (its undelivered datagrams are dropped, as the shell's
+    /// are).
     @discardableResult
     public func receive(_ datagram: [UInt8], at t: UInt64) -> [SessionEvent] {
-        let events = session.receive(
-            datagram, from: tuple, now: t * 1_000, hostMicroseconds: t
-        )
-        session.pump(now: t * 1_000)
+        var events: [SessionEvent] = []
+        if let currentSession {
+            events = currentSession.receive(
+                datagram, from: tuple, now: t * 1_000, hostMicroseconds: t
+            )
+        }
+        if currentSession == nil
+            || events.contains(.initiationWhileUnconfirmed) {
+            switch acceptor.accept(
+                datagram[...], from: tuple, now: t * 1_000
+            ).verdict {
+            case .authenticated(let handshake):
+                outbox.datagrams.removeSubrange(forwarded...)
+                let answered = try! Session.answer(
+                    handshake, config: config,
+                    now: t * 1_000, hostMicroseconds: t,
+                    rng: rng, sendAccounting: sendAccounting,
+                    send: { [outbox] in outbox.datagrams.append($0) }
+                )
+                currentSession = answered.session
+                events += answered.events
+            case .challenge(let challenge):
+                challenges.append(challenge)
+            case .notInitiation, .refused:
+                break
+            }
+        }
+        currentSession?.pump(now: t * 1_000)
         return events
     }
 
     /// The session's timers at virtual µs `t`, then a pump.
     @discardableResult
     public func advance(to t: UInt64) -> [SessionEvent] {
+        guard let session = currentSession else { return [] }
         let events = session.advance(now: t * 1_000, hostMicroseconds: t)
         session.pump(now: t * 1_000)
         return events
+    }
+
+    /// Runs the session's timers wake by wake, each rounded up to a whole
+    /// µs and at least 1 µs on, until `done` or the next wake passes
+    /// virtual µs `horizon`; returns their events.
+    @discardableResult
+    public func service(
+        t: inout UInt64, through horizon: UInt64,
+        until done: () -> Bool = { false }
+    ) -> [SessionEvent] {
+        var events: [SessionEvent] = []
+        currentSession?.pump(now: t * 1_000)
+        while !done(), let wake = currentSession?.nextWake(now: t * 1_000) {
+            let next = max(t + 1, (wake + 999) / 1_000)
+            guard next <= horizon else { break }
+            t = next
+            events += advance(to: t)
+        }
+        return events
+    }
+
+    /// Removes and returns, in order, the not-yet-forwarded datagrams
+    /// `selectedBy` picks; the rest stay queued for `deliver`.
+    public func take(
+        where selectedBy: (VideoChannelDatagram) -> Bool
+    ) -> [VideoChannelDatagram] {
+        let pending = outbox.datagrams[forwarded...]
+        outbox.datagrams.removeSubrange(forwarded...)
+        var taken: [VideoChannelDatagram] = []
+        for datagram in pending {
+            if selectedBy(datagram) {
+                taken.append(datagram)
+            } else {
+                outbox.datagrams.append(datagram)
+            }
+        }
+        return taken
     }
 
     /// Hands every not-yet-forwarded datagram to the client.
@@ -215,4 +280,73 @@ extension PeerBackedClient {
     }
 
     public var progressMark: Int { peer.received.count }
+}
+
+extension Session {
+    /// The encoder-loop poll as a Bool: whether a fresh IDR is owed.
+    public func takeFreshKeyframeRequest() -> Bool {
+        !takeFreshKeyframeDemand().isEmpty
+    }
+
+    /// A session answering the client's `message1Datagram` from `tuple`,
+    /// admitted by a fresh acceptor for `hostStatic`: how a gate stands
+    /// up an answered session on its own sink.
+    public static func answering(
+        _ message1Datagram: [UInt8],
+        hostStatic: NoiseKeyPair,
+        from tuple: FourTuple,
+        config: SessionConfig,
+        now: UInt64 = 0,
+        rng: some RandomNumberGenerator,
+        sendAccounting: SessionSendAccounting = .pacerRelease,
+        send: @escaping (VideoChannelDatagram) -> Void
+    ) throws -> (session: Session, events: [SessionEvent]) {
+        var acceptor = HandshakeAcceptor(
+            config: HandshakeAcceptor.Config(hostStatic: hostStatic))
+        guard case .authenticated(let handshake) = acceptor.accept(
+            message1Datagram[...], from: tuple, now: now
+        ).verdict else { throw HostSessionHarnessError.notAuthenticated }
+        return try answer(
+            handshake, config: config,
+            now: now, hostMicroseconds: now / 1_000,
+            rng: rng, sendAccounting: sendAccounting, send: send)
+    }
+}
+
+public enum HostSessionHarnessError: Error {
+    case notAuthenticated
+}
+
+extension VideoChannel {
+    /// Both halves of a frame's ingest at once: packetize at this
+    /// channel's shard budget, then enqueue; returns the shard count.
+    /// Throws on non-frame-shaped bytes, a lying keyframe flag or an
+    /// unprotectable size.
+    @discardableResult
+    public func ingest(
+        frame annexB: [UInt8],
+        frameNumber: FrameNumber,
+        captureTimestampMicroseconds: UInt64,
+        isKeyframe: Bool,
+        lastInputSeq: UInt32? = nil,
+        now: UInt64
+    ) throws -> Int {
+        ingestPrepared(
+            try Self.prepareFrame(
+                annexB, isKeyframe: isKeyframe,
+                config: preparationConfig(
+                    hasLastInputSeq: lastInputSeq != nil)),
+            frameNumber: frameNumber,
+            captureTimestampMicroseconds: captureTimestampMicroseconds,
+            lastInputSeq: lastInputSeq, now: now)
+    }
+}
+
+/// A frame-shaped Annex-B blob of exactly `byteCount` bytes: a 4-byte start
+/// code, a TRAIL_R NAL header (IDR_W_RADL with `irap`), and padding that can
+/// never form a start code.
+public func syntheticFrame(byteCount: Int, irap: Bool = false) -> [UInt8] {
+    precondition(byteCount >= 6)
+    return [0, 0, 0, 1, irap ? 0x26 : 0x02, 0x01]
+        + [UInt8](repeating: 0xAA, count: byteCount - 6)
 }

@@ -246,7 +246,7 @@ final class VideoFlightRecorderTests: XCTestCase {
             presentationLatenessMicroseconds: 2_000,
             rendererRecovery: true)
 
-        let frame = try XCTUnwrap(recorder.recentFrames().first)
+        let frame = try XCTUnwrap(recorder.frames(after: 0).first)
         XCTAssertEqual(frame.frame, 7)
         XCTAssertEqual(frame.queueDepth, 1)
         XCTAssertEqual(frame.sampleBuildMilliseconds ?? 0, 0.9)
@@ -259,7 +259,7 @@ final class VideoFlightRecorderTests: XCTestCase {
 
         recorder.reset()
         XCTAssertEqual(recorder.snapshot().frames, 0)
-        XCTAssertTrue(recorder.recentFrames().isEmpty)
+        XCTAssertTrue(recorder.frames(after: 0).isEmpty)
     }
 
     /// The periodic line carries the books, never the lifecycle ring that
@@ -310,7 +310,7 @@ final class VideoFlightRecorderTests: XCTestCase {
                 rendererFailed: false)
         }
 
-        let observations = recorder.recentFrames()
+        let observations = recorder.frames(after: 0)
         XCTAssertEqual(
             observations.map(\.provenance),
             [.freshCapture, .retainedRefinement, .retainedRefinement])
@@ -366,7 +366,7 @@ final class VideoFlightRecorderTests: XCTestCase {
         for after: UInt64 in [0, 2, 3, 5, 6, 9] {
             XCTAssertEqual(
                 recorder.frames(after: after).map(\.ordinal),
-                recorder.recentFrames().filter { $0.ordinal > after }
+                recorder.frames(after: 0).filter { $0.ordinal > after }
                     .map(\.ordinal),
                 "after \(after)")
         }

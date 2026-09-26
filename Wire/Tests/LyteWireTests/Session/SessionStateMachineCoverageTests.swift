@@ -1,12 +1,11 @@
 import XCTest
 import LyteWire
 
-// W-G5b's core artifact: the transition-coverage table. Every state ×
-// every input × both roles has an asserted outcome — including the
-// illegal/ignored ones (core plan §4: "every state × every input has
-// an asserted outcome — including the illegal ones"). The table rows
-// are explicit data, not a re-implementation of the machine: each row
-// pins the next state and the exact action list.
+// The transition-coverage table: every state × every input × both roles
+// has an asserted outcome, including the illegal and ignored ones. The
+// rows are explicit data, not a re-implementation of the machine: each
+// row pins the next state, the exact action list and, for a close, the
+// close reason.
 //
 // Timer coverage (poll) rides in a second table: silence → FROZEN from
 // every streaming state, liveness → closed from everywhere, closed is
@@ -235,6 +234,9 @@ final class SessionStateMachineCoverageTests: XCTestCase {
                 actions, row.expectActions,
                 "actions: \(row.role)/\(row.state) ← \(row.input) (row at line \(row.line))"
             )
+            if case .sessionClosed(let reason)? = row.expectActions.last {
+                XCTAssertEqual(m.closeReason, reason, "row at line \(row.line)")
+            }
         }
     }
 
@@ -341,20 +343,5 @@ final class SessionStateMachineCoverageTests: XCTestCase {
             XCTAssertEqual(actions, [])
             XCTAssertNil(deadline)
         }
-    }
-
-    /// The receiver can never reach RECOVERY: it exits FROZEN straight
-    /// to the wire mode on every evidence kind (asserted above), and no
-    /// other transition targets RECOVERY.
-    func testReceiverNeverEntersRecovery() {
-        var (m, now) = machine(role: .mediaReceiver, in: .frozen)
-        for input in Self.allInputs {
-            var probe = m
-            _ = probe.apply(input, now: now)
-            XCTAssertNotEqual(probe.state, .recovery, "\(input)")
-        }
-        now = now.advanced(byMicroseconds: 10_000_000)
-        _ = m.poll(now: now)
-        XCTAssertNotEqual(m.state, .recovery)
     }
 }

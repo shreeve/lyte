@@ -302,11 +302,11 @@ public struct SocketOutbox {
     ) {
         if datagram.pacerClass == .freshVideo {
             let frame = datagram.frameNumber.rawValue
-            if !framesPartiallyAccepted.contains(frame) {
-                framesPartiallyAccepted = framesPartiallyAccepted.filter {
-                    Self.isOlder(frame, than: $0)
+            if framesPartiallyAccepted.insert(frame).inserted {
+                for older in framesPartiallyAccepted
+                where Self.isOlder(older, than: frame) {
+                    framesPartiallyAccepted.remove(older)
                 }
-                framesPartiallyAccepted.insert(frame)
             }
             freshVideoReleasedAtNS.removeValue(forKey: Self.traceKey(datagram))
         }

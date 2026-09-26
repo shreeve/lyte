@@ -1,41 +1,28 @@
-import CoreMedia
 import CoreVideo
-import Foundation
-import LyteClientTestKit
-import VideoToolbox
 import LyteCorpus
-import LyteWire
+import VideoToolbox
 import XCTest
-@testable import LyteTransport
 
 final class VideoQualityReadbackTests: XCTestCase {
-    func testSynchronousDecodeOwnsImageBeyondCallbackAndSession() throws {
-        let expectedPTS = CMTime(value: 16_667, timescale: 1_000_000)
-        let decoded = try autoreleasepool {
-            let annexB = [UInt8](try Data(contentsOf: URL(fileURLWithPath:
-                ClientTestPaths.videoCorpus + "/frame-000-idr.annexb")))
-            let factory = VideoRenderFactory()
-            let sample = try XCTUnwrap(factory.makeSampleBuffer(from: DecodeUnit(
-                frameNumber: FrameNumber(rawValue: 0),
-                timestamp: HostTimestamp(microseconds: 16_667),
-                isIDR: true,
-                annexB: annexB)))
-            XCTAssertEqual(
-                CMSampleBufferGetPresentationTimeStamp(sample), expectedPTS)
-
-            let tap = VideoReadbackTap()
-            return try tap.decode(sample)
+    /// Damage confined to one channel moves that channel's PSNR alone,
+    /// the minimum tracks it, and SSIM falls below 1.
+    func testMetricsTrackTheDamagedChannel() {
+        let width = 64
+        let height = 64
+        let clean = (0..<(width * height * 4)).map { UInt8(truncatingIfNeeded: $0 &* 7) }
+        var damaged = clean
+        for pixel in stride(from: 0, to: width * height, by: 3) {
+            damaged[pixel * 4 + 2] &+= 40
         }
-
-        XCTAssertEqual(decoded.presentationTimeStamp, expectedPTS)
-        XCTAssertEqual(CVPixelBufferGetWidth(decoded.imageBuffer), 2_048)
-        XCTAssertEqual(CVPixelBufferGetHeight(decoded.imageBuffer), 1_280)
-        XCTAssertEqual(
-            CVPixelBufferLockBaseAddress(decoded.imageBuffer, [.readOnly]),
-            kCVReturnSuccess)
-        XCTAssertEqual(
-            CVPixelBufferUnlockBaseAddress(decoded.imageBuffer, [.readOnly]),
-            kCVReturnSuccess)
+        let hurt = CorpusGates.rgbPSNR(
+            reference: clean, decoded: damaged, width: width, height: height)
+        XCTAssertLessThan(hurt.r, 60)
+        XCTAssertTrue(hurt.g.isInfinite)
+        XCTAssertTrue(hurt.b.isInfinite)
+        XCTAssertEqual(hurt.minChannel, hurt.r)
+        XCTAssertLessThan(
+            CorpusGates.ssim(reference: clean, decoded: damaged,
+                             width: width, height: height), 1)
     }
 
     func testBGRAReadbackPreservesRowsAndScoresCorpusPixels() throws {

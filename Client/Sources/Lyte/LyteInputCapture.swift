@@ -49,20 +49,35 @@ final class LyteInputCapture {
     private let onActivity: @MainActor (PointerActivity) -> Void
     private var monitors: [Any] = []
     private var forwarding = InputForwardingPolicy()
-    private var resignObserver: NSObjectProtocol?
+    private var observers: [NSObjectProtocol] = []
+
+    /// The Actions menu's "Secure Keyboard Entry", app-wide, off unless set.
+    nonisolated static let secureKeyboardEntryKey = "secureKeyboardEntry"
+    private let defaults: UserDefaults
+    /// Enables (true) or disables (false) secure event input. The Carbon
+    /// calls are refcounted per process; this capture holds at most one.
+    private let setSecureInput: @MainActor (Bool) -> Void
+    private var windowIsKey = false
+    private var secureInputHeld = false
 
     init(
         view: NSView,
         window: NSWindow,
         videoSize: @escaping @MainActor () -> CGSize,
         send: @escaping @MainActor (InputEvent.Body) -> Void,
-        onActivity: @escaping @MainActor (PointerActivity) -> Void = { _ in }
+        onActivity: @escaping @MainActor (PointerActivity) -> Void = { _ in },
+        defaults: UserDefaults = .standard,
+        setSecureInput: @escaping @MainActor (Bool) -> Void = {
+            _ = $0 ? EnableSecureEventInput() : DisableSecureEventInput()
+        }
     ) {
         self.view = view
         self.window = window
         self.videoSize = videoSize
         self.send = send
         self.onActivity = onActivity
+        self.defaults = defaults
+        self.setSecureInput = setSecureInput
         window.acceptsMouseMovedEvents = true
     }
 
@@ -82,12 +97,45 @@ final class LyteInputCapture {
         // way teardown does: whatever the host holds would stay down and
         // auto-repeat. Focus loss releases everything; keys still
         // physically held re-press on return.
-        resignObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didResignKeyNotification, object: window,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.releaseAllHeld() }
-        }
+        let center = NotificationCenter.default
+        observers = [
+            center.addObserver(
+                forName: NSWindow.didResignKeyNotification, object: window,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.releaseAllHeld()
+                    self?.windowKeyChanged(false)
+                }
+            },
+            center.addObserver(
+                forName: NSWindow.didBecomeKeyNotification, object: window,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.windowKeyChanged(true) }
+            },
+            center.addObserver(
+                forName: UserDefaults.didChangeNotification, object: defaults,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.syncSecureInput() }
+            },
+        ]
+        windowKeyChanged(window?.isKeyWindow == true)
+    }
+
+    private func windowKeyChanged(_ isKey: Bool) {
+        windowIsKey = isKey
+        syncSecureInput()
+    }
+
+    /// Secure event input is held exactly while the preference is on and
+    /// this stream window is key, so other apps cannot read its keys.
+    private func syncSecureInput() {
+        let wanted = windowIsKey && defaults.bool(forKey: Self.secureKeyboardEntryKey)
+        guard wanted != secureInputHeld else { return }
+        secureInputHeld = wanted
+        setSecureInput(wanted)
     }
 
     /// Sends up-events for every key/button the host believes is down.
@@ -105,10 +153,9 @@ final class LyteInputCapture {
         // A window/session teardown can swallow AppKit's matching keyUp.
         // Release every state we told the host was down before detaching.
         releaseAllHeld()
-        if let resignObserver {
-            NotificationCenter.default.removeObserver(resignObserver)
-        }
-        resignObserver = nil
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        observers.removeAll()
+        windowKeyChanged(false)
         monitors.forEach { NSEvent.removeMonitor($0) }
         monitors.removeAll()
     }
@@ -229,6 +276,7 @@ final class LyteInputCapture {
                 isRepeat: event.isARepeat, commandHeld: commandHeld,
                 isLocalShortcut: commandHeld
                     && Self.isLocalShortcut(event),
+                typesLetter: Self.typesLetter(event),
                 modifiersDown: Self.modifiersDown(event.modifierFlags),
                 capsLockOn: event.modifierFlags.contains(.capsLock)), event)
 
@@ -277,10 +325,20 @@ final class LyteInputCapture {
         return down
     }
 
-    /// True when a menu item (the app's own commands, which own every
-    /// window-management chord: ⌘W, ⌘Q, ⌘H, ⌘M, the Actions menu)
-    /// answers this ⌘ key equivalent. System chords (⌘Tab, ⌘Space)
-    /// never reach the app at all.
+    /// True when the key types a letter a–z in the current layout, wherever
+    /// the layout puts it (Dvorak's S is QWERTY's semicolon key).
+    static func typesLetter(_ event: NSEvent) -> Bool {
+        guard let typed = event.charactersIgnoringModifiers?.lowercased(),
+              typed.count == 1, let letter = typed.unicodeScalars.first
+        else { return false }
+        return ("a"..."z").contains(letter)
+    }
+
+    /// True when an enabled, visible menu item (the app's own commands,
+    /// which own every window-management chord: ⌘W, ⌘Q, ⌘H, ⌘M, the
+    /// Actions menu) answers this ⌘ key equivalent. The standard Edit
+    /// items never do: in the stream window ⌘C, ⌘V, ⌘Z… are the host's.
+    /// System chords (⌘Tab, ⌘Space) never reach the app at all.
     private static func isLocalShortcut(_ event: NSEvent) -> Bool {
         guard let menu = NSApp.mainMenu,
               let characters = event.charactersIgnoringModifiers?.lowercased(),
@@ -291,10 +349,15 @@ final class LyteInputCapture {
         return menuAnswers(menu, characters: characters, modifiers: modifiers)
     }
 
-    private static func menuAnswers(
+    static func menuAnswers(
         _ menu: NSMenu, characters: String, modifiers: NSEvent.ModifierFlags
     ) -> Bool {
-        for item in menu.items {
+        // Auto-enabled items hold the last validation pass's verdict, and
+        // the capture swallows the key equivalents that would run one.
+        menu.update()
+        for item in menu.items where item.isEnabled && !item.isHidden {
+            if let action = item.action,
+               editActions.contains(NSStringFromSelector(action)) { continue }
             if let submenu = item.submenu,
                menuAnswers(submenu, characters: characters, modifiers: modifiers) {
                 return true
@@ -311,4 +374,11 @@ final class LyteInputCapture {
         }
         return false
     }
+
+    /// The standard Edit menu's actions, which text fields elsewhere in
+    /// the app still answer through the menu.
+    private static let editActions: Set<String> = [
+        "undo:", "redo:", "cut:", "copy:", "paste:", "pasteAsPlainText:",
+        "pasteAndMatchStyle:", "selectAll:", "delete:",
+    ]
 }

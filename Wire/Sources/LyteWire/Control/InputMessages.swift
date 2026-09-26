@@ -148,45 +148,38 @@ public struct InputEvent: Hashable, Sendable, SliceDecodable {
         let clientMicros: UInt64 = wireReadLE(payload, at: base + 5)
         let kind = payload[base + 13]
         let body = payload[(base + headerByteCount)...]
+        let bodyByteCount: Int
+        switch kind {
+        case kindKeyKeycode, kindPointerButton: bodyByteCount = 5
+        case kindPointerMotionAbsolute, kindPointerMotionRelative:
+            bodyByteCount = 16
+        case kindPointerAxis: bodyByteCount = 17
+        default: throw InputMessageError.unknownKind(kind)
+        }
+        guard body.count == bodyByteCount else {
+            throw InputMessageError.bodyLengthMismatch(
+                kind: kind, byteCount: body.count
+            )
+        }
         let decoded: Body
         switch kind {
         case kindKeyKeycode:
-            guard body.count == 5 else {
-                throw InputMessageError.bodyLengthMismatch(
-                    kind: kind, byteCount: body.count
-                )
-            }
             decoded = .keyKeycode(
                 keycode: wireReadLE(body, at: body.startIndex),
                 pressed: try flag(body[body.startIndex + 4])
             )
         case kindPointerMotionAbsolute, kindPointerMotionRelative:
-            guard body.count == 16 else {
-                throw InputMessageError.bodyLengthMismatch(
-                    kind: kind, byteCount: body.count
-                )
-            }
             let a = try coordinate(body, at: body.startIndex)
             let b = try coordinate(body, at: body.startIndex + 8)
             decoded = kind == kindPointerMotionAbsolute
                 ? .pointerMotionAbsolute(x: a, y: b)
                 : .pointerMotionRelative(dx: a, dy: b)
         case kindPointerButton:
-            guard body.count == 5 else {
-                throw InputMessageError.bodyLengthMismatch(
-                    kind: kind, byteCount: body.count
-                )
-            }
             decoded = .pointerButton(
                 button: wireReadLE(body, at: body.startIndex),
                 pressed: try flag(body[body.startIndex + 4])
             )
         case kindPointerAxis:
-            guard body.count == 17 else {
-                throw InputMessageError.bodyLengthMismatch(
-                    kind: kind, byteCount: body.count
-                )
-            }
             let flags = body[body.startIndex + 16]
             guard flags & ~0x01 == 0 else {
                 throw InputMessageError.reservedBitsSet(flags)

@@ -6,8 +6,7 @@
 // socket. It listens on loopback unless --allow-remote. Datagrams are
 // unreliable end to end: the relay holds none longer than a beat or two
 // and drops, never retries, one its writer refuses. Writes JSON metadata
-// (url, cert hash, ports) to --meta-out for serverCertificateHashes
-// dialing.
+// (url, cert hash) to --meta-out for serverCertificateHashes dialing.
 
 import { createHash } from "node:crypto";
 import { createSocket } from "node:dgram";
@@ -75,24 +74,20 @@ function isLoopback(host) {
 function parseArgs(argv) {
   const out = {
     host: "127.0.0.1",
-    wtPort: 0,
     metaOut: null,
-    path: "/lyte-datagram",
     udpPeer: null,
     allowRemote: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--host") out.host = argv[++i];
-    else if (a === "--wt-port") out.wtPort = Number(argv[++i]);
     else if (a === "--meta-out") out.metaOut = argv[++i];
-    else if (a === "--path") out.path = argv[++i];
     else if (a === "--udp-peer") out.udpPeer = parsePeer(argv[++i]);
     else if (a === "--allow-remote") out.allowRemote = true;
     else if (a === "--help" || a === "-h") {
       console.log(
-        "usage: wt-sidecar.mjs [--host 127.0.0.1] [--allow-remote] [--wt-port 0] " +
-          "[--meta-out path] [--path /lyte-datagram] --udp-peer host:port"
+        "usage: wt-sidecar.mjs [--host 127.0.0.1] [--allow-remote] " +
+          "[--meta-out path] --udp-peer host:port"
       );
       process.exit(0);
     }
@@ -165,16 +160,27 @@ const MAX_PENDING_AGE_MS = 50;
 const MAX_PENDING_WT_WRITES = 256;
 const MAX_SESSIONS = 8;
 
+// A session that relays nothing either way for this long is closed, so a
+// stalled handshake or an abandoned session cannot hold a slot.
+const IDLE_TIMEOUT_MS = 10_000;
+
 /**
  * One WebTransport session ↔ its own UDP socket, so each session has its own
  * 4-tuple toward the peer and hears only the peer's replies to it.
  */
 async function relaySession(session, host, destination) {
-  await session.ready;
-  const relay = await listenUdp(host);
-  const writer = session.datagrams.writable.getWriter();
-  const reader = session.datagrams.readable.getReader();
+  let lastActivity = performance.now();
+  let expire;
+  const expired = new Promise((_, reject) => (expire = reject));
+  expired.catch(() => {});
+  const idle = setInterval(() => {
+    if (performance.now() - lastActivity < IDLE_TIMEOUT_MS) return;
+    session.close?.({ closeCode: 0, reason: "idle" });
+    expire(new Error("idle"));
+  }, 1_000);
   const pending = [];
+  let relay = null;
+  let writer = null;
   let open = true;
   let draining = false;
   let udpIn = 0;
@@ -212,29 +218,36 @@ async function relaySession(session, host, destination) {
     }
   };
 
-  relay.on("message", (msg, rinfo) => {
-    if (rinfo.port !== destination.port || rinfo.address !== destination.address) return;
-    udpIn += 1;
-    if (pending.length >= MAX_PENDING_WT_WRITES) {
-      pending.shift();
-      dropped += 1;
-    }
-    pending.push({ bytes: new Uint8Array(msg), queuedAt: performance.now() });
-    void drainWrites();
-  });
+  try {
+    await Promise.race([session.ready, expired]);
+    relay = await listenUdp(host);
+    writer = session.datagrams.writable.getWriter();
+    const reader = session.datagrams.readable.getReader();
 
-  session.closed
-    ?.catch(() => {})
-    .finally(() => {
-      open = false;
-      pending.length = 0;
+    relay.on("message", (msg, rinfo) => {
+      if (rinfo.port !== destination.port || rinfo.address !== destination.address) return;
+      udpIn += 1;
+      lastActivity = performance.now();
+      if (pending.length >= MAX_PENDING_WT_WRITES) {
+        pending.shift();
+        dropped += 1;
+      }
+      pending.push({ bytes: new Uint8Array(msg), queuedAt: performance.now() });
+      void drainWrites();
     });
 
-  try {
+    session.closed
+      ?.catch(() => {})
+      .finally(() => {
+        open = false;
+        pending.length = 0;
+      });
+
     for (;;) {
-      const { value, done } = await reader.read();
+      const { value, done } = await Promise.race([reader.read(), expired]);
       if (done) break;
       if (!value) continue;
+      lastActivity = performance.now();
       await new Promise((resolve, reject) => {
         relay.send(value, destination.port, destination.host, (err) =>
           err ? reject(err) : resolve()
@@ -242,12 +255,13 @@ async function relaySession(session, host, destination) {
       });
     }
   } catch {
-    // Session closed or reset.
+    // Session closed, reset or idle.
   } finally {
+    clearInterval(idle);
     open = false;
-    relay.close();
+    relay?.close();
     try {
-      writer.releaseLock();
+      writer?.releaseLock();
     } catch {
       /* already released */
     }
@@ -271,25 +285,17 @@ const peer = {
 
 const server = new WebTransportServer({
   host: args.host,
-  port: args.wtPort,
+  port: 0,
   cert: certPath,
   key: keyPath,
 });
 await server.ready;
-const wtPort = server.port;
 
+// Every session is relayed whatever its path.
 const meta = {
   adapter: "lyte-wt-sidecar",
-  url: `https://${args.host}:${wtPort}${args.path}`,
-  host: args.host,
-  wtPort,
-  udpPeerHost: peer.host,
-  udpPeerPort: peer.port,
-  path: args.path,
+  url: `https://${args.host}:${server.port}/lyte-datagram`,
   hashHex: Buffer.from(hash).toString("hex"),
-  hashAlgorithm: "sha-256",
-  note:
-    "Opaque bytes only. Pairing/Noise stay end-to-end in WASM↔host; this sidecar never unseals.",
 };
 
 if (args.metaOut) {

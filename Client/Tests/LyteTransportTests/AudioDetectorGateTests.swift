@@ -4,14 +4,11 @@ import CoreMedia
 import LyteTransport
 import LyteWire
 
-// THE GATE (CL-11, detector half): CL-8's documented deviation closes.
-// The client's FROZEN detector defaults to 2.5 s (beacon-bounded — an
-// IDLE host emits only 1 Hz beacons); the moment the session SEES
-// audio (the 5 ms path probe HS-15 keeps flowing through ACTIVE, IDLE
-// and FROZEN), it tightens to the pillar's 350 ms. Evidence-gated
-// deliberately: W7's registry carries only the reserved audioExpress
-// escape hatch, no audio-presence key — a no-audio host never sends
-// chan-1 and keeps the 2.5 s behavior, asserted below.
+// The client's FROZEN detector defaults to 2.5 s (an idle host emits only
+// 1 Hz beacons); the moment the session sees audio (a 5 ms path probe that
+// flows through ACTIVE, IDLE and FROZEN) it tightens to 350 ms. It is
+// evidence-gated: no capability announces audio presence, so a host that
+// never sends chan 1 keeps the 2.5 s bound.
 
 final class AudioDetectorGateTests: XCTestCase {
 
@@ -30,35 +27,9 @@ final class AudioDetectorGateTests: XCTestCase {
         }
     }
 
-    private final class EventLog: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [LyteUdpSessionEvent] = []
-        func append(_ event: LyteUdpSessionEvent) {
-            lock.lock()
-            stored.append(event)
-            lock.unlock()
-        }
-        var all: [LyteUdpSessionEvent] {
-            lock.lock()
-            defer { lock.unlock() }
-            return stored
-        }
-    }
-
-    private final class RecoveryLog: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [(VideoRecoveryCause, FrameNumber)] = []
-        func append(_ cause: VideoRecoveryCause, _ frame: FrameNumber) {
-            lock.lock(); stored.append((cause, frame)); lock.unlock()
-        }
-        var all: [(VideoRecoveryCause, FrameNumber)] {
-            lock.lock(); defer { lock.unlock() }; return stored
-        }
-    }
-
     private func makeCore(
         clock: VirtualClock,
-        events: EventLog,
+        events: Locked<[LyteUdpSessionEvent]>,
         config: LyteUdpSessionCoreConfig = LyteUdpSessionCoreConfig(),
         onVideoRecoveryDemand: @escaping @Sendable (
             VideoRecoveryCause, FrameNumber
@@ -75,7 +46,7 @@ final class AudioDetectorGateTests: XCTestCase {
             onEvent: { events.append($0) })
     }
 
-    /// One HS-15-shaped audio datagram (data shard 0 of a 4+2 group).
+    /// One audio datagram (data shard 0 of a 4+2 group).
     private func audioDatagram(
         group: UInt32, captureMicros: UInt64
     ) throws -> (envelope: Envelope, payload: [UInt8]) {
@@ -93,12 +64,12 @@ final class AudioDetectorGateTests: XCTestCase {
 
     func testNoAudioKeepsTheBeaconBoundedDetector() {
         let clock = VirtualClock()
-        let events = EventLog()
+        let events = Locked<[LyteUdpSessionEvent]>()
         let core = makeCore(clock: clock, events: events)
-        XCTAssertFalse(core.detectorTightened)
+        XCTAssertFalse(core.control.detectorTightened)
 
         // 400 ms of silence: WELL past 350 ms, far under 2.5 s — a
-        // no-audio session must NOT freeze here (the CL-8 rationale:
+        // no-audio session must NOT freeze here (the rationale:
         // an IDLE host's 1 Hz beacons would flap a 350 ms detector).
         clock.advance(400_000)
         core.tick(now: clock.now)
@@ -113,7 +84,7 @@ final class AudioDetectorGateTests: XCTestCase {
 
     func testAudioEvidenceTightensTo350Milliseconds() throws {
         let clock = VirtualClock()
-        let events = EventLog()
+        let events = Locked<[LyteUdpSessionEvent]>()
         let core = makeCore(clock: clock, events: events)
 
         // The first authenticated chan-1 arrival is the evidence gate.
@@ -122,7 +93,7 @@ final class AudioDetectorGateTests: XCTestCase {
         core.handleDatagram(
             .accepted(envelope: envelope, payload: payload),
             arrivalMicroseconds: clock.now.microseconds)
-        XCTAssertTrue(core.detectorTightened)
+        XCTAssertTrue(core.control.detectorTightened)
         XCTAssertEqual(core.snapshotCounters().audioDatagramsReceived, 1)
         XCTAssertTrue(events.all.contains {
             if case .protocolNote(let note) = $0 {
@@ -160,40 +131,40 @@ final class AudioDetectorGateTests: XCTestCase {
     }
 
     func testRendererRecoverySeamJoinsOneCoalescedIdrEpisode() {
-        let demands = RecoveryLog()
+        let demands = Locked<[(VideoRecoveryCause, FrameNumber)]>()
         let core = makeCore(
             clock: VirtualClock(),
-            events: EventLog(),
+            events: Locked<[LyteUdpSessionEvent]>(),
             onVideoRecoveryDemand: { cause, frame in
-                demands.append(cause, frame)
+                demands.append((cause, frame))
             })
         core.requestVideoRecovery(
             after: FrameNumber(rawValue: 40), cause: .rendererFailure)
         core.requestVideoRecovery(
             after: FrameNumber(rawValue: 41), cause: .rendererBackpressure)
-        let stats = core.idrRequester.snapshotStats()
+        let stats = core.idrStats
         XCTAssertEqual(stats.verdicts, 2)
         XCTAssertEqual(stats.episodesStarted, 1)
         XCTAssertEqual(stats.requestsSent, 1)
         XCTAssertTrue(stats.recoveryOutstanding)
-        XCTAssertEqual(
-            demands.all.map(\.0), [.rendererFailure, .rendererBackpressure])
+        XCTAssertTrue(demands.all.isEmpty,
+                      "the handoff raised these demands; none echo back to it")
 
         // Assembly cannot close recovery. Only the handoff's post-enqueue
         // callback does.
         core.noteVideoIrapEnqueued()
-        XCTAssertFalse(core.idrRequester.snapshotStats().recoveryOutstanding)
+        XCTAssertFalse(core.idrStats.recoveryOutstanding)
     }
 
     func testTighteningPreservesTheWireMode() throws {
         let clock = VirtualClock()
-        let events = EventLog()
+        let events = Locked<[LyteUdpSessionEvent]>()
         let core = makeCore(clock: clock, events: events)
 
         // Drive the receiver machine to IDLE the wire way: a real ARQ
         // segment carrying ModeTransition(idle), built with a LyteWire
         // host-clock endpoint and delivered through the core's CTRL
-        // peek — then let audio arrive. HS-15's ruling: audio flows in
+        // peek — then let audio arrive. Audio flows in
         // IDLE and must not wake or corrupt the mode.
         var hostArq = ArqEndpoint<HostClock>(channel: .ctrl)
         try hostArq.send(
@@ -212,22 +183,22 @@ final class AudioDetectorGateTests: XCTestCase {
                 .accepted(envelope: ctrl, payload: segment),
                 arrivalMicroseconds: clock.now.microseconds)
         }
-        XCTAssertEqual(core.wireMode, .idle)
+        XCTAssertEqual(core.control.wireMode, .idle)
 
         let (envelope, payload) = try audioDatagram(
             group: 0, captureMicros: 7_000)
         core.handleDatagram(
             .accepted(envelope: envelope, payload: payload),
             arrivalMicroseconds: clock.now.microseconds)
-        XCTAssertTrue(core.detectorTightened)
-        XCTAssertEqual(core.wireMode, .idle,
+        XCTAssertTrue(core.control.detectorTightened)
+        XCTAssertEqual(core.control.wireMode, .idle,
             "the rebuilt machine must carry the wire mode across")
         XCTAssertEqual(core.state, .idle)
     }
 
     func testNilTightenedConfigDisablesTheTightening() throws {
         let clock = VirtualClock()
-        let events = EventLog()
+        let events = Locked<[LyteUdpSessionEvent]>()
         var config = LyteUdpSessionCoreConfig()
         config.tightenedBlackoutSilenceMicroseconds = nil
         let core = makeCore(clock: clock, events: events, config: config)
@@ -237,7 +208,7 @@ final class AudioDetectorGateTests: XCTestCase {
         core.handleDatagram(
             .accepted(envelope: envelope, payload: payload),
             arrivalMicroseconds: clock.now.microseconds)
-        XCTAssertFalse(core.detectorTightened)
+        XCTAssertFalse(core.control.detectorTightened)
         clock.advance(400_000)
         core.tick(now: clock.now)
         XCTAssertNotEqual(core.state, .frozen)

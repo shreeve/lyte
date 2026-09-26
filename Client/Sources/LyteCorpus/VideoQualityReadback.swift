@@ -93,19 +93,9 @@ public enum VideoQualityReadback {
         }
         let converted = try readBGRA(
             destination, width: width, height: height)
-        return Frame(
-            width: width,
-            height: height,
-            bgra: converted.bgra,
-            sourcePixelFormat: fourCC(
-                CVPixelBufferGetPixelFormatType(pixelBuffer)),
-            sourceBytesPerRow: converted.sourceBytesPerRow,
-            yCbCrMatrix: attachment(
-                pixelBuffer, key: kCVImageBufferYCbCrMatrixKey),
-            colorPrimaries: attachment(
-                pixelBuffer, key: kCVImageBufferColorPrimariesKey),
-            transferFunction: attachment(
-                pixelBuffer, key: kCVImageBufferTransferFunctionKey))
+        return frame(
+            pixelBuffer, width: width, height: height,
+            bytesPerRow: converted.sourceBytesPerRow, bgra: converted.bgra)
     }
 
     public static func score(

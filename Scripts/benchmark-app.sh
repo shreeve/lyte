@@ -18,6 +18,7 @@ APP_EXECUTABLE="$APP/Contents/MacOS/Lyte"
 ANALYZER="$ROOT/Scripts/analyze-app-benchmark.py"
 source "$ROOT/Scripts/lib/benchmark-process.sh"
 source "$ROOT/Scripts/lib/pup.sh"
+source "$ROOT/Scripts/lib/benchmark-handshake.sh"
 source "$ROOT/Scripts/AppArtifact/app-artifact.sh"
 source "$ROOT/Scripts/lib/source-fingerprint.sh"
 LSREGISTER="${LYTE_LSREGISTER:-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister}"
@@ -40,10 +41,6 @@ MOTION_SOURCE_LOG=""
 REMOTE_MOTION_PRESENTER=""
 REMOTE_MOTION_DEFINITION=""
 REMOTE_MOTION_LOG=""
-FRESH_HOST_RECOVERY_NEEDED=0
-FRESH_HOST_PROTECTED_STATE=""
-FRESH_HOST_JOURNAL_SINCE=""
-FRESH_HOST_LOG_OFFSET=0
 NO_BUILD=0
 APP_SHA256=""
 HOST_SHA256=""
@@ -218,21 +215,23 @@ fi
 
 # A benchmark is evidence only when pup built exactly the source under
 # review; dry-run checksums catch "edit B, run A" even when mtimes agree.
-# Each pair is checked on its own so a failed ssh cannot pass as no delta.
+# Each path is checked on its own so a failed ssh cannot pass as no delta.
+# pup keeps Host at ~/src/lyte-host and each other package at ~/src/<name>.
+pup_host_sources=""
 deployed_delta=""
-for pair in \
-    "Host/Package.swift:src/lyte-host/Package.swift" \
-    "Host/Package.resolved:src/lyte-host/Package.resolved" \
-    "Host/Sources/:src/lyte-host/Sources/" \
-    "Wire/Package.swift:src/Wire/Package.swift" \
-    "Wire/Package.resolved:src/Wire/Package.resolved" \
-    "Wire/Sources/:src/Wire/Sources/" \
-    "Common/Package.swift:src/Common/Package.swift" \
-    "Common/Sources/:src/Common/Sources/"
-do
-  delta="$(rsync -ani --checksum --no-times --omit-dir-times --delete \
-    --exclude .build "$ROOT/${pair%%:*}" "$PUP:${pair#*:}")" || {
-    echo "benchmark refused: cannot compare ${pair%%:*} with pup" >&2
+for path in $LYTE_HOST_SOURCE_PATHS; do
+  case "$path" in
+    Host/*) remote="src/lyte-host/${path#Host/}" ;;
+    *) remote="src/$path" ;;
+  esac
+  pup_host_sources+=" $remote"
+  if [[ -d "$ROOT/$path" ]]; then
+    path+=/
+    remote+=/
+  fi
+  delta="$(pup_rsync -ani --checksum --no-times --omit-dir-times --delete \
+    --exclude .build "$ROOT/$path" "$PUP:$remote")" || {
+    echo "benchmark refused: cannot compare $path with pup" >&2
     exit 1
   }
   deployed_delta+="$delta"
@@ -243,28 +242,8 @@ done
   exit 1
 }
 
-stale_host_source="$(
-  pup_ssh \
-    "python3 -c 'import os
-b = os.path.expanduser(\"~/src/lyte-host/.build/release/lyte-host\")
-bm = os.path.getmtime(b)
-roots = [
-    (os.path.expanduser(\"~/src/lyte-host\"), \"Host\", [\"Sources\"]),
-    (os.path.expanduser(\"~/src/Wire\"), \"Wire\", [\"Sources\"]),
-    (os.path.expanduser(\"~/src/Common\"), \"Common\", [\"Sources\"]),
-]
-for root, label, source_dirs in roots:
-    paths = [
-        os.path.join(root, \"Package.swift\"),
-        os.path.join(root, \"Package.resolved\"),
-    ]
-    for source_dir in source_dirs:
-        for directory, _, files in os.walk(os.path.join(root, source_dir)):
-            paths.extend(os.path.join(directory, name) for name in files)
-    for path in paths:
-        if os.path.isfile(path) and os.path.getmtime(path) > bm:
-            print(label + \"/\" + os.path.relpath(path, root))'"
-)"
+stale_host_source="$(pup_ssh "cd && find$pup_host_sources -type f \
+  -newer src/lyte-host/.build/release/lyte-host")"
 [[ -z "$stale_host_source" ]] || {
   echo "benchmark refused: pup Host binary predates deployed source:" >&2
   printf '%s\n' "$stale_host_source" >&2
@@ -275,22 +254,11 @@ pup_service_owns_port "$BENCH_PORT" || {
   echo "benchmark refused: lyte-host.service is not active or does not own UDP $BENCH_PORT" >&2
   exit 1
 }
-HOST_PID="$(pup_ssh "systemctl show lyte-host --property MainPID --value")"
-# A capability-tagged host is ptrace-guarded (/proc/PID/exe refuses
-# same-uid readers); sudo -n keeps the witness identical, just readable.
 # The deployed ~/.local/bin/lyte-host must be built from the checked source.
-host_hashes="$(
-  pup_ssh \
-    "{ sha256sum /proc/$HOST_PID/exe 2>/dev/null \
-       || sudo -n sha256sum /proc/$HOST_PID/exe; } \
-       | head -1; \
-     sha256sum \"\$(readlink -f ~/.local/bin/lyte-host)\"; \
-     sha256sum ~/src/lyte-host/.build/release/lyte-host"
-)"
-host_hashes="$(printf '%s\n' "$host_hashes" | awk '{print $1}')"
-running_host_sha="$(printf '%s\n' "$host_hashes" | awk 'NR == 1 {print}')"
-deployed_host_sha="$(printf '%s\n' "$host_hashes" | awk 'NR == 2 {print}')"
-built_host_sha="$(printf '%s\n' "$host_hashes" | awk 'NR == 3 {print}')"
+host_hashes="$(pup_run 'pid="$(lyte_host_main_pid)"
+built="$(sha256sum ~/src/lyte-host/.build/release/lyte-host)"
+echo "${pid:+$(lyte_host_exe_sha "$pid")}:$(lyte_deployed_host_sha):${built%% *}"')"
+IFS=: read -r running_host_sha deployed_host_sha built_host_sha <<< "$host_hashes"
 [[ "$deployed_host_sha" == "$built_host_sha" ]] || {
   echo "benchmark refused: the deployed pup Host is not the built binary (run Host/Scripts/deploy-host.sh --restart)" >&2
   exit 1
@@ -302,9 +270,8 @@ built_host_sha="$(printf '%s\n' "$host_hashes" | awk 'NR == 3 {print}')"
 
 APP_SHA256="$(shasum -a 256 "$APP/Contents/MacOS/Lyte" | awk '{print $1}')"
 HOST_SHA256="$running_host_sha"
-HOST_SOURCE_SHA256="$(lyte_source_fingerprint "$ROOT" \
-  Host Common/Package.swift Common/Sources \
-  Wire/Package.swift Wire/Package.resolved Wire/Sources)"
+# shellcheck disable=SC2086
+HOST_SOURCE_SHA256="$(lyte_source_fingerprint "$ROOT" $LYTE_HOST_SOURCE_PATHS)"
 
 PRESENTER_PID=""
 APP_PID=""
@@ -312,79 +279,22 @@ APP_RUN_ID=""
 APP_PIDFILE=""
 OPEN_PID=""
 CLEANUP_STARTED=0
-HANDSHAKE_RUN_ID=""
-HANDSHAKE_LOCAL_TCPDUMP_PID=""
-HANDSHAKE_REMOTE_TCPDUMP_PID=""
 
-start_handshake_evidence() {
-  local run_id="$1"
-  HANDSHAKE_RUN_ID="$run_id"
-  route -n get "$HOST" > "$OUT_DIR/$run_id-client-route.txt"
-  netstat -s -p udp > "$OUT_DIR/$run_id-client-udp-before.txt"
-  sudo -n tcpdump -i en0 -nn -U \
-    -w "$OUT_DIR/$run_id-client.pcap" "udp port $BENCH_PORT" \
-    >"$OUT_DIR/$run_id-client-tcpdump.stderr" 2>&1 &
-  HANDSHAKE_LOCAL_TCPDUMP_PID=$!
-  # Both captures run as root under sudo, and $! is the sudo process: only
-  # `sudo -n kill` can signal it (sudo relays the signal to tcpdump). The
-  # pup capture is also bounded by timeout in case this side never returns.
-  HANDSHAKE_REMOTE_TCPDUMP_PID="$(pup_ssh \
-    "sudo -n rm -f '/tmp/$run_id-host.pcap'; \
-sudo -n nohup timeout $((BENCH_SECONDS + 300)) \
-tcpdump -i any -nn -U -w '/tmp/$run_id-host.pcap' \
-'udp port $BENCH_PORT' >'/tmp/$run_id-host-tcpdump.stderr' 2>&1 & echo \$!")"
-  pup_ssh "date -u +%FT%TZ; \
-p=\$(systemctl show lyte-host --property MainPID --value); \
-ps -o pid,lstart,args -p \"\$p\"; \
-{ sha256sum /proc/\$p/exe 2>/dev/null || sudo -n sha256sum /proc/\$p/exe; }; \
-sha256sum \"\$(readlink -f ~/.local/bin/lyte-host)\"; \
-ss -u -a -n -p; ip -s link show" \
-    > "$OUT_DIR/$run_id-host-before.txt"
+# provenance_merge FILE KEY=STRING|KEY:=JSON...: sets each KEY in the JSON
+# provenance record FILE (created when absent).
+provenance_merge() {
+  python3 - "$@" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+record = json.loads(path.read_text()) if path.exists() else {}
+for item in sys.argv[2:]:
+    key, value = item.split("=", 1)
+    if key.endswith(":"):
+        key, value = key[:-1], json.loads(value)
+    record[key] = value
+path.write_text(json.dumps(record, separators=(",", ":")) + "\n")
+PY
 }
-
-collect_handshake_evidence() {
-  local run_id="$HANDSHAKE_RUN_ID"
-  [[ -n "$run_id" ]] || return 0
-  [[ -z "$HANDSHAKE_LOCAL_TCPDUMP_PID" ]] \
-    || sudo -n kill "$HANDSHAKE_LOCAL_TCPDUMP_PID" 2>/dev/null || true
-  [[ -z "$HANDSHAKE_REMOTE_TCPDUMP_PID" ]] \
-    || pup_ssh \
-      "sudo -n kill '$HANDSHAKE_REMOTE_TCPDUMP_PID' 2>/dev/null || true" || true
-  sleep 1
-  if [[ -n "$HANDSHAKE_LOCAL_TCPDUMP_PID" ]] \
-      && ps -p "$HANDSHAKE_LOCAL_TCPDUMP_PID" >/dev/null 2>&1; then
-    echo "WARNING: local root tcpdump (sudo PID $HANDSHAKE_LOCAL_TCPDUMP_PID) is still capturing" >&2
-  fi
-  if [[ -n "$HANDSHAKE_REMOTE_TCPDUMP_PID" ]] \
-      && pup_ssh "ps -p '$HANDSHAKE_REMOTE_TCPDUMP_PID' >/dev/null 2>&1"; then
-    echo "WARNING: pup root tcpdump (sudo PID $HANDSHAKE_REMOTE_TCPDUMP_PID) is still capturing" >&2
-  fi
-  netstat -s -p udp > "$OUT_DIR/$run_id-client-udp-after.txt"
-  sudo -n tcpdump -nn -tttt -vv \
-    -r "$OUT_DIR/$run_id-client.pcap" "udp port $BENCH_PORT" \
-    > "$OUT_DIR/$run_id-client-packets.txt" 2>/dev/null || true
-  rsync -a "$PUP:/tmp/$run_id-host.pcap" \
-    "$OUT_DIR/$run_id-host.pcap" 2>/dev/null || true
-  rsync -a "$PUP:/tmp/$run_id-host-tcpdump.stderr" \
-    "$OUT_DIR/$run_id-host-tcpdump.stderr" 2>/dev/null || true
-  tcpdump -nn -tttt -vv -r "$OUT_DIR/$run_id-host.pcap" \
-    "udp port $BENCH_PORT" > "$OUT_DIR/$run_id-host-packets.txt" \
-    2>/dev/null || true
-  # tcpdump ran as root on pup; its capture is root-owned.
-  pup_ssh "sudo -n rm -f '/tmp/$run_id-host.pcap' \
-'/tmp/$run_id-host-tcpdump.stderr'" || true
-  pup_ssh "date -u +%FT%TZ; \
-p=\$(systemctl show lyte-host --property MainPID --value || true); \
-if test -n \"\$p\"; then ps -o pid,lstart,args -p \"\$p\"; \
-{ sha256sum /proc/\$p/exe 2>/dev/null || sudo -n sha256sum /proc/\$p/exe; }; fi; \
-ss -u -a -n -p; ip -s link show" \
-    > "$OUT_DIR/$run_id-host-after.txt" || true
-  shasum -a 256 "$OUT_DIR/$run_id"* \
-    > "$OUT_DIR/$run_id-handshake-artifacts.sha256" 2>/dev/null || true
-  HANDSHAKE_RUN_ID=""
-  HANDSHAKE_LOCAL_TCPDUMP_PID=""
-  HANDSHAKE_REMOTE_TCPDUMP_PID=""
-  }
 
 cleanup() {
   (( CLEANUP_STARTED == 0 )) || return 0
@@ -449,7 +359,7 @@ trap 'handle_signal 143' TERM
 start_motion() {
   local run_id="$1"
   local freeze="${2:-}"
-  local monitor_state discovered refresh scale summary
+  local monitor_state discovered scale summary
   local presenter="$ROOT/Scripts/motion-presenter.py"
   local definition="$ROOT/Scripts/motion-definition.json"
   refuse_if_lyte_is_running
@@ -472,9 +382,9 @@ logical = re.search(
 )
 if not mode or not logical:
     raise SystemExit("no current physical/logical monitor state")
-print(mode.group(1), mode.group(2), mode.group(3), logical.group(3))
+print(mode.group(1), mode.group(2), logical.group(3))
 ')"
-  read -r QUALITY_WIDTH QUALITY_HEIGHT refresh scale <<< "$discovered"
+  read -r QUALITY_WIDTH QUALITY_HEIGHT scale <<< "$discovered"
   pup_ssh \
     'python3 -c '"'"'import gi, numpy
 gi.require_version("Gdk", "4.0")
@@ -487,8 +397,8 @@ gi.require_version("Gtk", "4.0")
   REMOTE_MOTION_DEFINITION="/tmp/lyte-benchmark-$run_id-motion.json"
   REMOTE_MOTION_LOG="/tmp/lyte-benchmark-$run_id-motion-source.jsonl"
   MOTION_SOURCE_LOG="$OUT_DIR/$run_id-motion-source.jsonl"
-  rsync -a "$presenter" "$PUP:$REMOTE_MOTION_PRESENTER"
-  rsync -a "$definition" "$PUP:$REMOTE_MOTION_DEFINITION"
+  pup_rsync -a "$presenter" "$PUP:$REMOTE_MOTION_PRESENTER"
+  pup_rsync -a "$definition" "$PUP:$REMOTE_MOTION_DEFINITION"
   remote_hashes="$(pup_ssh \
     "sha256sum '$REMOTE_MOTION_PRESENTER' '$REMOTE_MOTION_DEFINITION' \
 | awk '{print \$1}'")"
@@ -504,7 +414,7 @@ gi.require_version("Gtk", "4.0")
 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
 WAYLAND_DISPLAY=wayland-0 nohup python3 '$REMOTE_MOTION_PRESENTER' \
 --definition '$REMOTE_MOTION_DEFINITION' \
---width '$QUALITY_WIDTH' --height '$QUALITY_HEIGHT' --refresh '$refresh' \
+--width '$QUALITY_WIDTH' --height '$QUALITY_HEIGHT' \
 ${freeze:+--freeze $freeze} \
 --log '$REMOTE_MOTION_LOG' >'$REMOTE_MOTION_LOG.stderr' 2>&1 & echo \$!")"
   [[ "$PRESENTER_PID" =~ ^[0-9]+$ ]] || {
@@ -516,31 +426,20 @@ ${freeze:+--freeze $freeze} \
     echo "pup motion workload failed to stay alive" >&2
     exit 1
   }
-  rsync -a "$PUP:$REMOTE_MOTION_LOG" "$MOTION_SOURCE_LOG"
+  pup_rsync -a "$PUP:$REMOTE_MOTION_LOG" "$MOTION_SOURCE_LOG"
   summary="$OUT_DIR/$run_id-motion-source-preflight.json"
   source_pass=1
   python3 "$ROOT/Scripts/motion_preflight.py" "$MOTION_SOURCE_LOG" "$summary" \
       "$QUALITY_WIDTH" "$QUALITY_HEIGHT" "$scale" "$freeze" || source_pass=0
-  motion_source_sha="$(shasum -a 256 "$MOTION_SOURCE_LOG" | awk '{print $1}')"
-  python3 - "$OUT_DIR/$run_id.provenance.json" "$summary" \
-      "$MOTION_PRESENTER_SHA256" "$MOTION_DEFINITION_SHA256" \
-      "$motion_source_sha" <<'PY'
-import json, os, sys
-provenance_path, summary_path, presenter, definition, source_log = sys.argv[1:]
-record = json.load(open(provenance_path))
-record.update({
-    "motionPresenter": "Scripts/motion-presenter.py",
-    "motionPresenterSHA256": presenter,
-    "motionDefinition": "Scripts/motion-definition.json",
-    "motionDefinitionSHA256": definition,
-    "motionSourceLogSHA256": source_log,
-    "motionSourcePreflight": (
-        json.load(open(summary_path)) if os.path.exists(summary_path)
-        else {"pass": False, "error": "preflight wrote no summary"}),
-    "presentation": "gtk4-wayland-frame-clock-fractional-scale-aware",
-})
-open(provenance_path, "w").write(json.dumps(record, separators=(",", ":")) + "\n")
-PY
+  provenance_merge "$OUT_DIR/$run_id.provenance.json" \
+    motionPresenter=Scripts/motion-presenter.py \
+    motionPresenterSHA256="$MOTION_PRESENTER_SHA256" \
+    motionDefinition=Scripts/motion-definition.json \
+    motionDefinitionSHA256="$MOTION_DEFINITION_SHA256" \
+    motionSourceLogSHA256="$(shasum -a 256 "$MOTION_SOURCE_LOG" | awk '{print $1}')" \
+    motionSourcePreflight:="$(cat "$summary" 2>/dev/null \
+      || echo '{"pass":false,"error":"preflight wrote no summary"}')" \
+    presentation=gtk4-wayland-frame-clock-fractional-scale-aware
   if (( ! source_pass )); then
     echo "motion source/compositor cadence failed before Lyte; see $summary" >&2
     exit 1
@@ -553,111 +452,11 @@ stop_motion() {
   PRESENTER_PID=""
 }
 
-# handshake-only restarts the real systemd unit (keeping its arguments,
-# seat environment and ambient CAP_SYS_ADMIN) to measure connect latency.
-# Protected host identity and configuration must stay byte-identical.
-protected_host_fingerprint() {
-  pup_ssh \
-    "set -e; cd ~/.config/lyte; \
-sha256sum noise_static.key paired_clients host.conf; \
-stat -c '%n %a %U %G %s' noise_static.key paired_clients host.conf" \
-    | shasum -a 256 \
-    | awk '{print $1}'
-}
-
-start_fresh_host() {
-  local run_id="$1"
-  local restart_result before_pid after_pid
-
-  refuse_if_lyte_is_running
-
-  pup_ssh \
-    "systemctl is-active --quiet lyte-host" || {
-    echo "handshake-only requires active lyte-host.service" >&2
-    exit 1
-  }
-
-  FRESH_HOST_PROTECTED_STATE="$(protected_host_fingerprint)"
-  FRESH_HOST_JOURNAL_SINCE="$(date -u +%FT%TZ)"
-  FRESH_HOST_LOG_OFFSET="$(pup_ssh \
-    "stat -c %s ~/.local/state/lyte/host.log 2>/dev/null || echo 0")"
-  FRESH_HOST_RECOVERY_NEEDED=1
-  restart_result="$(pup_ssh "port=$BENCH_PORT"'
-set -eu
-before=$(systemctl show lyte-host --property MainPID --value)
-sudo -n systemctl restart lyte-host
-i=0
-while [ "$i" -lt 100 ]; do
-  after=$(systemctl show lyte-host --property MainPID --value)
-  if systemctl is-active --quiet lyte-host \
-      && [ "$after" -gt 0 ] && [ "$after" != "$before" ] \
-      && sudo -n ss -H -lunp "sport = :$port" \
-          | grep -q "pid=$after,"; then
-    set -- $(sudo -n sha256sum "/proc/$after/exe")
-    running=$1
-    set -- $(sha256sum "$(readlink -f "$HOME/.local/bin/lyte-host")")
-    deployed=$1
-    [ "$running" = "$deployed" ] || {
-      echo "fresh service process is not the deployed host" >&2
-      exit 1
-    }
-    printf "%s %s\n" "$before" "$after"
-    exit 0
-  fi
-  i=$((i + 1))
-  sleep 0.1
-done
-echo "lyte-host.service did not publish a fresh active MainPID" >&2
-exit 1
-')"
-  read -r before_pid after_pid <<< "$restart_result"
-  [[ "$before_pid" =~ ^[0-9]+$ && "$after_pid" =~ ^[0-9]+$ \
-      && "$before_pid" != "$after_pid" ]] || {
-    echo "lyte-host.service restart did not produce a fresh process" >&2
-    exit 1
-  }
-  FRESH_HOST_RECOVERY_NEEDED=0
-
-  [[ "$(protected_host_fingerprint)" == "$FRESH_HOST_PROTECTED_STATE" ]] || {
-    echo "lyte-host.service restart changed protected host state" >&2
-    exit 1
-  }
-  printf '%s %s\n' "$before_pid" "$after_pid" \
-    > "$OUT_DIR/$run_id.fresh-host.pids"
-}
-
-finish_fresh_host() {
-  local run_id="$1"
-  local host_log="$OUT_DIR/$run_id-host.log"
-  pup_ssh \
-    "sudo -n journalctl -u lyte-host \
---since '$FRESH_HOST_JOURNAL_SINCE' --no-pager" > "$host_log"
-  # The host's own output since the restart. A start that rotated the log
-  # leaves a file shorter than the recorded offset: take all of it.
-  pup_ssh "log=~/.local/state/lyte/host.log; offset=$FRESH_HOST_LOG_OFFSET; \
-size=\$(stat -c %s \"\$log\" 2>/dev/null || echo 0); \
-[ \"\$size\" -ge \"\$offset\" ] || offset=0; \
-tail -c +\$((offset + 1)) \"\$log\"" > "$OUT_DIR/$run_id-host-output.log" || true
-  pup_ssh \
-    "systemctl is-active --quiet lyte-host" || {
-    echo "lyte-host.service is not active after handshake-only" >&2
-    exit 1
-  }
-  [[ "$(protected_host_fingerprint)" == "$FRESH_HOST_PROTECTED_STATE" ]] || {
-    echo "handshake-only changed protected host state" >&2
-    exit 1
-  }
-  FRESH_HOST_PROTECTED_STATE=""
-  FRESH_HOST_JOURNAL_SINCE=""
-  FRESH_HOST_LOG_OFFSET=0
-}
-
 run_leg() {
   local workload="$1"
   local stamp nonce run_id jsonl pidfile stderr_file provenance_file readback_file
-  local quality_reference_sha readback_sha build_badge benchmark_chroma
-  local benchmark_reference_name synthetic_motion
-  local client_pipeline_witness
+  local build_badge benchmark_chroma benchmark_reference_name synthetic_motion
+  local client_pipeline_witness old_pid new_pid
   refuse_if_lyte_is_running
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   nonce="$(uuidgen | tr '[:upper:]' '[:lower:]' | tr -d '-')"
@@ -672,9 +471,10 @@ run_leg() {
   provenance_file="$OUT_DIR/$run_id.provenance.json"
   readback_file="$OUT_DIR/$run_id.readback.bgra"
   rm -f "$jsonl" "$pidfile" "$stderr_file" "$provenance_file" "$readback_file"
-  cat > "$provenance_file" <<EOF
-{"runID":"$run_id","buildUTC":"$APP_BUILD_UTC","clientExecutableSHA256":"$APP_SHA256","clientSourceSHA256":"$CLIENT_SOURCE_SHA256","hostExecutableSHA256":"$HOST_SHA256","hostSourceSHA256":"$HOST_SOURCE_SHA256"}
-EOF
+  provenance_merge "$provenance_file" runID="$run_id" \
+    buildUTC="$APP_BUILD_UTC" clientExecutableSHA256="$APP_SHA256" \
+    clientSourceSHA256="$CLIENT_SOURCE_SHA256" \
+    hostExecutableSHA256="$HOST_SHA256" hostSourceSHA256="$HOST_SOURCE_SHA256"
 
   # Pin the leg's chroma tier (good|best — ChromaTier rawValues). Empty
   # keeps the app's persisted tier: fine for smoke, ambiguous for an A/B.
@@ -693,30 +493,16 @@ EOF
     start_motion "$run_id" "$FREEZE_FRAME_ID"
     synthetic_motion=1
     benchmark_reference_name="motion-definition-v1"
-  fi
-  if [[ "$workload" == handshake-only ]]; then
+  elif [[ "$workload" == handshake-only ]]; then
     QUALITY_WIDTH=2048
     QUALITY_HEIGHT=1280
-    refuse_if_lyte_is_running
     start_handshake_evidence "$run_id"
+    refuse_if_lyte_is_running
     start_fresh_host "$run_id"
-  fi
-  if [[ "$workload" == handshake-only ]]; then
-    python3 - "$provenance_file" "$OUT_DIR/$run_id.fresh-host.pids" <<PY
-import json, pathlib, sys
-path = pathlib.Path(sys.argv[1])
-old_pid, new_pid = map(int, pathlib.Path(sys.argv[2]).read_text().split())
-record = json.loads(path.read_text())
-record.update({
-    "motionLeg": "handshake-only",
-    "hostLifecycle": "systemd-restart",
-    "hostMainPIDBefore": old_pid,
-    "hostMainPIDAfter": new_pid,
-    "qualityWidth": 2048,
-    "qualityHeight": 1280,
-})
-path.write_text(json.dumps(record, separators=(",", ":")) + "\n")
-PY
+    read -r old_pid new_pid < "$OUT_DIR/$run_id.fresh-host.pids"
+    provenance_merge "$provenance_file" hostLifecycle=systemd-restart \
+      hostMainPIDBefore:="$old_pid" hostMainPIDAfter:="$new_pid" \
+      qualityWidth:="$QUALITY_WIDTH" qualityHeight:="$QUALITY_HEIGHT"
   fi
   build_badge="build $APP_BUILD_UTC · C ${CLIENT_SOURCE_SHA256:0:12}/${APP_SHA256:0:12} · H ${HOST_SOURCE_SHA256:0:12}/${HOST_SHA256:0:12} · $run_id"
   refuse_if_lyte_is_running
@@ -807,10 +593,7 @@ PY
 }
 
 case "$MODE" in
-  static) run_leg static ;;
-  motion) run_leg motion ;;
-  quality-static) run_leg quality-static ;;
-  handshake-only) run_leg handshake-only ;;
+  static|motion|quality-static|handshake-only) run_leg "$MODE" ;;
   all)
     # One process per leg: `run_leg x || rc=1` would disable set -e inside
     # the whole leg, so provenance and pup failures would be ignored.

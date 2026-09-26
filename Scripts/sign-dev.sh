@@ -17,12 +17,14 @@
 # fail closed without an identity: ad-hoc signing breaks the Keychain ACL
 # and guarantees another authorization prompt.
 #
-# Every target is signed with the hardened runtime and no entitlements: the
-# helper trusts the app's designated requirement and lyte-cli holds the
-# pairing key, so a same-user process must not inject (DYLD_*, task-port
-# attach). The binaries link only system libraries and use no JIT, so no
-# exception is needed. Consequence: debuggers cannot attach; debug the
-# unsigned SwiftPM binary or a copy re-signed with `codesign --force --sign -`.
+# Every target is signed with the hardened runtime: the helper trusts the
+# app's designated requirement and lyte-cli holds the pairing key, so a
+# same-user process must not inject (DYLD_*, task-port attach). Nothing
+# carries an entitlement except a "Lyte Dev" app: that self-signed leaf has
+# no Team ID, so library validation would refuse the embedded
+# Sparkle.framework at launch, and only that app opts out of it. Debuggers
+# cannot attach; debug the unsigned SwiftPM binary or a copy re-signed with
+# `codesign --force --sign -`.
 set -e
 
 NESTED=0
@@ -134,14 +136,32 @@ if [ "$NESTED" -eq 1 ]; then
     exit 0
 fi
 
+APP_ENTITLEMENTS=""
+if [ "$IDENTITY_KIND" = self-signed ]; then
+    APP_ENTITLEMENTS="$(mktemp "${TMPDIR:-/tmp}/lyte-app-entitlements.XXXXXX")"
+    trap 'rm -f "$APP_ENTITLEMENTS"' EXIT
+    cat > "$APP_ENTITLEMENTS" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>
+PLIST
+fi
+
 SELECTED_TEAM=""
 for target in "$@"; do
+    entitlements=""
     case "$target" in
-        *.app) ident="dev.shreeve.lyte" ;;
+        *.app) ident="dev.shreeve.lyte"; entitlements="$APP_ENTITLEMENTS" ;;
         *)     ident="dev.shreeve.$(basename "$target")" ;;
     esac
     codesign --force --sign "$IDENT_HASH" --identifier "$ident" \
-        --options runtime "$TIMESTAMP" "$target"
+        --options runtime ${entitlements:+--entitlements "$entitlements"} \
+        "$TIMESTAMP" "$target"
     codesign --verify --strict "$target"
     signature_details="$(codesign -d --verbose=4 "$target" 2>&1)"
     actual_ident="$(printf '%s\n' "$signature_details" \

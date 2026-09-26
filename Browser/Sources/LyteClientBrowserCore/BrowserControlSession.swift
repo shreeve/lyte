@@ -43,17 +43,9 @@ public final class BrowserControlSession {
     /// Message-1 retransmit schedule; a page dial is a first dial.
     public typealias HandshakeRetry = ClientHandshakeInitiator.Retry
 
-    /// The chan-3 report cadence, the native shell's: inside the 25–50 ms
-    /// band the host's estimator and its 350 ms freeze detector expect.
-    public static let feedbackIntervalMicroseconds: UInt64 = 40_000
-    /// Arrival samples kept between reports.
-    public static let maxRetainedArrivalSamples = 512
-    /// The receiver machine's timing, the native shell's: the baseline
-    /// blackout bound sits past an idle host's 1 Hz beacons, and the first
-    /// audio datagram (a dense path probe) tightens it.
-    public static let machineConfig = SessionMachineConfig(
-        blackoutSilenceMicroseconds: 2_500_000)
-    public static let tightenedBlackoutSilenceMicroseconds: Int64 = 350_000
+    /// The chan-3 report cadence every client shell runs.
+    private static let feedbackIntervalMicroseconds =
+        UInt64(ClientFeedbackReporter.cadenceMilliseconds) * 1_000
 
     public struct Counters: Sendable, Equatable {
         /// Datagrams whose envelope did not decode.
@@ -148,7 +140,6 @@ public final class BrowserControlSession {
     public var videoPresentationBacklog: Int { video.presentationBacklogCount }
     public var audioPending: Int { audio.pendingCount }
     public var audioPacketsAssembled: UInt64 { audio.packetsAssembled }
-    public var audioPacketsPopped: UInt64 { audio.packetsPopped }
     public var audioPacketsDroppedStale: UInt64 { audio.packetsDroppedStale }
     public var clipboardNegotiated: Bool { control?.clipboardNegotiated ?? false }
     /// Input events captured but not yet on the reliable stream.
@@ -203,7 +194,7 @@ public final class BrowserControlSession {
         video.noteDropped(frameNumber: frameNumber)
     }
 
-    public func popAudioPacket() -> BrowserAudioPlayout.Packet? {
+    public func popAudioPacket() -> AudioPacket? {
         audio.popPacket()
     }
 
@@ -469,11 +460,8 @@ public final class BrowserControlSession {
 
         var control = ClientControlSession(
             localCapabilities: .wireDefault.declaringClipboardText(),
-            machineConfig: Self.machineConfig,
             desiredHostAudioRouting: nil,
             clipboardSharingAtStart: true,
-            tightenedBlackoutSilenceMicroseconds:
-                Self.tightenedBlackoutSilenceMicroseconds,
             now: now
         )
         var pairing = try ClientPairing(
@@ -570,7 +558,7 @@ public final class BrowserControlSession {
                 scheduled: ingested.scheduled)
         case .audio:
             note(posture: control?.noteAudioEvidence(now: now))
-            for line in audio.ingestShard(envelope: envelope, payload: plaintext[...]) {
+            for line in audio.ingestShard(envelope: envelope, payload: plaintext) {
                 note(line)
             }
             return step(outbound: [])
@@ -790,7 +778,7 @@ public final class BrowserControlSession {
 
     private func record(_ envelope: Envelope, arrivalMicros: UInt64) {
         ledgers[envelope.channel, default: SeqGapTracker()].record(envelope.seq)
-        guard arrivals.count < Self.maxRetainedArrivalSamples else {
+        guard arrivals.count < ClientFeedbackReporter.maxRetainedArrivals else {
             counters.arrivalSamplesDropped += 1
             return
         }
@@ -865,14 +853,7 @@ public final class BrowserControlSession {
     }
 
     private func note(posture: ClientDetectorPosture?) {
-        switch posture {
-        case .tightened(let bound):
-            note("audio evidence — blackout detector tightened to \(bound / 1_000) ms")
-        case .relaxed(let bound):
-            note("audio quiet announced — blackout detector relaxed to \(bound / 1_000) ms")
-        case nil:
-            break
-        }
+        if let posture { note(posture.note) }
     }
 
     /// Builds a step and drains the notes, so each note is reported once.

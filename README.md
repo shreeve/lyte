@@ -99,6 +99,7 @@ Homebrew and update themselves with Sparkle; cutting a release is in
 | [AGENTS.md](AGENTS.md) | Repository law: ownership, doctrine, safety, change discipline |
 | [HANDOFF.md](HANDOFF.md) | Current branch, live rig state, what is next |
 | [TODO.md](TODO.md) | Deferred work |
+| [CHANGELOG.md](CHANGELOG.md) | User-visible changes per release |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Packages, targets, data flow, threads |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) | The Lyte-UDP contract and its vectors |
 | [docs/TESTING.md](docs/TESTING.md) | Every gate and its exact commands |

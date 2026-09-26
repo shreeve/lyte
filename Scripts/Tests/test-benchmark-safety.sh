@@ -326,13 +326,15 @@ grep -Fq "match ip dst 10.0.0.44/32" "$LYTE_FAKE_TC_LOG"
 expect_tc default
 "$netem" remove en-test0 >/dev/null
 
-"$netem" apply en-test0 10.0.0.44 41151 20 10 1 >/dev/null
-printf '%s\n' owned-changed > "$LYTE_FAKE_TC_STATE"
-if "$netem" remove en-test0 >/dev/null 2>&1; then
-    fail "changed owned topology was removed"
-fi
-printf '%s\n' owned > "$LYTE_FAKE_TC_STATE"
-"$netem" remove en-test0 >/dev/null
+for changed in owned-changed owned-without-netem; do
+    "$netem" apply en-test0 10.0.0.44 41151 20 10 1 >/dev/null
+    printf '%s\n' "$changed" > "$LYTE_FAKE_TC_STATE"
+    if "$netem" remove en-test0 >/dev/null 2>&1; then
+        fail "changed owned topology ($changed) was removed"
+    fi
+    printf '%s\n' owned > "$LYTE_FAKE_TC_STATE"
+    "$netem" remove en-test0 >/dev/null
+done
 
 printf '%s\n' foreign > "$LYTE_FAKE_TC_STATE"
 if "$netem" apply en-test0 10.0.0.44 41151 20 10 1 >/dev/null 2>&1; then
@@ -431,11 +433,11 @@ kill "$ordinary_pid"
 ends "$ordinary_pid"
 ordinary_pid=""
 
-# benchmark-netem runs against a simulated pup: ssh executes the remote
-# command locally, with tc/ip/systemctl/ss/sudo replaced by fakes, and the
-# real port-netem.sh driving the fake tc. Nothing leaves this machine. The
-# caller's benchmark environment is cleared so a unit test can never reach a
-# real host.
+# benchmark-netem and the handshake leg run against a simulated pup: ssh
+# executes the remote command locally, with tc/ip/systemctl/ss/sudo and the
+# rest replaced by fakes, and the real port-netem.sh driving the fake tc.
+# Nothing leaves this machine. The caller's benchmark environment is cleared
+# so a unit test can never reach a real host.
 netem_env=(env -u LYTE_BENCHMARK_PORT -u LYTE_BENCHMARK_ALLOW_STANDING_PORT
     -u PUP -u LYTE_BENCHMARK_PUP -u LYTE_BENCHMARK_HOST
     LYTE_PUP_HOST=fake-pup.invalid)
@@ -467,6 +469,7 @@ exec "$@"
 EOF
 cat > "$fake_pup/rsync" <<'EOF'
 #!/bin/sh
+printf '%s\n' "$*" >> "${FAKE_RSYNC_LOG:-/dev/null}"
 eval "last=\${$#}"
 cp "$(eval "echo \${$(($# - 1))}")" "${last#*:}"
 EOF
@@ -482,20 +485,75 @@ cat > "$fake_pup/ip" <<'EOF'
 #!/bin/sh
 echo "10.0.0.44 dev en-test0 src 10.0.0.232 uid 1000"
 EOF
+# The service's MainPID is 4242, or $FAKE_PUP_STATE/pid; a restart moves it
+# on and runs $FAKE_RESTART_HOOK.
 cat > "$fake_pup/systemctl" <<'EOF'
 #!/bin/sh
+pid_file="${FAKE_PUP_STATE:-/nonexistent}/pid"
 case "$1" in
     is-active) exit 0 ;;
-    show) echo 4242 ;;
+    show) cat "$pid_file" 2>/dev/null || echo 4242 ;;
+    restart)
+        echo $(( $(cat "$pid_file") + 1 )) > "$pid_file"
+        sh -c "${FAKE_RESTART_HOOK:-:}"
+        ;;
 esac
 EOF
 cat > "$fake_pup/ss" <<'EOF'
 #!/bin/sh
+pid=$(cat "${FAKE_PUP_STATE:-/nonexistent}/pid" 2>/dev/null || echo 4242)
 case "$*" in
-    *":$FAKE_OWNED_PORT'"*|*":$FAKE_OWNED_PORT") echo "UNCONN 0 0 *:$FAKE_OWNED_PORT *:* users:((\"lyte-host\",pid=4242,fd=3))" ;;
+    *":$FAKE_OWNED_PORT") echo "UNCONN 0 0 *:$FAKE_OWNED_PORT *:* users:((\"lyte-host\",pid=$pid,fd=3))" ;;
 esac
 EOF
+# /proc/PID/exe is whatever ~/.local/bin/lyte-host names; stat takes GNU -c.
+cat > "$fake_pup/sha256sum" <<'EOF'
+#!/bin/sh
+[ $# -gt 0 ] || exec shasum -a 256
+for file; do
+    case "$file" in /proc/*/exe) file="$HOME/.local/bin/lyte-host" ;; esac
+    shasum -a 256 "$file" || exit 1
+done
+EOF
+cat > "$fake_pup/stat" <<'EOF'
+#!/bin/sh
+[ "$1" = -c ] || exec /usr/bin/stat "$@"
+format=$(printf '%s' "$2" | sed 's/%n/%N/g; s/%a/%Lp/g; s/%U/%Su/g; s/%G/%Sg/g; s/%s/%z/g')
+shift 2
+exec /usr/bin/stat -f "$format" "$@"
+EOF
+# A capture logs its arguments and runs until killed; a read prints nothing.
+cat > "$fake_pup/tcpdump" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "${FAKE_TCPDUMP_LOG:-/dev/null}"
+case "$*" in *" -w "*) exec sleep 30 ;; esac
+EOF
+cat > "$fake_pup/timeout" <<'EOF'
+#!/bin/sh
+shift
+exec "$@"
+EOF
+printf '#!/bin/sh\necho "fake journal"\n' > "$fake_pup/journalctl"
 chmod +x "$fake_pup"/*
+
+# benchmark-netem runs from a private root whose impaired leg and analyzer
+# are fakes: the leg writes a motion JSONL, the witnesses beside it, and the
+# line naming the JSONL; the analyzer prints its arguments.
+netem_root="$test_root/netem-repo"
+mkdir -p "$netem_root/Scripts"
+ln -s "$repo_root/Scripts/lib" "$repo_root/Scripts/netem" "$benchmark_netem" \
+    "$netem_root/Scripts/"
+cat > "$netem_root/Scripts/benchmark-app.sh" <<'EOF'
+#!/bin/sh
+out="$3"
+for suffix in "" -client-handshake -client-pipeline-witness -motion-source; do
+    : > "$out/motion-fake$suffix.jsonl"
+done
+echo "benchmark JSONL: $out/motion-fake.jsonl"
+EOF
+printf '%s\n' 'import json, sys' 'print(json.dumps(sys.argv[1:]))' \
+    > "$netem_root/Scripts/analyze-app-benchmark.py"
+chmod +x "$netem_root/Scripts/benchmark-app.sh"
 
 refute_logged() {
     if grep -Fq -- "$1" "$test_root/ssh.log"; then
@@ -504,12 +562,14 @@ refute_logged() {
 }
 run_netem() {
     : > "$test_root/ssh.log"
+    : > "$test_root/rsync.log"
     "${netem_env[@]}" PATH="$fake_pup:$PATH" \
         FAKE_SSH_LOG="$test_root/ssh.log" \
+        FAKE_RSYNC_LOG="$test_root/rsync.log" \
         FAKE_SSH_HANG_PID="$test_root/ssh.pid" \
         FAKE_OWNED_PORT="${FAKE_OWNED_PORT:-41151}" \
         LYTE_BENCHMARK_OUT_DIR="$test_root/netem-runs" \
-        "$@" "$benchmark_netem" moderate \
+        "$@" "$netem_root/Scripts/benchmark-netem.sh" moderate \
         >"$test_root/netem.stdout" 2>"$test_root/netem.stderr"
 }
 printf '%s\n' default > "$LYTE_FAKE_TC_STATE"
@@ -576,5 +636,91 @@ fi
 refute_logged ' apply '
 refute_logged ' remove '
 printf '%s\n' default > "$LYTE_FAKE_TC_STATE"
+
+# A full impaired run judges the JSONL the leg named, whatever witnesses lie
+# beside it, removes the qdisc, and gives every rsync a connect timeout.
+run_netem LYTE_BENCHMARK_PORT=41151 LYTE_BENCHMARK_ALLOW_STANDING_PORT=1 \
+    || fail "an impaired run failed: $(<"$test_root/netem.stderr")"
+grep -Eq '"--netem-profile", "moderate", "[^"]*/motion-fake\.jsonl"' \
+    "$test_root/netem.stdout" \
+    || fail "the netem verdict did not judge the leg's JSONL"
+expect_tc default
+[[ -s "$test_root/rsync.log" ]] || fail "benchmark-netem uploaded no helper"
+refute grep -v -- '-e ssh -o ConnectTimeout=10' "$test_root/rsync.log"
+
+# The handshake leg's host side against the simulated pup, whose HOME holds
+# the protected state: the XDG and pre-XDG identity and the deployed link.
+pup_home="$test_root/pup-home"
+mkdir -p "$pup_home/.config/lyte" "$pup_home/.config/lyte-host" \
+    "$pup_home/.local/bin" "$test_root/pup-state"
+for file in lyte/noise_static.key lyte/paired_clients lyte/host.conf \
+    lyte-host/noise_static.key lyte-host/paired_clients
+do
+    printf '%s\n' "$file" > "$pup_home/.config/$file"
+done
+printf 'deployed host\n' > "$test_root/lyte-host"
+ln -s "$test_root/lyte-host" "$pup_home/.local/bin/lyte-host"
+cat > "$test_root/handshake-leg.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+source "$REPO_ROOT/Scripts/lib/pup.sh"
+source "$REPO_ROOT/Scripts/lib/benchmark-handshake.sh"
+PUP=fake-pup.invalid HOST=10.0.0.232 BENCH_PORT=41151 BENCH_SECONDS=1
+OUT_DIR="$1"
+trap collect_handshake_evidence EXIT
+start_handshake_evidence "$2"
+start_fresh_host "$2"
+collect_handshake_evidence
+finish_fresh_host "$2"
+EOF
+# run_handshake NAME [VAR=VALUE...]: one leg with its evidence under NAME.
+run_handshake() {
+    local name="$1"
+    shift
+    mkdir -p "$test_root/$name"
+    printf '4242\n' > "$test_root/pup-state/pid"
+    "${netem_env[@]}" HOME="$pup_home" PATH="$fake_pup:$PATH" \
+        REPO_ROOT="$repo_root" FAKE_PUP_STATE="$test_root/pup-state" \
+        FAKE_SSH_LOG="$test_root/ssh.log" FAKE_OWNED_PORT=41151 \
+        FAKE_TCPDUMP_LOG="$test_root/$name/tcpdump.log" \
+        "$@" "$BASH" "$test_root/handshake-leg.sh" "$test_root/$name" \
+        "lyte-test-$$-$name" \
+        >"$test_root/$name.stdout" 2>"$test_root/$name.stderr"
+}
+
+# The client capture listens on the interface that routes to the host, and
+# the restart yields a fresh service process.
+run_handshake handshake \
+    || fail "the handshake leg failed: $(<"$test_root/handshake.stderr")"
+grep -Fq -- '-i en-fake ' "$test_root/handshake/tcpdump.log" \
+    || fail "the client capture ignored the route's interface"
+pids="$(<"$test_root/handshake/lyte-test-$$-handshake.fresh-host.pids")"
+[[ "$pids" == "4242 4243" ]] || fail "the restart recorded $pids"
+
+# A restart that rewrites the pre-XDG identity copy fails the leg.
+if run_handshake legacy-rewrite \
+    FAKE_RESTART_HOOK='echo adopted >> "$HOME/.config/lyte-host/paired_clients"'
+then
+    fail "the handshake leg missed a changed pre-XDG identity copy"
+fi
+grep -Fq 'restart changed protected host state' \
+    "$test_root/legacy-rewrite.stderr"
+
+# A protected file that exists but cannot be read, even through sudo, fails
+# the fingerprint rather than dropping out of it.
+mkdir -p "$test_root/no-sudo"
+printf '#!/bin/sh\nexit 1\n' > "$test_root/no-sudo/sudo"
+chmod +x "$test_root/no-sudo/sudo"
+chmod 000 "$pup_home/.config/lyte-host/paired_clients"
+if HOME="$pup_home" PATH="$test_root/no-sudo:$fake_pup:$PATH" "$BASH" -c \
+    'source "$1"; lyte_protected_state_fingerprint' _ \
+    "$repo_root/Scripts/lib/pup-side.sh" \
+    >/dev/null 2>"$test_root/unreadable.stderr"
+then
+    fail "the fingerprint left out an unreadable protected file"
+fi
+chmod 600 "$pup_home/.config/lyte-host/paired_clients"
+grep -Fq 'cannot read' "$test_root/unreadable.stderr" \
+    || fail "the unreadable-file refusal did not name the file"
 
 echo "benchmark safety tests PASSED"

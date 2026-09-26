@@ -1,8 +1,6 @@
 // The kernel-facing half of the direct eye: plane discovery, the FB_ID
 // import identity, and the scanout ticket (GETFB2 + dmabuf export).
 
-#if os(Linux)
-
 import CDRM
 import Foundation
 import Glibc
@@ -31,8 +29,11 @@ public func renderNode(forCard fd: Int32) -> String? {
     return String(cString: name)
 }
 
-/// The DRM "type" property of a plane (primary / overlay / cursor).
-func planeType(fd: Int32, planeId: UInt32) -> UInt64? {
+/// A named property's current value on a plane. Values are raw UInt64;
+/// CRTC_X/CRTC_Y carry signed positions, bit-cast by the caller.
+func planePropValue(
+    fd: Int32, planeId: UInt32, name: String
+) -> UInt64? {
     guard let props = drmModeObjectGetProperties(
         fd, planeId, UInt32(DRM_MODE_OBJECT_PLANE))
     else { return nil }
@@ -41,11 +42,11 @@ func planeType(fd: Int32, planeId: UInt32) -> UInt64? {
         guard let prop = drmModeGetProperty(fd, props.pointee.props[i])
         else { continue }
         defer { drmModeFreeProperty(prop) }
-        let name = withUnsafeBytes(of: prop.pointee.name) { raw in
+        let propName = withUnsafeBytes(of: prop.pointee.name) { raw in
             String(cString: raw.baseAddress!.assumingMemoryBound(
                 to: CChar.self))
         }
-        if name == "type" { return props.pointee.prop_values[i] }
+        if propName == name { return props.pointee.prop_values[i] }
     }
     return nil
 }
@@ -67,7 +68,8 @@ public func findActivePlanes(fd: Int32) -> ActivePlanes? {
         defer { drmModeFreePlane(plane) }
         let p = plane.pointee
         guard p.crtc_id != 0, p.fb_id != 0,
-              let type = planeType(fd: fd, planeId: p.plane_id)
+              let type = planePropValue(
+                  fd: fd, planeId: p.plane_id, name: "type")
         else { continue }
         if type == UInt64(DRM_PLANE_TYPE_PRIMARY), primary == nil {
             primary = (p.plane_id, p.fb_id)
@@ -170,5 +172,3 @@ private func closeGemHandles(fd: Int32, _ handles: [UInt32]) {
         _ = drmCloseBufferHandle(fd, handle)
     }
 }
-
-#endif

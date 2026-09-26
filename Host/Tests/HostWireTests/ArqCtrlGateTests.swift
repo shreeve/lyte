@@ -6,21 +6,16 @@ import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (build plan HS-8 row, the host-side half): the session's CTRL
-// channel rides the W3 ArqEndpoint and SURVIVES the W-G4 fault model —
-// 5% seeded loss plus duplication and jitter-driven reorder through
-// SimNet, RTT-adaptive retransmit, exactly-once in-order delivery both
-// directions — while the deliberately ARQ-exempt traffic stays exempt:
-// beacons are never retransmitted (a late beacon is a lie; a lost one is
-// superseded at 1 Hz) and a sealed IDR request still lands mid-storm.
-// The other half of the slice's gate — beacon residual <1 ms after 30 s
-// — is client-measured, joint with CL-10/CL-7, and runs when the client
-// grows its LyteUdpSession leg.
+// The session's CTRL channel rides an ArqEndpoint and survives 5% seeded
+// loss plus duplication and jitter-driven reorder through SimNet:
+// RTT-adaptive retransmit, exactly-once in-order delivery both directions,
+// while the deliberately ARQ-exempt traffic stays exempt: beacons are
+// never retransmitted (a late beacon is a lie; a lost one is superseded
+// at 1 Hz) and a sealed IDR request still lands mid-storm.
 //
-// The far end here is a LyteWire client build-up: NoiseSession initiator
-// (the HS-7 harness's discipline) plus its own ArqEndpoint<ClientClock>,
-// which is exactly what CL-7 will assemble — the two endpoints meet
-// through the same frame codecs the frozen arq-v1 vectors pin.
+// The far end is a LyteWire client build-up: a NoiseSession initiator
+// plus its own ArqEndpoint<ClientClock>, meeting the host through the
+// frame codecs the frozen arq-v1 vectors pin.
 
 final class ArqCtrlGateTests: XCTestCase {
 
@@ -37,7 +32,6 @@ final class ArqCtrlGateTests: XCTestCase {
     /// ArqEndpoint, and the bookkeeping the gate asserts against.
     private struct ArqClient: PeerBackedClient {
         var peer: SealedCtrlPeer<ClientClock>
-        var oneShotAcks: [ArqGroupId] = []
         var beaconSeqsSeen: [UInt32] = []
         var arqIgnored = 0
         /// Byte-identical network duplicates die at the transport's
@@ -68,10 +62,8 @@ final class ArqCtrlGateTests: XCTestCase {
                 )
                 for event in events {
                     switch event {
-                    case .message:
-                        break // in `received`
-                    case .oneShotAcknowledged(let group):
-                        oneShotAcks.append(group)
+                    case .message, .oneShotAcknowledged:
+                        break // messages are in `received`
                     case .ignored:
                         arqIgnored += 1
                     }
@@ -90,9 +82,9 @@ final class ArqCtrlGateTests: XCTestCase {
     // MARK: Shared harness
 
     /// Handshake, run directly (fault injection starts after — retry
-    /// under handshake loss is the client's timer, not this slice).
+    /// under handshake loss is the client's timer, not this suite's).
     /// Returns the session, the client with its transport live, the
-    /// sink, and the virtual instant the setup finished at. The W4b
+    /// sink, and the virtual instant the setup finished at. The
     /// lifecycle machine's timers are pushed past the horizon by
     /// default: this suite gates the ARQ sublayer, and the machine has
     /// its own gate (SessionLifecycleGateTests).
@@ -103,9 +95,11 @@ final class ArqCtrlGateTests: XCTestCase {
         append: @escaping (VideoChannelDatagram) -> Void
     ) throws -> (session: Session, client: ArqClient) {
         let hostStatic = NoiseKeyPair.generate()
-        let session = Session(
+        var client = try ArqClient(hostStaticPublicKey: hostStatic.publicKey)
+        let (session, _) = try Session.answering(
+            try client.message1Datagram(clientMicros: 500),
+            hostStatic: hostStatic, from: Self.tupleA,
             config: SessionConfig(
-                crypto: .noise(hostStatic: hostStatic),
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: beaconIntervalNS,
                 arq: arqConfig,
@@ -114,17 +108,9 @@ final class ArqCtrlGateTests: XCTestCase {
                     livenessTimeoutMicroseconds: 1 << 45
                 )
             ),
-            clientTuple: Self.tupleA,
-            now: 0,
             rng: SplitMix64(seed: 0x88),
             send: append
         )
-        var client = try ArqClient(hostStaticPublicKey: hostStatic.publicKey)
-        _ = session.receive(
-            try client.message1Datagram(clientMicros: 500),
-            from: Self.tupleA, now: 0, hostMicroseconds: 0
-        )
-        XCTAssertEqual(session.phase, .established)
         var now: UInt64 = 0
         session.pump(now: now)
         while let wake = session.nextWake(now: now), wake < 5_000_000 {
@@ -146,9 +132,9 @@ final class ArqCtrlGateTests: XCTestCase {
         try client.absorb(handshake[1].bytes, nowMicros: 700)
         try client.absorb(handshake[2].bytes, nowMicros: 800)
         XCTAssertNotNil(client.transport)
-        // The W7 declaration is the host's first reliable word (HS-8's
-        // deferred capabilities item). Acknowledge it and clear the
-        // baseline so the gates below start from a quiescent stream.
+        // The capability declaration is the host's first reliable word.
+        // Acknowledge it and clear the baseline so the tests below start
+        // from a quiescent stream.
         XCTAssertEqual(client.received.count, 1)
         XCTAssertEqual(client.received.first?.bytes.first,
                        CtrlMessageType.capabilityDeclaration)
@@ -164,7 +150,7 @@ final class ArqCtrlGateTests: XCTestCase {
         return (session, client)
     }
 
-    // MARK: The gate — 5% loss, duplication, reorder, both directions
+    // MARK: 5% loss, duplication, reorder, both directions
 
     func testGateReliableCtrlSurvivesLossDuplicationAndReorder() throws {
         var sent: [VideoChannelDatagram] = []
@@ -175,7 +161,7 @@ final class ArqCtrlGateTests: XCTestCase {
         var client = established.client
         var forwarded = sent.count // handshake rode outside the pipe
 
-        // The W-G4 fault model: 5% loss, 2% duplication, 3 ms base
+        // 5% loss, 2% duplication, 3 ms base
         // delay with 4 ms jitter — displacement reorder emerges.
         var net = SimNet(
             config: SimNetConfig(
@@ -188,15 +174,12 @@ final class ArqCtrlGateTests: XCTestCase {
         )
 
         // Traffic both ways: the ordered stream in mixed sizes (single
-        // and multi-segment) plus independent one-shots.
+        // and multi-segment), plus the client's independent one-shots.
         let sizes = [1, 17, 300, 1_093, 1_500, 2_600]
         let hostStream: [[UInt8]] = (0..<30).map { i in
             [UInt8](repeating: UInt8(truncatingIfNeeded: i &+ 1),
                     count: sizes[i % sizes.count])
         }
-        let hostOneShots: [UInt16: [UInt8]] = [
-            1: [0xB1, 0xB1], 2: [UInt8](repeating: 0xB2, count: 2_000),
-        ]
         let clientStream: [[UInt8]] = (0..<30).map { i in
             [UInt8](repeating: UInt8(truncatingIfNeeded: 0x40 &+ i),
                     count: sizes[(i + 3) % sizes.count])
@@ -258,13 +241,6 @@ final class ArqCtrlGateTests: XCTestCase {
             }
             if !oneShotsSent, t >= 1_200_000 {
                 oneShotsSent = true
-                for (group, message) in hostOneShots.sorted(by: { $0.key < $1.key }) {
-                    let allocated = try session.sendReliableOneShot(
-                        message, now: t * 1_000, hostMicroseconds: t
-                    )
-                    XCTAssertEqual(allocated, ArqGroupId(rawValue: group),
-                                   "the endpoint allocates 1, 2, … in order")
-                }
                 for (group, message) in clientOneShots.sorted(by: { $0.key < $1.key }) {
                     try client.arq.sendOneShot(
                         message: message, group: ArqGroupId(rawValue: group),
@@ -299,7 +275,7 @@ final class ArqCtrlGateTests: XCTestCase {
             if hostSent == hostStream.count, clientSent == clientStream.count,
                oneShotsSent, idrSeen,
                session.arqIsQuiescent, client.arq.isQuiescent,
-               client.received.count == hostStream.count + hostOneShots.count,
+               client.received.count == hostStream.count,
                hostGot == clientStream.count + clientOneShots.count,
                net.nextArrivalTime == nil {
                 converged = t
@@ -322,25 +298,8 @@ final class ArqCtrlGateTests: XCTestCase {
         XCTAssertGreaterThan(net.lostCount, 0, "the storm must be real")
         XCTAssertGreaterThan(net.duplicatedCount, 0)
 
-        let clientOrdered = client.received
-            .filter { $0.group == .orderedStream }.map(\.bytes)
-        XCTAssertEqual(clientOrdered, hostStream,
+        XCTAssertEqual(client.received.map(\.bytes), hostStream,
                        "host→client stream: exactly once, in order")
-        for (group, message) in hostOneShots {
-            let hits = client.received.filter {
-                $0.group == ArqGroupId(rawValue: group)
-            }
-            XCTAssertEqual(hits.count, 1, "one-shot \(group) exactly once")
-            XCTAssertEqual(hits.first?.bytes, message)
-        }
-        for group in hostOneShots.keys {
-            XCTAssertTrue(
-                hostEvents.contains(
-                    .reliableOneShotAcknowledged(ArqGroupId(rawValue: group))
-                ),
-                "one-shot \(group): full acknowledgment must surface"
-            )
-        }
 
         var hostOrdered: [[UInt8]] = []
         var hostOneShotHits: [UInt16: [[UInt8]]] = [:]
@@ -364,8 +323,7 @@ final class ArqCtrlGateTests: XCTestCase {
         // host emitted strictly more ARQ datagrams than its messages
         // needed fresh (retransmits + re-ACKs under duplication).
         XCTAssertGreaterThan(
-            session.counters.arqDatagramsSent,
-            hostStream.count + hostOneShots.count
+            session.counters.arqDatagramsSent, hostStream.count
         )
 
         // ── Exempt stays exempt ────────────────────────────────────────
@@ -384,17 +342,6 @@ final class ArqCtrlGateTests: XCTestCase {
             hostEvents.contains(.idrRequested(idrRequest)),
             "the exempt IDR request must land mid-storm"
         )
-
-        print("""
-            HS-8 gate: \(hostStream.count)+\(hostOneShots.count) host and \
-            \(clientStream.count)+\(clientOneShots.count) client messages \
-            exactly-once in-order through 5% loss / 2% dup / 4 ms jitter \
-            (\(net.lostCount) lost, \(net.duplicatedCount) duplicated of \
-            \(net.sentCount) datagrams; \(session.counters.arqDatagramsSent) \
-            host ARQ datagrams; converged at \(converged.map(String.init) ?? "-") µs \
-            virtual; \(client.beaconSeqsSeen.count)/\
-            \(session.counters.beaconsSent) beacons, none retransmitted)
-            """)
     }
 
     // MARK: PTO retransmit rides the session's wake machinery
@@ -644,25 +591,8 @@ final class ArqCtrlGateTests: XCTestCase {
 
     // MARK: API guards
 
-    func testReliableSendRefusesBeforeEstablishmentAndBadGroups() throws {
-        // Before the handshake there is no transport to seal under.
-        let hostStatic = NoiseKeyPair.generate()
-        let session = Session(
-            config: SessionConfig(
-                crypto: .noise(hostStatic: hostStatic),
-                rateBitsPerSecond: Self.rateBPS
-            ),
-            clientTuple: Self.tupleA,
-            now: 0,
-            rng: SplitMix64(seed: 0x1)
-        ) { _ in }
-        XCTAssertThrowsError(try session.sendReliable(
-            [0x10], now: 0, hostMicroseconds: 0
-        )) {
-            XCTAssertEqual($0 as? SessionError, .notEstablished)
-        }
-
-        // Established: the endpoint's own refusals surface unchanged.
+    func testReliableSendRefusesAnEmptyMessage() throws {
+        // The endpoint's refusal surfaces unchanged.
         var sent: [VideoChannelDatagram] = []
         let (live, _) = try establish(
             sent: { sent }, append: { sent.append($0) }
@@ -672,21 +602,6 @@ final class ArqCtrlGateTests: XCTestCase {
         )) {
             XCTAssertEqual($0 as? ArqSendError, .emptyMessage)
         }
-        XCTAssertThrowsError(try live.sendReliableOneShot(
-            [], now: 1_000, hostMicroseconds: 1
-        )) {
-            XCTAssertEqual($0 as? ArqSendError, .emptyMessage)
-        }
-        // The endpoint allocates one-shot groups, so a caller can no
-        // longer present an ordered-stream or non-ascending id.
-        XCTAssertEqual(
-            try live.sendReliableOneShot([0x10], now: 1_000, hostMicroseconds: 1),
-            ArqGroupId(rawValue: 1)
-        )
-        XCTAssertEqual(
-            try live.sendReliableOneShot([0x10], now: 1_000, hostMicroseconds: 1),
-            ArqGroupId(rawValue: 2)
-        )
     }
 
     /// A peer that never acknowledges fills a group's segment bound: the
@@ -695,9 +610,9 @@ final class ArqCtrlGateTests: XCTestCase {
     func testQueueFullIsCountedBackpressure() throws {
         let session = Session(
             config: SessionConfig(
-                crypto: .testPassthrough, rateBitsPerSecond: Self.rateBPS
+                rateBitsPerSecond: Self.rateBPS
             ),
-            clientTuple: Self.tupleA,
+            passthroughTo: Self.tupleA,
             now: 0,
             rng: SplitMix64(seed: 0x51)
         ) { _ in }
@@ -729,7 +644,6 @@ final class ArqCtrlGateTests: XCTestCase {
     func testAPoisonedCtrlStreamEndsTheSessionWithATypedTeardown() throws {
         let host = HostSessionHarness(
             config: SessionConfig(
-                crypto: .noise(hostStatic: NoiseKeyPair.generate()),
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: 1 << 62,
                 arq: ArqConfig(maxMessageByteCount: 2_048)
@@ -761,7 +675,6 @@ final class ArqCtrlGateTests: XCTestCase {
     func testTheCrossingSegmentAloneEndsThePoisonedCtrlStream() throws {
         let host = HostSessionHarness(
             config: SessionConfig(
-                crypto: .noise(hostStatic: NoiseKeyPair.generate()),
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: 1 << 62,
                 arq: ArqConfig(maxMessageByteCount: 2_048)

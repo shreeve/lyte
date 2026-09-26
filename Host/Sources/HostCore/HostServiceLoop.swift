@@ -62,14 +62,13 @@ public struct HostServiceLoop: Sendable {
         self.posture = posture
     }
 
-    /// The posture a command line asks for: only a listening session
-    /// without an explicit clock and without pairing is the service.
-    /// A pairing run mints one PIN, which one session consumes.
+    /// The posture a listening command line asks for: without an explicit
+    /// clock and without pairing it is the service. A pairing run mints
+    /// one PIN, which one session consumes.
     public static func posture(
-        listening: Bool, secondsGiven: Bool, pairing: Bool, seconds: Double
+        secondsGiven: Bool, pairing: Bool, seconds: Double
     ) -> Posture {
-        listening && !secondsGiven && !pairing
-            ? .service : .singleSession(seconds: seconds)
+        !secondsGiven && !pairing ? .service : .singleSession(seconds: seconds)
     }
 
     /// The bound on the next session's leg, in seconds.

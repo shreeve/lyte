@@ -51,7 +51,8 @@ record across rebuilds. Set `LYTE_SIGNING_IDENTITY="Lyte Dev"` to choose it
 deliberately even when Apple identities exist.
 
 Apple Development is local development signing. It does not notarize Lyte or
-make the bundle suitable for Gatekeeper distribution.
+make the bundle suitable for Gatekeeper distribution; releases sign with a
+Developer ID and are notarized ([RELEASING.md](RELEASING.md)).
 
 ## Where things live
 
@@ -114,11 +115,12 @@ This will:
 1. Create a 20-year self-signed code-signing cert (`CN=Lyte Dev`) in
    `~/.config/lyte-signing/` if absent. The PKCS#12 is exported with
    `-legacy` because macOS `security` cannot verify the MAC that OpenSSL 3
-   writes by default.
+   writes by default (`SecKeychainItemImport: MAC verification failed`).
 2. Create the `lyte-signing` keychain, add it to the user search list, and
    import the identity trusted only for `/usr/bin/codesign`.
 3. Run `security set-key-partition-list -S apple-tool:,apple:,codesign:` so
-   `codesign` may use the private key without an interactive prompt.
+   `codesign` may use the private key without an interactive prompt (a
+   prompt separate from the pairing key's).
 
 Then build, sign, and run each distinct executable that accesses the pairing
 identity against a host once. Click **Always Allow** separately for Lyte.app
@@ -149,11 +151,8 @@ Scripts/launch-app.sh
 
 Only `Scripts/make-app.sh --diagnostics release` builds a bundle whose
 signed Info.plist enables the diagnostic entry points (autoconnect, the
-benchmark driver); `LYTE_APP_DIAGNOSTICS` in the environment is ignored.
-`Scripts/benchmark-app.sh` builds that bundle at `.build/Lyte.app` itself —
-there is only ever one physical copy — and rebuilds the plain bundle when
-it exits. If that restore fails it prints a WARNING; run
-`Scripts/make-app.sh release` before using the app again.
+benchmark driver); how the benchmark builds and restores it is in
+[TESTING.md](TESTING.md#live-benchmarks-pup).
 
 `make-app.sh` refuses to replace the bundle while any `Lyte` process is
 running, including its helper. Assembly and scripted launch share one
@@ -191,36 +190,47 @@ The bundle identifier is part of the DR, so it must be stable per target:
 - `*.app` → `dev.shreeve.lyte`
 - anything else → `dev.shreeve.<basename>` (e.g. `dev.shreeve.lyte-cli`)
 
-It selects the sole Apple Development identity, an exact name or hash override,
-or the explicit Lyte Dev fallback. It signs using the identity **by SHA-1
-hash** and verifies the identifier, team consistency, and matching Apple-anchor
-or certificate-root requirement. If selection is absent or ambiguous it fails
-closed; an ad-hoc Keychain client would invalidate the ACL invariant and Local
-Network identity.
+It selects an exact name or hash override, else the sole Apple Development
+identity, else the Lyte Dev fallback automatically. It signs using the
+identity **by SHA-1 hash** and verifies the identifier, team consistency, and
+matching Apple-anchor or certificate-root requirement. With several Apple
+Development identities and no override, or with no identity at all, it fails
+closed rather than sign ad hoc: an ad-hoc Keychain client would invalidate
+the ACL invariant and Local Network identity.
 
 ## Hardened runtime
 
 `sign-dev.sh` signs every target — `Lyte.app`, `lyte-helperd` and
-`lyte-cli` — with `--options runtime` and no entitlements, and fails closed
-("not signed with the hardened runtime") when the signed CodeDirectory
-lacks the `runtime` flag. `test-app-packaging.sh` checks the flag on the
-app and the helper and rejects `get-task-allow`.
+`lyte-cli` — with `--options runtime`, and fails closed ("not signed with
+the hardened runtime") when the signed CodeDirectory lacks the `runtime`
+flag. `test-app-packaging.sh` checks the flag on the app and the helper and
+rejects `get-task-allow`.
 
 Why: the helper admits any process that satisfies the app's designated
 requirement, and `lyte-cli` holds the Keychain pairing key. Without the
 hardened runtime a same-user process could inject into either
-(`DYLD_*` variables, task-port attach) and inherit that trust. No
-exception entitlement is needed: the binaries link only system libraries
-(`test-hermetic-linkage.sh`), use no JIT or unsigned executable memory,
-and only play audio (no microphone or camera). Runtime flags are not part
-of the designated requirement, so Keychain ACLs and the helper's
-requirement are unaffected.
+(`DYLD_*` variables, task-port attach) and inherit that trust. The
+binaries use no JIT or unsigned executable memory and only play audio (no
+microphone or camera). Runtime flags are not part of the designated
+requirement, so Keychain ACLs and the helper's requirement are unaffected.
+
+One library is embedded: `Lyte` links `Sparkle.framework` from
+`Contents/Frameworks`, and nothing else links anything outside the system
+(`test-hermetic-linkage.sh`). Library validation lets the hardened app load
+it only when both carry the same Team ID, which Apple Development and
+Developer ID signatures do. The self-signed Lyte Dev leaf has no Team ID, so
+under that identity alone `sign-dev.sh` gives the app (never the helper or
+`lyte-cli`) the one entitlement
+`com.apple.security.cs.disable-library-validation`; without it dyld refuses
+Sparkle and the app dies before `main`. `test-app-packaging.sh` requires the
+entitlement on a Lyte Dev app and rejects it under an Apple identity. It
+adds no new exposure: same-user code can already sign as Lyte Dev without a
+prompt (below).
 
 Debugging consequence: `DYLD_*` variables are ignored, and lldb,
 Instruments and other tools cannot attach to a signed build. Debug the
 unsigned SwiftPM binary, or re-sign a scratch copy ad hoc with
-`codesign --force --sign - <copy>`. If a future feature loads third-party
-in-process plugins it will need `com.apple.security.cs.disable-library-validation`.
+`codesign --force --sign - <copy>`.
 
 ## Verifying a signature
 
@@ -296,7 +306,7 @@ operations.
 Deriving from the helper rather than hard-coding a certificate preserves the
 exact signer selected by `sign-dev.sh`: the Apple Development anchor and leaf
 identity in the preferred path, or the Lyte Dev certificate root in the
-explicit fallback. Startup fails closed if the running code is invalid, its
+fallback. Startup fails closed if the running code is invalid, its
 requirement has an unexpected shape (anything but one identifier clause, a
 pinned signer, and no `or` alternative), or the rewritten requirement cannot
 be compiled.
@@ -318,15 +328,9 @@ Apple platform binary (wrong identity) fail it.
   (`CSSMERR_TP_NOT_TRUSTED`), so fallback lookup uses plain `find-identity`
   against only the dedicated keychain. `codesign` signs by hash regardless of
   chain trust.
-- **PKCS#12 import fails without `-legacy`.** `SecKeychainItemImport: MAC
-  verification failed` — export the `.p12` with `openssl pkcs12 -export
-  -legacy`.
-- **Partition list is required.** Without `set-key-partition-list`, `codesign`
-  itself triggers a keychain prompt to *use* the signing key — separate from
-  the pairing-key prompt. Setup handles this.
 - **Every signing key is dev-machine only.** The private key is never committed
   (`~/.config/lyte-signing/`). This is throwaway local-dev material, unrelated
-  to any future notarized release identity.
+  to the Developer ID that signs releases.
 - **Distinct from the pairing key.** Two different keys are in play: the
   *pairing* key (the client's Noise static, in the login keychain,
   authenticates to Lyte hosts) and the *signing* key (an Apple Development

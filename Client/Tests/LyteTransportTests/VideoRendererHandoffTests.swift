@@ -15,13 +15,7 @@ final class VideoRendererHandoffTests: XCTestCase {
     private var corpus: [[UInt8]] = []
 
     override func setUpWithError() throws {
-        let directory = ClientTestPaths.videoCorpus
-        let names = try FileManager.default.contentsOfDirectory(atPath: directory)
-            .filter { $0.hasPrefix("frame-") && $0.hasSuffix(".annexb") }
-            .sorted()
-        corpus = try names.prefix(8).map {
-            [UInt8](try Data(contentsOf: URL(fileURLWithPath: directory + "/" + $0)))
-        }
+        corpus = try ClientTestPaths.videoCorpusFrames(8)
         XCTAssertGreaterThanOrEqual(corpus.count, 6)
     }
 
@@ -47,17 +41,18 @@ final class VideoRendererHandoffTests: XCTestCase {
     func testTheGateClosingIrapEndsTheCoresEpisode() throws {
         let rig = Rig()
         let core = rig.bindCore()
-        core.requestVideoRecovery(
-            after: FrameNumber(rawValue: 11), cause: .fecAssemblerDamage)
+        core.beginVideoRecovery(
+            cause: .fecAssemblerDamage, frame: FrameNumber(rawValue: 11),
+            now: Rig.coreNow)
         rig.barrier()
         try rig.submit(frame: 12, idr: true, bytes: corpus[0])
         rig.barrier()
 
         XCTAssertEqual(rig.renderer.enqueuedFrames(), [12])
-        XCTAssertFalse(core.idrRequester.snapshotStats().recoveryOutstanding)
-        core.idrRequester.flushIfDue(
+        XCTAssertFalse(core.idrStats.recoveryOutstanding)
+        core.feedback.tick(
             now: Rig.coreNow.advanced(byMicroseconds: 500_000))
-        XCTAssertEqual(core.idrRequester.snapshotStats().requestsSent, 1)
+        XCTAssertEqual(core.idrStats.requestsSent, 1)
     }
 
     /// The core's demand reaches the handoff by a queue hop. An IRAP
@@ -73,23 +68,24 @@ final class VideoRendererHandoffTests: XCTestCase {
 
         rig.queue.suspend()
         rig.renderer.becomeReady()
-        core.requestVideoRecovery(
-            after: FrameNumber(rawValue: 11), cause: .fecAssemblerDamage)
+        core.beginVideoRecovery(
+            cause: .fecAssemblerDamage, frame: FrameNumber(rawValue: 11),
+            now: Rig.coreNow)
         rig.queue.resume()
         rig.barrier()
 
         XCTAssertEqual(rig.renderer.enqueuedFrames(), [12])
         XCTAssertEqual(rig.peer.gateClosingIraps, [])
-        XCTAssertTrue(core.idrRequester.snapshotStats().recoveryOutstanding,
+        XCTAssertTrue(core.idrStats.recoveryOutstanding,
                       "an IRAP outside the gate closed the core's episode")
-        core.idrRequester.flushIfDue(
+        core.feedback.tick(
             now: Rig.coreNow.advanced(byMicroseconds: 500_000))
-        XCTAssertEqual(core.idrRequester.snapshotStats().retryRequests, 1)
+        XCTAssertEqual(core.idrStats.retryRequests, 1)
 
         try rig.submit(frame: 30, idr: true, bytes: corpus[0])
         rig.barrier()
         XCTAssertEqual(rig.peer.gateClosingIraps, [30])
-        XCTAssertFalse(core.idrRequester.snapshotStats().recoveryOutstanding)
+        XCTAssertFalse(core.idrStats.recoveryOutstanding)
     }
 
     /// Damage that joins an open episode while its IRAP is pending: the
@@ -98,8 +94,9 @@ final class VideoRendererHandoffTests: XCTestCase {
     func testAGateReopenedAfterItsIrapClosedTheEpisodeReassertsIt() throws {
         let rig = Rig()
         let core = rig.bindCore()
-        core.requestVideoRecovery(
-            after: FrameNumber(rawValue: 5), cause: .fecAssemblerDamage)
+        core.beginVideoRecovery(
+            cause: .fecAssemblerDamage, frame: FrameNumber(rawValue: 5),
+            now: Rig.coreNow)
         rig.barrier()
         rig.renderer.ready = false
         try rig.submit(frame: 12, idr: true, bytes: corpus[0])
@@ -107,17 +104,81 @@ final class VideoRendererHandoffTests: XCTestCase {
 
         rig.queue.suspend()
         rig.renderer.becomeReady()
-        core.requestVideoRecovery(
-            after: FrameNumber(rawValue: 11), cause: .fecAssemblerDamage)
+        core.beginVideoRecovery(
+            cause: .fecAssemblerDamage, frame: FrameNumber(rawValue: 11),
+            now: Rig.coreNow)
         rig.queue.resume()
         rig.barrier()
 
         XCTAssertEqual(rig.peer.gateClosingIraps, [12])
-        let stats = core.idrRequester.snapshotStats()
+        let stats = core.idrStats
         XCTAssertTrue(stats.recoveryOutstanding,
                       "the handoff awaits an IRAP the core stopped asking for")
         XCTAssertEqual(stats.episodesStarted, 2)
         XCTAssertEqual(stats.requestsSent, 2)
+    }
+
+    /// An IRAP that finds the renderer failed answers the flush it trips:
+    /// it is enqueued once the flush completes, and no IDR is requested.
+    func testAnIrapThatTripsAFlushHealsItWithoutARequest() throws {
+        let rig = Rig()
+        let core = rig.bindCore()
+        try rig.submit(frame: 1, idr: true, bytes: corpus[0])
+        rig.barrier()
+        rig.renderer.failed = true
+        try rig.submit(frame: 2, idr: true, bytes: corpus[0])
+        rig.barrier()
+
+        XCTAssertEqual(rig.renderer.recoveryFlushes, 1)
+        XCTAssertEqual(rig.renderer.enqueuedFrames(), [1, 2])
+        XCTAssertEqual(rig.peer.gateClosingIraps, [2])
+        let stats = core.idrStats
+        XCTAssertEqual(stats.requestsSent, 0)
+        XCTAssertFalse(stats.recoveryOutstanding)
+    }
+
+    /// That IRAP itself fails to decode, and nothing follows it (a static
+    /// screen): the handoff still notices and asks for another.
+    func testAGateClosingIrapThatFailsToDecodeStillAsksForAnother() throws {
+        let rig = Rig(deadlineMicroseconds: 20_000)
+        let core = rig.bindCore()
+        try rig.submit(frame: 1, idr: true, bytes: corpus[0])
+        rig.barrier()
+        rig.renderer.failed = true
+        rig.renderer.failsDecoding = true
+        try rig.submit(frame: 2, idr: true, bytes: corpus[0])
+        rig.barrier()
+        XCTAssertEqual(rig.peer.gateClosingIraps, [2])
+
+        let deadline = Date().addingTimeInterval(2)
+        while rig.peer.recoveryRequests.isEmpty, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.005)
+        }
+        rig.barrier()
+        XCTAssertEqual(rig.peer.recoveryRequests.map(\.cause), [.rendererFailure])
+        XCTAssertEqual(rig.renderer.recoveryFlushes, 2)
+        XCTAssertEqual(core.idrStats.requestsSent, 1)
+    }
+
+    /// A P-frame that trips the flush asks once, the handoff's own demand
+    /// is not echoed back into it, and the next IRAP closes both gates.
+    func testAPFrameThatTripsAFlushAsksOnceAndTheNextIrapHeals() throws {
+        let rig = Rig()
+        let core = rig.bindCore()
+        try rig.submit(frame: 1, idr: true, bytes: corpus[0])
+        rig.barrier()
+        rig.renderer.failed = true
+        try rig.submit(frame: 2, idr: false, bytes: corpus[1])
+        rig.barrier()
+        try rig.submit(frame: 3, idr: true, bytes: corpus[0])
+        rig.barrier()
+
+        XCTAssertEqual(rig.renderer.recoveryFlushes, 1)
+        XCTAssertEqual(rig.renderer.enqueuedFrames(), [1, 3])
+        XCTAssertEqual(rig.peer.recoveryRequests.map(\.frame), [2])
+        let stats = core.idrStats
+        XCTAssertEqual(stats.requestsSent, 1)
+        XCTAssertFalse(stats.recoveryOutstanding)
     }
 
     func testBackpressureQueuesInOrderUntilTheRendererAsks() throws {
@@ -272,7 +333,7 @@ final class VideoRendererHandoffTests: XCTestCase {
         XCTAssertEqual(rig.renderer.plainFlushes, 1)
         XCTAssertEqual(rig.renderer.recoveryFlushes, 0)
         XCTAssertEqual(rig.peer.recoveryRequests.count, 0)
-        XCTAssertFalse(rig.recorder.recentFrames().contains { $0.rendererDropped },
+        XCTAssertFalse(rig.recorder.frames(after: 0).contains { $0.rendererDropped },
                        "a teardown discard is not a renderer verdict")
     }
 
@@ -297,14 +358,6 @@ final class VideoRendererHandoffTests: XCTestCase {
 }
 
 // MARK: - Rig
-
-private final class Locked<Value>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var stored: Value
-    init(_ value: Value) { stored = value }
-    var value: Value { lock.withLock { stored } }
-    func mutate(_ body: (inout Value) -> Void) { lock.withLock { body(&stored) } }
-}
 
 private final class Rig {
     let queue = DispatchQueue(label: "test.video.delivery")
@@ -421,7 +474,21 @@ private final class ScriptedRenderer: VideoRendererPort, @unchecked Sendable {
     private var _ready = true
     private var _recoveryFlushes = 0
     private var _plainFlushes = 0
+    private var _failed = false
+    private var _failsDecoding = false
     var holdRecoveryFlush = false
+
+    /// Reports `.failed` until the next recovery flush, as AVFoundation does.
+    var failed: Bool {
+        get { lock.withLock { _failed } }
+        set { lock.withLock { _failed = newValue } }
+    }
+
+    /// Every enqueued sample fails to decode.
+    var failsDecoding: Bool {
+        get { lock.withLock { _failsDecoding } }
+        set { lock.withLock { _failsDecoding = newValue } }
+    }
 
     var ready: Bool {
         get { lock.withLock { _ready } }
@@ -473,11 +540,14 @@ private final class ScriptedRenderer: VideoRendererPort, @unchecked Sendable {
     // MARK: VideoRendererPort
 
     var isReadyForMoreMediaData: Bool { ready }
-    var status: AVQueuedSampleBufferRenderingStatus { .rendering }
+    var status: AVQueuedSampleBufferRenderingStatus { failed ? .failed : .rendering }
     var error: (any Error)? { nil }
 
     func enqueue(_ sampleBuffer: CMSampleBuffer) {
-        lock.withLock { enqueued.append(sampleBuffer) }
+        lock.withLock {
+            enqueued.append(sampleBuffer)
+            if _failsDecoding { _failed = true }
+        }
     }
 
     func flush() {
@@ -487,6 +557,7 @@ private final class ScriptedRenderer: VideoRendererPort, @unchecked Sendable {
     func flush(removingDisplayedImage: Bool, completionHandler: (@Sendable () -> Void)?) {
         let hold = lock.withLock { () -> Bool in
             _recoveryFlushes += 1
+            _failed = false
             if holdRecoveryFlush { heldFlush = completionHandler }
             return holdRecoveryFlush
         }

@@ -63,6 +63,8 @@ final class SealedCtrlPeerTests: XCTestCase {
         let message2 = try XCTUnwrap(host.answerMessage1(
             client.message1Datagram(timestamp: 0)))
         try client.absorb(message2, nowMicros: 0)
+        guard case .duplicate = try client.absorb(message2, nowMicros: 1)
+        else { return XCTFail("a duplicated message 2 is a routine duplicate") }
 
         let beacon = try host.datagram(
             body: [CtrlMessageType.clockBeacon, 0xAA], timestamp: 10)

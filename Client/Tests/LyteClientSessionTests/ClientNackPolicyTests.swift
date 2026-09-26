@@ -127,7 +127,7 @@ final class ClientNackPolicyTests: XCTestCase {
         XCTAssertEqual(stats.framesEscalatedToIdr, 1)
     }
 
-    /// The whole-loss rule (the HS-33 unmasked gap): a frame that never
+    /// The whole-loss rule (the unmasked gap): a frame that never
     /// landed a single shard has no book, no ask, and no fecImpossible
     /// verdict — before this rule, NOTHING reached the IDR requester and
     /// the broken reference chain stood until an unrelated wake IDR. A

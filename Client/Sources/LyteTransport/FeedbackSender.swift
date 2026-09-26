@@ -19,9 +19,6 @@ public final class FeedbackSender: Sendable {
         public var nackEntriesSent: UInt64 = 0
     }
 
-    /// The cadence is clamped to 25–50 ms at init.
-    public static let cadenceRangeMilliseconds = 25...50
-
     private struct Books {
         var reporter = ClientFeedbackReporter()
         var reportsSent: UInt64 = 0
@@ -32,7 +29,7 @@ public final class FeedbackSender: Sendable {
     private let sender: TransportSender
     private let intervalMilliseconds: Int
     private let now: @Sendable () -> ClientTimestamp
-    /// Fires after each cadence report (the IdrRequester's flush hook).
+    /// Fires after each cadence report (the IDR retry and NACK deadlines).
     private let onTick: (@Sendable (ClientTimestamp) -> Void)?
 
     private let books = Mutex(Books())
@@ -44,7 +41,7 @@ public final class FeedbackSender: Sendable {
     public init(
         demux: ReceiveDemux,
         sender: TransportSender,
-        intervalMilliseconds: Int = 40,
+        intervalMilliseconds: Int = ClientFeedbackReporter.cadenceMilliseconds,
         now: @escaping @Sendable () -> ClientTimestamp = {
             ClientTimestamp(microseconds: SystemMonotonicClock.nowMicroseconds)
         },
@@ -52,9 +49,9 @@ public final class FeedbackSender: Sendable {
     ) {
         self.demux = demux
         self.sender = sender
+        let band = ClientFeedbackReporter.cadenceRangeMilliseconds
         self.intervalMilliseconds = min(
-            max(intervalMilliseconds, Self.cadenceRangeMilliseconds.lowerBound),
-            Self.cadenceRangeMilliseconds.upperBound)
+            max(intervalMilliseconds, band.lowerBound), band.upperBound)
         self.now = now
         self.onTick = onTick
     }

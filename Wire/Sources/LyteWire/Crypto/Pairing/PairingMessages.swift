@@ -67,11 +67,10 @@ public struct PairingShareA: Hashable, Sendable, SliceDecodable {
     public static func decode(
         _ payload: ArraySlice<UInt8>
     ) throws -> PairingShareA {
-        try checkFrame(
+        let base = try checkFixedFrame(
             payload, type: CtrlMessageType.pairingShareA,
-            byteCount: encodedByteCount
+            byteCount: encodedByteCount, PairingMessageError.self
         )
-        let base = payload.startIndex
         return PairingShareA(
             share: Array(payload[(base + 1)..<(base + encodedByteCount)])
         )
@@ -105,11 +104,10 @@ public struct PairingShareB: Hashable, Sendable, SliceDecodable {
     public static func decode(
         _ payload: ArraySlice<UInt8>
     ) throws -> PairingShareB {
-        try checkFrame(
+        let base = try checkFixedFrame(
             payload, type: CtrlMessageType.pairingShareB,
-            byteCount: encodedByteCount
+            byteCount: encodedByteCount, PairingMessageError.self
         )
-        let base = payload.startIndex
         let shareEnd = base + 1 + CPace.elementByteCount
         return PairingShareB(
             share: Array(payload[(base + 1)..<shareEnd]),
@@ -142,11 +140,10 @@ public struct PairingConfirm: Hashable, Sendable, SliceDecodable {
     public static func decode(
         _ payload: ArraySlice<UInt8>
     ) throws -> PairingConfirm {
-        try checkFrame(
+        let base = try checkFixedFrame(
             payload, type: CtrlMessageType.pairingConfirm,
-            byteCount: encodedByteCount
+            byteCount: encodedByteCount, PairingMessageError.self
         )
-        let base = payload.startIndex
         return PairingConfirm(
             confirmationTag: Array(
                 payload[(base + 1)..<(base + encodedByteCount)]
@@ -174,11 +171,10 @@ public struct PairingReject: Hashable, Sendable, SliceDecodable {
     public static func decode(
         _ payload: ArraySlice<UInt8>
     ) throws -> PairingReject {
-        try checkFrame(
+        let base = try checkFixedFrame(
             payload, type: CtrlMessageType.pairingReject,
-            byteCount: encodedByteCount
+            byteCount: encodedByteCount, PairingMessageError.self
         )
-        let base = payload.startIndex
         guard let reason = PairingRejectReason(
             rawValue: payload[base + 1]
         ) else {
@@ -190,27 +186,11 @@ public struct PairingReject: Hashable, Sendable, SliceDecodable {
 
 /// Everything the pairing codecs can refuse. Hostile bytes throw,
 /// never trap.
-public enum PairingMessageError: Error, Hashable, Sendable {
+public enum PairingMessageError: FixedFrameError, Hashable, Sendable {
     case truncatedMessage
     case trailingBytes
     case unexpectedType(UInt8)
     case unknownReason(UInt8)
     case invalidShareLength(Int)
     case invalidTagLength(Int)
-}
-
-/// The fixed-frame discipline all four codecs share: exact size, exact
-/// type byte.
-private func checkFrame(
-    _ payload: ArraySlice<UInt8>, type: UInt8, byteCount: Int
-) throws {
-    guard payload.count >= byteCount else {
-        throw PairingMessageError.truncatedMessage
-    }
-    guard payload.count == byteCount else {
-        throw PairingMessageError.trailingBytes
-    }
-    guard payload[payload.startIndex] == type else {
-        throw PairingMessageError.unexpectedType(payload[payload.startIndex])
-    }
 }

@@ -4,13 +4,11 @@ import LyteTransport
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (CL-17): the M7 audio remainder in virtual time — WSOLA
-// accelerate drains an overfull pipe to target at a bounded rate with
-// sine-wave continuity (the CL-11 evidence pattern), the skew term
-// reads clock drift as a rate instead of depth, and a drain that runs
-// dry hands to PLC cleanly. The route-change leg drives the production
-// rebuild path against the real engine (skipped where no device
-// exists).
+// Audio playout in virtual time: WSOLA accelerate drains an overfull pipe
+// to target at a bounded rate with sine-wave continuity, the skew term
+// reads clock drift as a rate instead of depth, and a drain that runs dry
+// hands to PLC cleanly. The route-change leg drives the production rebuild
+// path against the real engine (skipped where no device exists).
 
 final class AudioAccelerateGateTests: XCTestCase {
 
@@ -75,7 +73,7 @@ final class AudioAccelerateGateTests: XCTestCase {
         return (rms, Double(crossings) / 2 / seconds)
     }
 
-    // MARK: Leg 1 — WSOLA on a pure tone: pitch-true, click-free,
+    // MARK: WSOLA on a pure tone: pitch-true, click-free,
     // rate-bounded, exact books
 
     func testAccelerateOnSineIsContinuousPitchTrueAndRateBounded() {
@@ -125,7 +123,7 @@ final class AudioAccelerateGateTests: XCTestCase {
                        accuracy: 1.0)
     }
 
-    // MARK: Leg 2 — passthrough is byte-exact; transients defer; a
+    // MARK: Passthrough is byte-exact; transients defer; a
     // disengage flush strands nothing
 
     func testPassthroughExactTransientsDeferSilenceCutsFreely() {
@@ -169,7 +167,7 @@ final class AudioAccelerateGateTests: XCTestCase {
                              "silence must drain at full rate")
     }
 
-    // MARK: - The virtual-time pump harness (the CL-11 sim grown the
+    // MARK: - The virtual-time pump harness (the sim grown the
     // accelerator: receiver → synthetic decode → WSOLA → ring → DAC)
 
     private struct PumpResult {
@@ -263,7 +261,7 @@ final class AudioAccelerateGateTests: XCTestCase {
     }
 
     /// One audio packet as the wire carries it (the leg-3 pattern from
-    /// the CL-11 gate: real envelopes through the real depacketizer,
+    /// the depacketizer gate: real envelopes through the real depacketizer,
     /// data shards only — loss is not this gate's subject).
     private func wireArrivals(
         count: Int,
@@ -291,7 +289,7 @@ final class AudioAccelerateGateTests: XCTestCase {
         return arrivals
     }
 
-    // MARK: Leg 3 — the drain: a 100 ms prime reaches target within
+    // MARK: The drain: a 100 ms prime reaches target within
     // seconds at ≤5%, no skip, no PLC, in order
 
     func testOverfullPipeDrainsToTargetWithinBoundNoSkipNoPlc() throws {
@@ -337,10 +335,10 @@ final class AudioAccelerateGateTests: XCTestCase {
         XCTAssertLessThanOrEqual(maxAdjacentDelta(result.output),
                                  cleanCeiling * 2)
         // The books agree with the receiver's own counters.
-        XCTAssertEqual(stats.pullsAccelerated > 0, true)
+        XCTAssertGreaterThan(stats.pullsAccelerated, 0)
     }
 
-    // MARK: Leg 4 — the skew estimate converges, both signs, clamped
+    // MARK: The skew estimate converges, both signs, clamped
 
     func testSkewEstimateConvergesAndDriftNeverInflatesTarget() {
         // +200 ppm (sender slow): arrivals stretch 1 µs per packet.
@@ -391,7 +389,7 @@ final class AudioAccelerateGateTests: XCTestCase {
                        accuracy: 1)
     }
 
-    // MARK: Leg 5 — sender-fast drift is absorbed by the drain, never
+    // MARK: Sender-fast drift is absorbed by the drain, never
     // by recenter skips or growing latency
 
     func testSenderFastDriftIsAbsorbedByAccelerateNotSkips() throws {
@@ -423,7 +421,7 @@ final class AudioAccelerateGateTests: XCTestCase {
         XCTAssertEqual(result.played.count, Set(result.played).count)
     }
 
-    // MARK: Leg 6 — drain-then-underrun hands to PLC cleanly
+    // MARK: Drain-then-underrun hands to PLC cleanly
 
     func testDrainThenStallHandsToPlcCleanlyAndGoesQuiet() throws {
         var config = AudioJitterConfig()
@@ -457,7 +455,7 @@ final class AudioAccelerateGateTests: XCTestCase {
                        accel.outputFrames + accel.framesRemoved)
     }
 
-    // MARK: Leg 7 — an output-device change rebuilds the engine with
+    // MARK: An output-device change rebuilds the engine with
     // the ring intact, counted (the production notification path)
 
     /// Drives the machine's real audio output, so it is opt-in:

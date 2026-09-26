@@ -2,6 +2,7 @@ import XCTest
 import HostCore
 import HostSession
 @_spi(Testing) import HostWire
+import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
@@ -30,7 +31,6 @@ final class IdrOfferInFlightGateTests: XCTestCase {
     private func makeSession(box: Box) -> Session {
         Session(
             config: SessionConfig(
-                crypto: .testPassthrough,
                 rateBitsPerSecond: Self.ceiling,
                 // Keep the lifecycle machine out of this pin: the stall is
                 // about 0x10 vs encode-time lastKeyframeNumber, not FROZEN.
@@ -40,21 +40,12 @@ final class IdrOfferInFlightGateTests: XCTestCase {
                 ),
                 clientIdrOfferInFlightNS: Self.inFlightNS
             ),
-            clientTuple: Self.tuple,
+            passthroughTo: Self.tuple,
             now: 0,
             rng: SplitMix64(seed: 0x1010)
         ) { [box] datagram in
             box.sent.append(datagram)
         }
-    }
-
-    private func syntheticFrame(
-        byteCount: Int, irap: Bool = false
-    ) -> [UInt8] {
-        [0, 0, 0, 1, irap ? 0x26 : 0x02, 0x01]
-            + (0..<(byteCount - 6)).map {
-                UInt8(truncatingIfNeeded: $0 &* 131 &+ 7)
-            }
     }
 
     private var ctrlSeq: UInt16 = 0

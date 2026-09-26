@@ -4,17 +4,17 @@
 // message 1s, admitted cookies, per-address budgets) all sit on it.
 // Sans-IO value state, O(1) per operation.
 
+import LyteCore
+
 struct BoundedFifoMap<Key: Hashable & Sendable, Value: Sendable>: Sendable {
-    let capacity: Int
     private var values: [Key: Value] = [:]
-    private var order: [Key] = []
-    private var next = 0
+    private var order: BoundedRing<Key>
 
     init(capacity: Int) {
-        precondition(capacity > 0)
-        self.capacity = capacity
+        order = BoundedRing(capacity: capacity)
     }
 
+    var capacity: Int { order.capacity }
     var count: Int { values.count }
 
     subscript(key: Key) -> Value? { values[key] }
@@ -23,12 +23,8 @@ struct BoundedFifoMap<Key: Hashable & Sendable, Value: Sendable>: Sendable {
     /// oldest-inserted key.
     mutating func set(_ value: Value, for key: Key) {
         guard values.updateValue(value, forKey: key) == nil else { return }
-        if order.count < capacity {
-            order.append(key)
-        } else {
-            values.removeValue(forKey: order[next])
-            order[next] = key
-            next = (next + 1) % capacity
+        if let evicted = order.append(key) {
+            values.removeValue(forKey: evicted)
         }
     }
 }

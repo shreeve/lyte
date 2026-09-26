@@ -68,6 +68,14 @@ test("Meta and Meta chords stay with the browser", () => {
   assert.deepEqual(sent, []);
 });
 
+test("volume keys stay with the listener's own machine, as in the native client", () => {
+  const events = ["AudioVolumeMute", "AudioVolumeDown", "AudioVolumeUp"].flatMap((code) => [
+    ["keydown", { code }],
+    ["keyup", { code }],
+  ]);
+  assert.deepEqual(replay(events).sent, []);
+});
+
 test("chorded buttons that arrive as pointermove balance on the host", () => {
   // Pointer Events: pointerdown for the first press, pointerup for the
   // last release, pointermove for every edge between.
@@ -157,4 +165,34 @@ test("the session proof stops as soon as the host closes the session", async (t)
   const started = Date.now();
   await runSessionProof({ sidecar: {}, timeoutMs: 3_000 });
   assert.ok(Date.now() - started < 1_000, "the loop ran to its deadline");
+});
+
+/** A VideoSink over a fake decoder and bridge; nothing is presented. */
+function stalledSink(bridge) {
+  globalThis.VideoDecoder ??= class {
+    decodeQueueSize = 0;
+    configure() {}
+    decode() {}
+  };
+  return new VideoSink(bridge, { detail: "", config: { codec: "hvc1" } }, {});
+}
+
+test("a page that stops presenting keeps only the newest keyframe's chain queued", () => {
+  const dropped = [];
+  const sink = stalledSink({ mediaNoteDropped: (n) => dropped.push(n) });
+  for (let n = 0; n < 1_000; n++) {
+    sink.enqueue([{ frameNumber: n, isRandomAccess: n % 60 === 0, presentationMicroseconds: n }]);
+  }
+  assert.ok(sink.queue.length <= 121, `queue=${sink.queue.length}`);
+  assert.equal(sink.queue[0].isRandomAccess, true);
+  assert.equal(dropped.length + sink.queue.length, 1_000);
+});
+
+test("a page that stops presenting still closes the frames WASM abandoned", () => {
+  const closed = [];
+  const sink = stalledSink({ mediaTakeAbandoned: () => [7] });
+  sink.decoded.set(1, { frame: { close: () => closed.push(7) }, meta: { frameNumber: 7 } });
+  sink.pumpDecode();
+  assert.deepEqual(closed, [7]);
+  assert.equal(sink.decoded.size, 0);
 });

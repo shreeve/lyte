@@ -6,39 +6,14 @@ import LyteTransport
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (P-1, the client half of clipboard v2 — images). Pinned
-// behaviors:
-//
-//   • capability key 12 rides the W7 spine byte-equal to the host's
-//     encoding (wireDefault + `0C F5`), and the session core's DEFAULT
-//     config declares it beside keys 9–11 (dialect, not consent —
-//     the images rung stays OFF by default like text);
-//   • in vivo through the REAL core against a scripted 10∧12 host
-//     stand-in running the REAL Wire ClipboardImageChannel: a local
-//     image copy rides chan 8 as 0x22 cargo + offer + chunks and
-//     lands byte-exact (multi-chunk, through real ARQ + Noise), the
-//     digest verdict returns, a host image surfaces as the typed
-//     event — and BOTH apply echoes suppress through the shared book
-//     (the boomerang proofs, cross-modal keys);
-//   • the consent tier is Off / Text only / Text + images: with the
-//     images rung off nothing leaves (.sharingDisabled) and an
-//     inbound marker draws abort(declined) — typed, never silent,
-//     because the image sender waits on a verdict; the live toggle
-//     opens both directions;
-//   • the rule-3 gate holds per LANE: against a text-only host the
-//     image share refuses before a byte leaves (.notNegotiated) and
-//     a hostile 0x22 drops loud; a FILE offer against an images-only
-//     agreement stays ungated traffic (dropped loud, never surfaced)
-//     — keys 11 and 12 gate independently;
-//   • ceilings are weather: empty and over-32 MiB copies suppress
-//     without a byte leaving; a second copy mid-transfer reports
-//     .suppressedBusy (latest-wins, the superseded copy drops);
-//   • the per-host images-rung default: pre-P-1 pinned_hosts.json
-//     decodes unchanged, the preference survives a re-pair, and the
-//     setter refuses unknown hashes.
-//
-// NOT here, deliberately: the live joint leg (real NSPasteboard ↔
-// Mutter clipboard) waits on J-G4a.
+// Clipboard images (keys 10 ∧ 12) through the real core against a scripted
+// host running the real Wire ClipboardImageChannel: a local image rides
+// chan 8 as 0x22 cargo + offer + chunks and lands byte-exact, a host image
+// surfaces as the typed event, and both apply echoes suppress. With the
+// images rung off nothing leaves and an inbound marker draws
+// abort(declined). Keys 11 and 12 gate independently per lane; empty and
+// over-32 MiB copies suppress without a byte leaving, and a second copy
+// mid-transfer reports .suppressedBusy.
 
 final class ClipboardImageClientGateTests: XCTestCase {
 
@@ -56,61 +31,16 @@ final class ClipboardImageClientGateTests: XCTestCase {
         return bytes
     }
 
-    // MARK: Leg 1 — key 12 on the spine; the core default declares
-
-    func testCapabilityKeyTwelveOnTheSpineAndCoreDefaultDeclares() throws {
-        let base = try Capabilities.wireDefault.encodeCbor()
-        XCTAssertEqual(base.first, 0xA8)
-        var expected = base
-        expected[0] = 0xA9
-        expected += [0x0C, 0xF5]
-        let declared = Capabilities.wireDefault.declaringClipboardImages()
-        XCTAssertEqual(try declared.encodeCbor(), expected,
-                       "key 12 = frozen wireDefault bytes + `0C F5`")
-
-        XCTAssertTrue(declared.intersecting(declared).clipboardImages)
-        XCTAssertFalse(
-            declared.intersecting(.wireDefault).clipboardImages)
-
-        // The agreed gate is 10 ∧ 12 — and NEVER key 11: the consent
-        // tiers do not couple image sync to file consent.
-        let imagesTier = Capabilities.wireDefault
-            .declaringClipboardText().declaringClipboardImages()
-        XCTAssertTrue(
-            imagesTier.intersecting(imagesTier).clipboardImagesAgreed,
-            "10∧12 agree with NO key 11 anywhere")
-        XCTAssertFalse(
-            declared.intersecting(declared).clipboardImagesAgreed,
-            "key 12 without key 10 is not the feature")
-
-        // The session core's DEFAULT declaration carries key 12
-        // beside 9–11 (dialect); the images rung's consent defaults
-        // OFF like text.
-        let defaults = LyteUdpSessionCoreConfig()
-        XCTAssertTrue(defaults.capabilities.clipboardImages)
-        XCTAssertTrue(defaults.capabilities.clipboardText)
-        XCTAssertTrue(defaults.capabilities.bulkTransfer)
-        XCTAssertFalse(defaults.shareClipboardImages,
-                       "the images rung defaults OFF — consent, tiered")
-        print("P-1 client gate (spine): declaration = frozen bytes + "
-            + "`0C F5`; agreed gate is 10∧12 (never 11); consent off")
-    }
-
     // MARK: - The scripted images-tier host (the REAL Wire
     // ClipboardImageChannel)
 
-    fileprivate final class ImageHostStandIn: ScriptedHost {
-        var peer: SealedCtrlPeer<HostClock>
-        var handshakeOutbox: [[UInt8]] = []
-        let localCapabilities: Capabilities
-
+    fileprivate final class ImageHostStandIn: DeclaringHost {
         // The production lane logic — the host's real seam.
         var channel = ClipboardImageChannel()
         var book = ClipboardSyncBook()
         var imageRng = SplitMix64(seed: 0xB01)
 
         // Evidence.
-        var agreed: Capabilities?
         /// Bulk messages the channel did NOT claim — the file lane's.
         var bulkReceived: [BulkMessage] = []
         /// Images the channel applied, byte-exact.
@@ -118,37 +48,21 @@ final class ClipboardImageClientGateTests: XCTestCase {
         /// The channel's non-send, non-apply events, in order.
         var imageEvents: [ClipboardImageEvent] = []
 
-        var progressMark: Int {
+        override var progressMark: Int {
             bulkReceived.count + applied.count + imageEvents.count
         }
 
         init(localCapabilities: Capabilities) {
-            var rng = SplitMix64(seed: 0x0122)
-            peer = SealedCtrlPeer(
-                connectionId: ConnectionId.random(using: &rng),
+            super.init(
+                localCapabilities: localCapabilities, seed: 0x0122,
                 carriesBulk: true)
-            self.localCapabilities = localCapabilities
         }
 
-        func didEstablish() throws {
-            try declare(localCapabilities)
-        }
-
-        /// One client datagram: unseal → the CHANNEL's ARQ → route.
-        func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
-            switch try peer.absorb(bytes, nowMicros: nowMicros) {
-            case .reliable(let envelope, _, let events):
-                for case .message(_, let message) in events {
-                    if envelope.channel == .bulkTransfer {
-                        try consumeBulkStream(message, nowMicros: nowMicros)
-                    } else {
-                        dispatchCtrlPlain(message)
-                    }
-                }
-            case .plain(_, let plaintext):
-                dispatchCtrlPlain(plaintext)
-            case .handshakeCompleted, .duplicate, .unopened:
-                break
+        override func receive(
+            _ message: [UInt8], on channel: ChannelId, nowMicros: UInt64
+        ) throws {
+            if channel == .bulkTransfer {
+                try consumeBulkStream(message, nowMicros: nowMicros)
             }
         }
 
@@ -200,13 +114,6 @@ final class ClipboardImageClientGateTests: XCTestCase {
                 nowMicros: nowMicros
             )
         }
-
-        private func dispatchCtrlPlain(_ message: [UInt8]) {
-            guard message.first == CtrlMessageType.capabilityDeclaration,
-                  let intersection = try? peer.receiveDeclaration(message)
-            else { return }
-            agreed = intersection
-        }
     }
 
     // MARK: - The client harness
@@ -217,7 +124,7 @@ final class ClipboardImageClientGateTests: XCTestCase {
         .wireDefault.declaringClipboardText().declaringClipboardImages()
     }
 
-    // MARK: Leg 2 — both directions in vivo + the boomerang proofs
+    // MARK: Both directions in vivo + the boomerang proofs
 
     func testGateImageRoundTripsBothDirectionsAndEchoesSuppress() throws {
         let host = ImageHostStandIn(localCapabilities: imagesTier)
@@ -225,17 +132,13 @@ final class ClipboardImageClientGateTests: XCTestCase {
         config.shareClipboard = true
         config.shareClipboardImages = true
         let harness = try Harness(host: host, coreConfig: config)
-        var t: UInt64 = 1_000
-        harness.clock.value = t
-
-        try harness.core.open(now: ClientTimestamp(microseconds: t))
-        try harness.settle(t: &t)
+        var t = try harness.openAndSettle()
         XCTAssertEqual(host.agreed?.clipboardImagesAgreed, true,
                        "10∧12 must agree — and with NO key 11 in the "
                         + "stand-in's declaration")
         XCTAssertEqual(host.agreed?.bulkTransfer, false)
-        XCTAssertTrue(harness.core.clipboardImagesNegotiated)
-        XCTAssertTrue(harness.core.clipboardImageSharingEnabled)
+        XCTAssertTrue(harness.core.control.clipboardImagesNegotiated)
+        XCTAssertTrue(harness.core.control.clipboardImageSharingEnabled)
 
         // Mac → host: a 150 KB "PNG" (3 chunks — the multi-chunk
         // geometry through real ARQ segmentation + Noise sealing).
@@ -251,7 +154,7 @@ final class ClipboardImageClientGateTests: XCTestCase {
                        "byte-exact through seal/unseal + ARQ + chunks")
         XCTAssertEqual(host.applied.first?.mime, "image/png")
         XCTAssertEqual(
-            harness.core.clipboardImageCounters.sharesCompleted, 1,
+            harness.core.control.clipboardImageCounters.sharesCompleted, 1,
             "the digest verdict must round-trip back to the sender")
 
         // The boomerang proof, host side: the leaf's echo of that
@@ -280,7 +183,7 @@ final class ClipboardImageClientGateTests: XCTestCase {
             return false
         })
         XCTAssertEqual(
-            harness.core.clipboardImageCounters.imagesApplied, 1)
+            harness.core.control.clipboardImageCounters.imagesApplied, 1)
 
         // The boomerang proof, client side: the NSPasteboard echo of
         // that apply judges suppressedEcho through the client's book.
@@ -292,27 +195,19 @@ final class ClipboardImageClientGateTests: XCTestCase {
         try harness.settle(t: &t)
         XCTAssertEqual(host.applied.count, 1,
                        "the echo must never return as new cargo")
-
-        print("P-1 client gate (in vivo): Mac image → host byte-exact "
-            + "(\(macImage.count) B, 3 chunks); host image → typed event "
-            + "byte-exact (\(hostImage.count) B); both echoes suppressed")
     }
 
-    // MARK: Leg 3 — the consent tier gates both directions, live
+    // MARK: The consent tier gates both directions, live
 
     func testGateImagesRungOffMeansTypedDeclineAndNothingLeaves() throws {
         let host = ImageHostStandIn(localCapabilities: imagesTier)
         var config = LyteUdpSessionCoreConfig()
         config.shareClipboard = true   // Text only — the middle tier.
         let harness = try Harness(host: host, coreConfig: config)
-        var t: UInt64 = 1_000
-        harness.clock.value = t
-
-        try harness.core.open(now: ClientTimestamp(microseconds: t))
-        try harness.settle(t: &t)
-        XCTAssertTrue(harness.core.clipboardImagesNegotiated,
+        var t = try harness.openAndSettle()
+        XCTAssertTrue(harness.core.control.clipboardImagesNegotiated,
                       "capability negotiates regardless — dialect")
-        XCTAssertFalse(harness.core.clipboardImageSharingEnabled)
+        XCTAssertFalse(harness.core.control.clipboardImageSharingEnabled)
 
         // Nothing leaves.
         XCTAssertEqual(
@@ -337,12 +232,12 @@ final class ClipboardImageClientGateTests: XCTestCase {
             return false
         }, "the decline must reach the sender as abort(declined)")
         XCTAssertEqual(
-            harness.core.clipboardImageCounters.receivesRefused, 1)
+            harness.core.control.clipboardImageCounters.receivesRefused, 1)
         host.imageEvents.removeAll()
 
         // The live toggle opens both directions.
         harness.core.setClipboardImageSharing(true)
-        XCTAssertTrue(harness.core.clipboardImageSharingEnabled)
+        XCTAssertTrue(harness.core.control.clipboardImageSharingEnabled)
         let image = makePayload(count: 5_000, seed: 0x0107)
         XCTAssertEqual(
             harness.core.shareLocalClipboardImage(
@@ -352,12 +247,9 @@ final class ClipboardImageClientGateTests: XCTestCase {
         try harness.settle(t: &t)
         XCTAssertEqual(host.applied.count, 1)
         XCTAssertEqual(host.applied.first?.data, image)
-
-        print("P-1 client gate (consent): images-off = quiet AND a "
-            + "typed abort(declined); the live toggle opens both ways")
     }
 
-    // MARK: Leg 4 — rule 3 per lane: 10∧12 vs 11 stay independent
+    // MARK: Rule 3 per lane: 10∧12 vs 11 stay independent
 
     func testGateRuleThreePerLaneAndCeilingsAreWeather() throws {
         // A text-only host (key 10, no 12): the image share refuses
@@ -368,11 +260,8 @@ final class ClipboardImageClientGateTests: XCTestCase {
         config.shareClipboard = true
         config.shareClipboardImages = true   // consent on — not enough
         let harness = try Harness(host: textHost, coreConfig: config)
-        var t: UInt64 = 1_000
-        harness.clock.value = t
-        try harness.core.open(now: ClientTimestamp(microseconds: t))
-        try harness.settle(t: &t)
-        XCTAssertFalse(harness.core.clipboardImagesNegotiated)
+        var t = try harness.openAndSettle()
+        XCTAssertFalse(harness.core.control.clipboardImagesNegotiated)
         XCTAssertEqual(
             harness.core.shareLocalClipboardImage(
                 [1, 2, 3], now: ClientTimestamp(microseconds: t)),
@@ -397,12 +286,9 @@ final class ClipboardImageClientGateTests: XCTestCase {
         config2.shareClipboard = true
         config2.shareClipboardImages = true
         let harness2 = try Harness(host: imagesHost, coreConfig: config2)
-        var t2: UInt64 = 1_000
-        harness2.clock.value = t2
-        try harness2.core.open(now: ClientTimestamp(microseconds: t2))
-        try harness2.settle(t: &t2)
-        XCTAssertFalse(harness2.core.bulkTransferNegotiated)
-        XCTAssertTrue(harness2.core.clipboardImagesNegotiated)
+        var t2 = try harness2.openAndSettle()
+        XCTAssertFalse(harness2.core.control.agreedCapabilities?.bulkTransfer == true)
+        XCTAssertTrue(harness2.core.control.clipboardImagesNegotiated)
         let fileOffer = try BulkOffer(
             transferId: 0xF11E, totalByteCount: 10,
             chunkByteCount: 4_096,
@@ -449,13 +335,9 @@ final class ClipboardImageClientGateTests: XCTestCase {
         )
         try harness2.settle(t: &t2)
         XCTAssertEqual(imagesHost.applied.count, 1)
-
-        print("P-1 client gate (rule 3): share refused pre-wire against "
-            + "a text-only host; hostile 0x22 dropped loud; file offer "
-            + "on an images-only chan 8 dropped loud; ceilings weather")
     }
 
-    // MARK: Leg 4b — hashing cost stays off refused images and the lock
+    // MARK: Hashing cost stays off refused images and the lock
 
     /// Records every digest the core finishes and the size of every
     /// slice it hashes; while finishing a whole-blob digest (a local
@@ -479,7 +361,7 @@ final class ClipboardImageClientGateTests: XCTestCase {
             let done = DispatchSemaphore(value: 0)
             let core = self.core
             DispatchQueue.global().async {
-                _ = core?.clipboardImageSharingEnabled
+                _ = core?.control.clipboardImageSharingEnabled
                 done.signal()
             }
             if done.wait(timeout: .now() + 2) == .timedOut {
@@ -517,10 +399,7 @@ final class ClipboardImageClientGateTests: XCTestCase {
             host: host, coreConfig: config,
             imageHasher: { probe.makeHasher() })
         probe.core = harness.core
-        var t: UInt64 = 1_000
-        harness.clock.value = t
-        try harness.core.open(now: ClientTimestamp(microseconds: t))
-        try harness.settle(t: &t)
+        var t = try harness.openAndSettle()
         let now = ClientTimestamp(microseconds: t)
 
         let oneOver = [UInt8](
@@ -537,7 +416,7 @@ final class ClipboardImageClientGateTests: XCTestCase {
         XCTAssertEqual(probe.callCount, 0,
                        "a refused image must never be hashed")
         XCTAssertEqual(
-            harness.core.clipboardImageCounters.sharesSuppressed, 1,
+            harness.core.control.clipboardImageCounters.sharesSuppressed, 1,
             "the pre-digest ceiling refusal still counts as suppressed")
 
         harness.core.setClipboardImageSharing(true)
@@ -568,10 +447,7 @@ final class ClipboardImageClientGateTests: XCTestCase {
         let harness = try Harness(
             host: host, coreConfig: config,
             imageHasher: { probe.makeHasher() })
-        var t: UInt64 = 1_000
-        harness.clock.value = t
-        try harness.core.open(now: ClientTimestamp(microseconds: t))
-        try harness.settle(t: &t)
+        var t = try harness.openAndSettle()
 
         let hostImage = makePayload(count: 150_000, seed: 0xCAFE)
         try host.shareImage(hostImage, nowMicros: t)
@@ -579,60 +455,6 @@ final class ClipboardImageClientGateTests: XCTestCase {
         XCTAssertEqual(harness.imageApplies.first?.data, hostImage)
         XCTAssertEqual(probe.absorbedSizes, [65_536, 65_536, 18_928])
         XCTAssertEqual(probe.callCount, 1)
-    }
-
-    // MARK: Leg 5 — the per-host images-rung default's plumbing
-
-    func testPinnedHostImagesPreferencePlumbing() throws {
-        // A pre-P-1 file (no shareClipboardImages key) decodes
-        // unchanged: the rung reads nil, meaning text-only.
-        let keyHex = String(repeating: "ab", count: 32)
-        let legacy = Data("""
-        {"hosts":{"deadbeef":{"name":"pup","address":"10.0.0.249",\
-        "port":41000,"staticPublicKeyHex":"\(keyHex)",\
-        "pairedAt":"2026-07-21T09:00:00Z","shareClipboard":true}}}
-        """.utf8)
-        let store = try JSONDecoder().decode(
-            PinnedHostStore.self, from: legacy)
-        XCTAssertNil(store.hosts["deadbeef"]?.shareClipboardImages)
-        XCTAssertEqual(store.hosts["deadbeef"]?.shareClipboard, true,
-                       "CL-15's preference decodes beside the new one")
-
-        // Round trip through the real save/load path, rung set.
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("p1-pinned-\(UUID().uuidString).json")
-        defer { try? FileManager.default.removeItem(at: url) }
-        var live = PinnedHostStore()
-        let staticKey = (0..<32).map { UInt8($0) }
-        live.pin(staticPublicKey: staticKey, name: "pup",
-                 address: "10.0.0.249", port: 41_000,
-                 pairedAt: "2026-07-22T15:00:00Z")
-        let pkh = try XCTUnwrap(live.hosts.keys.first)
-        XCTAssertTrue(live.setShareClipboardImages(
-            publicKeyHash: pkh, share: true))
-        try live.save(to: url)
-        let reloaded = PinnedHostStore.load(from: url)
-        XCTAssertEqual(
-            reloaded.host(publicKeyHash: pkh)?.shareClipboardImages, true)
-
-        // Text-only writes nil — the default posture keeps the file
-        // clean (the setShareClipboard precedent).
-        var cleaned = reloaded
-        XCTAssertTrue(cleaned.setShareClipboardImages(
-            publicKeyHash: pkh, share: false))
-        XCTAssertNil(cleaned.hosts[pkh]?.shareClipboardImages)
-
-        // A re-pair refreshes dial hints WITHOUT resetting the rung.
-        var repaired = reloaded
-        repaired.pin(staticPublicKey: staticKey, name: "pup",
-                     address: "10.0.0.77", port: 41_131,
-                     pairedAt: "2026-07-23T09:00:00Z")
-        XCTAssertEqual(repaired.hosts[pkh]?.shareClipboardImages, true,
-                       "a re-pair is a trust event, not a settings reset")
-
-        // The setter refuses hashes it has never pinned.
-        XCTAssertFalse(repaired.setShareClipboardImages(
-            publicKeyHash: "0000", share: true))
     }
 }
 

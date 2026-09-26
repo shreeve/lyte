@@ -44,10 +44,6 @@ enum HostStaticKey {
         }
         return try NoiseKeyPair(privateKey: bytes)
     }
-
-    static func loadOrCreate() throws -> NoiseKeyPair {
-        try loadOrCreate(paths: HostPaths.current())
-    }
 }
 
 /// Resolves an identity file through HostPaths and prints the one-line

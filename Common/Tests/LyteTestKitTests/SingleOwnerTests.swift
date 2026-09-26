@@ -23,8 +23,6 @@ final class SingleOwnerTests: XCTestCase {
         case declarer(of: String)
         /// Files below this repository path.
         case directory(String)
-        /// No production file.
-        case nowhere
     }
 
     private struct ConfinedUse {
@@ -82,11 +80,40 @@ final class SingleOwnerTests: XCTestCase {
                     scope: "Host/Sources/"),
         // Encryption is always on: no production shell selects the
         // session's plaintext test mode.
-        ConfinedUse(tokens: ["testPassthrough"],
+        ConfinedUse(tokens: ["passthroughTo"],
                     owner: .directory("Host/Sources/HostWire/")),
-        // Decoded samples leave the session only through VideoSink.
-        ConfinedUse(tokens: ["(", "CMSampleBuffer", "DecodeUnit", ")"],
-                    owner: .nowhere),
+        // Handshake admission is the listener's: only the acceptor holds
+        // a flood gate, so no session can reset one.
+        ConfinedUse(tokens: ["HandshakeGate", "("],
+                    owner: .declarer(of: "HandshakeAcceptor"),
+                    scope: "Host/Sources/"),
+        // No client grows a plaintext option, and the passthrough crypto
+        // stays in the client test kit, which this scan never reads.
+        ConfinedUse(tokens: ["insecure"],
+                    owner: .directory("Client/Sources/LyteClientTestKit/"),
+                    scope: "Client/Sources/"),
+        ConfinedUse(tokens: ["PassthroughTransportCrypto"],
+                    owner: .directory("Client/Sources/LyteClientTestKit/")),
+    ] + SingleOwnerTests.clientControlOwners.map {
+        ConfinedUse(tokens: $0.tokens, owner: .declarer(of: $0.owner),
+                    scope: "Client/Sources/")
+    }
+
+    /// Each client control-word decoder or policy engine is reached from
+    /// one IO-free LyteClientSession owner; the transport shell executes
+    /// decisions and never decodes those words or runs those machines.
+    private static let clientControlOwners: [(tokens: [String], owner: String)] = [
+        (["ModeTransition", ".", "decode"], "ClientSessionLifecycle"),
+        (["SessionTeardown", ".", "decode"], "ClientSessionLifecycle"),
+        (["SessionStateMachine"], "ClientSessionLifecycle"),
+        (["CapabilityNegotiator"], "ClientCapabilitySession"),
+        (["AudioRoutingStatus", ".", "decode"], "ClientAudioRoutingSession"),
+        (["ClipboardAnnounce", ".", "decode"], "ClientClipboardSession"),
+        (["ClipboardSyncBook"], "ClientClipboardSession"),
+        (["ClipboardImageChannel", "("], "ClientClipboardSession"),
+        (["CursorShape", ".", "decode"], "ClientCursorSession"),
+        (["AudioTrackState", ".", "decode"], "ClientMediaPostureSession"),
+        (["VideoPostureState", ".", "decode"], "ClientMediaPostureSession"),
     ]
 
     /// Files declaring these types never name these tokens: the session
@@ -140,6 +167,24 @@ final class SingleOwnerTests: XCTestCase {
         XCTAssertEqual(
             dependents.filter { $0.type != "test" }.map(\.name), [],
             "a shipping Browser target depends on Host")
+    }
+
+    /// Client and Host never depend on each other, test targets included:
+    /// they meet only in SystemTests and the browser's tests.
+    func testClientAndHostManifestsNeverDependOnEachOther() throws {
+        let root = RepositorySourceTree().repositoryRoot
+        let host = try Self.dumpPackage(root.appendingPathComponent("Host"))
+        let client = try Self.dumpPackage(root.appendingPathComponent("Client"))
+        for (package, other, name) in [(client, host, "host"),
+                                       (host, client, "client")] {
+            let products = Set(other.products.map(\.name))
+            XCTAssertFalse(products.isEmpty)
+            XCTAssertEqual(package.targets.filter { target in
+                target.dependencies.contains {
+                    $0.dependsOnPackage(name, products: products)
+                }
+            }.map(\.name), [], "a target depends on the \(name) package")
+        }
     }
 
     func testDependsOnPackageReadsProductAndByNameEdges() throws {
@@ -404,8 +449,6 @@ final class SingleOwnerTests: XCTestCase {
                     allowed = source.topLevelTypes.contains(name)
                 case .directory(let path):
                     allowed = source.path.hasPrefix(path)
-                case .nowhere:
-                    allowed = false
                 }
                 if !allowed,
                    SwiftSourceScanner.contains(needle, in: source.tokens) {

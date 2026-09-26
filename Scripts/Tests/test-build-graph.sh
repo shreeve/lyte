@@ -76,6 +76,19 @@ expect_moved "Other's manifest" Other
 echo 'let x = 1' >> "$fixture/Leaf/Sources/Leaf/Leaf.swift"
 expect_moved "a Leaf source edit"
 
+# A gate cleans a scratch directory only until it records the graph it
+# built, and again once the graph moves.
+changed="$(lyte_changed_build_graph "$fixture" Top)"
+[[ "$changed" == "$(lyte_build_graph_hash "$fixture" Top)" ]] \
+    || fail "an unrecorded scratch directory is not stale"
+lyte_record_build_graph "$fixture" Top "$changed"
+[[ -z "$(lyte_changed_build_graph "$fixture" Top)" ]] \
+    || fail "a recorded graph is still stale"
+touch "$fixture/Leaf/Sources/Leaf/Another.swift"
+[[ -n "$(lyte_changed_build_graph "$fixture" Top)" ]] \
+    || fail "a dependency's new source left the scratch directory current"
+refute lyte_changed_build_graph "$fixture" Missing
+
 # Path dependencies are found whatever their other arguments and however the
 # call is split across lines; commented-out and URL dependencies are not.
 mkdir -p "$fixture/Styles"

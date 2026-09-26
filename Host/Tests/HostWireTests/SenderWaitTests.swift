@@ -61,10 +61,10 @@ final class SenderWaitTests: XCTestCase {
                                all: 1 * ms, .pressure), 100_000)
     }
 
-    /// Regression: an IDR's worth of video sits in the pacer behind a
-    /// full socket. One refill later the bucket reads "due now" — the
-    /// wait used to collapse to zero (EAGAIN and ENOBUFS alike) and the
-    /// SCHED_RR sender spun. The latency-bounded wake ignores it.
+    /// An IDR's worth of video sits in the pacer behind a full socket.
+    /// One refill later the bucket reads "due now", but the wait must
+    /// not collapse to zero (EAGAIN and ENOBUFS alike) or the SCHED_RR
+    /// sender spins. The latency-bounded wake ignores it.
     func testABlockedOutboxDoesNotSpinOnceTheBucketRefills() {
         let pacer = Pacer(rateBitsPerSecond: 50_000_000, now: 0)
         for _ in 0..<100 { pacer.enqueue(.freshVideo, bytes: 1_152, now: 0) }
@@ -93,8 +93,8 @@ final class SenderWaitTests: XCTestCase {
     func testSessionLatencyWakeKeepsTimersAndDropsHeldVideo() throws {
         let session = Session(
             config: SessionConfig(
-                crypto: .testPassthrough, rateBitsPerSecond: 50_000_000),
-            clientTuple: FourTuple(
+                rateBitsPerSecond: 50_000_000),
+            passthroughTo: FourTuple(
                 localAddress: "0.0.0.0", localPort: 41_151,
                 remoteAddress: "10.0.0.23", remotePort: 61_000),
             now: 0, rng: SplitMix64(seed: 2)) { _ in }

@@ -2,6 +2,7 @@ import LyteCore
 import XCTest
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // Verifies the committed Vectors/input-coordinates-v1.json byte-exact:
 // InputEvent coordinates are finite f64, so NaN and ±Inf reject in every

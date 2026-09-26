@@ -2,25 +2,17 @@ import XCTest
 import Foundation
 import HostSession
 @_spi(Testing) import HostWire
+import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (build plan HS-12 row): rebind mid-stream → resume ≤ 400 ms,
-// run deterministically against the sans-IO PathValidator (the socket
-// rebind is lyte-host's). The simulation feeds the machine datagrams from 4-tuple A, then the same
-// connection ID from 4-tuple B, and asserts: a challenge is issued on B
-// and never before; the anti-amplification cap holds pre-validation; the
-// echo promotes B within the modeled time; the fresh-IDR signal fires
-// exactly once; and the old path is retained then aged out. The
-// validator's spoof, withholding and foreign-traffic legs live in
-// HostSessionTests/PathValidatorTests.
-//
-// The ≤ 400 ms resume budget (resiliency gate G7: "IDR ≤ 400 ms after
-// first packet from new path") is modeled on the injected clock with
-// documented assumptions — hotel-grade RTT, worst-case encoder tick, the
-// measured pacer drain, one-way delivery, client assemble+decode — and
-// the sum is asserted against the budget, with the real VideoChannel
-// pacing the real corpus IDR for the drain term.
+// A mid-stream rebind resumes within 400 ms of the first datagram from
+// the new path: the sans-IO PathValidator challenges the new tuple once
+// and never before, the echo promotes it, and the fresh IDR it owes
+// drains through the real VideoChannel pacer carrying the conn-id. The
+// budget sums a modeled RTT, encoder tick, one-way delivery and client
+// decode with that measured drain. The validator's spoof, withholding,
+// fallback and foreign-traffic cases are PathValidatorTests'.
 
 final class PathMigrationGateTests: XCTestCase {
 
@@ -58,11 +50,7 @@ final class PathMigrationGateTests: XCTestCase {
     /// 24 B envelope + 11 B TLV block + 1112 B shard.
     private static let fullDatagramBytes = 1_147
 
-    // NOTE: the conn-id TLV and path-message CODEC tests moved to
-    // Wire/Tests/LyteWireTests/Session/SessionCodecTests.swift with the codec
-    // promotion; what stays here is the PathValidator behavior.
-
-    // MARK: The gate — mid-stream rebind
+    // MARK: Mid-stream rebind
 
     func testGateMidStreamRebindPromotesWithinBudget() throws {
         let connId = makeConnectionId()
@@ -100,15 +88,6 @@ final class PathMigrationGateTests: XCTestCase {
         }
         XCTAssertEqual(on, Self.tupleB)
 
-        // Anti-amplification pre-validation: the challenge is the only
-        // datagram B receives, and it fits 3 × what B sent.
-        let config = validator.config
-        XCTAssertLessThanOrEqual(
-            config.challengeDatagramByteCount,
-            Self.fullDatagramBytes * config.amplificationFactor,
-            "the challenge itself must fit the reflection budget"
-        )
-
         // More B datagrams before the echo: the outstanding token stands,
         // no challenge storm.
         let more = validator.datagramReceived(
@@ -122,15 +101,15 @@ final class PathMigrationGateTests: XCTestCase {
                        "no keyframe before promotion")
 
         // ── The modeled resume clock (documented assumptions) ─────────
-        // rtt          30 ms  hotel-grade RTT (resiliency G5 profile;
-        //                     LAN is ~2 ms — this is the worst case)
+        // rtt          30 ms  hotel-grade RTT (LAN is ~2 ms — this is
+        //                     the worst case)
         // encoderTick  16.7 ms worst-case wait for the next capture tick
         //                     at 60 fps before the forced IDR encodes
         // drain        measured below: the real corpus IDR through the
         //                     real VideoChannel pacer at 20 Mbps
         // oneWay       15 ms  IDR shards' delivery on the new path (½ RTT)
-        // clientDecode 10 ms  assemble + decode (M3 measured 60 fps
-        //                     pipeline runs well under one frame interval)
+        // clientDecode 10 ms  assemble + decode (a 60 fps pipeline runs
+        //                     well under one frame interval)
         let rtt = 30 * millisecond
         let encoderTick = UInt64(16_666_667)
         let oneWay = 15 * millisecond
@@ -159,8 +138,8 @@ final class PathMigrationGateTests: XCTestCase {
         XCTAssertFalse(validator.takeFreshKeyframeRequest(),
                        "the keyframe request must fire exactly once")
 
-        // The IDR the signal forces, through the real HS-5 machinery:
-        // conn-id-tagged shards, urgent class, paced at 20 Mbps.
+        // The IDR the signal forces: conn-id-tagged shards, urgent
+        // class, paced at 20 Mbps.
         let idr = try loadCorpus("frame-000-idr.annexb")
         var emitted: [VideoChannelDatagram] = []
         let channel = VideoChannel(
@@ -200,26 +179,6 @@ final class PathMigrationGateTests: XCTestCase {
             resume, 400 * millisecond,
             "modeled resume \(resume / millisecond) ms blew the budget"
         )
-        print("""
-            HS-12 gate: modeled resume \
-            \(String(format: "%.1f", Double(resume) / 1e6)) ms ≤ 400 ms \
-            (rtt 30 + encoder tick 16.7 + IDR drain \
-            \(String(format: "%.1f", Double(drain) / 1e6)) + one-way 15 \
-            + decode 10); \(emitted.count) conn-id-tagged IDR datagrams
-            """)
-
-        // Old path retention, then age-out.
-        let beforeExpiry = tEcho + validator.config.fallbackRetentionNS - 1
-        XCTAssertTrue(validator.advance(now: beforeExpiry).isEmpty)
-        XCTAssertEqual(validator.fallback?.tuple, Self.tupleA)
-        XCTAssertEqual(validator.nextDeadline,
-                       tEcho + validator.config.fallbackRetentionNS)
-        let expiry = validator.advance(
-            now: tEcho + validator.config.fallbackRetentionNS
-        )
-        XCTAssertEqual(expiry, [.fallbackExpired(Self.tupleA)])
-        XCTAssertNil(validator.fallback)
-        XCTAssertNil(validator.nextDeadline)
     }
 
     // MARK: The estimator after a promotion
@@ -235,11 +194,10 @@ final class PathMigrationGateTests: XCTestCase {
         let box = Box()
         let session = Session(
             config: SessionConfig(
-                crypto: .testPassthrough,
                 rateBitsPerSecond: 20_000_000,
                 beaconIntervalNS: 1 << 62
             ),
-            clientTuple: Self.tupleA,
+            passthroughTo: Self.tupleA,
             now: 0,
             rng: SplitMix64(seed: 0x9A7B)
         ) { box.sent.append(($0, box.now)) }

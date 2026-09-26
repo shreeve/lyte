@@ -22,10 +22,8 @@ struct lyte_uinput {
     int tablet;
     /* Written by set_extent before the session starts, read by
        absolute moves on whichever thread receives input — atomics, not
-       plain ints. A
-       mid-change mismatched pair scales one event against the old
-       axis; a mid-session geometry change tears the session down
-       anyway (the P-3 law). */
+       plain ints. A mid-change mismatched pair scales one event against
+       the old axis; a geometry change ends the session anyway. */
     _Atomic uint32_t width;
     _Atomic uint32_t height;
     /* v120 remainders below one detent, per axis. */

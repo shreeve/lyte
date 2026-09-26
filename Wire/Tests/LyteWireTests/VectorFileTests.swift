@@ -2,10 +2,11 @@ import LyteCore
 import XCTest
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
-// Verifies the committed Vectors/ artifacts byte-exact. This suite passing
-// on macOS and Linux is what makes the files a contract: the client's CL-1
-// codes against the same bytes before the host sends a datagram.
+// Verifies the committed Vectors/envelope-v1.json byte-exact. This suite
+// passing on macOS, Linux and WebAssembly is what makes the files a
+// contract both ends code against.
 
 final class VectorFileTests: XCTestCase {
 
@@ -73,16 +74,8 @@ final class VectorFileTests: XCTestCase {
             return XCTFail("\(vector.name): malformed encodeReject vector")
         }
         let envelope = try fields.makeEnvelope()
-        XCTAssertThrowsError(
-            encoder == .plaintextShard
-                ? try envelope.encode(plaintextShard: payload)
-                : try envelope.encode(payload: payload),
-            vector.name
-        ) { error in
-            guard let wireError = error as? WireError else {
-                return XCTFail("\(vector.name): non-WireError \(error)")
-            }
-            XCTAssertEqual(vectorErrorName(wireError), expected, vector.name)
+        assertVectorReject(WireError.self, expected, vector.name) {
+            encoder == .plaintextShard ? try envelope.encode(plaintextShard: payload) : try envelope.encode(payload: payload)
         }
     }
 
@@ -94,11 +87,8 @@ final class VectorFileTests: XCTestCase {
         else {
             return XCTFail("\(vector.name): malformed decodeReject vector")
         }
-        XCTAssertThrowsError(try Envelope.decode(datagram), vector.name) { error in
-            guard let wireError = error as? WireError else {
-                return XCTFail("\(vector.name): non-WireError \(error)")
-            }
-            XCTAssertEqual(vectorErrorName(wireError), expected, vector.name)
+        assertVectorReject(WireError.self, expected, vector.name) {
+            try Envelope.decode(datagram)
         }
     }
 

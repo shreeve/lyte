@@ -18,7 +18,7 @@ public struct HeldInputBook: Sendable, Equatable {
         case everything
     }
 
-    /// Shift, Control, Alt and Meta on both sides, Caps Lock and Fn: keys
+    /// Shift, Control, Alt and Meta on both sides, and Caps Lock: keys
     /// a compositor reads as state, never autorepeats.
     public static let modifierKeyCodes: Set<UInt32> = [
         29, 97,   // KEY_LEFTCTRL, KEY_RIGHTCTRL
@@ -26,7 +26,6 @@ public struct HeldInputBook: Sendable, Equatable {
         56, 100,  // KEY_LEFTALT, KEY_RIGHTALT
         125, 126, // KEY_LEFTMETA, KEY_RIGHTMETA
         58,       // KEY_CAPSLOCK
-        464,      // KEY_FN
     ]
 
     public private(set) var keys: Set<UInt32> = []

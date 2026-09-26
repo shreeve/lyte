@@ -34,12 +34,14 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public private(set) var reliable: ReliableCtrlEndpoint!
     public private(set) var bulkReliable: ReliableCtrlEndpoint!
     public private(set) var echoResponder: BeaconEchoResponder!
-    public private(set) var idrRequester: IdrRequester!
     public private(set) var feedback: FeedbackSender!
     public private(set) var input: InputSender!
     public private(set) var audio: AudioReceiver!
-    public private(set) var nackPolicy: NackPolicy!
     public let clockModel: HostClockModel
+    /// The IDR episode (also the render gate) and the NACK book, each under
+    /// its own lock; their decisions execute after it is released.
+    private let idrRecovery = Mutex(ClientIdrRecovery())
+    private let nackPolicy: Mutex<ClientNackPolicy>
 
     // IO-free session policy + transport-owned counters, one lock.
     private let lock = NSLock()
@@ -106,10 +108,10 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         self.onEvent = onEvent
         self.onVideoRecoveryDemand = onVideoRecoveryDemand
         self.onVideoRecoveryTrace = onVideoRecoveryTrace
+        self.nackPolicy = Mutex(ClientNackPolicy(config: config.nackPolicy))
         // Constructed only after the handshake, so the machine starts ACTIVE.
         self.controlSession = ClientControlSession(
             localCapabilities: config.capabilities,
-            machineConfig: config.machineConfig,
             desiredHostAudioRouting: config.desiredHostAudioRouting,
             clipboardSharingAtStart: config.shareClipboard,
             clipboardImageSharingAtStart: config.shareClipboardImages,
@@ -127,9 +129,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                 // repair window; everything else requests an IDR now.
                 guard let self else { return }
                 let now = self.now()
-                if !self.nackPolicy.shouldDeferFecImpossible(
-                    frame: frame, now: now
-                ) {
+                if !self.nackPolicy.withLock({
+                    $0.shouldDeferFecImpossible(frame: frame, now: now)
+                }) {
                     self.beginVideoRecovery(
                         cause: .fecAssemblerDamage, frame: frame, now: now)
                 }
@@ -141,13 +143,14 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                         cause: .hostPurgeInferredDamage,
                         frame: from, now: now)
                 }
-                self.nackPolicy.handle(signal, now: now)
+                self.handleRepairSignal(signal, now: now)
             },
             onSampleFailure: { [weak self] frame in
                 // The frame never reaches the renderer, so the chain after
                 // it cannot decode: the same coalesced IDR recovery.
-                self?.requestVideoRecovery(
-                    after: frame, cause: .rendererFailure)
+                guard let self else { return }
+                self.beginVideoRecovery(
+                    cause: .rendererFailure, frame: frame, now: self.now())
             })
         self.reliable = ReliableCtrlEndpoint(
             sender: sender,
@@ -176,44 +179,15 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                     channel: .ctrl, timestamp: self.now(),
                     plaintext: echo.encode())
             })
-        self.idrRequester = IdrRequester(emit: { [weak self] request in
-            guard let self else { return }
-            _ = try? sender.send(
-                channel: .ctrl, timestamp: self.now(),
-                plaintext: request.encode())
-        })
+        // The cadence beat retries an open IDR episode and runs the NACK
+        // deadlines.
         self.feedback = FeedbackSender(
             demux: demux, sender: sender,
             onTick: { [weak self] tickNow in
-                self?.idrRequester.flushIfDue(now: tickNow)
-                self?.nackPolicy.tick(now: tickNow)
-            })
-        self.nackPolicy = NackPolicy(
-            config: config.nackPolicy,
-            rtt: { [weak self] in
-                self?.clockModel.estimate()?.minRttMicroseconds
-            },
-            emit: { [weak self] entries in
                 guard let self else { return }
-                // Report immediately: the host's freeze budget derives
-                // from the feedback cadence, so skipping the wait saves it.
-                self.feedback.enqueueNacks(entries)
-                self.feedback.tick(now: self.now())
-                for entry in entries {
-                    self.onEvent(.protocolNote(
-                        "nack: frame \(entry.frame.rawValue) asks "
-                        + "shards \(entry.missingShards)"))
-                }
-            },
-            escalate: { [weak self] frame, now in
-                guard let self else { return }
-                self.beginVideoRecovery(
-                    cause: .fecAssemblerDamage, frame: frame, now: now)
-                // Reason-neutral: expiries, framesGone and host refusals
-                // all exit here.
-                self.onEvent(.protocolNote(
-                    "nack: frame \(frame.rawValue) repair abandoned — "
-                    + "IDR instead"))
+                self.sendIdrRequest(
+                    self.idrRecovery.withLock { $0.requestDue(now: tickNow) })
+                self.tickNackPolicy(now: tickNow)
             })
         self.audio = AudioReceiver(jitterConfig: config.audioJitter)
         sessionSink.bind(self)
@@ -227,7 +201,8 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         // with lastInputSeq closes every pending event at or below it.
         // Upstream half of the renderer recovery gate: P samples already
         // queued when damage is discovered must not race the handoff flush.
-        guard idrRequester.admits(isRandomAccess: unit.isIDR) else {
+        guard idrRecovery.withLock({ $0.admits(isRandomAccess: unit.isIDR) })
+        else {
             onVideoRecoveryTrace(.init(
                 kind: "coreRejectedNonIrap",
                 frame: unit.frameNumber,
@@ -252,15 +227,11 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
 
     /// Sends the capability declaration (0x0F) as the first reliable
     /// word, so everything gated on a capability orders behind it.
-    public func open(now: ClientTimestamp) throws {
+    public func open(now: ClientTimestamp? = nil) throws {
         guard let declaration = try lock.withLock({
             try controlSession.start()
         }) else { return }
         try reliable.send(declaration, now: now)
-    }
-
-    public func open() throws {
-        try open(now: now())
     }
 
     /// Production timers: ARQ PTO, pipeline eviction, feedback cadence and
@@ -301,7 +272,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         reliable.tick(now: now)
         bulkReliable.tick(now: now)
         pipeline.tick(now: now)
-        nackPolicy.tick(now: now)
+        tickNackPolicy(now: now)
         machineBeat(now: now)
     }
 
@@ -324,13 +295,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// and the machine closes. The caller lingers on `isReliableQuiescent`
     /// before tearing the socket down.
     public func beginTeardown(
-        reason: SessionTeardownReason, now: ClientTimestamp
+        reason: SessionTeardownReason, now: ClientTimestamp? = nil
     ) {
-        applyMachine(.teardownRequest(reason), now: now)
-    }
-
-    public func beginTeardown(reason: SessionTeardownReason) {
-        beginTeardown(reason: reason, now: now())
+        applyMachine(.teardownRequest(reason), now: now ?? self.now())
     }
 
     // MARK: Input
@@ -340,14 +307,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// pre-arms on every delivered event, so input in IDLE is the wake.
     @discardableResult
     public func sendInput(
-        _ body: InputEvent.Body, now: ClientTimestamp
+        _ body: InputEvent.Body, now: ClientTimestamp? = nil
     ) throws -> UInt32 {
-        try input.send(body, now: now)
-    }
-
-    @discardableResult
-    public func sendInput(_ body: InputEvent.Body) throws -> UInt32 {
-        try sendInput(body, now: now())
+        try input.send(body, now: now ?? self.now())
     }
 
     /// The event carries `captured`; ARQ runs at `now()` so queue wait
@@ -359,12 +321,14 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         try input.send(body, captured: captured, now: now())
     }
 
-    /// Renderer failure/backpressure joins the coalesced IDR recovery.
+    /// Renderer failure/backpressure joins the coalesced IDR recovery. The
+    /// handoff raised it and already awaits an IRAP, so it is not told.
     public func requestVideoRecovery(
         after frame: FrameNumber,
         cause: VideoRecoveryCause = .rendererFailure
     ) {
-        beginVideoRecovery(cause: cause, frame: frame, now: now())
+        beginVideoRecovery(
+            cause: cause, frame: frame, now: now(), notifyHandoff: false)
     }
 
     /// The sole close seam: AVFoundation accepted the IRAP into its queue.
@@ -382,7 +346,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                 isRandomAccess: true))
             return
         }
-        idrRequester.noteUsableIrapAccepted()
+        idrRecovery.withLock { $0.noteUsableIrapAccepted() }
         onVideoRecoveryTrace(.init(
             kind: "coreRecoveryClosedAfterIrapEnqueue",
             frame: frame,
@@ -394,28 +358,93 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public func ensureVideoRecoveryOpen(
         after frame: FrameNumber, cause: VideoRecoveryCause
     ) {
-        guard idrRequester.reopenIfClosed(frame: frame, now: now()) else {
-            return
+        let now = now()
+        let request = idrRecovery.withLock { recovery -> IdrRequest? in
+            guard !recovery.isOutstanding else { return nil }
+            recovery.recordDemand(frame: frame)
+            return recovery.requestDue(now: now)
         }
+        guard let request else { return }
+        sendIdrRequest(request)
         onVideoRecoveryTrace(.init(
             kind: "coreRecoveryReopenedForRendererGate",
             frame: frame,
             cause: cause))
     }
 
-    private func beginVideoRecovery(
+    /// Damage found upstream of the handoff opens its gate too
+    /// (`notifyHandoff`); a demand the handoff raised is never echoed back
+    /// into it, where it would discard the IRAP it already holds.
+    func beginVideoRecovery(
         cause: VideoRecoveryCause,
         frame: FrameNumber,
-        now: ClientTimestamp
+        now: ClientTimestamp,
+        notifyHandoff: Bool = true
     ) {
         // The episode gates this core's render seam at once; the
         // handoff's own gate follows before any later sink submit.
-        let overlap = idrRequester.recordRecoveryDemand(frame: frame, now: now)
+        // The first verdict emits at once; later ones join its episode and
+        // emit only when its retry is due.
+        let (overlap, request) = idrRecovery.withLock {
+            ($0.recordDemand(frame: frame), $0.requestDue(now: now))
+        }
+        sendIdrRequest(request)
         onVideoRecoveryTrace(.init(
             kind: overlap ? "coreDamageOverlap" : "coreDamageKnown",
             frame: frame,
             cause: cause))
-        onVideoRecoveryDemand(cause, frame)
+        if notifyHandoff { onVideoRecoveryDemand(cause, frame) }
+    }
+
+    private func sendIdrRequest(_ request: IdrRequest?) {
+        guard let request else { return }
+        _ = try? sender.send(
+            channel: .ctrl, timestamp: now(), plaintext: request.encode())
+    }
+
+    // MARK: NACK repair
+
+    /// The clock model's RTT (a lock of its own) is read only for the
+    /// signal that uses it: every shard's signal passes here.
+    private func handleRepairSignal(
+        _ signal: VideoRepairSignal, now: ClientTimestamp
+    ) {
+        var rtt: Int64?
+        if case .nackCandidates = signal {
+            rtt = clockModel.estimate()?.minRttMicroseconds
+        }
+        executeNack(nackPolicy.withLock {
+            $0.handle(signal, rttMicroseconds: rtt, now: now)
+        }, now: now)
+    }
+
+    /// Rule-4 deadlines and book hygiene.
+    private func tickNackPolicy(now: ClientTimestamp) {
+        executeNack(nackPolicy.withLock { $0.tick(now: now) }, now: now)
+    }
+
+    /// Asks are reported at once: the host's freeze budget derives from
+    /// the feedback cadence. Escalations (expiries, framesGone and host
+    /// refusals alike) join the IDR recovery.
+    private func executeNack(
+        _ decision: ClientNackPolicy.Decision, now: ClientTimestamp
+    ) {
+        if !decision.nacks.isEmpty {
+            feedback.enqueueNacks(decision.nacks)
+            feedback.tick(now: self.now())
+            for entry in decision.nacks {
+                onEvent(.protocolNote(
+                    "nack: frame \(entry.frame.rawValue) asks "
+                    + "shards \(entry.missingShards)"))
+            }
+        }
+        for frame in decision.escalations {
+            beginVideoRecovery(
+                cause: .fecAssemblerDamage, frame: frame, now: now)
+            onEvent(.protocolNote(
+                "nack: frame \(frame.rawValue) repair abandoned — "
+                + "IDR instead"))
+        }
     }
 
     // MARK: Host audio routing
@@ -424,7 +453,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// negotiated key 9 or before the exchange settled. The posture changes
     /// only when the host's 0x19 answer says so.
     public func requestHostAudioRouting(
-        _ mode: HostAudioRoutingMode, now: ClientTimestamp
+        _ mode: HostAudioRoutingMode, now: ClientTimestamp? = nil
     ) throws {
         let bytes = try lock.withLock {
             let bytes = try controlSession.requestHostAudioRouting(mode)
@@ -434,20 +463,11 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         try reliable.send(bytes, now: now)
     }
 
-    public func requestHostAudioRouting(_ mode: HostAudioRoutingMode) throws {
-        try requestHostAudioRouting(mode, now: now())
-    }
-
     // MARK: Clipboard
 
     /// True when capability key 10 survived intersection.
     public var clipboardNegotiated: Bool {
         lock.withLock { controlSession.clipboardNegotiated }
-    }
-
-    /// Nothing leaves and nothing lands while false.
-    public var clipboardSharingEnabled: Bool {
-        lock.withLock { controlSession.clipboardSharingEnabled }
     }
 
     /// Local policy only (no wire message): a disabled end goes quiet
@@ -460,7 +480,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// Never throws; the outcome is counted and returned.
     @discardableResult
     public func shareLocalClipboard(
-        _ text: String, now: ClientTimestamp
+        _ text: String, now: ClientTimestamp? = nil
     ) -> ClipboardShareOutcome {
         lock.lock()
         let decision = controlSession.shareLocalClipboard(text)
@@ -486,32 +506,12 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         return .shared
     }
 
-    @discardableResult
-    public func shareLocalClipboard(_ text: String) -> ClipboardShareOutcome {
-        shareLocalClipboard(text, now: now())
-    }
-
     // MARK: Clipboard images
-
-    /// True when keys 10 and 12 survived intersection. Key 11 (files) is
-    /// deliberately not consulted: the tiers do not couple.
-    public var clipboardImagesNegotiated: Bool {
-        lock.withLock { controlSession.clipboardImagesNegotiated }
-    }
-
-    /// Images move only when sharing and this rung are both on.
-    public var clipboardImageSharingEnabled: Bool {
-        lock.withLock { controlSession.clipboardImageSharingEnabled }
-    }
 
     /// Local policy only; a disabled end answers an inbound marker with
     /// abort(declined) because the image sender waits on a verdict.
     public func setClipboardImageSharing(_ enabled: Bool) {
         lock.withLock { controlSession.setClipboardImageSharing(enabled) }
-    }
-
-    public var clipboardImageCounters: ClipboardImageChannelCounters {
-        lock.withLock { controlSession.clipboardImageCounters }
     }
 
     /// Shares one local image copy as 0x22 cargo on chan 8 when policy
@@ -520,8 +520,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// judgment; a refused image is never hashed.
     @discardableResult
     public func shareLocalClipboardImage(
-        _ data: [UInt8], now: ClientTimestamp
+        _ data: [UInt8], now: ClientTimestamp? = nil
     ) -> ClipboardShareOutcome {
+        let now = now ?? self.now()
         lock.lock()
         let refusal = controlSession.prejudgeLocalClipboardImage(
             byteCount: data.count)
@@ -538,13 +539,6 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         )
         lock.unlock()
         return executeClipboardDecision(decision, now: now)
-    }
-
-    @discardableResult
-    public func shareLocalClipboardImage(
-        _ data: [UInt8]
-    ) -> ClipboardShareOutcome {
-        shareLocalClipboardImage(data, now: now())
     }
 
     /// Executes a clipboard decision's sends and events and returns the
@@ -587,12 +581,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             case .image(.send):
                 onEvent(.protocolNote(
                     "clipboard policy leaked an unseparated send event"))
-            case .image(.shareStarted), .image(.suppressed):
-                break
-            case .textChanged, .malformedTextAnnounce,
-                 .unnegotiatedTextAnnounce, .textIgnoredDisabled,
-                 .roleConfusedTextSet, .malformedImageCargo,
-                 .unnegotiatedImageCargo:
+            default:
                 break
             }
         }
@@ -601,16 +590,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
 
     // MARK: Bulk transfer
 
-    /// True when key 11 survived intersection: the host accepts files.
-    public var bulkTransferNegotiated: Bool {
-        lock.withLock {
-            controlSession.agreedCapabilities?.bulkTransfer == true
-        }
-    }
-
     /// Queues one bulk message on chan 8; refused without key 11.
     public func sendBulkMessage(
-        _ message: [UInt8], now: ClientTimestamp
+        _ message: [UInt8], now: ClientTimestamp? = nil
     ) throws {
         lock.lock()
         guard controlSession.agreedCapabilities?.bulkTransfer == true else {
@@ -620,10 +602,6 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         counters.bulkMessagesSent += 1
         lock.unlock()
         try bulkReliable.send(message, now: now)
-    }
-
-    public func sendBulkMessage(_ message: [UInt8]) throws {
-        try sendBulkMessage(message, now: now())
     }
 
     // MARK: Ingest
@@ -702,7 +680,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             onEvent(.protocolNote(
                 "nack: frame \(refusal.frame.rawValue) repair refused "
                 + "by host (\(refusal.reason)) — IDR now"))
-            nackPolicy.handleRefusal(frame: refusal.frame, now: now)
+            executeNack(nackPolicy.withLock {
+                $0.handleRefusal(frame: refusal.frame, now: now)
+            }, now: now)
         case .malformed(type: CtrlMessageType.clockBeacon):
             echoResponder.noteMalformedBeacon()
         case .malformed(type: CtrlMessageType.pathChallenge):
@@ -715,18 +695,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     }
 
     private func notePosture(_ posture: ClientDetectorPosture?) {
-        switch posture {
-        case .tightened(let bound):
-            onEvent(.protocolNote(
-                "audio evidence — blackout detector tightened to "
-                + "\(bound / 1_000) ms"))
-        case .relaxed(let bound):
-            onEvent(.protocolNote(
-                "audio quiet announced — blackout detector relaxed "
-                + "to \(bound / 1_000) ms"))
-        case nil:
-            break
-        }
+        if let posture { onEvent(.protocolNote(posture.note)) }
     }
 
     /// Audits one IDR's in-band SPS chroma; no parseable SPS says nothing.
@@ -743,9 +712,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
 
     // MARK: Snapshots
 
-    /// The last accepted video posture announcement, or nil.
-    public var announcedVideoPosture: VideoPostureState? {
-        lock.withLock { controlSession.announcedVideoPosture }
+    /// The control policy as it stands (a value copy).
+    public var control: ClientControlSession {
+        lock.withLock { controlSession }
     }
 
     /// True between an accepted quiet announcement and the next accepted
@@ -764,23 +733,10 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         lock.withLock { controlSession.state }
     }
 
-    public var wireMode: SessionWireMode {
-        lock.withLock { controlSession.wireMode }
-    }
-
-    /// Local overlay only: the path is dark. Never a wire state.
-    public var isFrozen: Bool { state == .frozen }
-
     /// True once a host message over the ARQ ceiling ended the session
     /// (the close itself reads `.localTeardown(.shuttingDown)`).
     public var orderedStreamPoisoned: Bool {
         lock.withLock { streamPoisoned }
-    }
-
-    /// True once authenticated audio tightened the blackout detector, until
-    /// an announced audio quiet relaxes it.
-    public var detectorTightened: Bool {
-        lock.withLock { controlSession.detectorTightened }
     }
 
     public var agreedCapabilities: Capabilities? {
@@ -792,16 +748,18 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         lock.withLock { controlSession.hostAudioRoutingNegotiated }
     }
 
-    /// The host speakers' 0x19-confirmed posture; nil until the first
-    /// status. Never optimistic.
-    public var hostAudioRoutingPosture: HostAudioRoutingMode? {
-        lock.withLock { controlSession.hostAudioRoutingPosture }
-    }
-
     public var isReliableQuiescent: Bool { reliable.isQuiescent }
 
     public func snapshotCounters() -> LyteUdpSessionCounters {
         lock.withLock { counters }
+    }
+
+    public var idrStats: ClientIdrRecovery.Stats {
+        idrRecovery.withLock { $0.stats }
+    }
+
+    public var nackStats: ClientNackPolicy.Stats {
+        nackPolicy.withLock { $0.stats }
     }
 
     // MARK: The machine
@@ -1019,30 +977,23 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     private func receiveImageCargo(
         _ bytes: [UInt8], now: ClientTimestamp
     ) {
-        lock.lock()
-        let decision = controlSession.receiveClipboardImageCargo(bytes)
-        switch decision.events.first {
-        case .malformedImageCargo:
-            counters.clipboardDropsLoud += 1
-        case .unnegotiatedImageCargo:
-            counters.clipboardDropsLoud += 1
-        default:
-            break
+        let decision = lock.withLock {
+            controlSession.receiveClipboardImageCargo(bytes)
         }
-        lock.unlock()
         for event in decision.events {
+            let note: String
             switch event {
             case .malformedImageCargo(let byteCount):
-                onEvent(.protocolNote(
-                    "malformed clipboard-image marker dropped "
-                        + "(\(byteCount) B)"))
+                note = "malformed clipboard-image marker dropped "
+                    + "(\(byteCount) B)"
             case .unnegotiatedImageCargo:
-                onEvent(.protocolNote(
-                    "clipboard-image 0x22 without negotiated keys 10∧12 "
-                        + "— dropped"))
+                note = "clipboard-image 0x22 without negotiated keys 10∧12 "
+                    + "— dropped"
             default:
-                break
+                continue
             }
+            lock.withLock { counters.clipboardDropsLoud += 1 }
+            onEvent(.protocolNote(note))
         }
         executeClipboardDecision(decision, now: now)
     }

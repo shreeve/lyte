@@ -4,7 +4,7 @@
 public struct DecodeUnit: Hashable, Sendable {
     /// The envelope `frame` field this unit was assembled from.
     public let frameNumber: FrameNumber
-    /// Host capture timestamp (PipeWire monotonic µs), carried verbatim
+    /// Host capture timestamp (host monotonic µs), carried verbatim
     /// from the frame's envelopes.
     public let timestamp: HostTimestamp
     /// Derived from the recovered bytes (IRAP NAL presence), never from

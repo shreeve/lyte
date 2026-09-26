@@ -13,9 +13,6 @@ public func makeVideoDecisionVectorFile(
     let video = try makeVideoVectorFile(corpusDirectory: corpusDirectory)
     let replays = try replayVideoScenarios(video, corpusDirectory: corpusDirectory)
     return VideoDecisionVectorFile(
-        format: VideoDecisionVectorFile.expectedFormat,
-        formatVersion: 1,
-        wireVersion: 1,
         scenarioFile: VideoVectorFile.fileName,
         provenance: "pinned-self-consistent",
         scenarios: replays.map {

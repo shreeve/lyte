@@ -1,0 +1,34 @@
+{
+  "format" : "lyte-wire-audio-stream-off-vectors",
+  "formatVersion" : 1,
+  "vectors" : [
+    {
+      "description" : "wireDefault's frozen encoding plus exactly the appended `0E F5` entry (map head 0xA8 → 0xA9): audioStreamOff reads true and the set re-encodes byte-exactly.",
+      "flags" : {
+        "audioStreamOff" : true,
+        "hostAudioRouting" : false
+      },
+      "messageHex" : "a9010002810103810104f5058006f407f4081904800ef5",
+      "name" : "capability-key14-declared"
+    },
+    {
+      "description" : "wireDefault's frozen encoding unchanged: audioStreamOff reads false — \"not supported\", never an error.",
+      "flags" : {
+        "audioStreamOff" : false,
+        "hostAudioRouting" : false
+      },
+      "messageHex" : "a8010002810103810104f5058006f407f408190480",
+      "name" : "capability-key14-absent"
+    },
+    {
+      "description" : "Routing and stream-off together: map head 0xAA with `09 F5 0E F5` trailing in canonical order — streamOff rides the key-9 routing messages, so the two keys travel together.",
+      "flags" : {
+        "audioStreamOff" : true,
+        "hostAudioRouting" : true
+      },
+      "messageHex" : "aa010002810103810104f5058006f407f40819048009f50ef5",
+      "name" : "capability-key9-and-key14"
+    }
+  ],
+  "wireVersion" : 1
+}

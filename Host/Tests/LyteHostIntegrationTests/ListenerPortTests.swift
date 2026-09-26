@@ -6,7 +6,7 @@ import XCTest
 /// traffic, while a session's own media sockets still join the port.
 final class ListenerPortTests: XCTestCase {
     func testASecondListenerOnAHeldPortIsRefused() throws {
-        let first = try HostListener(port: 0)
+        let first = try HostListener()
         let port = lyte_netio_local_port(first.netio)
         XCTAssertThrowsError(try HostListener(port: port)) { error in
             XCTAssertTrue("\(error)".contains("already bound"), "\(error)")

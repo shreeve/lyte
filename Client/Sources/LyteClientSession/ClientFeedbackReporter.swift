@@ -3,7 +3,7 @@ import LyteWire
 /// The chan-3 feedback report's content, IO-free: per-channel receive
 /// ledgers, the arrival dispersion section and the queued NACK entries.
 /// The report feeds the host's estimator and doubles as its fast-liveness
-/// signal. The shell owns the 25–50 ms cadence, the ledgers and the send.
+/// signal. The shell runs the cadence and owns the ledgers and the send.
 ///
 /// Reports are unreliable: a lost report is superseded by the next, and
 /// entries drained into a report are spent even if it is lost (the repair
@@ -52,6 +52,14 @@ public struct ClientFeedbackReporter: Sendable {
             self.arrivalMicroseconds = arrivalMicroseconds
         }
     }
+
+    /// The report cadence every shell runs, inside the band the host's
+    /// estimator and its 350 ms freeze detector expect.
+    public static let cadenceMilliseconds = 40
+    public static let cadenceRangeMilliseconds = 25...50
+    /// Arrival samples a shell keeps between reports: several windows of
+    /// worst-case traffic.
+    public static let maxRetainedArrivals = 512
 
     /// NACK entries awaiting a report; past the cap the oldest drop
     /// (closest to stale; the repair deadline backstops them).

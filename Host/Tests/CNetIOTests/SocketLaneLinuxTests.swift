@@ -65,7 +65,7 @@ final class SocketLaneLinuxTests: XCTestCase {
 }
 
 final class NetioErrnoClassTests: XCTestCase {
-    /// Soft ICMP-driven errors are loss, not session death (B7).
+    /// Soft ICMP-driven errors are loss, not session death.
     func testSoftNetworkErrorsAreTransient() {
         for code in [EHOSTUNREACH, EHOSTDOWN, ENETUNREACH, ENETDOWN, EPERM,
                      EMSGSIZE] {
@@ -85,8 +85,8 @@ final class NetioErrnoClassTests: XCTestCase {
     }
 }
 
-/// B3's kernel half: a connected UDP socket hears only its peer, so the
-/// session port keeps one unconnected member. A second client's datagram
+/// A connected UDP socket hears only its peer, so the session port
+/// keeps one unconnected member. A second client's datagram
 /// (a migrated path, the next handshake) must still land on the port.
 final class ListeningSocketLinuxTests: XCTestCase {
     func testAnUnconnectedMemberHearsTuplesTheConnectedMembersRefuse() throws {

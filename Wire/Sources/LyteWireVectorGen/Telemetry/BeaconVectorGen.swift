@@ -494,9 +494,6 @@ public func makeBeaconVectorFile() throws -> BeaconVectorFile {
     )
 
     return BeaconVectorFile(
-        format: BeaconVectorFile.expectedFormat,
-        formatVersion: 1,
-        wireVersion: 1,
         beaconVectors: beaconVectors,
         feedbackVectors: feedbackVectors,
         clockWorkedExample: workedExample

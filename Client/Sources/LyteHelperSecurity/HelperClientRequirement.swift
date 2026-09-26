@@ -1,25 +1,9 @@
 import Foundation
 import Security
-import Synchronization
 
 public enum HelperClientRequirementError: Error, Equatable {
     case security(operation: String, status: OSStatus)
     case unexpectedDesignatedRequirement
-}
-
-private final class RequirementResultBox: Sendable {
-    private let result = Mutex<Result<String, any Error>?>(nil)
-
-    func store(_ result: Result<String, any Error>) {
-        self.result.withLock { $0 = result }
-    }
-
-    func take() -> Result<String, any Error>? {
-        result.withLock { value in
-            defer { value = nil }
-            return value
-        }
-    }
 }
 
 /// The two code requirements that bind Lyte.app and its privileged helper.
@@ -146,46 +130,12 @@ public enum HelperClientRequirement {
         return result
     }
 
-    /// Security may consult trust services while validating the certificate.
-    /// Keep that one-time startup work off a daemon's listener thread.
+    /// The running process's designated requirement, from its validated
+    /// signature.
     private static func currentProcessDesignatedRequirement() throws -> String {
-        let completed = DispatchSemaphore(value: 0)
-        let box = RequirementResultBox()
-        DispatchQueue.global(qos: .utility).async {
-            box.store(Result { try validatedDesignatedRequirementOfSelf() })
-            completed.signal()
-        }
-        completed.wait()
-        guard let result = box.take() else {
-            throw HelperClientRequirementError
-                .unexpectedDesignatedRequirement
-        }
-        return try result.get()
-    }
-
-    private static func validatedDesignatedRequirementOfSelf() throws -> String {
-        var code: SecCode?
-        var status = SecCodeCopySelf([], &code)
-        guard status == errSecSuccess, let code else {
-            throw HelperClientRequirementError.security(
-                operation: "SecCodeCopySelf", status: status)
-        }
-
-        status = SecCodeCheckValidity(code, [], nil)
-        guard status == errSecSuccess else {
-            throw HelperClientRequirementError.security(
-                operation: "SecCodeCheckValidity", status: status)
-        }
-
-        var staticCode: SecStaticCode?
-        status = SecCodeCopyStaticCode(code, [], &staticCode)
-        guard status == errSecSuccess, let staticCode else {
-            throw HelperClientRequirementError.security(
-                operation: "SecCodeCopyStaticCode", status: status)
-        }
-
+        let staticCode = try HelperCodeIdentity.currentStaticCode(validated: true)
         var requirement: SecRequirement?
-        status = SecCodeCopyDesignatedRequirement(
+        var status = SecCodeCopyDesignatedRequirement(
             staticCode, [], &requirement)
         guard status == errSecSuccess, let requirement else {
             throw HelperClientRequirementError.security(

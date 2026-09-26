@@ -35,32 +35,6 @@ public enum HostAudioRoutingMode: UInt8, Hashable, CaseIterable, Sendable {
     case streamOff = 0x04
 }
 
-// MARK: - The capability spine helpers
-
-extension Capabilities {
-    /// True when this set carries `hostAudioRouting: true` (key 9) — see
-    /// `declaresFlag(_:)`.
-    public var hostAudioRouting: Bool {
-        declaresFlag(CapabilityKey.hostAudioRouting)
-    }
-
-    /// A copy of this set declaring `hostAudioRouting`.
-    public func declaringHostAudioRouting() -> Capabilities {
-        declaringFlag(CapabilityKey.hostAudioRouting)
-    }
-
-    /// True when this set carries `audioStreamOff: true` (key 14) — see
-    /// `declaresFlag(_:)`.
-    public var audioStreamOff: Bool {
-        declaresFlag(CapabilityKey.audioStreamOff)
-    }
-
-    /// A copy of this set declaring `audioStreamOff`.
-    public func declaringAudioStreamOff() -> Capabilities {
-        declaringFlag(CapabilityKey.audioStreamOff)
-    }
-}
-
 // MARK: - The CTRL codecs
 
 /// The client's routing flip ask (type 0x18).

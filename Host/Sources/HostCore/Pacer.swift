@@ -18,32 +18,16 @@
 import LyteCore
 
 /// Send classes in strict priority order; lower raw value drains first.
-/// Bulk sits strictly below telemetry (mirrors `WirePriority.bulk`):
-/// feedback reports price the path for every media class, and a file
-/// transfer can always wait.
+/// Bulk sits last: a file transfer can always wait.
 public enum PacerClass: Int, CaseIterable, Comparable, Sendable {
     case control = 0
     case audio = 1
     case freshVideo = 2
     case videoTail = 3
-    case refinement = 4
-    case telemetry = 5
-    case bulk = 6
+    case bulk = 4
 
     public static func < (a: PacerClass, b: PacerClass) -> Bool {
         a.rawValue < b.rawValue
-    }
-
-    public var name: String {
-        switch self {
-        case .control: return "control"
-        case .audio: return "audio"
-        case .freshVideo: return "freshVideo"
-        case .videoTail: return "videoTail"
-        case .refinement: return "refinement"
-        case .telemetry: return "telemetry"
-        case .bulk: return "bulk"
-        }
     }
 }
 
@@ -81,9 +65,6 @@ public struct PacerBatch: Sendable {
 /// Per-class counters. Queue delay is dequeue time minus enqueue time —
 /// the pacer's own contribution to latency, before NIC serialization.
 public struct PacerClassCounters: Sendable {
-    public var tokensEnqueued = 0
-    public var tokensSent = 0
-    public var bytesSent = 0
     public var maxQueueDelayNS: UInt64 = 0
 
     public init() {}
@@ -95,7 +76,6 @@ public struct PacerTelemetry: Sendable {
         repeating: PacerClassCounters(), count: PacerClass.allCases.count)
     public var batches = 0
     public var bytesSent = 0
-    public var maxBatchBytes = 0
     public var maxBatchWireTimeNS: UInt64 = 0
 
     public init() {}
@@ -225,7 +205,6 @@ public final class Pacer {
                                frameID: frameID, urgent: urgent, tag: tag,
                                enqueuedAt: now)
         queues[priorityClass.rawValue].push(token)
-        telemetry.perClass[priorityClass.rawValue].tokensEnqueued += 1
     }
 
     public var isEmpty: Bool {
@@ -262,17 +241,12 @@ public final class Pacer {
                 outBytes += t.bytes
                 continue
             }
-            // A token larger than the burst cap never fits: emit it alone
-            // once the bucket is full, driving the balance negative.
-            if out.isEmpty, Double(head.bytes) > burstBytes,
-               tokens >= burstBytes - 1e-3 {
-                let t = queues[head.priorityClass.rawValue].pop()!
-                out.append(t)
-                outBytes += t.bytes
-            }
-            // Latency exemption: control and audio emit alone whatever
-            // the balance, charging the bucket.
-            else if out.isEmpty, head.priorityClass <= .audio {
+            // Emit alone, driving the balance negative: a token larger
+            // than the burst cap once the bucket is full, and control or
+            // audio whatever the balance (the latency exemption).
+            let oversize = Double(head.bytes) > burstBytes
+                && tokens >= burstBytes - 1e-3
+            if out.isEmpty, oversize || head.priorityClass <= .audio {
                 let t = queues[head.priorityClass.rawValue].pop()!
                 out.append(t)
                 outBytes += t.bytes
@@ -285,16 +259,12 @@ public final class Pacer {
 
         let wireNS = UInt64((Double(outBytes) / bytesPerNS).rounded(.up))
         for t in out {
-            var c = telemetry.perClass[t.priorityClass.rawValue]
-            c.tokensSent += 1
-            c.bytesSent += t.bytes
             let delay = now > t.enqueuedAt ? now - t.enqueuedAt : 0
-            c.maxQueueDelayNS = max(c.maxQueueDelayNS, delay)
-            telemetry.perClass[t.priorityClass.rawValue] = c
+            telemetry.perClass[t.priorityClass.rawValue].maxQueueDelayNS =
+                max(telemetry[t.priorityClass].maxQueueDelayNS, delay)
         }
         telemetry.batches += 1
         telemetry.bytesSent += outBytes
-        telemetry.maxBatchBytes = max(telemetry.maxBatchBytes, outBytes)
         telemetry.maxBatchWireTimeNS = max(telemetry.maxBatchWireTimeNS, wireNS)
 
         return PacerBatch(tokens: out, bytes: outBytes, wireTimeNS: wireNS,
@@ -331,12 +301,6 @@ public final class Pacer {
         _ priorityClass: PacerClass, olderThan cutoff: UInt64
     ) -> [PacerToken] {
         queues[priorityClass.rawValue].dropEnqueued(before: cutoff)
-    }
-
-    /// Token slots a class's queue retains, live or consumed (test seam).
-    func retainedTokenSlots(_ c: PacerClass) -> Int {
-        queues[c.rawValue].urgent.retainedCapacity
-            + queues[c.rawValue].normal.retainedCapacity
     }
 
     /// Reads each class queue in place rather than copying it out.

@@ -5,14 +5,12 @@
 // Kernel injection is compositor-agnostic and costs one write(2) per
 // event.
 
+import CInputUinput
 import Foundation
 import HostCore
 import HostWire
 import LyteIO
 import LyteWire
-
-#if os(Linux)
-import CInputUinput
 
 /// One injected event sink. `inject` throws loudly — the caller counts
 /// and reports; a failed injection never unwinds the session.
@@ -66,8 +64,10 @@ final class UinputInjector: InputInjector {
 
     func inject(_ event: InputEvent) throws {
         guard let call = Self.leafCall(for: event.body) else {
-            throw HostError(
-                "uinput inject refused: non-finite pointer coordinates")
+            throw HostError("""
+                uinput inject refused: a non-finite coordinate or an \
+                undeclared key code
+                """)
         }
         var err = [CChar](repeating: 0, count: 256)
         let rc: Int32
@@ -94,13 +94,21 @@ final class UinputInjector: InputInjector {
         }
     }
 
+    /// The key and button codes the virtual devices declare (uinput.c):
+    /// only these reach the leaf, so the held-input book stays bounded.
+    static let keyboardCodes: ClosedRange<UInt32> = 1...255
+    static let buttonCodes: ClosedRange<UInt32> = 0x110...0x117
+
     /// One leaf call per wire event: every client f64 is finite by the
-    /// time it leaves here, and every integer is saturated. Nil refuses
-    /// the event (a non-finite coordinate).
+    /// time it leaves here, every integer is saturated, and every code is
+    /// one a device declares. Nil refuses the event.
     static func leafCall(for body: InputEvent.Body) -> UinputCall? {
         switch body {
-        case .keyKeycode(let code, let pressed),
-             .pointerButton(let code, let pressed):
+        case .keyKeycode(let code, let pressed):
+            guard keyboardCodes.contains(code) else { return nil }
+            return .key(code, pressed: pressed)
+        case .pointerButton(let code, let pressed):
+            guard buttonCodes.contains(code) else { return nil }
             return .key(code, pressed: pressed)
         case .pointerMotionAbsolute(let x, let y):
             guard x.isFinite, y.isFinite else { return nil }
@@ -168,7 +176,6 @@ func makeInputInjector(_ choice: InputBackendChoice) -> InputInjector? {
         }
     }
 }
-#endif
 
 /// What one wire event asks of the uinput leaf, in the leaf's units.
 enum UinputCall: Equatable {

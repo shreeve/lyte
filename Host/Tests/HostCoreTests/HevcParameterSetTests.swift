@@ -9,14 +9,7 @@ import LyteCore
 
 final class HevcParameterSetTests: XCTestCase {
 
-    private static func hex(_ s: String) -> [UInt8] {
-        var out: [UInt8] = []
-        var iterator = s.makeIterator()
-        while let high = iterator.next(), let low = iterator.next() {
-            out.append(UInt8(String([high, low]), radix: 16)!)
-        }
-        return out
-    }
+    private static func hex(_ s: String) -> [UInt8] { Hex.bytes(s)! }
 
     /// The oracle NALs, Annex-B start codes stripped (the capture used
     /// 4-byte start codes, so the leading 00 of each next start code is

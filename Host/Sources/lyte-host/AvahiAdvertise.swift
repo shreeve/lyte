@@ -289,8 +289,7 @@ final class AvahiAdvertiser {
     }
 
     /// EntryGroup.AddService(i interface, i protocol, u flags, s name,
-    /// s type, s domain, s host, q port, aay txt). Static because it runs
-    /// during init, before all stored properties are set.
+    /// s type, s domain, s host, q port, aay txt).
     private static func addService(bus: SessionBus, groupPath: String,
                                    name: String, port: UInt16,
                                    txtRecords: [String],
@@ -357,73 +356,5 @@ final class AvahiAdvertiser {
         let full = String(cBuffer: buf)
         let short = full.split(separator: ".").first.map(String.init) ?? full
         return short.isEmpty ? "lyte-host" : short
-    }
-}
-
-// MARK: - `lyte-host advertise` subcommand
-
-/// Standalone advertisement with no capture session attached, so a
-/// Mac-side `dns-sd -B _lyte._udp` / `dns-sd -L` can verify discovery.
-func advertiseMain(_ args: [String]) -> Never {
-    var port: UInt16 = 41000
-    var seconds = 60.0
-    var name: String?
-    var i = 0
-    do {
-        while i < args.count {
-            switch args[i] {
-            case "--port":
-                i += 1
-                guard i < args.count, let p = UInt16(args[i]), p > 0 else {
-                    throw HostError("--port needs a port number")
-                }
-                port = p
-            case "--seconds":
-                i += 1
-                guard i < args.count, let s = Double(args[i]), s > 0,
-                      s.isFinite else {
-                    throw HostError("--seconds needs a positive number")
-                }
-                seconds = s
-            case "--name":
-                i += 1
-                guard i < args.count else { throw HostError("--name needs a value") }
-                name = args[i]
-            case "--help", "-h":
-                print("""
-                usage: lyte-host advertise [--port N] [--seconds N] [--name NAME]
-                Publishes the _lyte._udp advertisement via Avahi and idles
-                (default port 41000, 60s, name = hostname). Browse from a
-                Mac with: dns-sd -B _lyte._udp
-                """)
-                exit(0)
-            default:
-                throw HostError("unknown argument \(args[i]) (try --help)")
-            }
-            i += 1
-        }
-        let hostStatic = try HostStaticKey.loadOrCreate()
-        let advertiser = AvahiAdvertiser(
-            port: port, staticPublicKey: hostStatic.publicKey, name: name
-        )
-        guard advertiser.isFiled else {
-            throw HostError("the Avahi daemon did not take the record")
-        }
-        print("""
-            advertise: up for \(Int(seconds))s — browse with \
-            `dns-sd -B \(AvahiAdvertiser.serviceType)`
-            """)
-        let deadline = Date().addingTimeInterval(seconds)
-        while Date() < deadline {
-            advertiser.service()
-            Thread.sleep(forTimeInterval: 0.1)
-        }
-        withExtendedLifetime(advertiser) {}
-        print("advertise: done — record withdrawn")
-        exit(0)
-    } catch {
-        FileHandle.standardError.write(
-            Data("lyte-host: advertise error: \(error)\n".utf8))
-        exit(1)
     }
 }

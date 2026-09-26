@@ -173,15 +173,12 @@ public struct LyteUdpSessionCoreConfig: Sendable {
     /// optional key it speaks. Declaration is dialect, not consent: the
     /// intersection and the live consent toggles decide what moves.
     public var capabilities: Capabilities
-    /// The receiver machine's timing (default blackout 2.5 s, past an
-    /// idle host's 1 Hz beacons).
-    public var machineConfig: SessionMachineConfig
     /// Blackout threshold once authenticated audio arrives (a dense path
     /// probe). Evidence-gated: a host without audio never tightens. Nil
     /// disables tightening.
     public var tightenedBlackoutSilenceMicroseconds: Int64?
     public var audioJitter: AudioJitterConfig
-    public var nackPolicy: NackPolicyConfig
+    public var nackPolicy: ClientNackPolicy.Config
     /// The session-start host-speaker posture: with key 9 agreed, one
     /// 0x18 leaves if the host's first 0x19 differs (once per session).
     /// Nil takes the host's default.
@@ -202,18 +199,15 @@ public struct LyteUdpSessionCoreConfig: Sendable {
             .declaringCursorShape()
             .declaringAudioQuietPosture()
             .declaringVideoQuietPosture(),
-        machineConfig: SessionMachineConfig = SessionMachineConfig(
-            blackoutSilenceMicroseconds: 2_500_000
-        ),
-        tightenedBlackoutSilenceMicroseconds: Int64? = 350_000,
+        tightenedBlackoutSilenceMicroseconds: Int64? =
+            ClientControlSession.tightenedBlackoutSilenceMicroseconds,
         audioJitter: AudioJitterConfig = AudioJitterConfig(),
-        nackPolicy: NackPolicyConfig = NackPolicyConfig(),
+        nackPolicy: ClientNackPolicy.Config = ClientNackPolicy.Config(),
         desiredHostAudioRouting: HostAudioRoutingMode? = .hostMuted,
         shareClipboard: Bool = false,
         shareClipboardImages: Bool = false
     ) {
         self.capabilities = capabilities
-        self.machineConfig = machineConfig
         self.tightenedBlackoutSilenceMicroseconds =
             tightenedBlackoutSilenceMicroseconds
         self.audioJitter = audioJitter

@@ -28,12 +28,12 @@
 // and never stored; the scalar is dropped once the peer share is
 // consumed, so no PIN-testing material outlives the exchange.
 
+import LyteCore
+
 /// The pairing outcome both roles expose on success: the ISK (already
 /// authenticated by confirmation; hash it through a KDF if a key for a
 /// higher protocol is ever needed) and the statics the shell should
 /// now pin.
-import LyteCore
-
 public struct PairingResult: Hashable, Sendable {
     /// CPace's intermediate session key, 64 bytes.
     public var intermediateSessionKey: [UInt8]
@@ -80,11 +80,7 @@ public struct PairingPakeInitiator: Sendable {
     }
 
     private var state: State
-    private let sid: [UInt8]
-    /// The CPace secret; dropped once the peer share is consumed, so a
-    /// finished or failed run holds nothing that could test PINs.
-    private var scalar: [UInt8]
-    private let shareA: [UInt8]
+    private var party: CPaceParty
     private let hostStaticPublicKey: [UInt8]
     /// Set once the responder's confirmation tag verifies.
     public private(set) var result: PairingResult?
@@ -106,23 +102,13 @@ public struct PairingPakeInitiator: Sendable {
         noiseHandshakeHash: [UInt8],
         fixedScalar: [UInt8]? = nil
     ) throws {
-        let generator = try PairingPake.deriveGenerator(
+        party = try CPaceParty(
             pin: pin,
             clientStaticPublicKey: clientStaticPublicKey,
             hostStaticPublicKey: hostStaticPublicKey,
-            noiseHandshakeHash: noiseHandshakeHash
+            noiseHandshakeHash: noiseHandshakeHash,
+            fixedScalar: fixedScalar
         )
-        sid = noiseHandshakeHash
-        scalar = fixedScalar ?? CPace.sampleScalar()
-        guard scalar.count == CPace.elementByteCount else {
-            throw PairingPakeError.invalidInput
-        }
-        shareA = CPace.scalarMult(scalar: scalar, element: generator)
-        guard !CPace.constantTimeEquals(shareA, CPace.neutralElement) else {
-            // Unreachable with an Elligator-mapped generator; refuse
-            // to put G.I on the wire regardless.
-            throw PairingPakeError.invalidPeerShare
-        }
         self.hostStaticPublicKey = hostStaticPublicKey
         state = .awaitingShareB
     }
@@ -132,7 +118,7 @@ public struct PairingPakeInitiator: Sendable {
         guard state == .awaitingShareB else {
             throw PairingPakeError.invalidState
         }
-        return PairingShareA(share: shareA)
+        return PairingShareA(share: party.share)
     }
 
     /// Feeds the host's 0x0C reply: aborts on a low-order share (before
@@ -144,21 +130,13 @@ public struct PairingPakeInitiator: Sendable {
         guard state == .awaitingShareB else {
             throw PairingPakeError.invalidState
         }
-        // The G.I check compares SECRET key material against a public
-        // constant — constant-time, so timing never narrows K.
-        let k = CPace.scalarMultVfy(scalar: scalar, element: message.share)
-        scalar = []
-        guard !CPace.constantTimeEquals(k, CPace.neutralElement) else {
-            state = .failed
-            throw PairingPakeError.invalidPeerShare
-        }
-        let transcript = CPace.transcript(
-            ya: shareA, ada: [], yb: message.share, adb: []
+        state = .failed  // until the run below succeeds; any throw ends it
+        let (isk, confirmationKey) = try party.keys(
+            peerShare: message.share,
+            transcript: CPace.transcript(
+                ya: party.share, ada: [], yb: message.share, adb: []
+            )
         )
-        let isk = CPace.intermediateSessionKey(
-            sid: sid, k: k, transcript: transcript
-        )
-        let confirmationKey = CPace.confirmationKey(sid: sid, isk: isk)
         let expectedTb = CPace.confirmationTag(
             confirmationKey: confirmationKey,
             share: message.share, associatedData: []
@@ -166,12 +144,11 @@ public struct PairingPakeInitiator: Sendable {
         guard CPace.constantTimeEquals(
             expectedTb, message.confirmationTag
         ) else {
-            state = .failed
             throw PairingPakeError.confirmationFailed
         }
         let ta = CPace.confirmationTag(
             confirmationKey: confirmationKey,
-            share: shareA, associatedData: []
+            share: party.share, associatedData: []
         )
         result = PairingResult(
             intermediateSessionKey: isk,
@@ -194,10 +171,7 @@ public struct PairingPakeResponder: Sendable {
     }
 
     private var state: State
-    private let sid: [UInt8]
-    /// The CPace secret; dropped once share A is consumed.
-    private var scalar: [UInt8]
-    private let shareB: [UInt8]
+    private var party: CPaceParty
     private let clientStaticPublicKey: [UInt8]
     private var expectedTa: [UInt8] = []
     private var pendingResult: PairingResult?
@@ -214,21 +188,13 @@ public struct PairingPakeResponder: Sendable {
         noiseHandshakeHash: [UInt8],
         fixedScalar: [UInt8]? = nil
     ) throws {
-        let generator = try PairingPake.deriveGenerator(
+        party = try CPaceParty(
             pin: pin,
             clientStaticPublicKey: clientStaticPublicKey,
             hostStaticPublicKey: hostStaticPublicKey,
-            noiseHandshakeHash: noiseHandshakeHash
+            noiseHandshakeHash: noiseHandshakeHash,
+            fixedScalar: fixedScalar
         )
-        sid = noiseHandshakeHash
-        scalar = fixedScalar ?? CPace.sampleScalar()
-        guard scalar.count == CPace.elementByteCount else {
-            throw PairingPakeError.invalidInput
-        }
-        shareB = CPace.scalarMult(scalar: scalar, element: generator)
-        guard !CPace.constantTimeEquals(shareB, CPace.neutralElement) else {
-            throw PairingPakeError.invalidPeerShare
-        }
         self.clientStaticPublicKey = clientStaticPublicKey
         state = .awaitingShareA
     }
@@ -243,23 +209,16 @@ public struct PairingPakeResponder: Sendable {
         guard state == .awaitingShareA else {
             throw PairingPakeError.invalidState
         }
-        // Constant-time G.I check, as on the initiator side.
-        let k = CPace.scalarMultVfy(scalar: scalar, element: message.share)
-        scalar = []
-        guard !CPace.constantTimeEquals(k, CPace.neutralElement) else {
-            state = .failed
-            throw PairingPakeError.invalidPeerShare
-        }
-        let transcript = CPace.transcript(
-            ya: message.share, ada: [], yb: shareB, adb: []
+        state = .failed  // until the run below succeeds; any throw ends it
+        let (isk, confirmationKey) = try party.keys(
+            peerShare: message.share,
+            transcript: CPace.transcript(
+                ya: message.share, ada: [], yb: party.share, adb: []
+            )
         )
-        let isk = CPace.intermediateSessionKey(
-            sid: sid, k: k, transcript: transcript
-        )
-        let confirmationKey = CPace.confirmationKey(sid: sid, isk: isk)
         let tb = CPace.confirmationTag(
             confirmationKey: confirmationKey,
-            share: shareB, associatedData: []
+            share: party.share, associatedData: []
         )
         expectedTa = CPace.confirmationTag(
             confirmationKey: confirmationKey,
@@ -270,7 +229,7 @@ public struct PairingPakeResponder: Sendable {
             peerStaticPublicKeyToPin: clientStaticPublicKey
         )
         state = .awaitingConfirm
-        return PairingShareB(share: shareB, confirmationTag: tb)
+        return PairingShareB(share: party.share, confirmationTag: tb)
     }
 
     /// Feeds the client's 0x0D. On a verified tag `result` is set; on
@@ -293,6 +252,59 @@ public struct PairingPakeResponder: Sendable {
         result = pendingResult
         pendingResult = nil
         state = .complete
+    }
+}
+
+/// One CPace party: its public share, and the secret scalar until the
+/// peer share consumes it, so a finished or failed run holds nothing
+/// that could test PINs.
+private struct CPaceParty: Sendable {
+    let sid: [UInt8]
+    let share: [UInt8]
+    private var scalar: [UInt8]
+
+    init(
+        pin: [UInt8],
+        clientStaticPublicKey: [UInt8],
+        hostStaticPublicKey: [UInt8],
+        noiseHandshakeHash: [UInt8],
+        fixedScalar: [UInt8]?
+    ) throws {
+        let generator = try PairingPake.deriveGenerator(
+            pin: pin,
+            clientStaticPublicKey: clientStaticPublicKey,
+            hostStaticPublicKey: hostStaticPublicKey,
+            noiseHandshakeHash: noiseHandshakeHash
+        )
+        sid = noiseHandshakeHash
+        scalar = fixedScalar ?? CPace.sampleScalar()
+        guard scalar.count == CPace.elementByteCount else {
+            throw PairingPakeError.invalidInput
+        }
+        share = CPace.scalarMultVfy(scalar: scalar, element: generator)
+        // Unreachable with an Elligator-mapped generator; refuse to put
+        // G.I on the wire regardless.
+        guard !CPace.constantTimeEquals(share, CPace.neutralElement) else {
+            throw PairingPakeError.invalidPeerShare
+        }
+    }
+
+    /// Consumes the scalar against the peer's share and derives the ISK
+    /// and confirmation key. Throws `invalidPeerShare` on G.I, before any
+    /// tag math (draft §7.2); the check compares secret key material, so
+    /// it is constant-time and timing never narrows K.
+    mutating func keys(
+        peerShare: [UInt8], transcript: [UInt8]
+    ) throws -> (isk: [UInt8], confirmationKey: [UInt8]) {
+        let k = CPace.scalarMultVfy(scalar: scalar, element: peerShare)
+        scalar = []
+        guard !CPace.constantTimeEquals(k, CPace.neutralElement) else {
+            throw PairingPakeError.invalidPeerShare
+        }
+        let isk = CPace.intermediateSessionKey(
+            sid: sid, k: k, transcript: transcript
+        )
+        return (isk, CPace.confirmationKey(sid: sid, isk: isk))
     }
 }
 

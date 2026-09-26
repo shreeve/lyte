@@ -1,5 +1,3 @@
-#if os(Linux)
-
 import Glibc
 @testable import HostEye
 import XCTest
@@ -22,5 +20,3 @@ final class RenderNodeTests: XCTestCase {
         XCTAssertNil(renderNode(forCard: fd))
     }
 }
-
-#endif

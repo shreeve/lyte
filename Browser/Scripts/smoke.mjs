@@ -4,9 +4,13 @@
 // Conductor-scheduled WebCodecs + WebGPU present, sealed input echo,
 // clipboard text round-trip, and Opus → AudioWorklet. Run it through
 // smoke-chrome.sh, which restages .serve/ first.
+//
+// --serve runs the same peer, sidecar and page server for a person instead:
+// the peer serves sessions until Ctrl-C, the page is on LYTE_BROWSER_PORT
+// (8765), and no Chrome is started. It needs a prior build.sh.
 import { spawn, execFileSync } from "node:child_process";
 import { createServer } from "node:http";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, extname } from "node:path";
 import { tmpdir } from "node:os";
@@ -18,6 +22,7 @@ const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const serveDir = join(browserRoot, ".serve");
 const metaOut = join(serveDir, "wt-sidecar.json");
 const peerMetaOut = join(serveDir, "control-peer.json");
+const serve = process.argv.includes("--serve");
 const timeoutMs = Number(process.env.LYTE_BROWSER_SMOKE_TIMEOUT_S || 180) * 1000;
 const peerPort =
   Number(process.env.LYTE_CONTROL_PEER_PORT || 0) ||
@@ -30,11 +35,8 @@ const chrome =
 const mime = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
-  ".mjs": "text/javascript; charset=utf-8",
   ".wasm": "application/wasm",
   ".json": "application/json",
-  ".annexb": "application/octet-stream",
-  ".ts": "text/plain",
 };
 
 function sleep(ms) {
@@ -92,8 +94,7 @@ async function startControlPeer(bin) {
       peerMetaOut,
       "--emit-corpus",
       corpusDir,
-      "--seconds",
-      "180",
+      ...(serve ? ["--seconds", "600", "--sessions", "0"] : ["--seconds", "180"]),
     ],
     { stdio: ["ignore", logFd, logFd] }
   );
@@ -139,8 +140,10 @@ async function startSidecar(peer) {
     { stdio: ["ignore", "pipe", "pipe"] }
   );
   let stderr = "";
+  // A long serve run shows the relay's log instead of keeping it.
   proc.stderr.on("data", (chunk) => {
-    stderr += String(chunk);
+    if (serve) process.stderr.write(chunk);
+    else stderr += String(chunk);
   });
   proc.stdout.on("data", () => {});
   for (let i = 0; i < 100; i++) {
@@ -177,9 +180,9 @@ async function startStaticServer() {
       res.end("not found");
     }
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
-  return { server, port };
+  const port = serve ? Number(process.env.LYTE_BROWSER_PORT || 8765) : 0;
+  await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
+  return { server, port: server.address().port };
 }
 
 // Node 24+ ships the browser WebSocket; the DevTools protocol needs no
@@ -230,7 +233,7 @@ const mustPass = [
 ];
 
 if (!existsSync(join(serveDir, "LyteClientBrowser.wasm"))) {
-  throw new Error("missing .serve/ — run Browser/Scripts/smoke-chrome.sh (it builds first)");
+  throw new Error("missing .serve/ — run Browser/Scripts/build.sh (smoke-chrome.sh builds first)");
 }
 
 console.log("browser-smoke: building lyte-control-peer…");
@@ -242,6 +245,21 @@ const {
   stderr: sidecarStderr,
 } = await startSidecar(peerMeta);
 const { server, port } = await startStaticServer();
+
+if (serve) {
+  console.log(`browser-serve: http://127.0.0.1:${port}/ — open it in Google Chrome`);
+  console.log(`browser-serve: control PIN ${peerMeta.pin}; Ctrl-C to stop`);
+  const stop = () => {
+    sidecar.kill("SIGTERM");
+    peerProc.kill("SIGTERM");
+    server.close();
+    process.exit(0);
+  };
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
+  await new Promise(() => {});
+}
+
 const userData = await mkdtemp(join(tmpdir(), "lyte-browser-smoke-"));
 const debugPort = 9200 + Math.floor(Math.random() * 200);
 const pageUrl = `http://127.0.0.1:${port}/index.html?smoke=1`;
@@ -330,21 +348,6 @@ try {
     console.log("browser-smoke: PASS — Chrome reported the session proof green");
     console.log(payload.log);
     if (payload.meta) console.log(payload.meta);
-    await writeFile(
-      join(serveDir, "session-proof-measure.json"),
-      JSON.stringify(
-        {
-          passed: true,
-          adapter: sidecarMeta.adapter,
-          url: sidecarMeta.url,
-          controlPeerPort: peerMeta.listenPort,
-          log: payload.log,
-          metaText: payload.meta,
-        },
-        null,
-        2
-      ) + "\n"
-    ).catch(() => {});
     done = true;
     break;
   }

@@ -98,26 +98,20 @@ public enum LyteDiscovery {
         var hosts: [DiscoveredLyteHost] = []
         var resolutionProblems: [LocalNetworkAccessProblem] = []
         var hadUnresolvedService = false
-        await withTaskGroup(of: HostResolution.self) { group in
+        await withTaskGroup(
+            of: (FoundService, EndpointResolution).self
+        ) { group in
             for service in browse.services {
-                group.addTask {
-                    switch await resolve(service.endpoint) {
-                    case .resolved(let address, let port):
-                        let parsed = parseTxt(service.txt)
-                        return .host(DiscoveredLyteHost(
-                            name: service.name, address: address, port: port,
-                            wireVersion: parsed.wireVersion,
-                            publicKeyHash: parsed.publicKeyHash))
-                    case .accessProblem(let problem):
-                        return .accessProblem(problem)
-                    case .failed:
-                        return .failed
-                    }
-                }
+                group.addTask { (service, await resolve(service.endpoint)) }
             }
-            for await result in group {
+            for await (service, result) in group {
                 switch result {
-                case .host(let host): hosts.append(host)
+                case .resolved(let address, let port):
+                    let parsed = parseTxt(service.txt)
+                    hosts.append(DiscoveredLyteHost(
+                        name: service.name, address: address, port: port,
+                        wireVersion: parsed.wireVersion,
+                        publicKeyHash: parsed.publicKeyHash))
                 case .accessProblem(let problem):
                     resolutionProblems.append(problem)
                 case .failed:
@@ -166,12 +160,6 @@ public enum LyteDiscovery {
         let name: String
         let endpoint: NWEndpoint
         let txt: [String: String]
-    }
-
-    private enum HostResolution: Sendable {
-        case host(DiscoveredLyteHost)
-        case accessProblem(LocalNetworkAccessProblem)
-        case failed
     }
 
     private enum EndpointResolution: Sendable {

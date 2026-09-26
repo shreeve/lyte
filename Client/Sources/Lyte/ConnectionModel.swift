@@ -185,11 +185,23 @@ final class ConnectionModel {
     /// The host's stream dimensions, from the first delivered sample —
     /// the input capture's coordinate space (absolute moves drop until
     /// it is known).
-    private(set) var lyteVideoSize: CGSize = .zero
+    var lyteVideoSize: CGSize = .zero {
+        didSet { wearHostCursor() }
+    }
     var lyteInputCapture: LyteInputCapture?
     /// The stream surface, held weakly so the model can dress it with
     /// the host's announced cursor (StreamView installs it).
-    weak var lyteVideoView: VideoLayerView?
+    weak var lyteVideoView: VideoLayerView? {
+        didSet {
+            lyteVideoView?.onResize = { [weak self] in self?.wearHostCursor() }
+            wearHostCursor()
+        }
+    }
+    /// The host's last announced cursor shape (0x24); nil wears AppKit's
+    /// own arrow.
+    @ObservationIgnored private var hostCursorShape: CursorShape? {
+        didSet { wearHostCursor() }
+    }
 
     // MARK: - Derived
 
@@ -413,11 +425,9 @@ final class ConnectionModel {
         displayLayer.videoGravity = .resizeAspect
         displayLayer.backgroundColor = CGColor(gray: 0, alpha: 1)
         VideoRendererHandoff.attachHostClockTimebase(to: displayLayer)
-        let clockModel = HostClockModel()
         let handoff = VideoRendererHandoff(
             renderer: displayLayer.sampleBufferRenderer,
             queue: videoDeliveryQueue,
-            clockModel: clockModel,
             books: videoDeliveryBooks,
             recorder: videoFlightRecorder,
             onDimensionsChanged: { [weak self] width, height in
@@ -434,28 +444,15 @@ final class ConnectionModel {
         pendingTerminal = nil
         hostPoisonedStream = false
         let epoch = sessionEpoch
-        let session = LyteUdpSession(
+        return LyteUdpSession(
             crypto: crypto,
             config: config,
-            clockModel: clockModel,
-            onVideoRecoveryDemand: { [weak handoff] cause, frame in
-                handoff?.beginRecovery(cause: cause, after: frame)
-            },
-            onVideoRecoveryTrace: { [videoFlightRecorder] event in
-                videoFlightRecorder.recordRecoveryLifecycle(
-                    kind: event.kind,
-                    frame: event.frame.rawValue,
-                    cause: event.cause,
-                    isRandomAccess: event.isRandomAccess)
-            },
-            videoSink: handoff,
+            handoff: handoff,
             onEvent: { [weak self] event in
                 Task { @MainActor [weak self] in
                     self?.handleLyteEvent(event, epoch: epoch)
                 }
             })
-        handoff.bind(session)
-        return session
     }
 
     /// A started session becomes the window's — the one attach path for
@@ -560,7 +557,7 @@ final class ConnectionModel {
         lyteInputCapture = nil
         // Back to AppKit's own arrow — a dead session must not leave the
         // host's shape (or its hidden state) stuck on.
-        lyteVideoView?.hostCursor = nil
+        hostCursorShape = nil
         if lyteSession != nil {
             detachWireSession(.goodbye)
         } else {
@@ -645,7 +642,7 @@ final class ConnectionModel {
             // Already through the core's gates; the glue just applies.
             pasteboardSync?.apply(text)
         case .hostCursorShapeChanged(let shape):
-            applyHostCursor(shape)
+            hostCursorShape = shape
         case .hostClipboardImageChanged(let data, _):
             // Sha-verified PNG through the core's gates; the glue applies.
             pasteboardSync?.apply(imageData: data)
@@ -765,8 +762,12 @@ final class ConnectionModel {
     /// Wears the host's announced cursor, scaled from host device pixels
     /// to the video's on-glass points through the aspect-fit rect; 0.75
     /// approximates the host's 1.333 logical scale before the first sample.
-    private func applyHostCursor(_ shape: CursorShape) {
+    private func wearHostCursor() {
         guard let view = lyteVideoView else { return }
+        guard let shape = hostCursorShape else {
+            view.hostCursor = nil
+            return
+        }
         var scale: CGFloat = 0.75
         if lyteVideoSize.width > 0, view.bounds.width > 0 {
             let fit = AVMakeRect(aspectRatio: lyteVideoSize, insideRect: view.bounds)
@@ -842,7 +843,7 @@ final class ConnectionModel {
         let session = lyteSession
         let core = session?.core
         let pipeline = core?.pipeline.snapshotStats()
-        let idr = core?.idrRequester.snapshotStats()
+        let idr = core?.idrStats
         let receiver = core?.audio.snapshotStats()
         let player = session?.audioPlayer?.snapshotStats()
         let counters = core?.snapshotCounters()

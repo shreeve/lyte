@@ -28,6 +28,7 @@ var targets: [Target] = [
         dependencies: [
             "HostCore",
             .product(name: "LyteCore", package: "Common"),
+            .product(name: "LyteWireTestKit", package: "Wire"),
         ]
     ),
     .target(
@@ -79,6 +80,13 @@ var targets: [Target] = [
             .product(name: "LyteWire", package: "Wire"),
         ]
     ),
+    .testTarget(
+        name: "HostIOTests",
+        dependencies: [
+            "HostIO",
+            .product(name: "LyteWire", package: "Wire"),
+        ]
+    ),
     // Test-only: a shipping Session on an outbox and virtual time, plus
     // the settle loop every HostWire gate drives its fake client through.
     .target(
@@ -126,7 +134,6 @@ var targets: [Target] = [
 
 #if os(Linux)
 products.append(.executable(name: "lyte-host", targets: ["lyte-host"]))
-products.append(.executable(name: "lyte-eye", targets: ["lyte-eye"]))
 
 targets += [
     .systemLibrary(
@@ -193,19 +200,6 @@ targets += [
     // render-node test opens a render node when one exists, which touches
     // no display state.
     .testTarget(name: "HostEyeTests", dependencies: ["HostEye"]),
-    // The standalone eye: doorbell mode (framebuffer flips, unprivileged)
-    // and capture mode (the full loop into an Annex-B file).
-    .executableTarget(
-        name: "lyte-eye",
-        dependencies: [
-            "HostEye", "CDRM",
-            .product(name: "LyteIO", package: "Common"),
-        ],
-        linkerSettings: [
-            .linkedLibrary("va"),
-            .linkedLibrary("va-drm"),
-        ]
-    ),
     // C leaf: nonblocking UDP with sendmmsg/recvmmsg, per-packet TOS and
     // TX timestamps (CMSG macros are unreachable from Swift).
     .target(name: "CNetIO"),
@@ -271,12 +265,9 @@ targets += [
             .product(name: "LyteIO", package: "Common"),
             .product(name: "LyteWire", package: "Wire"),
         ],
-        linkerSettings: [
-            .linkedLibrary("dbus-1"),
-            .linkedLibrary("pipewire-0.3"),
-            .linkedLibrary("va"),
-            .linkedLibrary("va-drm"),
-        ]
+        // CPipeWireAudio is C, so nothing autolinks libpipewire for it;
+        // the Swift-imported module maps link their own libraries.
+        linkerSettings: [.linkedLibrary("pipewire-0.3")]
     ),
     .testTarget(
         name: "LyteHostIntegrationTests",

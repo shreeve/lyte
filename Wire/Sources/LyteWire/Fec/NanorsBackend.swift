@@ -20,17 +20,7 @@ enum NanorsBackend {
         let total = dataShards + parityShards
         let backing = UnsafeMutableBufferPointer<UInt8>.allocate(capacity: total * bs)
         defer { backing.deallocate() }
-        let copiedContiguously = group.withContiguousStorageIfAvailable { src in
-            backing.baseAddress!.initialize(from: src.baseAddress!, count: src.count)
-            return true
-        } ?? false
-        if !copiedContiguously {
-            var destination = 0
-            for byte in group {
-                backing[destination] = byte
-                destination += 1
-            }
-        }
+        _ = backing.initialize(from: group)
         // Only the trailing data row's pad needs zeros: the RS encode
         // overwrites every parity row outright.
         (backing.baseAddress! + group.count)

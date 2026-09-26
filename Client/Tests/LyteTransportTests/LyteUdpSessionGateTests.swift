@@ -7,55 +7,26 @@ import LyteTransport
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (build plan CL-8 + CL-7's deferred session slice): the
-// client's REAL production session core — NoiseTransportCrypto
-// initiator (with the W8 0x13→0x14 retry answer in the dial),
-// ReceiveDemux unseal, TransportSender seal, ReliableCtrlEndpoint,
-// CapabilityNegotiator(client), SessionStateMachine(mediaReceiver),
-// the 0x15 idle-frame render seam through the shared factory, and the
-// typed teardown both directions — driven end to end in virtual time
-// against a LyteWire host build-up running the REAL mediaSender
-// machine, through SimNet impairment schedules (the established
-// ReliableCtrlGateTests/PairingGateTests pattern; this gate keeps an
-// isolated stand-in assembled from the same Wire parts that pin the
-// HS-11 Session's discipline).
+// The client's production session core — Noise initiator (answering a
+// 0x13 retry challenge in the dial), demux, sealed sender, reliable CTRL,
+// capability negotiation, the receiver state machine, the 0x15 idle-frame
+// render seam and the typed teardown both ways — end to end in virtual
+// time against a host stand-in built from LyteWire parts running the real
+// mediaSender machine through SimNet impairment.
 //
-// The scripted lifecycle mirrors the W4b simulation's G6 shape, now
-// over the production client object: capabilities as the first
-// reliable word both ways → datagram video (real corpus frames) → the
-// ratchet convergence handoff (idle frame one-shot, ack-gated flip,
-// mode=idle) → WAKE (damage → mode=active) → a second convergence
-// whose idle frame DEDUPES (the datagram path already delivered that
-// frame) → a full blackout deriving the FROZEN pill → recovery
-// clearing it → the host's typed teardown closing the client with its
-// reason. Client-initiated teardown and the unworkable-intersection
-// refusal run as separate legs.
+// The scripted lifecycle: capabilities as the first reliable word both
+// ways → datagram video → the idle convergence (one-shot idle frame,
+// ack-gated flip, mode=idle) → wake → a second convergence whose idle
+// frame dedupes → a blackout deriving the FROZEN pill → recovery → the
+// host's typed teardown. Client-initiated teardown and the unworkable
+// intersection run as separate legs.
 
 final class LyteUdpSessionGateTests: XCTestCase {
 
-    // MARK: - Corpus
-
-    private static var corpusDirectory: String {
-        ClientTestPaths.videoCorpus
-    }
-
-    /// The decodable corpus prefix, in order (IDR first).
-    private func loadCorpus(_ count: Int) throws -> [[UInt8]] {
-        let names = try FileManager.default
-            .contentsOfDirectory(atPath: Self.corpusDirectory)
-            .filter { $0.hasPrefix("frame-0") && $0.hasSuffix(".annexb") }
-            .sorted()
-            .prefix(count)
-        return try names.map {
-            [UInt8](try Data(contentsOf: URL(
-                fileURLWithPath: Self.corpusDirectory + "/" + $0)))
-        }
-    }
-
     // MARK: - The host stand-in
 
-    /// The HS-11 host discipline from LyteWire parts: Noise responder
-    /// (optionally behind W8 retry challenges), mediaSender machine,
+    /// The host discipline from LyteWire parts: Noise responder
+    /// (optionally behind retry challenges), mediaSender machine,
     /// host-clock ARQ, capability negotiator (declaration = first
     /// reliable word), the idle-frame one-shot whose ack flips to
     /// IDLE, conn-id-tagged sealed CTRL, and corpus video on chan 2.
@@ -70,7 +41,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
         var lastBeaconAt: UInt64 = 0
         private var handshakeOutbox: [[UInt8]] = []
 
-        // W8 retry posture: refuse this many message 1s with a
+        // Retry posture: refuse this many message 1s with a
         // stateless challenge before establishing.
         var retryChallengesToIssue: Int
         let retrySecret: [UInt8] = (0..<32).map { UInt8($0) }
@@ -114,7 +85,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
         var transport: NoiseTransport? { peer.transport }
 
         // NoiseHandshakeIO — the pre-thread handshake window, answered
-        // in-process, with the W8 challenge leg in front when scripted.
+        // in-process, with the challenge leg in front when scripted.
 
         func sendToHost(_ datagram: [UInt8]) throws {
             guard let (envelope, payload) = try? Envelope.decode(datagram[...]),
@@ -166,7 +137,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
 
         private func establish(message1: [UInt8]) throws {
             let message2 = try peer.answer(message1: message1[...])
-            // The machine begins at establishment, ACTIVE (W4b).
+            // The machine begins at establishment, ACTIVE.
             machine = SessionStateMachine(
                 role: .mediaSender,
                 now: HostTimestamp(microseconds: 0)
@@ -220,7 +191,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
 
         /// One client datagram: unseal → route. Feedback (chan 3) is
         /// the 350 ms detector's food; CTRL splits at the one-byte
-        /// peek (HS-11's evidence discipline).
+        /// peek (the evidence discipline).
         func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
             guard let (envelope, plaintext) = try peer.open(bytes) else {
                 replayDrops += 1
@@ -301,7 +272,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
             guard transport != nil else { return [] }
             var out: [[UInt8]] = []
             if !capabilitiesDeclared {
-                // HS-11's rule: the declaration is the FIRST
+                // The declaration is the FIRST
                 // sendReliable post-establishment.
                 capabilitiesDeclared = true
                 try peer.arq.send(
@@ -330,7 +301,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
             return out
         }
 
-        /// Apply + poll, actions executed — the W4b shell discipline.
+        /// Apply + poll, actions executed — the shell discipline.
         func runMachine(_ input: SessionInput?, nowMicros: UInt64) {
             guard machine != nil else { return }
             let instant = HostTimestamp(microseconds: nowMicros)
@@ -401,7 +372,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
                 hostAddress: "10.0.0.249", hostPort: 41_009,
                 hostStaticPublicKey: host.staticKeys.publicKey,
                 staticKeys: clientStatic,
-                attempts: 3, attemptTimeoutMilliseconds: 200)
+                retry: .init(attempts: 3, intervalMicroseconds: 200_000))
             try crypto.performHandshake(io: host)
             self.crypto = crypto
             self.demux = ReceiveDemux(crypto: crypto)
@@ -478,7 +449,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
         }
     }
 
-    // MARK: - W8: the dial answers a retry challenge
+    // MARK: - The dial answers a retry challenge
 
     func testDialAnswersRetryChallengeWithVerbatimMessage1() throws {
         let host = HostStandIn(retryChallenges: 1)
@@ -493,40 +464,25 @@ final class LyteUdpSessionGateTests: XCTestCase {
 
     // MARK: - The 0x15 codec mirror (bytes pinned before promotion)
 
-    func testIdleFrameCodecMatchesHostPinnedLayout() throws {
-        let annexB: [UInt8] = [0, 0, 0, 1, 0x26, 0x01, 0xAB]
-        let message = IdleFrame(
-            frame: FrameNumber(rawValue: 0x0403_0201),
-            captureTimestampMicroseconds: 0x0807_0605_0403_0201,
-            annexB: annexB
-        ).encode()
-        // Hand-built layout: type ‖ frame u32 LE ‖ capture u64 LE ‖ Annex-B.
-        XCTAssertEqual(
-            message,
-            [0x15,
-             0x01, 0x02, 0x03, 0x04,
-             0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
-                + annexB
-        )
-        let decoded = try IdleFrame.decode(message)
-        XCTAssertEqual(decoded.frame.rawValue, 0x0403_0201)
-        XCTAssertEqual(
-            decoded.captureTimestampMicroseconds, 0x0807_0605_0403_0201)
-        XCTAssertEqual(decoded.annexB, annexB)
-
-        // Refusals: truncation, an empty body, a foreign type.
-        XCTAssertThrowsError(
-            try IdleFrame.decode(Array(message.prefix(13))))
-        XCTAssertThrowsError(try IdleFrame.decode([UInt8]()))
-        var foreign = message
-        foreign[0] = 0x09
-        XCTAssertThrowsError(try IdleFrame.decode(foreign))
+    /// Declaration is dialect, not consent: the core declares every
+    /// optional key it speaks, both clipboard rungs start off, and the
+    /// session asks for the host's speakers muted.
+    func testCoreDefaultDeclaresEveryKeyItSpeaksWithConsentOff() {
+        let defaults = LyteUdpSessionCoreConfig()
+        XCTAssertTrue(defaults.capabilities.hostAudioRouting)
+        XCTAssertTrue(defaults.capabilities.clipboardText)
+        XCTAssertTrue(defaults.capabilities.bulkTransfer)
+        XCTAssertTrue(defaults.capabilities.clipboardImages)
+        XCTAssertTrue(defaults.capabilities.cursorShape)
+        XCTAssertFalse(defaults.shareClipboard)
+        XCTAssertFalse(defaults.shareClipboardImages)
+        XCTAssertEqual(defaults.desiredHostAudioRouting, .hostMuted)
     }
 
     // MARK: - The full lifecycle gate
 
     func testGateFullLifecycleIdleCyclesBlackoutPillAndHostTeardown() throws {
-        let corpus = try loadCorpus(5)
+        let corpus = try ClientTestPaths.videoCorpusFrames(5)
         let host = HostStandIn()
         let harness = try Harness(host: host)
         var net = SimNet(
@@ -548,7 +504,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
         //          ack-gated flip → mode=idle
         //   3.0 s  damage → WAKE → mode=active; frame 3 datagram
         //   3.5 s  converges again → IdleFrame(3) DEDUPES client-side
-        //   4.5 s  the W-G4 storm (5% loss, 2% dup, jitter)
+        //   4.5 s  the SimNet storm (5% loss, 2% dup, jitter)
         //   5.0 s  blackout (100% loss) → both ends derive FROZEN;
         //          the client pill by 7.5 s (2.5 s beacon-bounded
         //          detector)
@@ -666,7 +622,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
                     now: ClientTimestamp(microseconds: t))
             }
             // Host feedback-window verdicts (40 ms), the estimator
-            // seam's stub — the W4b sim's shape.
+            // seam's stub.
             if t - lastWindowAt >= 40_000 {
                 lastWindowAt = t
                 let clean = feedbackSinceWindow > 0
@@ -696,11 +652,11 @@ final class LyteUdpSessionGateTests: XCTestCase {
             }
 
             // Milestones.
-            if frozenSeenAt == nil, harness.core.isFrozen {
+            if frozenSeenAt == nil, harness.core.state == .frozen {
                 frozenSeenAt = t
             }
             if let froze = frozenSeenAt, pillClearedAt == nil,
-               t > froze, !harness.core.isFrozen {
+               t > froze, harness.core.state != .frozen {
                 pillClearedAt = t
             }
 
@@ -902,7 +858,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
     // MARK: - The reliable-frame seam's bootstrap withhold
 
     func testIdleFrameBeforeAnyIdrIsWithheldNotRendered() throws {
-        let corpus = try loadCorpus(2)
+        let corpus = try ClientTestPaths.videoCorpusFrames(2)
         let collected = LockedBytePile()   // count via appends
         let pipeline = LyteVideoPipeline(
             nowNanoseconds: { 0 },

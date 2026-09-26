@@ -13,14 +13,15 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$repo_root"
 
-pup="${LYTE_PUP_HOST:-pup}"
+source Scripts/lib/pup.sh
+PUP="$(lyte_pup_host)"
 pup_gate_root="src/lyte-gates/deterministic"
-# The packages pup builds. Browser needs Swift 6.2 (JavaScriptKit) and
-# SystemTests needs the macOS client, so neither is built; Common's
-# repository lints still scan every manifest and Browser's sources, so those
-# two are mirrored as manifest and Sources only.
-packages="Client Common Wire Host"
-scanned_packages="Browser SystemTests"
+# The packages pup builds. Off macOS, Browser's manifest keeps only its
+# sans-IO core and suite (no JavaScriptKit). SystemTests needs the macOS
+# client, so it is not built; Common's repository lints still scan every
+# manifest, so it is mirrored as manifest and Sources only.
+packages="Client Common Wire Host Browser"
+scanned_packages="SystemTests"
 local_state="$(mktemp -d)"
 trap 'rm -rf -- "$local_state"' EXIT
 lock_token="lyte-pup-gate-locked-$$-$RANDOM$RANDOM"
@@ -30,8 +31,7 @@ mkfifo "$local_state/control"
 # is locked and ready to sync.
 {
     status=0
-    ssh -o ConnectTimeout=10 "$pup" 'bash -s' < "$local_state/control" \
-        || status=$?
+    pup_ssh 'bash -s' < "$local_state/control" || status=$?
     echo "$status" 2>/dev/null > "$local_state/remote-status" || true
 } | while IFS= read -r line; do
     if [[ "$line" == "$lock_token" ]]; then
@@ -48,7 +48,7 @@ exec 3> "$local_state/control"
     printf 'gate_owner=%q\n' "$(hostname -s):$repo_root (pid $$)"
     printf 'mirrored=%q\n' "$packages $scanned_packages"
     # Sent inline: the mirror's Scripts/ is not synced until the lock is held.
-    cat Scripts/lib/gate-lock.sh
+    cat Scripts/lib/gate-lock.sh Scripts/lib/pup-side.sh
     cat <<'REMOTE'
 set -euo pipefail
 shopt -s inherit_errexit
@@ -94,44 +94,9 @@ real_directory() {
         || fail "gate path resolves elsewhere: $path"
 }
 
-# Identity, the service's knobs, the deployed version and the installed unit
-# must be byte-identical after the gate. The XDG identity and host.conf are
-# required; pre-XDG copies are covered whenever they exist.
-protected_state_fingerprint() {
-    local config="$HOME/.config/lyte" file
-    for file in noise_static.key paired_clients host.conf; do
-        if [[ ! -f "$config/$file" ]]; then
-            echo "pup gate FAILED: required $config/$file is missing" >&2
-            return 1
-        fi
-    done
-    {
-        for file in \
-            "$config/noise_static.key" \
-            "$config/paired_clients" \
-            "$config/host.conf" \
-            "$HOME/.config/lyte-host/noise_static.key" \
-            "$HOME/.config/lyte-host/paired_clients" \
-            /etc/lyte/lyte-host.conf \
-            /etc/systemd/system/lyte-host.service
-        do
-            if [[ ! -e "$file" ]]; then
-                echo "absent $file"
-            elif [[ -r "$file" ]]; then
-                sha256sum "$file"
-                stat -c '%n %a %U %G %s' "$file"
-            else
-                sudo -n sha256sum "$file"
-                sudo -n stat -c '%n %a %U %G %s' "$file"
-            fi
-        done
-        echo "link $(readlink -- "$HOME/.local/bin/lyte-host" || echo absent)"
-    } | sha256sum | awk '{print $1}'
-}
-
 verify_protected_state() {
     local after_state
-    after_state="$(protected_state_fingerprint)" || return 1
+    after_state="$(lyte_protected_state_fingerprint)" || return 1
     if [[ "$before_state" != "$after_state" ]]; then
         echo "pup gate FAILED: protected host state or metadata changed" >&2
         return 1
@@ -167,43 +132,21 @@ trap 'exit 143' TERM
 trap 'exit 129' HUP
 trap 'exit 141' PIPE
 
-# run_package_tests PACKAGE [--build-only TARGET...]: resolve PACKAGE, then
-# test it (or build only TARGETs), cleaning its build state first when its
-# build graph changed.
+# run_package_tests PACKAGE: resolve and test PACKAGE, cleaning its build
+# state first when its build graph changed.
 run_package_tests() {
-    local package="$1" path="$gate_root/$1" target
-    shift
-    local marker="$path/.build/.lyte-build-graph-sha256"
-    local build_graph_hash installed_hash=""
-    build_graph_hash="$(lyte_build_graph_hash "$gate_root" "$package")" \
-        || build_graph_hash=""
-    [[ -n "$build_graph_hash" ]] \
+    local package="$1" path="$gate_root/$1" changed
+    echo "==> $package tests"
+    changed="$(lyte_changed_build_graph "$gate_root" "$package")" \
         || fail "no build-graph identity for $package"
-
-    if [[ "${1:-}" == --build-only ]]; then
-        shift
-        echo "==> $package builds: $*"
-    else
-        echo "==> $package tests"
-    fi
-    if [[ -f "$marker" ]]; then
-        installed_hash="$(<"$marker")"
-    fi
-    if [[ "$installed_hash" != "$build_graph_hash" ]]; then
+    if [[ -n "$changed" ]]; then
         echo "    package or source-path graph changed; invalidating stale SwiftPM build state"
         (cd "$path" && swift package clean)
     fi
     (cd "$path" && swift package resolve)
-    if (( $# )); then
-        for target in "$@"; do
-            (cd "$path" \
-                && swift build --target "$target" -Xswiftc -warnings-as-errors)
-        done
-    else
-        (cd "$path" && swift test -Xswiftc -warnings-as-errors)
-    fi
-    mkdir -p "$path/.build"
-    printf '%s\n' "$build_graph_hash" > "$marker"
+    (cd "$path" && swift test -Xswiftc -warnings-as-errors)
+    [[ -z "$changed" ]] \
+        || lyte_record_build_graph "$gate_root" "$package" "$changed"
 }
 
 main() {
@@ -213,7 +156,8 @@ main() {
         || fail "findmnt is required for deletion safety"
     command -v flock >/dev/null 2>&1 || fail "flock is required to lock the mirror"
     # The baseline precedes every write in the namespace, the lock included.
-    before_state="$(protected_state_fingerprint)"
+    before_state="$(lyte_protected_state_fingerprint)" \
+        || fail "cannot fingerprint protected host state"
     mount_targets="$(findmnt -rn -o TARGET)" \
         || fail "cannot inspect mounted filesystems"
     real_directory "$namespace"
@@ -253,6 +197,7 @@ run_gate() {
     # Off macOS the Client manifest keeps only its IO-free policy targets.
     run_package_tests Client
     run_package_tests Host
+    run_package_tests Browser
 
     echo "==> plain Host build"
     (cd "$gate_root/Host" && swift build -Xswiftc -warnings-as-errors)
@@ -317,21 +262,22 @@ if [[ ! -e "$local_state/locked" ]]; then
     exit 1
 fi
 
-echo "==> sync $packages, $scanned_packages and Scripts to $pup:$pup_gate_root"
+echo "==> sync $packages, $scanned_packages and Scripts to $PUP:$pup_gate_root"
 for package in $packages; do
-    rsync -a --delete --exclude .build \
-        "$package/" "$pup:$pup_gate_root/$package/"
+    pup_rsync -a --delete --exclude .build --exclude .serve \
+        --exclude node_modules \
+        "$package/" "$PUP:$pup_gate_root/$package/"
 done
 # Everything else under a scanned package is deleted from the mirror, so the
 # lints never read a stale file.
 for package in $scanned_packages; do
-    rsync -a --delete --delete-excluded --include=/Package.swift \
+    pup_rsync -a --delete --delete-excluded --include=/Package.swift \
         --include=/Sources/ --include='/Sources/**' --exclude='*' \
-        "$package/" "$pup:$pup_gate_root/$package/"
+        "$package/" "$PUP:$pup_gate_root/$package/"
 done
-rsync -a --delete Scripts/ "$pup:$pup_gate_root/Scripts/"
-rsync -a LICENSE "$pup:$pup_gate_root/LICENSE"
-rsync -a docs/THIRD-PARTY.md "$pup:$pup_gate_root/docs/THIRD-PARTY.md"
+pup_rsync -a --delete Scripts/ "$PUP:$pup_gate_root/Scripts/"
+pup_rsync -a LICENSE "$PUP:$pup_gate_root/LICENSE"
+pup_rsync -a docs/THIRD-PARTY.md "$PUP:$pup_gate_root/docs/THIRD-PARTY.md"
 echo go >&3
 
 wait "$remote_job" || true

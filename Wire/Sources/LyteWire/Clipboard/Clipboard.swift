@@ -25,21 +25,6 @@ public enum ClipboardWire {
     public static let maxTextByteCount = 65_536
 }
 
-// MARK: - The capability spine helpers
-
-extension Capabilities {
-    /// True when this set carries `clipboardText: true` (key 10) — see
-    /// `declaresFlag(_:)`.
-    public var clipboardText: Bool {
-        declaresFlag(CapabilityKey.clipboardText)
-    }
-
-    /// A copy of this set declaring `clipboardText`.
-    public func declaringClipboardText() -> Capabilities {
-        declaringFlag(CapabilityKey.clipboardText)
-    }
-}
-
 // MARK: - The CTRL codecs
 
 /// The client's clipboard push (type 0x1A).

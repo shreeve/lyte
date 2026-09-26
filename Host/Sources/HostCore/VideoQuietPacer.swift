@@ -5,25 +5,6 @@
 // one rung per further 30 s of stillness. A wake steps straight back to
 // 1 s and announces active once.
 
-public struct VideoQuietPacerConfig: Sendable {
-    /// Stillness before the first backoff rung.
-    public var quietAfterSeconds: Double
-    /// Seconds of further stillness per additional rung.
-    public var rungSeconds: Double
-    /// The deepest interval.
-    public var maxIntervalSeconds: UInt8
-
-    public init(
-        quietAfterSeconds: Double = 30,
-        rungSeconds: Double = 30,
-        maxIntervalSeconds: UInt8 = 30
-    ) {
-        self.quietAfterSeconds = max(quietAfterSeconds, 1)
-        self.rungSeconds = max(rungSeconds, 1)
-        self.maxIntervalSeconds = max(maxIntervalSeconds, 2)
-    }
-}
-
 public struct VideoQuietPacer: Sendable {
     /// What to announce, when a step just happened.
     public struct Announcement: Equatable, Sendable {
@@ -38,25 +19,29 @@ public struct VideoQuietPacer: Sendable {
         public var announce: Announcement?
     }
 
-    public let config: VideoQuietPacerConfig
+    /// Stillness before the first backoff rung.
+    private static let quietAfterSeconds = 30.0
+    /// Seconds of further stillness per additional rung.
+    private static let rungSeconds = 30.0
+    /// The deepest interval.
+    public static let maxIntervalSeconds: UInt8 = 30
+
     /// The interval last announced (1 = active; the session starts
     /// active by contract, so no opening announcement fires).
     private var announcedInterval: UInt8 = 1
 
-    public init(config: VideoQuietPacerConfig = VideoQuietPacerConfig()) {
-        self.config = config
-    }
+    public init() {}
 
     /// The ladder, as a pure function of stillness.
     public func interval(idleSeconds: Double) -> UInt8 {
-        guard idleSeconds >= config.quietAfterSeconds else { return 1 }
+        guard idleSeconds >= Self.quietAfterSeconds else { return 1 }
         // Rung 0 = 2 s, doubling each rung, capped at the ceiling. The
         // rung count is clamped while still a Double, so any idle
         // (including +infinity) converts safely; NaN never passes the guard.
         let rungs = Int(min(
-            (idleSeconds - config.quietAfterSeconds) / config.rungSeconds, 6))
+            (idleSeconds - Self.quietAfterSeconds) / Self.rungSeconds, 6))
         let unclamped = 1 << (rungs + 1)
-        return UInt8(min(unclamped, Int(config.maxIntervalSeconds)))
+        return UInt8(min(unclamped, Int(Self.maxIntervalSeconds)))
     }
 
     /// One assessment beat. Announcements fire exactly on changes —

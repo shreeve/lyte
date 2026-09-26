@@ -149,6 +149,7 @@ public struct VideoBeatConductor: Sendable {
         recue(&presentation, mapped: mapped, arrival: arrival)
         slip(&presentation, mapped: mapped, arrival: arrival,
              pathDelay: pathDelay)
+        bound(&presentation, arrival: arrival)
         return finish(
             presentation, mapped: mapped, arrival: arrival,
             pathDelay: pathDelay, shouldFlush: shouldFlush)
@@ -342,6 +343,28 @@ public struct VideoBeatConductor: Sendable {
         if slippedCue >= pathDelay &+ cushionFloor &+ period {
             startSlipProof(at: arrival, pathDelay: pathDelay)
         }
+    }
+
+    /// horizon: no part presents further past its arrival than the cue
+    /// ceiling plus the cushion ceiling. A capture stamp beyond that (a
+    /// host clock fault) carries its mapped capture and ceiling with it,
+    /// so the cue re-establishes at the cushion floor from arrival and
+    /// the grid snaps there instead of holding every later part behind a
+    /// far-future beat.
+    private mutating func bound(
+        _ presentation: inout UInt64, arrival: UInt64
+    ) {
+        let period = config.beatPeriodMicroseconds
+        let lead = config.maximumCueMicroseconds
+            &+ UInt64(config.maximumCushionBeats) &* period
+        guard presentation > arrival, presentation - arrival > lead else {
+            return
+        }
+        presentation = arrival &+ UInt64(config.cushionBeats) &* period
+        gridPresentationMicroseconds = nil
+        cushionBeatsInForce = config.cushionBeats
+        stretchProofStartMicroseconds = nil
+        resetSlipProof()
     }
 
     /// late: the beat stands even when it has passed — report the

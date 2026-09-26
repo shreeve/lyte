@@ -2,9 +2,10 @@ import LyteCore
 import XCTest
 import LyteWire
 import LyteWireTestKit
+import LyteWireVectorGen
 
 // Verifies the committed Vectors/repair-refusal-v1.json byte-exact —
-// the HS-32 repair-refusal CTRL message (0x23) both ends code against,
+// the repair-refusal CTRL message (0x23) both ends code against,
 // on both platforms.
 
 final class RepairRefusalVectorFileTests: XCTestCase {
@@ -54,16 +55,10 @@ final class RepairRefusalVectorFileTests: XCTestCase {
                     try RepairRefusal.decode(message), refusal, vector.name
                 )
             case .decodeReject:
-                XCTAssertThrowsError(
-                    try RepairRefusal.decode(message), vector.name
-                ) { error in
-                    guard let error = error as? RepairRefusalError else {
-                        return XCTFail("\(vector.name): foreign error")
-                    }
-                    XCTAssertEqual(
-                        vectorErrorName(error), vector.error,
-                        vector.name
-                    )
+                assertVectorReject(
+                    RepairRefusalError.self, vector.error, vector.name
+                ) {
+                    try RepairRefusal.decode(message)
                 }
             }
         }

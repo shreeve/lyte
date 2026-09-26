@@ -127,7 +127,14 @@ public final class AudioJitterBuffer {
     private var pending: [UInt32: (packet: AudioPacket, arrivalMicroseconds: UInt64)] = [:]
     private var started = false
     private var nextNumber: UInt32 = 0
+    /// The last packet handed out to play; nil before the first.
+    private var lastPlayedNumber: UInt32?
     private var consecutiveConcealments = 0
+    /// Set by an announced quiet, cleared by the packet that wakes it.
+    private var announcedQuiet = false
+    /// The latest arrival of the wake burst that ends a quiet: the host
+    /// ships its pre-roll at once, which describes its ring, not the path.
+    private var wakeBurstArrival: UInt64?
 
     // Adaptation state: each fresh arrival's skew off the 5 ms arrival
     // lattice — (arrival_n − anchorArrival) − (n − anchorNumber) × 5 ms —
@@ -146,11 +153,12 @@ public final class AudioJitterBuffer {
     private var lastArrival: (number: UInt32, atMicroseconds: UInt64)?
     private var deviationWindow: [Int64] = []
     private var deviationCursor = 0
-    // Retarget cadence, post-raise hold and between-sheds step, each a
-    // ProofCounter fed one fresh packet at a time.
-    private var retargetProof = ProofCounter()
-    private var raiseHoldProof = ProofCounter()
-    private var shedStepProof = ProofCounter()
+    // Proof before shed: fresh packets counted toward the retarget
+    // cadence, the post-raise hold and the between-sheds step; any
+    // contrary event starts a count over.
+    private var retargetProof = 0
+    private var raiseHoldProof = 0
+    private var shedStepProof = 0
     /// A configured opening is deliberately drainable at once; only cushion
     /// raised by measured path tails earns the long hold.
     private var targetCushionEarnedByPath = false
@@ -162,11 +170,19 @@ public final class AudioJitterBuffer {
         self.deviationWindow.reserveCapacity(config.deviationWindowPackets)
     }
 
-    /// An announced audio-quiet gap is contract, not path evidence: reset
-    /// the arrival lattice and windows so the wake burst re-bases the
-    /// epoch instead of slamming the spread target to max. The target
-    /// itself survives. Idempotent.
-    public func noteIntentionalGap() {
+    /// An announced audio quiet is contract, not path evidence: until a
+    /// wire-carried packet ahead of the last one played arrives, an empty
+    /// buffer is not concealed, and that packet re-primes playout at
+    /// itself (the host numbers on from the last packet it sent). A
+    /// recovered or replayed packet neither wakes the quiet nor rewinds
+    /// playout. The adaptation windows reset so the wake burst re-bases
+    /// the epoch; the target survives. Idempotent.
+    public func noteAnnouncedQuiet() {
+        announcedQuiet = true
+        resetAdaptationWindows()
+    }
+
+    private func resetAdaptationWindows() {
         skewAnchor = nil
         lastArrival = nil
         skewWindow.removeAll(keepingCapacity: true)
@@ -180,6 +196,13 @@ public final class AudioJitterBuffer {
     public func insert(_ packet: AudioPacket, arrivalMicroseconds: UInt64) {
         stats.packetsInserted += 1
 
+        if announcedQuiet, !packet.recovered,
+           lastPlayedNumber.map({ Int32(bitPattern: packet.number &- $0) > 0 })
+               ?? true {
+            announcedQuiet = false
+            wakeBurstArrival = arrivalMicroseconds
+            if pending.isEmpty { nextNumber = packet.number }
+        }
         if started {
             let distance = Int32(bitPattern: packet.number &- nextNumber)
             if distance < 0 {
@@ -193,8 +216,8 @@ public final class AudioJitterBuffer {
                         config.maxTargetPackets,
                         targetPackets + behind)
                     targetCushionEarnedByPath = true
-                    raiseHoldProof.reset()
-                    shedStepProof.reset()
+                    raiseHoldProof = 0
+                    shedStepProof = 0
                     stats.targetPackets = targetPackets
                 }
                 stats.latePacketsDropped += 1
@@ -214,7 +237,7 @@ public final class AudioJitterBuffer {
                > UInt32(config.hardCapPackets) {
             stats.packetsDroppedInRecenter += UInt64(pending.count)
             pending.removeAll()
-            noteIntentionalGap()
+            resetAdaptationWindows()
         }
         // Only packets admitted to the playout epoch describe the path.
         // Late/replayed packets carry stale or retransmit timing and must
@@ -243,6 +266,7 @@ public final class AudioJitterBuffer {
         stats.depthPackets.record(UInt64(pending.count))
 
         if let entry = pending.removeValue(forKey: nextNumber) {
+            lastPlayedNumber = nextNumber
             nextNumber &+= 1
             consecutiveConcealments = 0
             stats.packetsPlayed += 1
@@ -251,8 +275,9 @@ public final class AudioJitterBuffer {
 
         guard let oldest = oldestPendingNumber() else {
             // Empty buffer: the stream stalled. PLC bridges a short
-            // stall; a long one goes quiet until arrivals re-prime.
-            guard urgent else {
+            // stall; a long one goes quiet until arrivals re-prime. An
+            // announced quiet is silence by contract.
+            guard urgent, !announcedQuiet else {
                 stats.starvedVerdicts += 1
                 return .starved
             }
@@ -306,6 +331,7 @@ public final class AudioJitterBuffer {
         stats.recenterEvents += 1
         consecutiveConcealments = 0
         let entry = pending.removeValue(forKey: number)!
+        lastPlayedNumber = number
         nextNumber = number &+ 1
         stats.packetsPlayed += 1
         return .packet(entry.packet)
@@ -360,6 +386,15 @@ public final class AudioJitterBuffer {
         _ packet: AudioPacket, arrivalMicroseconds: UInt64
     ) {
         guard !packet.recovered else { return }
+        if let burst = wakeBurstArrival {
+            guard arrivalMicroseconds &- burst
+                >= UInt64(config.packetDurationMicroseconds)
+            else {
+                wakeBurstArrival = arrivalMicroseconds
+                return
+            }
+            wakeBurstArrival = nil
+        }
 
         // Diagnostics: pairwise inter-arrival deviation (σ, histogram).
         if let last = lastArrival {
@@ -403,12 +438,12 @@ public final class AudioJitterBuffer {
                 for index in skewWindow.indices { skewWindow[index] -= low }
             }
         }
-        retargetProof.advance()
-        raiseHoldProof.advance()
-        shedStepProof.advance()
+        retargetProof += 1
+        raiseHoldProof += 1
+        shedStepProof += 1
         let cadence = max(1, config.retargetCadencePackets)
-        guard retargetProof.reached(cadence) else { return }
-        retargetProof.reset()
+        guard retargetProof >= cadence else { return }
+        retargetProof = 0
         retarget()
     }
 
@@ -467,17 +502,15 @@ public final class AudioJitterBuffer {
         if desired > targetPackets {
             targetPackets = desired
             targetCushionEarnedByPath = true
-            raiseHoldProof.reset()
-            shedStepProof.reset()
+            raiseHoldProof = 0
+            shedStepProof = 0
         } else if desired < targetPackets, !targetCushionEarnedByPath {
             targetPackets = desired
         } else if desired < targetPackets,
-                  raiseHoldProof.reached(
-                    max(1, config.targetDecayHoldPackets)),
-                  shedStepProof.reached(
-                    max(1, config.targetDecayStepPackets)) {
+                  raiseHoldProof >= max(1, config.targetDecayHoldPackets),
+                  shedStepProof >= max(1, config.targetDecayStepPackets) {
             targetPackets -= 1
-            shedStepProof.reset()
+            shedStepProof = 0
             if targetPackets == config.minTargetPackets {
                 targetCushionEarnedByPath = false
             }

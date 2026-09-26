@@ -34,7 +34,7 @@ final class RefusalLoopbackTests: XCTestCase {
     func testAClientThatExitsEndsTheSessionOnceItsPathGoesSilent() throws {
         let hostStatic = NoiseKeyPair.generate()
         let wire = try SessionWire(
-            listener: HostListener(port: 0), peer: nil,
+            listener: HostListener(hostStatic: hostStatic),
             rateBitsPerSecond: 1_000_000)
         defer { wire.shutdown(reason: .shuttingDown, lingerSeconds: 0) }
 
@@ -42,7 +42,7 @@ final class RefusalLoopbackTests: XCTestCase {
             port: wire.localPort, hostStaticPublicKey: hostStatic.publicKey)
         try client?.dial()
         XCTAssertEqual(try awaitClient(
-            wire, hostStatic: hostStatic, timeoutSeconds: 5
+            wire, timeoutSeconds: 5
         ) {
             let reply = try XCTUnwrap(client?.awaitMessage2())
             try client?.confirm(message2: reply.payload)

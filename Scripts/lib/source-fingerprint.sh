@@ -6,6 +6,8 @@
 
 # Every tracked or untracked-unignored file a Lyte.app build compiles.
 LYTE_CLIENT_SOURCE_PATHS="Client/Package.swift Client/Package.resolved Client/Sources Common/Package.swift Common/Sources Wire/Package.swift Wire/Package.resolved Wire/Sources"
+# Every file a lyte-host build compiles.
+LYTE_HOST_SOURCE_PATHS="Host/Package.swift Host/Package.resolved Host/Sources Common/Package.swift Common/Sources Wire/Package.swift Wire/Package.resolved Wire/Sources"
 
 # The files under <paths...> that git knows of (tracked, or untracked and not
 # ignored), relative to <root>, sorted.

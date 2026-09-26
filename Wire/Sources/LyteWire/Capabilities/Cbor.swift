@@ -131,26 +131,19 @@ public enum Cbor {
         major: UInt8, argument: UInt64, to out: inout [UInt8]
     ) {
         let base = major << 5
-        switch argument {
-        case 0..<24:
+        guard argument >= 24 else {
             out.append(base | UInt8(argument))
-        case 24...0xFF:
-            out.append(base | 24)
-            out.append(UInt8(argument))
-        case 0x100...0xFFFF:
-            out.append(base | 25)
-            out.append(UInt8(argument >> 8))
-            out.append(UInt8(truncatingIfNeeded: argument))
-        case 0x1_0000...0xFFFF_FFFF:
-            out.append(base | 26)
-            for shift in stride(from: 24, through: 0, by: -8) {
-                out.append(UInt8(truncatingIfNeeded: argument >> shift))
-            }
-        default:
-            out.append(base | 27)
-            for shift in stride(from: 56, through: 0, by: -8) {
-                out.append(UInt8(truncatingIfNeeded: argument >> shift))
-            }
+            return
+        }
+        let (info, width): (UInt8, Int) = switch argument {
+        case ...0xFF: (24, 1)
+        case ...0xFFFF: (25, 2)
+        case ...0xFFFF_FFFF: (26, 4)
+        default: (27, 8)
+        }
+        out.append(base | info)
+        for shift in stride(from: 8 * (width - 1), through: 0, by: -8) {
+            out.append(UInt8(truncatingIfNeeded: argument >> shift))
         }
     }
 
@@ -307,9 +300,6 @@ public enum Cbor {
     /// RFC 8949 §4.2.1 map-key order: bytewise lexicographic over the
     /// complete encodings (a strict prefix sorts first).
     static func bytewiseAscending(_ a: [UInt8], _ b: [UInt8]) -> Bool {
-        for (x, y) in zip(a, b) where x != y {
-            return x < y
-        }
-        return a.count < b.count
+        a.lexicographicallyPrecedes(b)
     }
 }

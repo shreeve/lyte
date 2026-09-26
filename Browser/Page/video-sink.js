@@ -11,6 +11,10 @@ const MAX_QUEUED_DECODES = 2;
 // Decoded-but-unpresented frames held at once, counting frames still inside
 // the decoder; the decoder's output pool stalls if the page keeps more.
 const MAX_HELD_FRAMES = 8;
+// Scheduled metadata awaiting decode, WASM's own decode backlog bound. A page
+// that stops presenting (a hidden tab) stops decoding once it holds
+// MAX_HELD_FRAMES; past this bound only the newest keyframe's chain stays.
+const MAX_QUEUED_FRAMES = 120;
 // Presentation records kept for the log; the verdicts are counters.
 const RECENT_PRESENTATIONS = 64;
 
@@ -159,9 +163,20 @@ export class VideoSink {
     this.decoder.configure(picked.config);
   }
 
-  /** Metadata for frames the Conductor scheduled (from a session step). */
+  /**
+   * Metadata for frames the Conductor scheduled (from a session step).
+   * Past the cap, everything before the newest queued keyframe goes. With no
+   * keyframe queued the queue keeps growing until one arrives; the core's own
+   * backlog bound asks the host for that IDR, so the cap holds only as long
+   * as the host answers.
+   */
   enqueue(scheduled) {
     for (const meta of scheduled) this.queue.push(meta);
+    if (this.queue.length <= MAX_QUEUED_FRAMES) return;
+    const keyframe = this.queue.findLastIndex((meta) => meta.isRandomAccess);
+    for (const meta of this.queue.splice(0, Math.max(keyframe, 0))) {
+      this.bridge.mediaNoteDropped(meta.frameNumber);
+    }
   }
 
   /** True while decode input or output is still outstanding. */
@@ -184,8 +199,13 @@ export class VideoSink {
     this.decoded.set(frame.timestamp, { frame, meta, decodedAt: nowMicros() });
   }
 
-  /** Feeds the decoder in Conductor order without flooding it. */
+  /**
+   * Closes what WASM abandoned, then feeds the decoder in Conductor order
+   * without flooding it. Runs every pump turn, presenting or not.
+   */
   pumpDecode() {
+    const abandoned = this.bridge.mediaTakeAbandoned();
+    if (abandoned) for (const frameNumber of abandoned) this.abandon(frameNumber);
     while (
       !this.error &&
       this.queue.length &&
@@ -228,8 +248,6 @@ export class VideoSink {
    * when a frame was presented.
    */
   pumpPresent(now) {
-    const abandoned = this.bridge.mediaTakeAbandoned();
-    if (abandoned) for (const frameNumber of abandoned) this.abandon(frameNumber);
     for (;;) {
       if (!this.pendingDue) {
         this.pendingDue = this.bridge.mediaPopDue(now);

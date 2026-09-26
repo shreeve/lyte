@@ -4,13 +4,11 @@ import LyteClientTestKit
 @testable import LyteTransport
 import LyteWire
 
-// The client Noise leg (CL-1 closed): NoiseTransportCrypto as IK
-// initiator against an in-process LyteWire responder — the exact
-// counterpart of the host's HS-7 gate, which drives a LyteWire initiator
-// against HostWire.Session. Covers: the 1-RTT handshake over the promoted
-// 0x05/0x06 carriage, sealed round trips both directions with
-// envelope-header AAD and (chan, seq) ROC, tamper rejection, replay
-// rejection, and the wrong-pinned-pubkey refusal.
+// NoiseTransportCrypto as IK initiator against an in-process LyteWire
+// responder: the 1-RTT handshake over 0x05/0x06, sealed round trips both
+// directions with envelope-header AAD and (chan, seq) ROC, tamper and
+// replay rejection, the wrong-pinned-pubkey refusal, and the directional
+// seal/unseal locks.
 
 final class NoiseClientTests: XCTestCase {
 
@@ -40,7 +38,7 @@ final class NoiseClientTests: XCTestCase {
     }
 
     /// The host's half, in-process: answers a carried message 1 from
-    /// fresh responder state (the HS-7 rule) and exposes the transport it
+    /// fresh responder state and exposes the transport it
     /// derives, so tests can seal/unseal as the host would.
     private final class InProcessHost: NoiseHandshakeIO {
         let hostStatic: NoiseKeyPair
@@ -96,7 +94,7 @@ final class NoiseClientTests: XCTestCase {
         let crypto = try NoiseTransportCrypto(
             hostAddress: "10.0.0.249", hostPort: 41_000,
             hostStaticPublicKey: host.hostStatic.publicKey,
-            attempts: 3, attemptTimeoutMilliseconds: 200)
+            retry: .init(attempts: 3, intervalMicroseconds: 200_000))
         try crypto.performHandshake(io: host)
         return (crypto, host)
     }
@@ -136,7 +134,7 @@ final class NoiseClientTests: XCTestCase {
         let crypto = try NoiseTransportCrypto(
             hostAddress: "10.0.0.249", hostPort: 41_000,
             hostStaticPublicKey: host.hostStatic.publicKey,
-            attempts: 3, attemptTimeoutMilliseconds: 60)
+            retry: .init(attempts: 3, intervalMicroseconds: 60_000))
         try crypto.performHandshake(io: host)
         XCTAssertEqual(host.message1Attempts, 2,
                        "the client owns the retry timer")
@@ -148,7 +146,7 @@ final class NoiseClientTests: XCTestCase {
         let crypto = try NoiseTransportCrypto(
             hostAddress: "10.0.0.249", hostPort: 41_000,
             hostStaticPublicKey: NoiseKeyPair.generate().publicKey, // not the host's
-            attempts: 2, attemptTimeoutMilliseconds: 40)
+            retry: .init(attempts: 2, intervalMicroseconds: 40_000))
         XCTAssertThrowsError(try crypto.performHandshake(io: host)) {
             XCTAssertEqual(($0 as? HandshakeExhausted)?
                 .counters.message1Transmissions, 2,
@@ -212,13 +210,13 @@ final class NoiseClientTests: XCTestCase {
 
     func testSealAndUnsealCriticalSectionsOverlap() throws {
         let host = InProcessHost()
-        let probe = NoiseTransportOperationProbe(rendezvousDirections: true)
+        let probe = DirectionProbe(rendezvous: true)
         let crypto = try NoiseTransportCrypto(
             hostAddress: "10.0.0.249", hostPort: 41_000,
             hostStaticPublicKey: host.hostStatic.publicKey,
-            attempts: 3, attemptTimeoutMilliseconds: 200,
-            operationProbe: probe)
+            retry: .init(attempts: 3, intervalMicroseconds: 200_000))
         try crypto.performHandshake(io: host)
+        crypto.testingInsideDirection = { probe.inside(seal: $0) }
 
         let inboundDatagram = try hostSeal(
             host, plaintext: [0xA1, 0xA2],
@@ -273,13 +271,13 @@ final class NoiseClientTests: XCTestCase {
 
     func testSameDirectionOperationsRemainSerialized() throws {
         let host = InProcessHost()
-        let probe = NoiseTransportOperationProbe(holdMilliseconds: 20)
+        let probe = DirectionProbe(holdMilliseconds: 20)
         let crypto = try NoiseTransportCrypto(
             hostAddress: "10.0.0.249", hostPort: 41_000,
             hostStaticPublicKey: host.hostStatic.publicKey,
-            attempts: 3, attemptTimeoutMilliseconds: 200,
-            operationProbe: probe)
+            retry: .init(attempts: 3, intervalMicroseconds: 200_000))
         try crypto.performHandshake(io: host)
+        crypto.testingInsideDirection = { probe.inside(seal: $0) }
 
         let envelopes = [
             Envelope(
@@ -404,6 +402,52 @@ final class NoiseClientTests: XCTestCase {
             datagram: datagram[...], arrivalMicroseconds: 2)
         else {
             return XCTFail("the byte-identical resend must reject as replay")
+        }
+    }
+
+    /// Counts seals and unseals inside their critical sections. A
+    /// rendezvous holds each direction until the other has entered; a hold
+    /// keeps each operation inside long enough for a same-direction peer
+    /// to collide if the lock let it.
+    private final class DirectionProbe: @unchecked Sendable {
+        private let condition = NSCondition()
+        private let rendezvous: Bool
+        private let hold: TimeInterval
+        private var active = (seals: 0, unseals: 0)
+        private(set) var maximumConcurrentSeals = 0
+        private(set) var maximumConcurrentUnseals = 0
+        private(set) var directionalOverlap = false
+
+        init(rendezvous: Bool = false, holdMilliseconds: Int = 0) {
+            self.rendezvous = rendezvous
+            self.hold = TimeInterval(holdMilliseconds) / 1_000
+        }
+
+        func inside(seal: Bool) {
+            condition.lock()
+            defer { condition.unlock() }
+            if seal { active.seals += 1 } else { active.unseals += 1 }
+            maximumConcurrentSeals = max(maximumConcurrentSeals, active.seals)
+            maximumConcurrentUnseals = max(maximumConcurrentUnseals, active.unseals)
+            if active.seals > 0, active.unseals > 0 {
+                directionalOverlap = true
+                condition.broadcast()
+            }
+            if rendezvous {
+                let deadline = Date(timeIntervalSinceNow: 1)
+                while !directionalOverlap, condition.wait(until: deadline) {}
+            } else if hold > 0 {
+                _ = condition.wait(until: Date(timeIntervalSinceNow: hold))
+            }
+            if seal { active.seals -= 1 } else { active.unseals -= 1 }
+        }
+
+        var snapshot: (directionalOverlap: Bool, maximumConcurrentSeals: Int,
+                       maximumConcurrentUnseals: Int) {
+            condition.lock()
+            defer { condition.unlock() }
+            return (directionalOverlap, maximumConcurrentSeals,
+                    maximumConcurrentUnseals)
         }
     }
 

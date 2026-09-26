@@ -53,7 +53,6 @@ public struct VideoPipelineStats: Sendable {
 }
 
 public struct VideoFrameBuildTelemetry: Sendable, Equatable {
-    public var frame: UInt32
     public var assemblyLockHoldMicroseconds: UInt64
     public var sampleBuildMicroseconds: UInt64
 }
@@ -102,7 +101,7 @@ public final class LyteVideoPipeline: @unchecked Sendable {
 
     private let sink: any VideoSink
     private let onFecImpossible: (@Sendable (FrameNumber, _ presumedLostDataShards: Int, _ bestCaseParityShards: Int) -> Void)?
-    /// The NackPolicy's feed.
+    /// The NACK policy's feed.
     private let onRepairSignal: (@Sendable (VideoRepairSignal, ClientTimestamp) -> Void)?
     /// A decoded frame that CoreMedia refused to wrap: the reference chain
     /// is broken although the repair policy heard it decoded.
@@ -115,7 +114,7 @@ public final class LyteVideoPipeline: @unchecked Sendable {
     ///     worker. The owner assigns local presentation time.
     ///   - onFecImpossible: fired once per frame the assembler writes off
     ///     as unrecoverable from plausible arrivals.
-    ///   - onRepairSignal: the NackPolicy's event feed.
+    ///   - onRepairSignal: the NACK policy's event feed.
     ///   - onSampleFailure: fired once per decoded frame whose sample (or
     ///     format description) failed to build, on the sample worker.
     ///   - nowNanoseconds: the shell's monotonic clock. All convenience
@@ -166,12 +165,11 @@ public final class LyteVideoPipeline: @unchecked Sendable {
     }
 
     /// Feeds one accepted datagram; other channels pass through untouched.
-    public func ingest(envelope: Envelope, payload: [UInt8]) {
-        ingest(envelope: envelope, payload: payload, now: currentTimestamp())
-    }
-
-    public func ingest(envelope: Envelope, payload: [UInt8], now: ClientTimestamp) {
+    public func ingest(
+        envelope: Envelope, payload: [UInt8], now: ClientTimestamp? = nil
+    ) {
         guard envelope.channel == channel else { return }
+        let now = now ?? currentTimestamp()
         let lockStarted = nowNanoseconds()
         lock.lock()
         if firstIngest == nil { firstIngest = now }
@@ -254,11 +252,8 @@ public final class LyteVideoPipeline: @unchecked Sendable {
         dispatch(actions)
     }
 
-    public func snapshotStats() -> VideoPipelineStats {
-        snapshotStats(now: currentTimestamp())
-    }
-
-    public func snapshotStats(now: ClientTimestamp) -> VideoPipelineStats {
+    public func snapshotStats(now: ClientTimestamp? = nil) -> VideoPipelineStats {
+        let now = now ?? currentTimestamp()
         lock.lock()
         defer { lock.unlock() }
         var out = stats

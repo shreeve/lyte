@@ -7,19 +7,18 @@
 // declaration computes agreed = local ∩ remote and settles the session,
 // or fails it when no video codec or chroma mode is common.
 //
-// Renegotiation is host→client only, one proposal outstanding at a time.
-// Only renegotiable keys may move, within [1152, agreed ceiling]; a bad
-// proposal draws a rejected ack echoing it, never a teardown. An accepted
-// one moves `operativeMaxDatagramBytes` on both ends (applied by the
-// shell at the next IDR boundary).
+// Renegotiation is host→client only. The client answers an update: only
+// `maxDatagramBytes` may move, within [1152, agreed ceiling]; a bad
+// proposal draws a rejected ack echoing it, never a teardown, and an
+// accepted one moves `operativeMaxDatagramBytes` (applied by the shell
+// at the next IDR boundary). The host never proposes.
 //
-// Protocol violations (a second declaration, an update from the
-// non-proposer, an ack with nothing outstanding or echoing the wrong
-// bytes, a capability message before the declaration) throw; the shell
-// treats a throw as a peer protocol violation.
+// Protocol violations (a second declaration, an update at the host, a
+// capability message before the declaration) throw; the shell treats a
+// throw as a peer protocol violation.
 
 /// Which end this machine negotiates for. The role decides who may
-/// propose renegotiation (the host), nothing else — declarations
+/// answer renegotiation (the client), nothing else — declarations
 /// are symmetric.
 public enum CapabilityRole: Sendable {
     case host
@@ -36,11 +35,6 @@ public enum CapabilityEvent: Hashable, Sendable {
     /// which way; on accept the negotiator has already moved its
     /// operative value.
     case answerUpdate(CapabilityUpdateAck)
-    /// Our outstanding proposal was accepted; the operative value
-    /// moved. Apply at the next IDR boundary.
-    case updateAccepted([CapabilityParameter])
-    /// Our outstanding proposal was rejected; nothing moved.
-    case updateRejected([CapabilityParameter])
 }
 
 /// Why an exchange failed to produce a workable session.
@@ -53,20 +47,8 @@ public enum CapabilityNegotiationError: Error, Hashable, Sendable {
     case duplicateDeclaration
     /// A capability message arrived before the exchange settled.
     case notEstablished
-    /// An update arrived at the proposing end (the host), or a
-    /// local propose was attempted at the answering end.
+    /// An update arrived at the host.
     case wrongRoleForUpdate
-    /// An ack arrived with no proposal outstanding.
-    case unexpectedAck
-    /// An ack whose echoed parameters differ from the outstanding
-    /// proposal's bytes.
-    case ackParameterMismatch
-    /// A local propose while one is already outstanding.
-    case proposalAlreadyOutstanding
-    /// A local propose naming a fixed or unknown key, or a value
-    /// outside [1152, agreed ceiling] — caught before it wastes a
-    /// round trip.
-    case invalidLocalProposal
 }
 
 /// The negotiation machine. Not thread-safe by design (sans-IO: the
@@ -84,7 +66,6 @@ public struct CapabilityNegotiator: Sendable {
         UInt32(WireBudget.maxDatagramByteCount)
 
     private var declarationSent = false
-    private var outstandingProposal: [CapabilityParameter]?
 
     public init(role: CapabilityRole, local: Capabilities) {
         self.role = role
@@ -122,33 +103,6 @@ public struct CapabilityNegotiator: Sendable {
 
     // MARK: - Renegotiation
 
-    /// Builds a geometry-raise proposal. Host
-    /// role only, one outstanding at a time, value validated against
-    /// the agreed ceiling before it costs a round trip.
-    public mutating func proposeMaxDatagramBytes(
-        _ value: UInt32
-    ) throws -> CapabilityUpdate {
-        guard role == .host else {
-            throw CapabilityNegotiationError.wrongRoleForUpdate
-        }
-        guard let agreed else {
-            throw CapabilityNegotiationError.notEstablished
-        }
-        guard outstandingProposal == nil else {
-            throw CapabilityNegotiationError.proposalAlreadyOutstanding
-        }
-        guard value >= UInt32(WireBudget.maxDatagramByteCount),
-              value <= agreed.maxDatagramBytes else {
-            throw CapabilityNegotiationError.invalidLocalProposal
-        }
-        let parameters = [CapabilityParameter(
-            key: CapabilityKey.maxDatagramBytes,
-            value: .unsigned(UInt64(value))
-        )]
-        outstandingProposal = parameters
-        return CapabilityUpdate(parameters: parameters)
-    }
-
     /// A peer update (client role only). Judges the proposal and
     /// returns the ack to send; acceptance moves the operative value.
     /// A bad proposal draws a rejected ack, not a throw — only
@@ -162,55 +116,23 @@ public struct CapabilityNegotiator: Sendable {
         guard let agreed else {
             throw CapabilityNegotiationError.notEstablished
         }
-        let acceptable = update.parameters.allSatisfy { parameter in
-            guard CapabilityKey.renegotiableKeys.contains(parameter.key),
-                  parameter.key == CapabilityKey.maxDatagramBytes,
+        let values = update.parameters.compactMap { parameter -> UInt32? in
+            guard parameter.key == CapabilityKey.maxDatagramBytes,
                   case .unsigned(let raw) = parameter.value,
                   let value = UInt32(exactly: raw),
                   value >= UInt32(WireBudget.maxDatagramByteCount),
                   value <= agreed.maxDatagramBytes else {
-                return false
+                return nil
             }
-            return true
+            return value
         }
-        if acceptable {
-            for parameter in update.parameters {
-                if case .unsigned(let raw) = parameter.value {
-                    operativeMaxDatagramBytes = UInt32(raw)
-                }
-            }
+        let acceptable = values.count == update.parameters.count
+        if acceptable, let value = values.last {
+            operativeMaxDatagramBytes = value
         }
         return .answerUpdate(CapabilityUpdateAck(
             status: acceptable ? .accepted : .rejected,
             parameters: update.parameters
         ))
-    }
-
-    /// The answer to our outstanding proposal. The echo must match the
-    /// proposal exactly; acceptance moves the operative value.
-    public mutating func receive(
-        _ ack: CapabilityUpdateAck
-    ) throws -> CapabilityEvent {
-        guard agreed != nil else {
-            throw CapabilityNegotiationError.notEstablished
-        }
-        guard let proposal = outstandingProposal else {
-            throw CapabilityNegotiationError.unexpectedAck
-        }
-        guard ack.parameters == proposal else {
-            throw CapabilityNegotiationError.ackParameterMismatch
-        }
-        outstandingProposal = nil
-        switch ack.status {
-        case .accepted:
-            for parameter in proposal {
-                if case .unsigned(let raw) = parameter.value {
-                    operativeMaxDatagramBytes = UInt32(raw)
-                }
-            }
-            return .updateAccepted(proposal)
-        case .rejected:
-            return .updateRejected(proposal)
-        }
     }
 }

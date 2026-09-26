@@ -8,8 +8,6 @@
 
 public struct NoiseSession: Sendable {
     public private(set) var handshake: NoiseHandshake
-    /// Set once both version bytes have been verified.
-    public private(set) var negotiatedVersion: UInt8?
 
     /// - Parameters:
     ///   - remoteStaticPublicKey: required for the initiator (the pinned
@@ -65,7 +63,6 @@ public struct NoiseSession: Sendable {
         var next = handshake
         let payload = try Self.versionChecked(next.readMessage2(message))
         handshake = next
-        negotiatedVersion = WireVersion.major
         return payload
     }
 
@@ -80,7 +77,6 @@ public struct NoiseSession: Sendable {
         var next = handshake
         let payload = try Self.versionChecked(next.readMessage1(message))
         handshake = next
-        negotiatedVersion = WireVersion.major
         return payload
     }
 

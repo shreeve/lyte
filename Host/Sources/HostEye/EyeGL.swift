@@ -4,8 +4,6 @@
 // VAAPI-exported planes. glEGLImageTargetTexture2DOES is extension-only
 // and loads through eglGetProcAddress.
 
-#if os(Linux)
-
 import CEGL
 import CGBM
 import Foundation
@@ -533,5 +531,3 @@ public final class EyeGL {
         glFinish()
     }
 }
-
-#endif

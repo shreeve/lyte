@@ -19,7 +19,7 @@ final class HeldInputReleaseLoopbackTests: XCTestCase {
         throws {
         let hostStatic = NoiseKeyPair.generate()
         let wire = try SessionWire(
-            listener: HostListener(port: 0), peer: nil,
+            listener: HostListener(hostStatic: hostStatic),
             rateBitsPerSecond: 1_000_000)
         let injector = HoldingInjector()
         injector.hold(keys: [Self.keyA, Self.leftShift], buttons: [Self.leftButton])
@@ -29,7 +29,7 @@ final class HeldInputReleaseLoopbackTests: XCTestCase {
             port: wire.localPort, hostStaticPublicKey: hostStatic.publicKey)
         try client.dial()
         XCTAssertEqual(try awaitClient(
-            wire, hostStatic: hostStatic, timeoutSeconds: 5
+            wire, timeoutSeconds: 5
         ) {
             let reply = try XCTUnwrap(client.awaitMessage2())
             try client.confirm(message2: reply.payload)

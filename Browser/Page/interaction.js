@@ -6,6 +6,8 @@ import { nowMicros, sleep } from "./lyte-io.js";
 
 // DOM `KeyboardEvent.code` (physical position) → Linux evdev KEY_* codes.
 // The protocol carries position codes; the host's XKB map owns layout.
+// Volume keys are absent, as in the native client: the stream plays here,
+// so volume belongs to the listener's own machine.
 const EVDEV_KEYS = {
   Escape: 1, Digit1: 2, Digit2: 3, Digit3: 4, Digit4: 5, Digit5: 6,
   Digit6: 7, Digit7: 8, Digit8: 9, Digit9: 10, Digit0: 11, Minus: 12,
@@ -25,8 +27,7 @@ const EVDEV_KEYS = {
   NumpadEnter: 96, ControlRight: 97, NumpadDivide: 98, PrintScreen: 99,
   AltRight: 100, Home: 102, ArrowUp: 103, PageUp: 104, ArrowLeft: 105,
   ArrowRight: 106, End: 107, ArrowDown: 108, PageDown: 109, Insert: 110,
-  Delete: 111, AudioVolumeMute: 113, AudioVolumeDown: 114,
-  AudioVolumeUp: 115, NumpadEqual: 117, Pause: 119, NumpadComma: 121,
+  Delete: 111, NumpadEqual: 117, Pause: 119, NumpadComma: 121,
   IntlYen: 124, MetaLeft: 125, MetaRight: 126, ContextMenu: 127,
   // JIS Kana / Eisu: KEY_HENKAN / KEY_MUHENKAN, as the native client maps
   // the same keys.
@@ -220,9 +221,6 @@ export async function createAudioRing({ offline = false, maxQueuedFrames } = {})
   let framesPushed = 0;
   return {
     mode: offline ? "offline" : "realtime",
-    get contextState() {
-      return offline ? "offline" : ctx.state;
-    },
     /** Takes ownership of an interleaved stereo Float32Array (transferred). */
     pushPcm(interleaved) {
       framesPushed += interleaved.length / 2;

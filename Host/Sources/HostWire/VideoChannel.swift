@@ -68,8 +68,6 @@ public typealias VideoChannelSealer = (
 ) throws -> [UInt8]
 
 public struct VideoChannelConfig: Sendable {
-    public var channel: ChannelId
-    public var firstSeq: ChannelSeq
     /// The starting FEC regime; `setRegime` moves it per frame.
     public var regime: FecRegime
     public var rateBitsPerSecond: Int
@@ -90,8 +88,6 @@ public struct VideoChannelConfig: Sendable {
     public var repairQueueUsefulnessNS: UInt64
 
     public init(
-        channel: ChannelId = .videoActive,
-        firstSeq: ChannelSeq = ChannelSeq(rawValue: 0),
         regime: FecRegime = .clean,
         rateBitsPerSecond: Int,
         pacerQuantumNS: UInt64 = 1_000_000,
@@ -100,8 +96,6 @@ public struct VideoChannelConfig: Sendable {
         repairStoreByteCap: Int = 16 << 20,
         repairQueueUsefulnessNS: UInt64 = 100_000_000
     ) {
-        self.channel = channel
-        self.firstSeq = firstSeq
         self.regime = regime
         self.rateBitsPerSecond = rateBitsPerSecond
         self.pacerQuantumNS = pacerQuantumNS
@@ -158,8 +152,6 @@ public struct VideoFramePreparationConfig: Sendable {
 /// Preparing it is safe off the Session lock; committing it remains ordered.
 public struct PreparedVideoFrame: Sendable {
     fileprivate let shards: [VideoShardPayload]
-    fileprivate let encodedByteCount: Int
-    fileprivate let regime: FecRegime
     let isKeyframe: Bool
 
     public var shardCount: Int { shards.count }
@@ -183,27 +175,6 @@ public struct VideoChannelCounters: Sendable {
     public var releaseSealFailures = 0
 
     public init() {}
-}
-
-/// One bounded, joinable frame-flight record. Capture and admission are
-/// recorded once; first/last transmit are filled by the pacer release path.
-/// The executable may join this with encoder QP/IDR-cause posture without
-/// printing per frame.
-public struct VideoFrameTransmitTelemetry: Equatable, Sendable {
-    public var frameNumber: UInt32
-    public var captureTimestampMicroseconds: UInt64
-    public var admittedAtNS: UInt64
-    public var firstTransmitAtNS: UInt64?
-    public var lastTransmitAtNS: UInt64?
-    public var encodedBytes: Int
-    public var shardCount: Int
-    public var isKeyframe: Bool
-    public var averageQP: Int?
-    public var idrCauses: [String]
-    public var pacerRateBitsPerSecond: Int
-    public var fecRegime: FecRegime
-    public var queuedWireTimeBeforeAdmissionNS: UInt64
-    public var purged: Bool
 }
 
 public final class VideoChannel {
@@ -257,13 +228,9 @@ public final class VideoChannel {
     /// Video-class shards still queued, per frame number: NACKs against
     /// frames still draining measure our pacer, not the path.
     private var queuedShardsByFrame: [UInt32: Int] = [:]
-    private var queuedFreshShardsByFrame: [UInt32: Int] = [:]
     /// Frames one of whose shards the seal refused, while shards of them
     /// are still queued.
     private var sealRefusedFrames: Set<UInt32> = []
-    private var activeFrameTelemetry: [UInt32: VideoFrameTransmitTelemetry] = [:]
-    private var completedFrameTelemetry = Deque<VideoFrameTransmitTelemetry>()
-    private static let frameTelemetryCapacity = 256
 
     // MARK: Repair store
 
@@ -316,7 +283,7 @@ public final class VideoChannel {
             quantumNS: config.pacerQuantumNS,
             now: now
         )
-        self.nextSeq = config.firstSeq
+        self.nextSeq = ChannelSeq(rawValue: 0)
         self.regime = config.regime
         self.seal = seal
         self.sealOverheadByteCount = seal == nil ? 0 : sealTagByteCount
@@ -380,8 +347,6 @@ public final class VideoChannel {
                 regime: config.regime,
                 shardBudgetByteCount: config.shardBudgetByteCount
             ),
-            encodedByteCount: frame.count,
-            regime: config.regime,
             isKeyframe: isKeyframe
         )
     }
@@ -396,74 +361,12 @@ public final class VideoChannel {
             )
     }
 
-    /// Packetizes one encoded frame and enqueues every shard; returns the
-    /// shard count. Throws on non-frame-shaped bytes, a lying keyframe
-    /// flag or an unprotectable size.
-    /// `captureTimestampMicroseconds` rides the envelope timestamp
-    /// verbatim. `lastInputSeq`, when set, rides every shard of this frame
-    /// as TLV 0x03 and shrinks the frame's shard budget accordingly.
-    @discardableResult
-    public func ingest(
-        frame annexB: [UInt8],
-        frameNumber: FrameNumber,
-        captureTimestampMicroseconds: UInt64,
-        isKeyframe: Bool,
-        lastInputSeq: UInt32? = nil,
-        now: UInt64
-    ) throws -> Int {
-        try ingestBytes(
-            frame: annexB, frameNumber: frameNumber,
-            captureTimestampMicroseconds: captureTimestampMicroseconds,
-            isKeyframe: isKeyframe, lastInputSeq: lastInputSeq,
-            now: now
-        )
-    }
-
-    /// Synchronous borrowed ingress. Packetization, FEC, queueing and
-    /// repair retention finish before return; no input view escapes.
-    @discardableResult
-    public func ingest(
-        frame annexB: UnsafeBufferPointer<UInt8>,
-        frameNumber: FrameNumber,
-        captureTimestampMicroseconds: UInt64,
-        isKeyframe: Bool,
-        lastInputSeq: UInt32? = nil,
-        now: UInt64
-    ) throws -> Int {
-        try ingestBytes(
-            frame: annexB, frameNumber: frameNumber,
-            captureTimestampMicroseconds: captureTimestampMicroseconds,
-            isKeyframe: isKeyframe, lastInputSeq: lastInputSeq,
-            now: now
-        )
-    }
-
-    func ingestBytes<C>(
-        frame annexB: C,
-        frameNumber: FrameNumber,
-        captureTimestampMicroseconds: UInt64,
-        isKeyframe: Bool,
-        lastInputSeq: UInt32?,
-        now: UInt64
-    ) throws -> Int
-    where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
-        let prepared = try Self.prepareFrame(
-            annexB,
-            isKeyframe: isKeyframe,
-            config: preparationConfig(hasLastInputSeq: lastInputSeq != nil)
-        )
-        return ingestPrepared(
-            prepared,
-            frameNumber: frameNumber,
-            captureTimestampMicroseconds: captureTimestampMicroseconds,
-            lastInputSeq: lastInputSeq,
-            now: now
-        )
-    }
-
-    /// Ordered half: enqueue every shard unsealed and retain the frame.
-    /// Seqs and seals are assigned at release (see the header). Callers
-    /// serialize this with every other Session mutation.
+    /// Ordered half: enqueue every shard unsealed and retain the frame;
+    /// returns the shard count. Seqs and seals are assigned at release
+    /// (see the header). Callers serialize this with every other Session
+    /// mutation. `captureTimestampMicroseconds` rides the envelope
+    /// timestamp verbatim. `lastInputSeq`, when set, rides every shard of
+    /// this frame as TLV 0x03; it must match the preparation config's.
     @discardableResult
     public func ingestPrepared(
         _ prepared: PreparedVideoFrame,
@@ -472,29 +375,6 @@ public final class VideoChannel {
         lastInputSeq: UInt32?,
         now: UInt64
     ) -> Int {
-        let queuedBytesBeforeAdmission =
-            pacer.queuedBytes(.freshVideo) + pacer.queuedBytes(.videoTail)
-        let queuedWireTimeBeforeAdmissionNS = UInt64(
-            Double(queuedBytesBeforeAdmission) * 8e9
-                / Double(max(pacer.rateBitsPerSecond, 1))
-        )
-        // The row exists before any shard can release.
-        activeFrameTelemetry[frameNumber.rawValue] = VideoFrameTransmitTelemetry(
-            frameNumber: frameNumber.rawValue,
-            captureTimestampMicroseconds: captureTimestampMicroseconds,
-            admittedAtNS: now,
-            firstTransmitAtNS: nil,
-            lastTransmitAtNS: nil,
-            encodedBytes: prepared.encodedByteCount,
-            shardCount: prepared.shards.count,
-            isKeyframe: prepared.isKeyframe,
-            averageQP: nil,
-            idrCauses: [],
-            pacerRateBitsPerSecond: pacer.rateBitsPerSecond,
-            fecRegime: prepared.regime,
-            queuedWireTimeBeforeAdmissionNS: queuedWireTimeBeforeAdmissionNS,
-            purged: false
-        )
         var extensions: [WireExtension] = []
         if let connectionId = config.connectionId {
             extensions.append(connectionId.wireExtension)
@@ -596,31 +476,6 @@ public final class VideoChannel {
     /// recovery treats a later NACK as superseded, not as a new IDR demand.
     public func wasPurged(_ frame: FrameNumber) -> Bool {
         purgedFrames.contains(frame.rawValue)
-    }
-
-    /// Drains completed/purged frame-flight records in bounded batches.
-    public func takeFrameTransmitTelemetry() -> [VideoFrameTransmitTelemetry] {
-        defer { completedFrameTelemetry.removeAll(keepingCapacity: true) }
-        return Array(completedFrameTelemetry)
-    }
-
-    /// Joins encoder-side fields onto the frame-flight record without a
-    /// per-frame log. The first quantum may complete before the encoder
-    /// callback returns, so both active and just-completed rings are
-    /// searched.
-    public func annotateFrameTelemetry(
-        frame: FrameNumber, averageQP: Int?, idrCauses: [String]
-    ) {
-        if activeFrameTelemetry[frame.rawValue] != nil {
-            activeFrameTelemetry[frame.rawValue]?.averageQP = averageQP
-            activeFrameTelemetry[frame.rawValue]?.idrCauses = idrCauses
-            return
-        }
-        guard let index = completedFrameTelemetry.lastIndex(where: {
-            $0.frameNumber == frame.rawValue
-        }) else { return }
-        completedFrameTelemetry[index].averageQP = averageQP
-        completedFrameTelemetry[index].idrCauses = idrCauses
     }
 
     private func retain(
@@ -763,11 +618,8 @@ public final class VideoChannel {
         pending[tag] = .video(video)
         let frame = video.frameNumber.rawValue
         queuedShardsByFrame[frame, default: 0] += 1
-        if video.pacerClass == .freshVideo {
-            queuedFreshShardsByFrame[frame, default: 0] += 1
-        }
         let headerBytes = Envelope(
-            channel: config.channel, seq: nextSeq, frame: video.frameNumber,
+            channel: .videoActive, seq: nextSeq, frame: video.frameNumber,
             timestamp: 0, fec: 0, extensions: video.extensions
         ).headerByteCount
         pacer.enqueue(
@@ -817,15 +669,9 @@ public final class VideoChannel {
                           let released = release(video) else {
                         sealRefusedFrames.insert(frame)
                         invalidateStoredFrame(frame)
-                        let last = Self.countDown(&queuedShardsByFrame, frame)
-                        if video.pacerClass == .freshVideo,
-                           Self.countDown(&queuedFreshShardsByFrame, frame),
-                           var telemetry =
-                            activeFrameTelemetry.removeValue(forKey: frame) {
-                            telemetry.purged = true
-                            appendCompletedTelemetry(telemetry)
+                        if Self.countDown(&queuedShardsByFrame, frame) {
+                            sealRefusedFrames.remove(frame)
                         }
-                        if last { sealRefusedFrames.remove(frame) }
                         continue
                     }
                     datagram = released
@@ -833,16 +679,6 @@ public final class VideoChannel {
                 send(datagram)
                 if datagram.pacerClass == .freshVideo {
                     store[datagram.frameNumber.rawValue]?.lastSentAtNS = now
-                    let frame = datagram.frameNumber.rawValue
-                    if activeFrameTelemetry[frame]?.firstTransmitAtNS == nil {
-                        activeFrameTelemetry[frame]?.firstTransmitAtNS = now
-                    }
-                    if Self.countDown(&queuedFreshShardsByFrame, frame),
-                       var telemetry =
-                        activeFrameTelemetry.removeValue(forKey: frame) {
-                        telemetry.lastTransmitAtNS = now
-                        appendCompletedTelemetry(telemetry)
-                    }
                 }
                 if datagram.pacerClass == .freshVideo
                     || datagram.pacerClass == .videoTail {
@@ -912,15 +748,10 @@ public final class VideoChannel {
             }
         }
         queuedShardsByFrame.removeAll(keepingCapacity: true)
-        queuedFreshShardsByFrame.removeAll(keepingCapacity: true)
         sealRefusedFrames.removeAll()
         for frame in frames {
             invalidateStoredFrame(frame)
             rememberPurgedFrame(frame)
-            if var telemetry = activeFrameTelemetry.removeValue(forKey: frame) {
-                telemetry.purged = true
-                appendCompletedTelemetry(telemetry)
-            }
         }
         return (datagrams, bytes)
     }
@@ -972,20 +803,11 @@ public final class VideoChannel {
         }
     }
 
-    private func appendCompletedTelemetry(
-        _ telemetry: VideoFrameTransmitTelemetry
-    ) {
-        if completedFrameTelemetry.count == Self.frameTelemetryCapacity {
-            completedFrameTelemetry.removeFirst()
-        }
-        completedFrameTelemetry.append(telemetry)
-    }
-
     /// Assigns the next chan-2 seq and seals. A refused seal consumes no
     /// seq, so the seqs that do reach the wire stay gap-free.
     private func release(_ video: PendingVideo) -> VideoChannelDatagram? {
         let envelope = Envelope(
-            channel: config.channel,
+            channel: .videoActive,
             seq: nextSeq,
             frame: video.frameNumber,
             timestamp: video.captureMicros,

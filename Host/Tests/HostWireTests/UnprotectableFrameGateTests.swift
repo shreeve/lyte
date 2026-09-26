@@ -2,18 +2,14 @@ import XCTest
 import HostCore
 import HostSession
 @_spi(Testing) import HostWire
+import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
-// THE GATE (HS-25): one oversized frame must never kill the session.
-//
-// The live wound (2026-07-28, 50 Mbps/p4 recipe): a ~307 KB first-IDR
-// packetized to 279 data shards, past the GF(2⁸) 255-shard RS block, and
-// `unprotectableDataShardCount(279)` thrown out of the send path exited
-// the host. The fec field binds ONE group per frame number and carries
-// no group index, so a frame above the protectable ceiling is
-// unshippable on this wire — the fix is a ceiling, not a split. Pinned
-// behaviors, each a leg below:
+// One oversized frame must never kill the session. The fec field binds
+// ONE group per frame number and carries no group index, so a frame past
+// the GF(2⁸) 255-shard RS block is unshippable on this wire: the session
+// holds a ceiling instead of splitting.
 //
 //   • THE CEILING IS THE BLOCK MATH, EXACTLY: maxDataShards(regime) ×
 //     the config's real shard budget — 231/204 (clean/lossy) × 1101 B
@@ -21,13 +17,13 @@ import LyteWireTestKit
 //   • A CEILING-SIZED FRAME SHIPS PROTECTED: exactly 255 shards
 //     (231 + 24 clean), every fec field decoding to the advertised
 //     geometry, parity ≥ 1 — full protection at the block's brim;
-//   • ONE BYTE PAST IT NEVER THROWS OUT OF THE SESSION: the live-repro
-//     307 KB IDR ingests to zero shards, zero datagrams, one counted
+//   • ONE BYTE PAST IT NEVER THROWS OUT OF THE SESSION: a 307 KB IDR
+//     ingests to zero shards, zero datagrams, one counted
 //     drop, the coalesced keyframe latch armed (once), and the frame
 //     number UNCONSUMED — the client sees no numbering gap, just the
 //     re-encoded IDR riding the number the oversized frame would have
 //     taken;
-//   • THE CHANNEL SEAM STAYS LOUD (W2): VideoChannel.ingest past the
+//   • THE CHANNEL SEAM STAYS LOUD: VideoChannel.ingest past the
 //     ceiling still throws `unprotectableDataShardCount` — the session
 //     guard is policy, the channel invariant is the backstop;
 //   • A REGIME FLIP SHRINKS THE CEILING, the guard follows: a frame
@@ -35,7 +31,7 @@ import LyteWireTestKit
 
 final class UnprotectableFrameGateTests: XCTestCase {
 
-    /// The HS-23 session rate — the recipe that exposed the bug live.
+    /// A 50 Mbps session: a 307 KB IDR is plausible at this rate.
     private static let rate = 50_000_000
 
     private static let tuple = FourTuple(
@@ -53,9 +49,9 @@ final class UnprotectableFrameGateTests: XCTestCase {
     private func makeSession(box: Box) -> Session {
         Session(
             config: SessionConfig(
-                crypto: .testPassthrough, rateBitsPerSecond: Self.rate
+                rateBitsPerSecond: Self.rate
             ),
-            clientTuple: Self.tuple,
+            passthroughTo: Self.tuple,
             now: 0,
             rng: SplitMix64(seed: 0x2501)
         ) { [box] datagram in
@@ -73,18 +69,7 @@ final class UnprotectableFrameGateTests: XCTestCase {
         }
     }
 
-    /// A frame-shaped Annex-B blob with position-dependent bytes (the
-    /// house pattern — a shard swap can never pass byte equality).
-    private func syntheticFrame(
-        byteCount: Int, irap: Bool = false
-    ) -> [UInt8] {
-        [0, 0, 0, 1, irap ? 0x26 : 0x02, 0x01]
-            + (0..<(byteCount - 6)).map {
-                UInt8(truncatingIfNeeded: $0 &* 131 &+ 7)
-            }
-    }
-
-    // MARK: Leg 1 — the ceiling is the block math, exactly
+    // MARK: - The ceiling is the block math, exactly
 
     func testCeilingIsTheBlockMathExactly() {
         let box = Box()
@@ -104,7 +89,7 @@ final class UnprotectableFrameGateTests: XCTestCase {
         XCTAssertGreaterThan(307_000, session.protectableFrameByteCeiling)
     }
 
-    // MARK: Leg 2 — a ceiling-sized frame ships fully protected
+    // MARK: - A ceiling-sized frame ships fully protected
 
     func testCeilingSizedFrameShipsProtected() throws {
         let box = Box()
@@ -141,7 +126,7 @@ final class UnprotectableFrameGateTests: XCTestCase {
         XCTAssertEqual(session.counters.videoFramesUnprotectable, 0)
     }
 
-    // MARK: Leg 3 — the live repro never throws out of the session
+    // MARK: - A frame past the ceiling never throws out of the session
 
     func testOversizedFrameDropsArmsIdrAndKeepsTheNumber() throws {
         let box = Box()
@@ -154,7 +139,7 @@ final class UnprotectableFrameGateTests: XCTestCase {
         // guard's arm below.
         _ = session.takeFreshKeyframeRequest()
 
-        // The 2026-07-28 live frame: ~307 KB, the session's first IDR.
+        // ~307 KB, the session's first IDR.
         let oversized = syntheticFrame(byteCount: 307_000, irap: true)
         var shards = 0
         XCTAssertNoThrow(
@@ -212,14 +197,15 @@ final class UnprotectableFrameGateTests: XCTestCase {
             capacity: original.count
         )
         _ = pointer.initialize(from: original)
-        _ = try session.ingestVideoFrame(
-            UnsafeBufferPointer(pointer),
-            captureTimestampMicroseconds: 7_777,
-            isKeyframe: true,
-            now: now
-        )
+        let context = try XCTUnwrap(session.beginVideoFramePreparation(
+            encodedByteCount: original.count))
+        let prepared = try Session.prepareVideoFrame(
+            UnsafeBufferPointer(pointer), isKeyframe: true, context: context)
         pointer.update(repeating: 0xE1)
         pointer.deallocate()
+        try session.commitPreparedVideoFrame(
+            prepared, context: context,
+            captureTimestampMicroseconds: 7_777, now: now)
 
         drain(session, until: 100_000_000, now: &now)
         var assembler = VideoAssembler()
@@ -236,7 +222,7 @@ final class UnprotectableFrameGateTests: XCTestCase {
         XCTAssertEqual(decoded.map(\.annexB), [original])
     }
 
-    // MARK: Leg 4 — the channel seam stays loud (the W2 backstop)
+    // MARK: - The channel seam stays loud
 
     func testChannelSeamStillThrowsPastTheCeiling() throws {
         var emitted: [VideoChannelDatagram] = []
@@ -269,7 +255,7 @@ final class UnprotectableFrameGateTests: XCTestCase {
         XCTAssertTrue(emitted.isEmpty)
     }
 
-    // MARK: Leg 5 — a regime flip shrinks the ceiling, the guard follows
+    // MARK: - A regime flip shrinks the ceiling, the guard follows
 
     func testLossyRegimeShrinksTheCeilingAndTheGuardFollows() throws {
         var emitted: [VideoChannelDatagram] = []

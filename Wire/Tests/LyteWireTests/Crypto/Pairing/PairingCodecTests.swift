@@ -4,7 +4,8 @@ import LyteWireTestKit
 
 // The pairing message codecs (CTRL 0x0B–0x0E), anchored by hand-built
 // byte layouts — the anchor pairing-v1.json's messageVectors are checked
-// against, so vectorgen never grades its own homework.
+// against, so vectorgen never grades its own homework — plus the encode
+// guards. Decode rejects live in the vectors.
 
 final class PairingCodecTests: XCTestCase {
 
@@ -59,80 +60,16 @@ final class PairingCodecTests: XCTestCase {
     // MARK: Encode guards
 
     func testEncodeRejectsMisSizedFields() {
-        XCTAssertThrowsError(
+        assertThrows(PairingMessageError.invalidShareLength(3)) {
             try PairingShareA(share: [1, 2, 3]).encode()
-        ) { error in
-            XCTAssertEqual(
-                error as? PairingMessageError, .invalidShareLength(3)
-            )
         }
-        XCTAssertThrowsError(
+        assertThrows(PairingMessageError.invalidTagLength(1)) {
             try PairingShareB(
                 share: Self.share, confirmationTag: [0]
             ).encode()
-        ) { error in
-            XCTAssertEqual(
-                error as? PairingMessageError, .invalidTagLength(1)
-            )
         }
-        XCTAssertThrowsError(
+        assertThrows(PairingMessageError.invalidTagLength(0)) {
             try PairingConfirm(confirmationTag: []).encode()
-        ) { error in
-            XCTAssertEqual(
-                error as? PairingMessageError, .invalidTagLength(0)
-            )
-        }
-    }
-
-    // MARK: Decode rejects — the fixed-frame discipline
-
-    func testDecodeRejectsHostileBytes() {
-        // Truncation.
-        XCTAssertThrowsError(try PairingShareA.decode([0x0B])) {
-            XCTAssertEqual(
-                $0 as? PairingMessageError, .truncatedMessage
-            )
-        }
-        XCTAssertThrowsError(
-            try PairingShareB.decode([0x0C] + Self.share)
-        ) {
-            XCTAssertEqual($0 as? PairingMessageError, .truncatedMessage)
-        }
-        XCTAssertThrowsError(try PairingReject.decode([0x0E])) {
-            XCTAssertEqual($0 as? PairingMessageError, .truncatedMessage)
-        }
-        // Trailing bytes.
-        XCTAssertThrowsError(
-            try PairingShareA.decode([0x0B] + Self.share + [0x00])
-        ) {
-            XCTAssertEqual($0 as? PairingMessageError, .trailingBytes)
-        }
-        XCTAssertThrowsError(
-            try PairingConfirm.decode([0x0D] + Self.tag + [0x00])
-        ) {
-            XCTAssertEqual($0 as? PairingMessageError, .trailingBytes)
-        }
-        // Foreign type bytes.
-        XCTAssertThrowsError(
-            try PairingShareA.decode([0x0C] + Self.share)
-        ) {
-            XCTAssertEqual(
-                $0 as? PairingMessageError, .unexpectedType(0x0C)
-            )
-        }
-        XCTAssertThrowsError(
-            try PairingConfirm.decode([0x0B] + Self.tag)
-        ) {
-            XCTAssertEqual(
-                $0 as? PairingMessageError, .unexpectedType(0x0B)
-            )
-        }
-        // Reject reasons: zero-fill and unassigned values.
-        XCTAssertThrowsError(try PairingReject.decode([0x0E, 0x00])) {
-            XCTAssertEqual($0 as? PairingMessageError, .unknownReason(0x00))
-        }
-        XCTAssertThrowsError(try PairingReject.decode([0x0E, 0x7F])) {
-            XCTAssertEqual($0 as? PairingMessageError, .unknownReason(0x7F))
         }
     }
 }

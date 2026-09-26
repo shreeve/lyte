@@ -2,10 +2,8 @@ import XCTest
 import LyteWire
 import LyteWireTestKit
 
-// Seeded, deterministic property coverage: every trial reproduces from the
-// fixed seed on both platforms. W-G1's full 10^7-iteration fuzz is a CI
-// budget decision for later; these counts keep `swift test` under a few
-// seconds while still walking the interesting boundaries every run.
+// Seeded envelope round trips: every trial reproduces from the fixed seed
+// on both platforms. The never-trap sweep lives in CtrlDecoderFuzzTests.
 
 final class RoundTripPropertyTests: XCTestCase {
 
@@ -38,41 +36,6 @@ final class RoundTripPropertyTests: XCTestCase {
                 datagram,
                 "trial \(trial)"
             )
-        }
-    }
-
-    func testDecodeNeverTrapsOnArbitraryBytes() {
-        var rng = SplitMix64(seed: 0x57_1D_E0_02)
-        for _ in 0..<20_000 {
-            let length = rng.int(in: 0...1300)
-            var bytes = rng.bytes(length)
-            // Bias toward the parser's own edges: valid-looking headers
-            // with hostile TLV blocks.
-            if length >= 25, Bool.random(using: &rng) {
-                bytes[1] = 0x01
-            }
-            // Throws or succeeds; must never crash.
-            _ = try? Envelope.decode(bytes)
-        }
-    }
-
-    func testDecodeOfTruncatedValidDatagramsNeverTraps() throws {
-        var rng = SplitMix64(seed: 0x57_1D_E0_03)
-        for _ in 0..<2_000 {
-            var envelope = Envelope(
-                channel: .videoActive,
-                seq: ChannelSeq(rawValue: UInt16.random(in: .min ... .max, using: &rng)),
-                frame: FrameNumber(rawValue: 1),
-                timestamp: 2,
-                fec: 3,
-                extensions: try randomExtensions(using: &rng)
-            )
-            if envelope.headerByteCount > 200 {
-                envelope.extensions = []
-            }
-            let datagram = try envelope.encode(payload: rng.bytes(64))
-            let cut = rng.int(in: 0..<datagram.count)
-            _ = try? Envelope.decode(Array(datagram.prefix(cut)))
         }
     }
 

@@ -79,7 +79,7 @@ Behavior the proof exercises today:
   pump beat; key and button edges leave at once and wait, in order,
   through a full reliable queue rather than being dropped; non-finite
   coordinates are refused. Ctrl, Alt and Shift are forwarded; Meta stays
-  local. A drag that leaves the canvas is clamped to the stream's edge,
+  local, and volume keys are not forwarded (as in the native client). A drag that leaves the canvas is clamped to the stream's edge,
   chorded buttons are reconciled from `PointerEvent.buttons`, and held
   keys and buttons are released on blur. The peer echoes input but
   injects nothing.
@@ -94,16 +94,18 @@ Chrome with a GPU, Node 24 or 26, and `openssl`.
 
 ```sh
 Browser/Scripts/build.sh     # WASM + page + corpus staged in Browser/.serve/
-Browser/Scripts/serve.sh     # http://127.0.0.1:8765/ with control peer + sidecar
+node Browser/Scripts/smoke.mjs --serve  # http://127.0.0.1:8765/ with control peer + sidecar
 # open the URL in Chrome; Connect and Re-run work repeatedly
 
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   Browser/Scripts/smoke-chrome.sh   # headless proof; rebuilds first
 ```
 
-`serve.sh` builds `lyte-control-peer`, starts it on loopback UDP 41234
-(`LYTE_CONTROL_PEER_PORT`, never 41151), starts the sidecar with
-`--udp-peer`, and serves `.serve/`. Nothing is fetched at page run time:
+`smoke.mjs` builds `lyte-control-peer`, starts it on a fresh loopback UDP
+port (`LYTE_CONTROL_PEER_PORT`, never 41151), starts the sidecar with
+`--udp-peer`, and serves `.serve/`; with `--serve` the peer serves
+sessions until Ctrl-C, the page listens on `LYTE_BROWSER_PORT` (8765) and
+no Chrome starts. Nothing is fetched at page run time:
 `build.sh` stages the vendored WASI shim and the page's import map
 resolves it. The sidecar installs `rwebtransport` under `Browser/Harness/`
 with `npm ci` on first run. The module is about 77 MB without binaryen's
@@ -111,10 +113,12 @@ with `npm ci` on first run. The module is about 77 MB without binaryen's
 
 The smoke's PASS lines and what each asserts are listed in
 [TESTING.md](TESTING.md#browser-smoke--browserscriptssmoke-chromesh). The
-Browser package's native tests run in the macOS gate; the WASM build runs
-there when the toolchain is installed. Neither needs Chrome.
+Browser package's native tests run in the macOS and pup gates (off macOS
+the manifest keeps only `LyteClientBrowserCore` and its suite, so Linux
+never resolves JavaScriptKit); the WASM build runs in the macOS gate when
+the toolchain is installed. Neither needs Chrome.
 
-The `serve.sh` harness always starts its own local peer. Pointing the page
+The harness always starts its own local peer. Pointing the page
 at a peer on pup (a fresh 41xxx port, never 41151) needs a serve mode that
 skips the local peer, which does not exist yet.
 
@@ -148,9 +152,8 @@ the carrier opaque (its AEAD would fail otherwise). The page requires an
 unreliable transport (no HTTP/2 fallback) and sets 100 ms incoming and
 outgoing datagram max-age; the relay drops what its writer refuses and
 anything that waited past 50 ms. The session keeps Lyte's 1152 B budget;
-Chrome reports `maxDatagramSize` 1024, the smoke carries near-budget video
-shards inbound, and an earlier echo probe measured 1214 B usable. A
-per-session ceiling measurement does not exist.
+Chrome reports `maxDatagramSize` 1024 and the smoke carries near-budget
+video shards inbound; a per-session ceiling measurement does not exist.
 
 ## Intended shape
 
@@ -208,9 +211,9 @@ control peer's corpus replay, not against a real desktop.
 | B-5 | Sealed corpus video, FEC-assembled and presented on the Conductor's clock | smoke: `conductor-video/*` (paced, none early); native `BrowserPlayoutTests` |
 | B-6 | Input, clipboard text, Opus to AudioWorklet | smoke: `session-input/echo`, `clipboard/*`, `audio/*`, `audio-worklet/ring` (samples played); native `BrowserInputTests`; DOM input rules in `page.test.mjs`, not driven by the headless smoke |
 
-Next, toward a usable client ([TODO.md](../TODO.md)): live Direct Eye
-against a real host, a persistent interactive session, Safari, and product
-composition (`LyteBrowserApp`).
+Next, toward a usable client ([TODO.md](../TODO.md)): a relay to a real
+host (or WebTransport on the host), live Direct Eye in Chrome, a persistent
+interactive session, Safari, and product composition (`LyteBrowserApp`).
 
 The original research, measurements and rejected alternatives are in the
 [bridge consult](history/20260720-184200-browser-client-caddy-bridge.md)

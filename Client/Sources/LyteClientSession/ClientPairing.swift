@@ -63,8 +63,6 @@ public struct ClientPairing: Sendable {
         pake.result?.peerStaticPublicKeyToPin
     }
 
-    public var isPaired: Bool { pairedHostStaticPublicKey != nil }
-
     /// Terminal (success or failure) — the shell can stop waiting once
     /// this is true AND its reliable endpoint is quiescent (the confirm
     /// must be acknowledged before "paired" is honest end to end).

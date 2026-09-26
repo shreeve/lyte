@@ -63,53 +63,40 @@ let toneHz: Float = 440
 
 func parseArgs(_ argv: [String]) throws -> Options {
     var opts = Options()
-    var i = 0
-    while i < argv.count {
-        let a = argv[i]
+    var rest = argv[...]
+    /// The value after `flag` through `parse`, or a reason naming it.
+    func value<T>(
+        _ flag: String, _ want: String, _ parse: (String) -> T? = { $0 }
+    ) throws -> T {
+        guard let raw = rest.popFirst(), let value = parse(raw) else {
+            throw PeerError.message("\(flag) needs \(want)")
+        }
+        return value
+    }
+    while let a = rest.popFirst() {
         switch a {
         case "--listen":
-            i += 1
-            guard i < argv.count, let p = UInt16(argv[i]), p != 41151 else {
-                throw PeerError.message("--listen needs a fresh 41xxx port (not 41151)")
+            opts.listenPort = try value(a, "a fresh 41xxx port (not 41151)") {
+                UInt16($0).flatMap { $0 != 41151 ? $0 : nil }
             }
-            opts.listenPort = p
         case "--bind":
-            i += 1
-            guard i < argv.count else { throw PeerError.message("--bind needs a host") }
-            opts.bindHost = argv[i]
+            opts.bindHost = try value(a, "a host")
         case "--pin":
-            i += 1
-            guard i < argv.count else { throw PeerError.message("--pin needs digits") }
-            opts.pin = argv[i]
+            opts.pin = try value(a, "digits")
         case "--seconds":
-            i += 1
-            guard i < argv.count, let s = Double(argv[i]), s > 0,
-                  s.isFinite else {
-                throw PeerError.message("--seconds needs a positive number")
+            opts.seconds = try value(a, "a positive number") {
+                Double($0).flatMap { $0 > 0 && $0.isFinite ? $0 : nil }
             }
-            opts.seconds = s
         case "--sessions":
-            i += 1
-            guard i < argv.count, let n = Int(argv[i]), n >= 0 else {
-                throw PeerError.message("--sessions needs a count (0 = unlimited)")
+            opts.sessions = try value(a, "a count (0 = unlimited)") {
+                Int($0).flatMap { $0 >= 0 ? $0 : nil }
             }
-            opts.sessions = n
         case "--meta-out":
-            i += 1
-            guard i < argv.count else { throw PeerError.message("--meta-out needs a path") }
-            opts.metaOut = argv[i]
+            opts.metaOut = try value(a, "a path")
         case "--host-static-hex":
-            i += 1
-            guard i < argv.count else {
-                throw PeerError.message("--host-static-hex needs hex")
-            }
-            opts.hostStaticHex = argv[i]
+            opts.hostStaticHex = try value(a, "hex")
         case "--emit-corpus":
-            i += 1
-            guard i < argv.count else {
-                throw PeerError.message("--emit-corpus needs a directory")
-            }
-            opts.emitCorpusDir = argv[i]
+            opts.emitCorpusDir = try value(a, "a directory")
         case "--help", "-h":
             print(
                 """
@@ -137,24 +124,14 @@ func parseArgs(_ argv: [String]) throws -> Options {
         default:
             throw PeerError.message("unknown argument: \(a)")
         }
-        i += 1
     }
     return opts
 }
 
 func loadCorpusFrames(from directory: String) throws -> [[UInt8]] {
-    let names = [
-        "frame-000-idr.annexb",
-        "frame-001-p.annexb",
-        "frame-002-p.annexb",
-        "frame-003-p.annexb",
-        "frame-004-p.annexb",
-        "frame-005-p.annexb",
-        "frame-006-p.annexb",
-        "frame-007-p.annexb",
-        "frame-008-p.annexb",
-        "frame-009-p.annexb",
-    ]
+    let names = (0..<10).map {
+        "frame-00\($0)-\($0 == 0 ? "idr" : "p").annexb"
+    }
     var frames: [[UInt8]] = []
     for name in names {
         let path = (directory as NSString).appendingPathComponent(name)
@@ -306,9 +283,9 @@ enum SessionVerdict {
     case fail(String)
 }
 
-/// One client's session: a fresh HostWire Session, pairing responder and
-/// media emitters, opened by a message 1 and bound to the client that
-/// completes the handshake (the Session's primary path).
+/// One client's session: a HostWire Session answering an authenticated
+/// message 1, a pairing responder and media emitters, bound to the client
+/// that sent it (the Session's primary path).
 final class PeerSession {
     let session: Session
     let pairing: PairingResponderService
@@ -317,7 +294,6 @@ final class PeerSession {
     let toneEncoder: HostOpusEncoder?
     let outbox = Outbox()
 
-    var established = false
     var paired = false
     var capabilitiesAgreed = false
     var closed = false
@@ -331,7 +307,7 @@ final class PeerSession {
     var clipboardSetsAcked = 0
 
     init(
-        latching packet: UdpSocket.Packet,
+        answering handshake: AuthenticatedHandshake,
         sock: UdpSocket,
         hostStatic: NoiseKeyPair,
         pin: String,
@@ -350,19 +326,12 @@ final class PeerSession {
             toneEncoder = nil
             toneEmitFinished = true
         }
-        let tuple = FourTuple(
-            localAddress: sock.localHost,
-            localPort: sock.localPort,
-            remoteAddress: packet.host,
-            remotePort: packet.port
-        )
         // Corpus→WT needs a modest pace: 50 Mbps blasts the
         // sidecar/Chrome datagram path and FEC-impossibles.
         // Control-only keeps the native-like ceiling.
         let pace = corpusFrames == nil ? 50_000_000 : 3_000_000
-        // The browser sends no chan-3 feedback, so the default 350 ms
-        // blackout would freeze video after ~3 frames and suppress the
-        // rest of the corpus. Widen silence for corpus emit only.
+        // Corpus runs widen the blackout clocks so no silence freezes
+        // video before every corpus frame has left.
         let lifecycle = corpusFrames == nil
             ? SessionMachineConfig()
             : SessionMachineConfig(
@@ -370,42 +339,42 @@ final class PeerSession {
                 recoveryBlackoutSilenceMicroseconds: 30_000_000
             )
         let outbox = self.outbox
-        session = Session(
+        let opening: [SessionEvent]
+        (session, opening) = try Session.answer(
+            handshake,
             config: SessionConfig(
-                crypto: .noise(hostStatic: hostStatic),
                 rateBitsPerSecond: pace,
                 capabilities: .wireDefault.declaringClipboardText(),
                 lifecycle: lifecycle
             ),
-            clientTuple: tuple,
             now: now,
+            hostMicroseconds: now / 1_000,
             rng: SystemRandomNumberGenerator()
         ) { datagram in
             outbox.datagrams.append(datagram)
         }
-        print("session: latched \(packet.host):\(packet.port)")
+        let client = handshake.clientTuple
+        print("session: answered \(client.remoteAddress):\(client.remotePort)")
+        handleEvents(opening, now: now)
+        service(now: now)
     }
 
     var mediaReady: Bool {
-        established && paired && capabilitiesAgreed
+        paired && capabilitiesAgreed
     }
 
-    /// One inbound datagram, then the emitters and a flush.
-    func receive(_ packet: UdpSocket.Packet, now: UInt64) {
-        let tuple = FourTuple(
-            localAddress: sock.localHost,
-            localPort: sock.localPort,
-            remoteAddress: packet.host,
-            remotePort: packet.port
-        )
-        handleEvents(
-            session.receive(
-                packet.bytes, from: tuple,
-                now: now, hostMicroseconds: now / 1_000
-            ),
-            now: now
-        )
+    /// One inbound datagram, then the emitters and a flush. True when it
+    /// is another handshake initiation at this unconfirmed session: the
+    /// acceptor's to judge.
+    func receive(
+        _ packet: UdpSocket.Packet, from tuple: FourTuple, now: UInt64
+    ) -> Bool {
+        let events = session.receive(
+            packet.bytes, from: tuple,
+            now: now, hostMicroseconds: now / 1_000)
+        handleEvents(events, now: now)
         service(now: now)
+        return events.contains(.initiationWhileUnconfirmed)
     }
 
     /// A timer pass with no datagram.
@@ -557,7 +526,6 @@ final class PeerSession {
         for event in events {
             switch event {
             case .handshakeCompleted(let remote):
-                established = true
                 print("noise: handshake completed — client static \(Hex.string(remote))")
                 if let hash = session.handshakeHash {
                     logPairing(pairing.sessionEstablished(
@@ -661,10 +629,9 @@ final class PeerSession {
                 flushOutbox()
             }
         }
-        guard established && paired && capabilitiesAgreed else {
+        guard paired && capabilitiesAgreed else {
             return .fail("""
-                incomplete (established=\(established) paired=\(paired) \
-                caps=\(capabilitiesAgreed))
+                incomplete (paired=\(paired) caps=\(capabilitiesAgreed))
                 """)
         }
         if let frames = corpusFrames, !corpusEmitFinished {
@@ -716,9 +683,6 @@ final class ControlPeer {
     let corpusFrames: [[UInt8]]?
 
     init(opts: Options) throws {
-        if opts.listenPort == 41151 {
-            throw PeerError.message("refusing standing host UDP 41151")
-        }
         hostStatic = try loadHostStatic(hex: opts.hostStaticHex)
         var rng = SystemRandomNumberGenerator()
         pin = opts.pin ?? PairingResponderService.mintPin(using: &rng)
@@ -769,18 +733,19 @@ final class ControlPeer {
     }
 
     /// Serves sessions one at a time. A session ends when the client
-    /// closes it, when no handshake completed 30 s after its first
-    /// datagram, or `seconds` after that datagram; then the peer waits
-    /// for the next message 1. A single-session run must see its
+    /// closes it, when its answer goes unconfirmed past the client's
+    /// retransmit span, or `seconds` after the answer; then the peer
+    /// waits for the next message 1. A single-session run must see its
     /// handshake within 30 s and fails the process when the session
     /// fails; a multi-session run logs a failed session and keeps serving.
     func run() throws {
         let start = SystemMonotonicClock.nowNanoseconds
         let handshakeDeadline: UInt64? =
             sessions == 1 ? start + 30_000_000_000 : nil
+        var acceptor = HandshakeAcceptor(
+            config: HandshakeAcceptor.Config(hostStatic: hostStatic))
         var current: PeerSession?
         var sessionDeadline: UInt64 = 0
-        var establishDeadline: UInt64 = 0
         var served = 0
         var failed = 0
         print("noise: awaiting client handshake…")
@@ -789,7 +754,7 @@ final class ControlPeer {
             let now = SystemMonotonicClock.nowNanoseconds
             if let peer = current,
                peer.closed || now >= sessionDeadline
-                || (!peer.established && now >= establishDeadline) {
+                || peer.session.isUnconfirmedAnswerAbandoned(now: now) {
                 current = nil
                 served += 1
                 switch peer.finish(now: now) {
@@ -820,21 +785,28 @@ final class ControlPeer {
             }
 
             if let packet = sock.recv() {
-                if current == nil {
-                    guard Session.looksLikeHandshakeInitiation(packet.bytes)
-                    else { continue }
-                    current = try PeerSession(
-                        latching: packet,
-                        sock: sock,
-                        hostStatic: hostStatic,
-                        pin: pin,
-                        corpusFrames: corpusFrames,
-                        now: now
-                    )
-                    sessionDeadline = now + UInt64(seconds * 1e9)
-                    establishDeadline = now + 30_000_000_000
+                let tuple = FourTuple(
+                    localAddress: sock.localHost, localPort: sock.localPort,
+                    remoteAddress: packet.host, remotePort: packet.port)
+                if let peer = current,
+                   !peer.receive(packet, from: tuple, now: now) {
+                    continue
                 }
-                current?.receive(packet, now: now)
+                guard case .authenticated(let handshake) = acceptor.accept(
+                    packet.bytes[...], from: tuple, now: now
+                ).verdict else { continue }
+                if current != nil {
+                    print("noise: a newer handshake replaces the unconfirmed one")
+                }
+                current = try PeerSession(
+                    answering: handshake,
+                    sock: sock,
+                    hostStatic: hostStatic,
+                    pin: pin,
+                    corpusFrames: corpusFrames,
+                    now: now
+                )
+                sessionDeadline = now + UInt64(seconds * 1e9)
                 continue
             }
 
