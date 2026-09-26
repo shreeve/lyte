@@ -1869,8 +1869,11 @@ final class SessionWire {
                     let loss = String(
                         format: "%.3f/%.3f",
                         f.lossFraction, f.postFecLossFraction)
+                    let anchor = f.anchorBitsPerSecond.map {
+                        "\($0 / 1_000) kbps"
+                    } ?? "none"
                     forensics = """
-                         [anchor \(f.anchorBitsPerSecond / 1_000) kbps from \
+                         [anchor \(anchor) from \
                         \(f.rateBeforeBitsPerSecond / 1_000) kbps; belief \
                         \(belief) kbps, honest \(honest), streak age \
                         \((f.streakAgeNS ?? 0) / 1_000_000) ms; streak \

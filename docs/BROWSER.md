@@ -21,7 +21,7 @@ session has streamed a real desktop from a host's Direct Eye yet.
 | `LyteClientBrowser` | `Browser/Sources/` | The WASM executable: `globalThis.lyteBrowser`, the JS↔WASM bridge (JavaScriptKit) |
 | Page | `Browser/Page/` | `session-pump.js` (WebTransport datagrams ↔ WASM), `video-sink.js` (WebCodecs decode, WebGPU present), `interaction.js` (DOM input, Opus decode, AudioWorklet), `audio-ring-worklet.js`, `session-proof.js` (the scripted proof), `lyte-io.js`, `index.html`, and `vendor/browser_wasi_shim/` (the pinned `@bjorn3/browser_wasi_shim` 0.4.1 build PackageToJS imports; MIT OR Apache-2.0) |
 | `lyte-wt-sidecar` | `Browser/Scripts/wt-sidecar.mjs` | Same-box WebTransport ↔ UDP relay (Node, `rwebtransport` from `Browser/Harness/package-lock.json`); opaque bytes only, one UDP socket per WebTransport session, at most eight sessions; loopback unless `--allow-remote`; refuses to relay to 41151 |
-| `lyte-control-peer` | `Host/Sources/lyte-control-peer/` | A real `HostWire.Session` and pairing responder over UDP with no Direct Eye; `--emit-corpus` sends `video-corpus-v1` frames 000–009 and an Opus tone; `--sessions 0` serves sessions until killed |
+| `lyte-control-peer` | `Host/Sources/lyte-control-peer/` | A real `HostWire.Session` and pairing responder over UDP with no Direct Eye; `--emit-corpus` sends `video-corpus-v1` frames 000–009 and an Opus tone; `--sessions 0` serves sessions until killed; `--stream-corpus` loops those frames at 60 fps, unpaired, under `--rate-mbps` and prints every rate move (the live rate-estimator rig, dialed by `lyte-cli wire-view --host-key`) |
 
 The page executes; WASM decides. Every decode, presentation, recovery,
 repair and latency verdict below is made by the core; the page decodes

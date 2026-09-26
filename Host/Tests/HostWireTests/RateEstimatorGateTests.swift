@@ -2842,6 +2842,46 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(estimator.stats.upshiftsCadenceHeld, heldBefore,
             "RECOVERY carried an old-path cadence band into the new path")
     }
+
+    /// A full train is evidence for the sample window, not forever. A
+    /// static desktop sends only micro-train frames for minutes; the
+    /// reporting anchor and a fall's forensic anchor must then read
+    /// "none", never the last full train from minutes ago.
+    func testStaleFullTrainsNeitherReportNorAnchor() {
+        let estimator = makeEstimator()
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+        func beat(count: Int, mbps: Double, delay: UInt64 = 0)
+            -> RateEstimatorVerdict {
+            now += 25 * Self.ms
+            clientMicros += 25_000
+            let samples = train(
+                estimator, seqStart: seq, count: count,
+                sendStartNS: now - Self.ms,
+                bottleneckBitsPerSecond: mbps * 1e6,
+                extraDelayMicros: delay)
+            seq += count
+            return estimator.ingest(
+                report(samples: samples, clientMicros: clientMicros),
+                now: now, inRecovery: false)
+        }
+        for _ in 0..<10 { _ = beat(count: 12, mbps: 20) }
+        XCTAssertNotNil(estimator.measuredDeliveryRateBitsPerSecond)
+        // Twelve seconds of micro-train frames only.
+        for _ in 0..<480 { _ = beat(count: 4, mbps: 20) }
+        XCTAssertNil(estimator.measuredDeliveryRateBitsPerSecond,
+            "a full train from 12 s ago still reports as measured delivery")
+        // A persisted streak with no backlog falls (bounded
+        // multiplicative); its forensics must not cite the stale train.
+        var fell = false
+        for _ in 0..<40 where !fell {
+            fell = beat(count: 4, mbps: 20, delay: 40_000).change == .overuse
+        }
+        XCTAssertTrue(fell)
+        XCTAssertNil(estimator.lastOveruseFall?.anchorBitsPerSecond,
+            "the fall's anchor cited a full train from 12 s ago")
+    }
 }
 
 private func XCTAssertEqual(

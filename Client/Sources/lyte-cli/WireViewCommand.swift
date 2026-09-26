@@ -248,6 +248,9 @@ struct WireView: AsyncParsableCommand {
                     finishBox.withLock { $0 }?("session closed: \(reason)")
                 case .protocolNote(let note):
                     print("wire-view: \(note)")
+                case .videoRecoveryRequested(let cause, let frame):
+                    print("wire-view: IDR requested after frame "
+                        + "\(frame.rawValue) — \(cause.shortName)")
                 }
             })
 

@@ -608,5 +608,9 @@ final class NackRepairClientGateTests: XCTestCase {
         XCTAssertTrue(harness.notes.contains {
             $0.contains("repair refused") && $0.contains("staleBudget")
         }, "the refusal is loud in the protocol notes")
+        XCTAssertEqual(
+            harness.core.snapshotCounters().videoRecoveryEpisodesByCause,
+            [.repairAbandoned: 1],
+            "the IDR the refusal drew is booked as an abandoned repair")
     }
 }

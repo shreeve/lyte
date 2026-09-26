@@ -13,6 +13,13 @@
 // `--sessions N` serves N sessions in turn (0 = until killed), each with
 // a fresh HostWire Session and pairing responder under the one PIN, so a
 // page's Connect / Re-run can dial again without restarting the peer.
+//
+// `--stream-corpus DIR` is the live rate rig: it loops the same corpus
+// frames at 60 fps (an IRAP every 10 frames, ~8 Mbps) for the whole
+// session under the native `--rate-mbps` ceiling, starting once
+// capabilities agree — no pairing, so `lyte-cli wire-view --host-key`
+// dials it with a throwaway identity and nothing is pinned — and prints
+// every estimator rate move plus a once-a-second estimator line.
 
 import Foundation
 import HostAudio
@@ -48,6 +55,10 @@ struct Options {
     var hostStaticHex: String?
     /// Directory with frame-000-idr.annexb … frame-009-p.annexb, or nil.
     var emitCorpusDir: String?
+    /// The same frames looped at 60 fps for the session (the rate rig).
+    var streamCorpusDir: String?
+    /// The session ceiling for `--stream-corpus`, Mbps.
+    var rateMbps: Int = 50
 }
 
 /// ~3 Conductor beats between frames: slower than 60 Hz so the browser's
@@ -60,6 +71,8 @@ let tonePacketIntervalNS: UInt64 = 5_000_000
 /// ~240 ms of tone — enough for WebCodecs + AudioWorklet smoke.
 let tonePacketCount = 48
 let toneHz: Float = 440
+/// The rate rig's frame cadence (60 fps).
+let streamFrameIntervalNS: UInt64 = 16_666_667
 
 func parseArgs(_ argv: [String]) throws -> Options {
     var opts = Options()
@@ -97,6 +110,12 @@ func parseArgs(_ argv: [String]) throws -> Options {
             opts.hostStaticHex = try value(a, "hex")
         case "--emit-corpus":
             opts.emitCorpusDir = try value(a, "a directory")
+        case "--stream-corpus":
+            opts.streamCorpusDir = try value(a, "a directory")
+        case "--rate-mbps":
+            opts.rateMbps = try value(a, "a ceiling in Mbps (1–1000)") {
+                Int($0).flatMap { (1...1_000).contains($0) ? $0 : nil }
+            }
         case "--help", "-h":
             print(
                 """
@@ -116,6 +135,11 @@ func parseArgs(_ argv: [String]) throws -> Options {
                                       frames 000–009 + Opus tone (no
                                       DRM). Declares clipboardText;
                                       echoes input; in-memory clipboard ack.
+                  --stream-corpus DIR the live rate rig: loop those frames at
+                                      60 fps for the whole session, no
+                                      pairing (dial with lyte-cli wire-view
+                                      --host-key), printing every rate move
+                  --rate-mbps N       --stream-corpus ceiling (default 50)
 
                 Safe beside standing lyte-host on 41151 — no Direct Eye / DRM.
                 """
@@ -291,8 +315,15 @@ final class PeerSession {
     let pairing: PairingResponderService
     let sock: UdpSocket
     let corpusFrames: [[UInt8]]?
+    /// Frames looped for the whole session (the rate rig), or nil.
+    let streamFrames: [[UInt8]]?
     let toneEncoder: HostOpusEncoder?
     let outbox = Outbox()
+    let answeredAtNS: UInt64
+    var streamIndex = 0
+    var streamNextEmitNS: UInt64 = 0
+    var streamRefused = 0
+    var estimatorLineAtNS: UInt64 = 0
 
     var paired = false
     var capabilitiesAgreed = false
@@ -312,10 +343,14 @@ final class PeerSession {
         hostStatic: NoiseKeyPair,
         pin: String,
         corpusFrames: [[UInt8]]?,
+        streamFrames: [[UInt8]]? = nil,
+        rateBitsPerSecond: Int = 50_000_000,
         now: UInt64
     ) throws {
         self.sock = sock
         self.corpusFrames = corpusFrames
+        self.streamFrames = streamFrames
+        self.answeredAtNS = now
         pairing = PairingResponderService(
             pin: Array(pin.utf8),
             hostStaticPublicKey: hostStatic.publicKey
@@ -329,7 +364,8 @@ final class PeerSession {
         // Corpus→WT needs a modest pace: 50 Mbps blasts the
         // sidecar/Chrome datagram path and FEC-impossibles.
         // Control-only keeps the native-like ceiling.
-        let pace = corpusFrames == nil ? 50_000_000 : 3_000_000
+        let pace = streamFrames != nil ? rateBitsPerSecond
+            : corpusFrames == nil ? 50_000_000 : 3_000_000
         // Corpus runs widen the blackout clocks so no silence freezes
         // video before every corpus frame has left.
         let lifecycle = corpusFrames == nil
@@ -363,6 +399,12 @@ final class PeerSession {
         paired && capabilitiesAgreed
     }
 
+    /// The rate rig needs no pairing: Noise IK already authenticated the
+    /// dial, and the cargo is the public corpus.
+    var streamReady: Bool {
+        capabilitiesAgreed
+    }
+
     /// One inbound datagram, then the emitters and a flush. True when it
     /// is another handshake initiation at this unconfirmed session: the
     /// acceptor's to judge.
@@ -389,8 +431,66 @@ final class PeerSession {
     private func service(now: UInt64) {
         maybeEmitTone(now: now)
         maybeEmitCorpus(now: now)
+        maybeStreamCorpus(now: now)
         session.pump(now: now)
         flushOutbox()
+    }
+
+    /// Milliseconds since the session was answered, for the rig's lines.
+    func sessionMs(_ now: UInt64) -> UInt64 {
+        (now &- answeredAtNS) / 1_000_000
+    }
+
+    /// The rate rig: one looped corpus frame per 60 fps tick, whatever
+    /// the pacer holds (a real encoder does not wait for the wire), and
+    /// a once-a-second estimator line.
+    func maybeStreamCorpus(now: UInt64) {
+        guard let frames = streamFrames, streamReady, !closed else { return }
+        if streamNextEmitNS == 0 { streamNextEmitNS = now }
+        if now >= streamNextEmitNS {
+            let frame = frames[streamIndex % frames.count]
+            do {
+                _ = try session.ingestVideoFrame(
+                    frame,
+                    captureTimestampMicroseconds: now / 1_000,
+                    isKeyframe: streamIndex % frames.count == 0,
+                    now: now
+                )
+            } catch {
+                streamRefused += 1
+            }
+            streamIndex += 1
+            streamNextEmitNS &+= streamFrameIntervalNS
+            if streamNextEmitNS < now { streamNextEmitNS = now }
+        }
+        if now >= estimatorLineAtNS {
+            estimatorLineAtNS = now &+ 1_000_000_000
+            func kbps(_ value: Int?) -> String {
+                value.map { "\($0 / 1_000)" } ?? "—"
+            }
+            let rate = session.estimatedRateBitsPerSecond / 1_000
+            let delay = session.queuingDelayMicroseconds
+                .map { "\($0)" } ?? "—"
+            // Every counter by name, so one rig line reads any estimator
+            // build.
+            let counters = Mirror(reflecting: session.estimatorStats)
+                .children.compactMap { child -> String? in
+                    guard let label = child.label,
+                          let value = child.value as? Int, value > 0
+                    else { return nil }
+                    return "\(label)=\(value)"
+                }
+                .joined(separator: " ")
+            logPeer(
+                """
+                    est: t=\(sessionMs(now)) ms rate \(rate) kbps belief \
+                    \(kbps(session.capacityBeliefBitsPerSecond)) delivery \
+                    \(kbps(session.measuredDeliveryRateBitsPerSecond)) qdelay \
+                    \(delay) µs frames \(streamIndex) refused \(streamRefused) \
+                    | \(counters)
+                    """
+            )
+        }
     }
 
     /// Pace one corpus frame when the video channel is idle.
@@ -606,6 +706,32 @@ final class PeerSession {
             case .lifecycleChanged(let state):
                 if state == .closed { closed = true }
                 print("lifecycle: \(state)")
+            case .rateChanged(let bps, let reason) where streamFrames != nil:
+                var line = """
+                    rate: t=\(sessionMs(now)) ms \(bps / 1_000) kbps \
+                    (\(reason))
+                    """
+                if reason == .overuse,
+                   let f = session.lastOveruseFallForensics {
+                    func text(_ value: Int64?) -> String {
+                        value.map { "\($0)" } ?? "—"
+                    }
+                    let honest = f.honestAnchorBitsPerSecond
+                        .map { "\($0 / 1_000)" } ?? "none"
+                    line += """
+                         [from \(f.rateBeforeBitsPerSecond / 1_000) kbps; \
+                        honest \(honest); streak \
+                        \(text(f.streakStartMicroseconds))→\
+                        \(text(f.queuingDelayMicroseconds)) µs, peak \
+                        \(text(f.streakPeakMicroseconds)) µs]
+                        """
+                }
+                logPeer(line)
+            case .idrRequested(let request) where streamFrames != nil:
+                logPeer("""
+                    idr: t=\(sessionMs(now)) ms client request seq \
+                    \(request.requestSeq)
+                    """)
             default:
                 break
             }
@@ -628,6 +754,18 @@ final class PeerSession {
                 session.pump(now: now)
                 flushOutbox()
             }
+        }
+        if streamFrames != nil {
+            let stats = session.estimatorStats
+            guard capabilitiesAgreed else {
+                return .fail("stream never started (capabilities not agreed)")
+            }
+            return .pass("""
+                PASS — streamed \(streamIndex) frames (\(streamRefused) \
+                refused); \(stats.downshifts) downshifts \
+                (\(stats.overuseVerdicts) overuse verdicts), \
+                \(stats.upshifts) upshifts
+                """)
         }
         guard paired && capabilitiesAgreed else {
             return .fail("""
@@ -681,6 +819,8 @@ final class ControlPeer {
     let seconds: Double
     let sessions: Int
     let corpusFrames: [[UInt8]]?
+    let streamFrames: [[UInt8]]?
+    let rateBitsPerSecond: Int
 
     init(opts: Options) throws {
         hostStatic = try loadHostStatic(hex: opts.hostStaticHex)
@@ -690,6 +830,12 @@ final class ControlPeer {
         seconds = opts.seconds
         sessions = opts.sessions
         corpusFrames = try opts.emitCorpusDir.map(loadCorpusFrames(from:))
+        streamFrames = try opts.streamCorpusDir.map(loadCorpusFrames(from:))
+        rateBitsPerSecond = opts.rateMbps * 1_000_000
+        guard corpusFrames == nil || streamFrames == nil else {
+            throw PeerError.message(
+                "--emit-corpus and --stream-corpus are exclusive")
+        }
 
         let shape = corpusFrames == nil
             ? "hostwire-control-only-udp"
@@ -709,6 +855,12 @@ final class ControlPeer {
             )
         }
         print("features: input echo + in-memory clipboardText (not Wayland OS)")
+        if streamFrames != nil {
+            print("""
+                stream: looping corpus at 60 fps under \(opts.rateMbps) \
+                Mbps once capabilities agree (no pairing)
+                """)
+        }
         print("note: no Direct Eye; safe beside standing UDP 41151")
 
         if let metaOut = opts.metaOut {
@@ -804,6 +956,8 @@ final class ControlPeer {
                     hostStatic: hostStatic,
                     pin: pin,
                     corpusFrames: corpusFrames,
+                    streamFrames: streamFrames,
+                    rateBitsPerSecond: rateBitsPerSecond,
                     now: now
                 )
                 sessionDeadline = now + UInt64(seconds * 1e9)
@@ -816,7 +970,7 @@ final class ControlPeer {
                       now > handshakeDeadline {
                 throw PeerError.message("no handshake within 30s")
             }
-            usleep(2_000)
+            usleep(streamFrames == nil ? 2_000 : 250)
         }
     }
 }
