@@ -4,7 +4,8 @@ import LyteWireTestKit
 
 // Never-trap sweeps for peer-controlled decoders: the envelope, ARQ
 // frames, the lifecycle pair, the bulk sextet's dispatcher, the capability
-// messages, the repair refusal, the path pair and the IDR request. Each
+// messages, the repair refusal, the path pair, the IDR request, input
+// events and echoes, and the audio-routing pair. Each
 // codec sees seeded garbage (half of it with the codec's gate byte set, to
 // get past it), every truncation of a valid message, and every
 // single-byte substitution of one. A decoder may throw or succeed; it may
@@ -112,6 +113,46 @@ final class CtrlDecoderFuzzTests: XCTestCase {
                     coalescedCount: 3
                 ).encode()],
                 roundTrip: { try IdrRequest.decode($0[...]).encode() }
+            ),
+            Codec(
+                name: "InputEvent", type: CtrlMessageType.inputEvent,
+                samples: try [
+                    .keyKeycode(keycode: 30, pressed: true),
+                    .pointerMotionAbsolute(x: 1_919.5, y: 0),
+                    .pointerMotionRelative(dx: -3.25, dy: 7),
+                    .pointerButton(button: 0x110, pressed: false),
+                    .pointerAxis(dx: 0, dy: -120, finish: true),
+                ].enumerated().map {
+                    try InputEvent(
+                        seq: UInt32($0.offset), clientMicroseconds: 9_000,
+                        body: $0.element
+                    ).encode()
+                },
+                roundTrip: { try InputEvent.decode($0[...]).encode() }
+            ),
+            Codec(
+                name: "InputEcho", type: CtrlMessageType.inputEcho,
+                samples: [InputEcho(tuples: [
+                    InputEchoTuple(
+                        seq: 4, receivedMicroseconds: 10,
+                        injectedMicroseconds: 12),
+                    InputEchoTuple(
+                        seq: 5, receivedMicroseconds: 20,
+                        injectedMicroseconds: 25),
+                ]).encode()],
+                roundTrip: { try InputEcho.decode($0[...]).encode() }
+            ),
+            Codec(
+                name: "AudioRoutingRequest",
+                type: CtrlMessageType.audioRoutingRequest,
+                samples: [AudioRoutingRequest(mode: .hostMuted).encode()],
+                roundTrip: { try AudioRoutingRequest.decode($0[...]).encode() }
+            ),
+            Codec(
+                name: "AudioRoutingStatus",
+                type: CtrlMessageType.audioRoutingStatus,
+                samples: [AudioRoutingStatus(mode: .streamOff).encode()],
+                roundTrip: { try AudioRoutingStatus.decode($0[...]).encode() }
             ),
         ]
 

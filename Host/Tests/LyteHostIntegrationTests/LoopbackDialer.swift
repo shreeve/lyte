@@ -70,9 +70,9 @@ final class LoopbackDialer {
         }
     }
 
-    /// Message 2's payload as received, and the port it left from; nil
-    /// after about a second without one.
-    func awaitMessage2() -> (payload: [UInt8], sourcePort: UInt16)? {
+    /// The first CTRL payload of `type` (type byte included) and the
+    /// port it left from; nil after about a second without one.
+    func awaitCtrl(type: UInt8) -> (payload: [UInt8], sourcePort: UInt16)? {
         var storage = [UInt8](repeating: 0, count: 2_048)
         var slots = [lyte_netio_slot()]
         var found: ([UInt8], UInt16)?
@@ -87,15 +87,21 @@ final class LoopbackDialer {
                 if count == 1,
                    let (envelope, payload) = try? Envelope.decode(
                        Array(bytes.prefix(slots[0].len))),
-                   envelope.channel == .ctrl,
-                   payload.first == CtrlMessageType.noiseHandshake2 {
-                    found = (Array(payload.dropFirst()), slots[0].src_port)
+                   envelope.channel == .ctrl, payload.first == type {
+                    found = (Array(payload), slots[0].src_port)
                 } else {
                     usleep(500)
                 }
             }
         }
         return found
+    }
+
+    /// Message 2's payload as received, and the port it left from.
+    func awaitMessage2() -> (payload: [UInt8], sourcePort: UInt16)? {
+        awaitCtrl(type: CtrlMessageType.noiseHandshake2).map {
+            (Array($0.payload.dropFirst()), $0.sourcePort)
+        }
     }
 
     /// The client's transport once `confirm` has run.

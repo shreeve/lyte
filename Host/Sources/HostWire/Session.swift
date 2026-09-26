@@ -667,12 +667,11 @@ public final class Session {
         sendAccounting: SessionSendAccounting = .pacerRelease,
         send: @escaping (VideoChannelDatagram) -> Void
     ) throws -> (session: Session, events: [SessionEvent]) {
-        var responder = handshake.responder
         let message2Body = [CtrlMessageType.noiseHandshake2]
-            + (try responder.writeMessage2())
+            + handshake.message2
         let session = Session(
             config: config, clientTuple: handshake.clientTuple,
-            transport: try responder.makeTransport(),
+            transport: handshake.transport,
             now: now, rng: rng, sendAccounting: sendAccounting, send: send)
         session.answeredHandshake = (handshake.message1, message2Body)
         session.lastAnswerNS = now

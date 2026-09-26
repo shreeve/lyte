@@ -725,11 +725,8 @@ final class SessionWire {
         if stopRequested() {
             return .terminationRequested
         }
-        throw HostError("""
-            no client handshake within \(Int(timeoutSeconds ?? 0))s \
-            — is lyte-cli wire-view pointed at this host and holding \
-            the printed static key?
-            """)
+        throw HostError(
+            "no client handshake within \(timeoutSeconds ?? 0) s")
     }
 
     /// Waits, off the lock, until a socket this wire reads is readable or

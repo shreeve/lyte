@@ -233,9 +233,11 @@ final class AudioInteriorTests: XCTestCase {
         XCTAssertEqual(delivered.sorted(), (0..<14).map { UInt32($0) })
         XCTAssertEqual(depacketizer.stats.packetsRebuilt, 1)
         XCTAssertEqual(framer.counters.groupsCompleted, 3)
-        // Nothing is open right after a completed group.
+        // Nothing is open right after a completed group, so a size
+        // change there abandons nothing.
         XCTAssertFalse(framer.abandonOpenGroup())
-        try feed(14, byteCount: 96)
+        try feed(14, byteCount: 112)
+        XCTAssertEqual(framer.counters.groupsAbandoned, 1)
         XCTAssertTrue(framer.abandonOpenGroup())
         XCTAssertEqual(framer.counters.groupsAbandoned, 2)
     }

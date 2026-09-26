@@ -293,6 +293,7 @@ final class PairingGateTests: XCTestCase {
         // confirmation tag: the host's answer is the same single reason a
         // wrong PIN gets, so a reject is no oracle.
         for attempt in 1...3 {
+            client.sawReject = nil
             try client.beginPairing(
                 pin: attempt == 1 ? Self.pin : Array("11111\(attempt)".utf8),
                 nowMicros: t)

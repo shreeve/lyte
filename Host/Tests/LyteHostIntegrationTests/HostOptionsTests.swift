@@ -1,3 +1,4 @@
+import HostCore
 import HostSession
 @testable import lyte_host
 import LyteWire
@@ -30,6 +31,25 @@ final class HostOptionsTests: XCTestCase {
             }
         }
         XCTAssertTrue(challenged, "a flood meets the cookie challenge")
+    }
+
+    /// The standing service's own line, as the unit word-splits it.
+    func testTheStandingServiceLineParsesAsTheService() throws {
+        let opts = try Options.parse(["lyte-host"]
+            + "--wire-listen 41151 --clipboard=images --advertise-interface wlp0s20f3"
+                .split(separator: " ").map(String.init))
+        XCTAssertEqual(opts.wireListen, 41151)
+        XCTAssertTrue(opts.clipboard)
+        XCTAssertTrue(opts.clipboardImages)
+        XCTAssertEqual(opts.advertiseInterface, "wlp0s20f3")
+        XCTAssertTrue(opts.advertise)
+        XCTAssertFalse(opts.acceptFiles)
+        XCTAssertFalse(opts.pair)
+        XCTAssertFalse(opts.requirePaired)
+        XCTAssertNil(opts.drmDevice)
+        XCTAssertEqual(HostServiceLoop.posture(
+            secondsGiven: opts.secondsGiven, pairing: opts.pair,
+            seconds: opts.seconds), .service)
     }
 
     func testTheCapturedCardCanBeNamed() throws {

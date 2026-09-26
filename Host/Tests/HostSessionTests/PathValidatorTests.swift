@@ -236,9 +236,13 @@ final class PathValidatorTests: XCTestCase {
         ).isEmpty)
         XCTAssertEqual(validator.primary.tuple, Self.tupleA)
 
+        XCTAssertTrue(validator.advance(now: window - 1).isEmpty)
+        XCTAssertEqual(validator.fallback, promotedB)
         let expiry = window
         XCTAssertEqual(validator.advance(now: expiry),
                        [.fallbackExpired(Self.tupleB)])
+        XCTAssertNil(validator.fallback)
+        XCTAssertNil(validator.nextDeadline)
         guard case .sendChallenge(let on, _)? = validator.datagramReceived(
             from: Self.tupleB, connectionId: connId,
             byteCount: Self.fullDatagramBytes, now: expiry + millisecond

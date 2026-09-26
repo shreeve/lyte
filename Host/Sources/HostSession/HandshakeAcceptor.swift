@@ -11,24 +11,23 @@
 // challenges (a stateless RetryChallenge datagram for the caller to send
 // to the asking tuple) or refuses; an admitted message 1 is read on fresh
 // responder state, and its client static must be in the paired set when
-// one is configured. An authenticated message 1 is remembered as answered
-// and handed back with the responder that read it; `Session` answers it.
+// one is configured. An authenticated message 1 is handed back with its
+// message 2 and transport, and only then remembered as answered; `Session`
+// sends the answer.
 //
 // Sans-IO: `now` is injected monotonic ns.
 
 import LyteWire
 
 /// A client message 1 that passed admission and authentication, with the
-/// responder that read it, ready to write message 2.
+/// responder's message 2 and the transport it completed.
 public struct AuthenticatedHandshake: Sendable {
     /// Where message 1 arrived from: the session's first primary path.
     public let clientTuple: FourTuple
     public let message1: [UInt8]
-    package let responder: NoiseSession
-
-    public var remoteStaticPublicKey: [UInt8] {
-        responder.remoteStaticPublicKey ?? []
-    }
+    public let remoteStaticPublicKey: [UInt8]
+    package let message2: [UInt8]
+    package let transport: NoiseTransport
 }
 
 public struct HandshakeAcceptor: Sendable {
@@ -162,29 +161,32 @@ public struct HandshakeAcceptor: Sendable {
     }
 
     /// Reads message 1 on fresh responder state — a failed one (bad
-    /// version, wrong static, garbage) burns nothing — and applies the
-    /// paired-set policy to the static it names.
+    /// version, wrong static, garbage) burns nothing — applies the
+    /// paired-set policy to the static it names, and writes message 2.
     private mutating func authenticate(
         _ message1: ArraySlice<UInt8>, from tuple: FourTuple
     ) -> Verdict {
-        var responder: NoiseSession
+        let handshake: AuthenticatedHandshake
         do {
-            responder = try NoiseSession(
+            var responder = try NoiseSession(
                 role: .responder, staticKeys: config.hostStatic)
             _ = try responder.readMessage1(message1)
+            let remote = responder.remoteStaticPublicKey ?? []
+            if let allowed = config.allowedClientStaticPublicKeys,
+               !allowed.contains(remote) {
+                return .refused(
+                    .handshakeFailed("client static not in the paired set"))
+            }
+            let message2 = try responder.writeMessage2()
+            handshake = AuthenticatedHandshake(
+                clientTuple: tuple, message1: Array(message1),
+                remoteStaticPublicKey: remote, message2: message2,
+                transport: try responder.makeTransport())
         } catch {
             return .refused(.handshakeFailed(String(describing: error)))
         }
-        if let allowed = config.allowedClientStaticPublicKeys,
-           let remote = responder.remoteStaticPublicKey,
-           !allowed.contains(remote) {
-            return .refused(
-                .handshakeFailed("client static not in the paired set"))
-        }
         answered.record(message1: message1)
-        return .authenticated(AuthenticatedHandshake(
-            clientTuple: tuple, message1: Array(message1),
-            responder: responder))
+        return .authenticated(handshake)
     }
 
     /// The one initiation parse; nil for anything else.

@@ -72,6 +72,8 @@ public final class DirectScreenSource: ScreenSource {
     public let fileDescriptor: Int32
     /// The card node this source observes.
     public let device: String
+    /// The card's kernel driver (i915, nvidia-drm, …).
+    public let driver: String
     /// The render node of the same GPU, which imports, blits and
     /// encodes this card's scanout.
     public let renderNode: String
@@ -117,6 +119,9 @@ public final class DirectScreenSource: ScreenSource {
 
         fileDescriptor = fd
         self.device = device
+        let version = drmGetVersion(fd)
+        driver = version?.pointee.name.map { String(cString: $0) } ?? "?"
+        drmFreeVersion(version)
         let named = HostEye.renderNode(forCard: fd)
         renderNode = named ?? Self.fallbackRenderNode
         renderNodeIsFallback = named == nil
