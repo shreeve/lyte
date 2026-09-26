@@ -15,7 +15,7 @@
 ## Live rig
 
 - **pup** is on Wi-Fi only (`10.0.0.249`, advertised on `wlp0s20f3`).
-- `lyte-host.service` serves UDP **41151** from `versions/31052cd5263a`: the
+- `lyte-host.service` serves UDP **41151** from `versions/8d5e83fcc831`: the
   **soak** of local branch `experiment/wifi-resilience` (this Mac only; Wi-Fi
   rate recovery, see its CHANGELOG note). `main`'s host is
   `bb4ce518dd2f`: `cd ~/src/lyte-host && ./Scripts/deploy-host.sh
