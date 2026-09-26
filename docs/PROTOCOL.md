@@ -33,10 +33,10 @@ clock); do not read them as the current contract.
 | Wire payload (ciphertext + 16 B tag) | ≤ 1128 | `WireBudget.maxWirePayloadByteCount` |
 | Datagram | ≤ 1152 | `WireBudget.maxDatagramByteCount` |
 
-Capability key 8 (`maxDatagramBytes`) declares and renegotiates a larger
-ceiling, host-proposed at an IDR boundary, but the raise is dormant in v1:
-every layer enforces the constants above and no end applies an agreed
-value past 1152.
+Capability key 8 (`maxDatagramBytes`) can declare a larger ceiling, and
+it is the one key a host CapabilityUpdate (0x11) may renegotiate, but the
+raise is dormant in v1: no v1 host proposes one, every layer enforces the
+constants above, and no end applies an agreed value past 1152.
 
 ## Envelope
 
@@ -62,18 +62,16 @@ Pinned by `envelope-v1.json`, `session-v1.json` (conn-id TLV),
 | 0 | CTRL | ARQ ordered stream (group 0) + ARQ-exempt datagrams | control |
 | 1 | audio | unreliable, RS-FEC | audio |
 | 2 | video-active | unreliable, RS-FEC + NACK repair | fresh video (repairs: video tail) |
-| 3 | feedback | unreliable, 25–50 ms reports | telemetry |
-| 4 | video-idle | registered, unused in v1 | video tail |
+| 3 | feedback | unreliable, 25–50 ms reports, client → host | — |
+| 4 | video-idle | registered, unused in v1 | — |
 | 5–7 | reserved | never sent; dropped on receive | — |
 | 8 | bulk transfer | ARQ ordered stream | bulk (last) |
-| 9–255 | feature channels | ARQ | feature |
+| 9–255 | feature channels | ARQ; unused in v1 | — |
 
-Priority order, highest first: control/input > audio > fresh video > video
-tail and retransmits > refinement > feature > telemetry > bulk
-(`WirePriority` in `LyteWire/ChannelId.swift`). The host's pacer enforces
-it with its own classes (`PacerClass` in `HostCore/Pacer.swift`), which
-have no feature rung because no v1 message rides chans 9–255. Refinement
-has no channel of its own; the pacer demotes it by content.
+Send priority is the host pacer's (`PacerClass` in `HostCore/Pacer.swift`),
+highest first: control and input > audio > fresh video > video tail (NACK
+repairs) > bulk. The client has no pacer. No v1 message rides the feature channels 9–255, so the
+pacer has no class for them.
 
 ## FEC
 
@@ -117,9 +115,10 @@ message is 0x0F (a pairing-only run opens with share A, 0x0B)
   (`.redial`) — so a late answer to any copy completes the transcript.
   Answering a retry challenge spends no attempt; the client answers at
   most one challenge per message-1 transmission.
-- The host rate-limits message 1 with a token bucket
-  (`HostSession.HandshakeGate`). A message 1 the bucket cannot admit, and
-  every un-cookied message 1 while arrivals exceed the flood threshold
+- The listening host admits message 1 through one process-wide
+  `HostSession.HandshakeAcceptor`, whose state outlives every session it
+  answers; its token bucket (`HandshakeGate`) rate-limits message 1. A
+  message 1 the bucket cannot admit, and every un-cookied message 1 while arrivals exceed the flood threshold
   (cookie mode), draws a stateless RetryChallenge instead of a drop: a
   24-byte HMAC cookie that binds the client tuple, a timestamp (30 s
   lifetime) and message 1 verbatim. Verified cookies spend from their own
@@ -209,9 +208,9 @@ entry of the v1 set, so `capabilities-v1.json` never moves.
 Pinned by `capabilities-v1.json` (keys 1–8, the CBOR profile, the
 intersection algebra) and the spine pins in `control-v1.json` (9),
 `clipboard-v1.json` (10), `bulk-v1.json` (11), `clipboard-images-v1.json`
-(12), `cursor-v1.json` (13) and `postures-v1.json` (15, 16). Key 14 has no
-spine pin yet; `control-v1.json` pins routing mode 0x04 and the reserved
-0x03.
+(12), `cursor-v1.json` (13), `audio-stream-off-v1.json` (14) and
+`postures-v1.json` (15, 16); `control-v1.json` also pins routing mode
+0x04 and the reserved 0x03.
 
 ## CTRL message registry
 
@@ -235,8 +234,8 @@ after the handshake unless noted).
 | 0x0B–0x0E | Pairing share A, share B, confirm, reject | both | ARQ | `pairing-v1.json` |
 | 0x0F | CapabilityDeclaration | both | ARQ, first message | `capabilities-v1.json` |
 | 0x10 | IdrRequest | client → host | bare | `session-v1.json` |
-| 0x11 | CapabilityUpdate | host → client | ARQ | `capabilities-v1.json` |
-| 0x12 | CapabilityUpdateAck | client → host | ARQ | `capabilities-v1.json` |
+| 0x11 | CapabilityUpdate | host → client | ARQ; not sent by the v1 host | `capabilities-v1.json` |
+| 0x12 | CapabilityUpdateAck | client → host | ARQ; a v1 host drops it as unsolicited | `capabilities-v1.json` |
 | 0x13 | RetryChallenge | host → client | bare, unsealed | `retry-v1.json` |
 | 0x14 | RetryHandshake1 | client → host | bare, unsealed | `retry-v1.json` |
 | 0x15 | IdleFrame | host → client | CTRL ARQ one-shot group; not sent by the v1 host | `control-v1.json` |
@@ -276,7 +275,7 @@ A reassembled message is at most 262,144 bytes. The ceiling is not
 negotiated, so both ends share it. A message past it poisons its group:
 a one-shot group is dropped, and a poisoned ordered stream can never
 deliver in order again, so the endpoint reports it
-(`isOrderedStreamPoisoned`, `.orderedStreamPoisoned`). Either end that
+(`.orderedStreamPoisoned`). Either end that
 sees its peer poison CTRL or chan 8 ends the session with a `shuttingDown`
 teardown; the macOS client then re-dials. Each open one-shot receive group
 reserves a whole message (262,144 bytes) of a 1 MiB receive budget: a
@@ -297,8 +296,8 @@ Pinned by `arq-v1.json`.
   macOS client roams (re-dials) on `shuttingDown` and ends the window on
   `takenOver`.
 - Liveness: 30 s without authenticated peer evidence ends a session; the
-  timeout sends nothing. Blackout (FROZEN) starts after 350 ms without
-  media-path evidence (`SessionStateMachine`).
+  timeout sends nothing. When blackout (FROZEN) starts is each end's own
+  policy (`SessionStateMachine`), not wire contract.
 - Path migration: a datagram from a new tuple carrying the connection-id
   TLV draws a PathChallenge (0x03) after it unseals; a matching
   PathResponse (0x04) promotes the tuple, and video restarts from an IDR.

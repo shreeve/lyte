@@ -3,8 +3,7 @@
 These files are first-class, versioned wire-contract artifacts, not test
 fixtures: `Wire/Tests` verifies `LyteWire` against them byte-for-byte on
 macOS and Linux, and `Wire/Scripts/wasm-test.sh` runs the same suite for
-wasm32-unknown-wasip1 under wasmtime. The client and host suites verify
-their codecs against the same bytes. This README describes every file and
+wasm32-unknown-wasip1 under wasmtime. This README describes every file and
 gives the normative byte layout for the layers with a section below; the
 other codecs' layouts are the header comments of their `LyteWire` sources
 (for example `Control/InputMessages.swift` for InputEvent 0x16).
