@@ -45,6 +45,13 @@
 //       above the delivery max: paced sends self-limit the measurement
 //       to ≈ the rate, so a max-derived cap would spiral to the floor.
 //       Only post-FEC < 0.5% (the clean column) updates lastGoodRate;
+//     - the QUIET RESTORE: a screen too quiet to send full trains cannot
+//       prove capacity, so once reports have read clean for 5 s on real
+//       traffic with no full train, the rate returns to the highest
+//       rate a fall left behind. Until trains prove it (belief ×
+//       probeHeadroomFactor ≥ rate) it is unproven: the first overuse
+//       verdict, pre-FEC loss past the clean band or post-FEC past the
+//       clean column falls to no higher than where it lifted from;
 //     - falls also need fresh delivery evidence OR standing pacer backlog;
 //       sparse keepalive (neither) freezes rather than ratcheting down,
 //       since the host never pads traffic just to probe.
@@ -242,6 +249,18 @@ extension RateEstimator {
     /// How long a fall's pre-fall rate stays a recovery target.
     static let recoveryTargetWindowNS: UInt64 = 10_000_000_000
 
+    /// A QUIET RESTORE returns the rate to what a fall left behind once,
+    /// for this long, every report has read clean (no inflation, pre-FEC
+    /// below `lossCleanThreshold`, post-FEC in the clean column) and no
+    /// full train has spoken: a screen whose frames cannot prove capacity.
+    /// The same hold the FEC regime takes to trust the path again.
+    static let quietRestoreCleanNS: UInt64 = 5_000_000_000
+    /// And only once the clean stretch carried this many datagrams: with
+    /// none lost in 3 / `lossCleanThreshold`, loss sits under the clean
+    /// band at 95% confidence. Silence is not a clean path.
+    static let quietRestoreEvidenceDatagrams =
+        Int((3 / lossCleanThreshold).rounded(.up))
+
     /// No upshift this long after a downshift (queue drain time).
     static let upshiftHoldAfterDownshiftNS: UInt64 = 1_000_000_000
 
@@ -307,6 +326,9 @@ public struct RateEstimatorStats: Equatable, Sendable {
     public var upshiftsCadenceHeld = 0
     /// Rises taken at the recovery budget toward a pre-fall rate.
     public var recoveryUpshifts = 0
+    /// Quiet restores to a pre-fall rate, and those fresh trouble undid.
+    public var quietRestores = 0
+    public var quietRestoreWithdrawals = 0
     /// Climbs admitted while post-FEC sat between the clean column and
     /// rung 3.
     public var upshiftsUnderMildPostFec = 0
@@ -484,6 +506,18 @@ public final class RateEstimator {
     private var recoveryTargetBits: Double?
     private var recoveryTargetUntilNS: UInt64 = 0
     private var recoveryClimbStarted = false
+    /// The highest rate a fall left behind, which a quiet restore returns
+    /// to; retired once the rate stands at `recoveryTargetFraction` of it
+    /// unrestored, or when motion's trains refute a restore.
+    private var restoreTargetBits: Double?
+    /// Set while a quiet restore holds the rate above what trains proved:
+    /// the rate it lifted. Cleared when the belief catches up (the rate is
+    /// back inside the probe ceiling) or by the fall that undoes it.
+    private var restoredFromBits: Double?
+    /// The current clean stretch: when it opened and the datagrams the
+    /// client counted received inside it.
+    private var cleanSinceNS: UInt64
+    private var cleanDatagrams = 0
 
     private struct DelaySample {
         var at: UInt64
@@ -563,6 +597,7 @@ public final class RateEstimator {
         self.rateBitsPerSecond = initial
         self.lastGoodRate = initial
         self.lastAdjustAt = now
+        self.cleanSinceNS = now
         self.ledger = [SendRecord?](
             repeating: nil, count: Self.sendLedgerCapacity
         )
@@ -633,7 +668,7 @@ public final class RateEstimator {
         stats.reportsIngested += 1
         expireWindows(now: now)
 
-        let (newMissing, _) = absorbChannelLedgers(report, now: now)
+        let (newMissing, newReceived) = absorbChannelLedgers(report, now: now)
         let newNackShards = absorbNacks(
             report, recusedFrames: recusedNackFrames, now: now
         )
@@ -647,6 +682,14 @@ public final class RateEstimator {
         let overuse = inflated
             && consecutiveInflatedReports >= Self.overuseConsecutiveReports
         if overuse { stats.overuseVerdicts += 1 }
+        if consecutiveInflatedReports > 0
+            || lossFraction >= Self.lossCleanThreshold
+            || postFecLossFraction > Self.postFecCleanThreshold {
+            cleanSinceNS = now
+            cleanDatagrams = 0
+        } else {
+            cleanDatagrams += newReceived
+        }
 
         let oldRate = rateBitsPerSecond
         let change = applyControlLaw(
@@ -801,6 +844,8 @@ public final class RateEstimator {
         cadenceBandFloorBits = .infinity
         recoveryTargetBits = nil
         recoveryClimbStarted = false
+        restoreTargetBits = nil
+        restoredFromBits = nil
     }
 
     /// The burst-budget window B = min(2/fps, 25 ms) in ns, shared with
@@ -1336,7 +1381,16 @@ public final class RateEstimator {
                 * Double(Self.selfReferenceBacklogWindowNS) / 8e9
         ))
         let backlogStanding = pacerBacklogBytes >= backlogFloorBytes
-        let fallEvidence = deliveryFresh || backlogStanding
+        if restoredFromBits != nil, let beliefBits,
+           beliefBits * Self.probeHeadroomFactor
+               >= Double(rateBitsPerSecond) {
+            restoredFromBits = nil
+        }
+        // A restored rate is unproven: the first trouble undoes it — no
+        // persistence, no FEC hold band, no sparse-evidence freeze (the
+        // undo is one bounded step, not a ratchet).
+        let restored = restoredFromBits != nil
+        let fallEvidence = deliveryFresh || backlogStanding || restored
 
         if overuse, downshiftAllowed {
             // THE HONESTY LAW. The verdict decided WHEN; this decides
@@ -1361,8 +1415,9 @@ public final class RateEstimator {
             // NACKs for frames that already drained.
             let instant = lossFraction >= Self.lossCleanThreshold
                 || postFecLossFraction > Self.postFecDownshiftThreshold
-            let persisted = now &- (inflatedStreakSinceNS ?? now)
-                >= Self.beliefDemotionSustainNS
+            let persisted = restored
+                || now &- (inflatedStreakSinceNS ?? now)
+                    >= Self.beliefDemotionSustainNS
             let wouldFall = instant
                 || (persisted && (queueGrew || honestLow || !selfExplaining))
 
@@ -1415,15 +1470,10 @@ public final class RateEstimator {
                     cadenceHoldUntilNS = now &+ Self.probeCadenceNS
                     cadenceBandFloorBits = bandFloor
                 }
-                noteFallForRecovery(from: rateBitsPerSecond, now: now,
-                                    armsTarget: true)
-                rateBitsPerSecond = clamp(min(
+                executeFall(to: clamp(min(
                     Int(demoted * Self.downshiftFactor),
                     Int(Double(rateBitsPerSecond) * Self.downshiftFactor)
-                ))
-                lastDownshiftAt = now
-                lastAdjustAt = now
-                stats.downshifts += 1
+                )), armsRecoveryTarget: true, now: now)
                 return .overuse
             } else if persisted {
                 // Self-explaining persisted pressure: held. Overuse
@@ -1449,42 +1499,35 @@ public final class RateEstimator {
             }
         }
 
-        if lossFraction > Self.lossDownshiftThreshold, downshiftAllowed {
-            guard fallEvidence else {
-                stats.sparseEvidenceHolds += 1
-                lastAdjustAt = now
-                return nil
-            }
-            noteFallForRecovery(from: rateBitsPerSecond, now: now,
-                                armsTarget: false)
-            // GCC's loss response: rate × (1 − loss/2) — a 20% loss
-            // window falls 10%, a 50% catastrophe falls 25% per beat.
-            rateBitsPerSecond = clamp(Int(
-                Double(rateBitsPerSecond) * (1 - lossFraction / 2)
-            ))
-            lastDownshiftAt = now
-            lastAdjustAt = now
-            stats.downshifts += 1
-            stats.lossDownshifts += 1
-            return .loss
-        }
-
-        if postFecLossFraction > Self.postFecDownshiftThreshold,
+        if lossFraction > Self.lossDownshiftThreshold
+            || (restored && lossFraction >= Self.lossCleanThreshold),
            downshiftAllowed {
             guard fallEvidence else {
                 stats.sparseEvidenceHolds += 1
                 lastAdjustAt = now
                 return nil
             }
-            noteFallForRecovery(from: rateBitsPerSecond, now: now,
-                                armsTarget: false)
+            // GCC's loss response: rate × (1 − loss/2) — a 20% loss
+            // window falls 10%, a 50% catastrophe falls 25% per beat.
+            executeFall(to: clamp(Int(
+                Double(rateBitsPerSecond) * (1 - lossFraction / 2)
+            )), armsRecoveryTarget: false, now: now)
+            stats.lossDownshifts += 1
+            return .loss
+        }
+
+        if postFecLossFraction > Self.postFecDownshiftThreshold
+            || (restored && postFecLossFraction > Self.postFecCleanThreshold),
+           downshiftAllowed {
+            guard fallEvidence else {
+                stats.sparseEvidenceHolds += 1
+                lastAdjustAt = now
+                return nil
+            }
             // Rung 3: loss FEC could not absorb, so no hold band.
-            rateBitsPerSecond = clamp(Int(
+            executeFall(to: clamp(Int(
                 Double(rateBitsPerSecond) * Self.downshiftFactor
-            ))
-            lastDownshiftAt = now
-            lastAdjustAt = now
-            stats.downshifts += 1
+            )), armsRecoveryTarget: false, now: now)
             stats.postFecDownshifts += 1
             return .postFecLoss
         }
@@ -1495,6 +1538,8 @@ public final class RateEstimator {
            postFecLossFraction <= Self.postFecCleanThreshold {
             lastGoodRate = rateBitsPerSecond
         }
+
+        if quietRestore(now: now) { return .evidence }
 
         // Rise only on evidence (see the header), toward the PROBE
         // ceiling.
@@ -1547,6 +1592,66 @@ public final class RateEstimator {
         stats.upshifts += 1
         if mildPostFec { stats.upshiftsUnderMildPostFec += 1 }
         return .evidence
+    }
+
+    /// Every executing fall lands here. A fall that undoes a quiet
+    /// restore lands no higher than the rate the restore lifted and arms
+    /// no recovery climb; its target survives only while the screen is
+    /// still quiet (no full train judged the restore), so a clean stretch
+    /// may try again. Any other fall remembers the rate it left behind.
+    private func executeFall(
+        to rate: Int, armsRecoveryTarget: Bool, now: UInt64
+    ) {
+        if let restoredFromBits {
+            self.restoredFromBits = nil
+            stats.quietRestoreWithdrawals += 1
+            if lastFullTrainAt.map({
+                now &- $0 < Self.quietRestoreCleanNS
+            }) ?? false {
+                restoreTargetBits = nil
+            }
+            noteFallForRecovery(from: rateBitsPerSecond, now: now,
+                                armsTarget: false)
+            rateBitsPerSecond = min(rate, clamp(Int(restoredFromBits)))
+        } else {
+            restoreTargetBits = max(
+                restoreTargetBits ?? 0, Double(rateBitsPerSecond))
+            noteFallForRecovery(from: rateBitsPerSecond, now: now,
+                                armsTarget: armsRecoveryTarget)
+            rateBitsPerSecond = rate
+        }
+        lastDownshiftAt = now
+        lastAdjustAt = now
+        stats.downshifts += 1
+    }
+
+    /// The QUIET RESTORE (see `quietRestoreCleanNS`): the rate jumps back
+    /// to the restore target once the path has run clean on enough real
+    /// traffic, no full train could prove it, and no failed probe's
+    /// cadence says a wall stands below. The rate is then unproven until
+    /// the belief catches up. Returns true when it fired.
+    private func quietRestore(now: UInt64) -> Bool {
+        guard restoredFromBits == nil,
+              let target = restoreTargetBits else { return false }
+        guard Double(rateBitsPerSecond)
+                < target * Self.recoveryTargetFraction else {
+            restoreTargetBits = nil
+            return false
+        }
+        let trainsSilent = lastFullTrainAt.map {
+            now &- $0 >= Self.quietRestoreCleanNS
+        } ?? true
+        guard trainsSilent,
+              now &- cleanSinceNS >= Self.quietRestoreCleanNS,
+              cleanDatagrams >= Self.quietRestoreEvidenceDatagrams,
+              now >= cadenceHoldUntilNS
+        else { return false }
+        restoredFromBits = Double(rateBitsPerSecond)
+        rateBitsPerSecond = clamp(Int(target))
+        lastAdjustAt = now
+        stats.upshifts += 1
+        stats.quietRestores += 1
+        return true
     }
 
     /// Every executing fall passes through here. A fall after the
