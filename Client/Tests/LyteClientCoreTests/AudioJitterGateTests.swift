@@ -357,15 +357,15 @@ final class AudioJitterGateTests: XCTestCase {
         for _ in 0..<25 {
             XCTAssertEqual(buffer.pull(nowMicroseconds: 100_000, urgent: true), .starved)
         }
-        // The whole pre-roll plays: the host's announced burst is deeper
-        // than the hard cap, and none of it is a stall to re-center.
-        for n in UInt32(10)..<50 {
+        // The host's pre-roll (the trip run) fits under the hard cap: it
+        // plays whole, from its first packet, with nothing re-centered.
+        for n in UInt32(10)..<30 {
             buffer.insert(packet(n), arrivalMicroseconds: 3_000_000)
         }
         XCTAssertEqual(buffer.pull(nowMicroseconds: 3_000_000, urgent: true),
                        .packet(packet(10)))
-        for n in UInt32(50)..<150 {
-            let at = 3_000_000 + UInt64(n - 49) * 5_000
+        for n in UInt32(30)..<130 {
+            let at = 3_000_000 + UInt64(n - 29) * 5_000
             buffer.insert(packet(n), arrivalMicroseconds: at)
             _ = buffer.pull(nowMicroseconds: at, urgent: true)
         }
@@ -375,6 +375,28 @@ final class AudioJitterGateTests: XCTestCase {
         XCTAssertEqual(stats.recenterEvents, 0)
         XCTAssertEqual(stats.packetsDroppedInRecenter, 0)
         XCTAssertEqual(stats.targetPackets, 5)
+    }
+
+    /// The wake grants no depth of its own: a burst deeper than the hard
+    /// cap re-centers like any other, so a wake never parks latency.
+    func testWakeBurstDeeperThanTheHardCapStillRecenters() {
+        let buffer = AudioJitterBuffer()
+        for n in UInt32(0)..<10 {
+            buffer.insert(packet(n), arrivalMicroseconds: UInt64(n) * 5_000)
+        }
+        for n in UInt32(0)..<10 {
+            XCTAssertEqual(buffer.pull(nowMicroseconds: 50_000, urgent: true),
+                           .packet(packet(n)))
+        }
+        buffer.noteAnnouncedQuiet()
+        for n in UInt32(10)..<50 {
+            buffer.insert(packet(n), arrivalMicroseconds: 3_000_000)
+        }
+        XCTAssertEqual(buffer.pull(nowMicroseconds: 3_000_000, urgent: true),
+                       .packet(packet(30)))
+        let stats = buffer.snapshotStats()
+        XCTAssertEqual(stats.recenterEvents, 1)
+        XCTAssertEqual(stats.packetsDroppedInRecenter, 20)
     }
 
     /// Only a wire-carried packet ahead of the last one played wakes an

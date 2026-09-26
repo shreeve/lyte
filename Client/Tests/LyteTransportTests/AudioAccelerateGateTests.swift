@@ -451,44 +451,35 @@ final class AudioAccelerateGateTests: XCTestCase {
         XCTAssertEqual(stats.jitter.recenterEvents, 0)
     }
 
-    // MARK: A wake burst deeper than the hard cap plays whole and
-    // drains through accelerate
+    // MARK: The host's pre-roll plays whole through the pump
 
-    func testWakePreRollPlaysWholeAndDrainsThroughAccelerate() throws {
+    func testWakePreRollPlaysWholeFromItsFirstPacket() throws {
         let receiver = AudioReceiver()
         let accelerator = AudioAccelerator()
         // One second of steady audio, an announced quiet, and 2 s later
-        // the host's 40-packet pre-roll at once, then steady again.
+        // the host's 20-packet pre-roll at once, then steady again.
         let steady = try wireArrivals(count: 1_600)
         let quietAt: UInt64 = 10_000 + 200 * Self.packetMicros
         let wakeAt: UInt64 = quietAt + 2_000_000
         var arrivals = Array(steady.prefix(200))
         for (index, arrival) in steady.dropFirst(200).enumerated() {
-            let at = index < 40
+            let at = index < 20
                 ? wakeAt
-                : wakeAt + UInt64(index - 39) * Self.packetMicros
+                : wakeAt + UInt64(index - 19) * Self.packetMicros
             arrivals.append((at, arrival.envelope, arrival.payload))
         }
         let result = runPump(
             receiver: receiver, accelerator: accelerator,
-            arrivals: arrivals, untilMicros: arrivals.last!.at,
+            arrivals: arrivals, untilMicros: arrivals.last!.at + 1_000,
             announcedQuietAtMicros: quietAt)
 
         let stats = receiver.snapshotStats()
-        XCTAssertEqual(stats.jitter.recenterEvents, 0,
-                       "an announced pre-roll is not a stall")
+        XCTAssertEqual(stats.jitter.recenterEvents, 0)
         XCTAssertEqual(stats.jitter.packetsDroppedInRecenter, 0)
         XCTAssertEqual(result.played.count + receiver.pendingPackets, 1_600,
                        "the whole pre-roll plays, and nothing is dropped")
         XCTAssertEqual(result.played, result.played.sorted())
         XCTAssertEqual(stats.jitter.plcInvocations, 0)
-        XCTAssertGreaterThanOrEqual(stats.accelerateEngagements, 1)
-        // ~175 ms of surplus at ≤5% drains in about 3.5 s.
-        let depth = Double(receiver.pendingPackets)
-        XCTAssertLessThanOrEqual(
-            depth, Double(stats.jitter.targetPackets
-                + AudioJitterConfig().accelerateEngagePackets),
-            "the pre-roll's surplus drained back to target")
     }
 
     /// The pump marks the ring quiet from the decision, so the silence

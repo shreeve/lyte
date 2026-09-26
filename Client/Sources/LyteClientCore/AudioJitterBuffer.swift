@@ -68,8 +68,8 @@ public struct AudioJitterConfig: Sendable {
 
     public init() {}
 
-    /// The pending bound outside a wake burst's drain: backlog past this
-    /// is dropped by a re-center. maxTarget + slack.
+    /// The absolute pending bound (and the pump's ring hard cap):
+    /// backlog past this is dropped by a re-center. maxTarget + slack.
     public var hardCapPackets: Int { maxTargetPackets + slackPackets }
 }
 
@@ -143,10 +143,6 @@ public final class AudioJitterBuffer {
     /// packet for one of them plays (the concealment becomes delay)
     /// instead of dropping.
     private var rewindFloor: UInt32?
-    /// The pending depth past which a re-center fires: the hard cap, or
-    /// the depth a wake burst delivered (the host's pre-roll is announced
-    /// contract, not a stall), lowered with the depth as it drains.
-    private var overgrowthLimit: Int
 
     // Adaptation state: each fresh arrival's skew off the 5 ms arrival
     // lattice — (arrival_n − anchorArrival) − (n − anchorNumber) × 5 ms —
@@ -182,7 +178,6 @@ public final class AudioJitterBuffer {
         self.config = config
         self.targetPackets = config.initialTargetPackets
         self.stats.targetPackets = config.initialTargetPackets
-        self.overgrowthLimit = config.hardCapPackets
         self.deviationWindow.reserveCapacity(config.deviationWindowPackets)
     }
 
@@ -278,9 +273,6 @@ public final class AudioJitterBuffer {
             }
             return
         }
-        if wakeBurstArrival != nil {
-            overgrowthLimit = max(overgrowthLimit, pending.count)
-        }
         recenterIfOvergrown()
     }
 
@@ -293,9 +285,6 @@ public final class AudioJitterBuffer {
     ) -> AudioPullVerdict {
         guard started else { return .starved }
         stats.depthPackets.record(UInt64(pending.count))
-        overgrowthLimit = max(
-            config.hardCapPackets,
-            min(overgrowthLimit, pending.count + config.slackPackets))
 
         if let entry = pending.removeValue(forKey: nextNumber) {
             lastPlayedNumber = nextNumber
@@ -397,11 +386,12 @@ public final class AudioJitterBuffer {
         }
     }
 
-    /// Backlog between target and the overgrowth limit belongs to WSOLA
-    /// accelerate; only past the limit does the skip fire, so a blackout's
+    /// Backlog between target and the hard cap belongs to WSOLA
+    /// accelerate; only past the cap does the skip fire, so a blackout's
     /// burst never becomes unbounded latency.
     private func recenterIfOvergrown() {
-        guard pending.count > overgrowthLimit else { return }
+        let limit = config.hardCapPackets
+        guard pending.count > limit else { return }
         guard let newest = pending.keys.max(by: { a, b in
             Int32(bitPattern: a &- b) < 0
         }) else { return }
@@ -416,7 +406,6 @@ public final class AudioJitterBuffer {
         nextNumber = newNext
         consecutiveConcealments = 0
         rewindFloor = nil
-        overgrowthLimit = config.hardCapPackets
         stats.recenterEvents += 1
         stats.packetsDroppedInRecenter += dropped
     }
