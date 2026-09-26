@@ -121,7 +121,6 @@ live state: [HANDOFF.md](HANDOFF.md).
 
 ## Gates
 
-- **Source size.** <!-- size -->
 - **Enforce the gates.** No hosted CI runs them, so "always green" rests
   on whoever lands a PR running `Scripts/CI/test-all-macos.sh` and
   `test-all-pup.sh` by hand. A self-hosted runner on pup (Linux leg) plus
