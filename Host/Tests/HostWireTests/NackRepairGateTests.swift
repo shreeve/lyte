@@ -393,6 +393,16 @@ final class NackRepairGateTests: XCTestCase {
         XCTAssertEqual(armed, 0,
             "wire-cadence garbage NACKs bypassed the client episode")
         XCTAssertEqual(session.counters.repairRefusalsSent, 40)
+
+        // Past 1 s a low unknown frame is refused the same way.
+        now = 1_011 * Self.ms
+        _ = try feed(
+            session,
+            report: nackReport(frame: 7, shards: [0], clientMicros: now / 1_000),
+            now: now
+        )
+        XCTAssertFalse(session.takeFreshKeyframeRequest())
+        XCTAssertEqual(session.counters.repairRefusalsSent, 41)
     }
 
     func testNackAfterCloseIsSuppressed() throws {
