@@ -536,6 +536,15 @@ EOF
 printf '#!/bin/sh\necho "fake journal"\n' > "$fake_pup/journalctl"
 chmod +x "$fake_pup"/*
 
+# pup_run parses its script whole before running it: a command that reads
+# stdin sees end of file and cannot swallow the lines after it.
+pup_run_output="$(PATH="$fake_pup:$PATH" FAKE_SSH_LOG=/dev/null "$BASH" -c \
+    'source "$1"; PUP=fake-pup.invalid; pup_run "$2"' _ \
+    "$repo_root/Scripts/lib/pup.sh" $'cat\necho after-reader')" \
+    || fail "pup_run failed"
+[[ "$pup_run_output" == after-reader ]] \
+    || fail "a stdin reader in pup_run saw: $pup_run_output"
+
 # benchmark-netem runs from a private root whose impaired leg and analyzer
 # are fakes: the leg writes a motion JSONL, the witnesses beside it, and the
 # line naming the JSONL; the analyzer prints its arguments.
