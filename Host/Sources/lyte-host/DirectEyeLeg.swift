@@ -188,12 +188,16 @@ final class DirectEyeLeg {
     static func openScreen(device named: String?) throws -> DirectScreenSource {
         guard let device = named ?? DirectScreenSource.discoverCard() else {
             throw HostError("""
-                direct: no card under /dev/dri scans out a primary plane \
-                — name one with --drm-device
+                direct: no card under /dev/dri has an active primary \
+                plane — the display must be lit; --drm-device names a card
                 """)
         }
         do {
             let screen = try DirectScreenSource(device: device)
+            print("""
+                direct: capturing \(device) (\(screen.driver), \
+                \(named == nil ? "discovered" : "--drm-device"))
+                """)
             if screen.renderNodeIsFallback {
                 print("""
                     direct: \(device) names no render node — using \
@@ -211,7 +215,10 @@ final class DirectEyeLeg {
         } catch DirectScreenSourceError.openDevice(let path, let code) {
             throw HostError("direct: open(\(path)) errno \(code)")
         } catch DirectScreenSourceError.noActivePrimaryPlane {
-            throw HostError("direct: no active primary plane")
+            throw HostError("""
+                direct: no active primary plane on \(device) — the display \
+                must be lit
+                """)
         } catch DirectScreenSourceError.initialTicketDenied {
             throw HostError("""
                 direct: GETFB2 refused — the direct backend \
