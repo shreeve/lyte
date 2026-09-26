@@ -60,10 +60,10 @@ Iterate with `--filter <TestClass>`. Environment knobs read by the suites:
 
 | Variable | Effect |
 |---|---|
-| `LYTE_ARQ_TRIALS` | Seeded ARQ simulation trials (default 2,000; `25000` or more for the long form) |
+| `LYTE_ARQ_TRIALS` | Seeded ARQ simulation trials (default 2,000; `25000` or more for the long form, which the pup gate runs in release) |
 | `LYTE_ARQ_SEED` | Replay one ARQ simulation seed |
 | `LYTE_BULK_SEED` | Run the lossy bulk-transfer test on this one seed instead of its three defaults |
-| `LYTE_HARDWARE_TESTS=1` | Run tests that use real machine hardware (today: the audio route-change test, which plays through the real output device); skipped otherwise |
+| `LYTE_HARDWARE_TESTS=1` | Run tests that use real machine hardware (today: the audio route-change test, which plays through the real output device); skipped otherwise. `LYTE_HARDWARE_TESTS=1 Scripts/CI/test-all-macos.sh` is the owner's-Mac leg |
 
 ### Test equipment
 
@@ -161,6 +161,11 @@ In order:
    app binary and `lyte-helperd`, and `test-hermetic-linkage.sh`. The
    owner's `.build/Lyte.app` is never touched.
 
+The package suites inherit the environment, so
+`LYTE_HARDWARE_TESTS=1 Scripts/CI/test-all-macos.sh` also runs the
+hardware tests on a Mac with real devices (the owner's). The last lines
+say whether they ran.
+
 ## The pup gate — `Scripts/CI/test-all-pup.sh`
 
 One ssh session to `LYTE_PUP_HOST` (default `pup`) fingerprints protected
@@ -189,7 +194,9 @@ session:
    `LyteClientCore`, `LyteClientSession` and their suites, and Browser's
    only `LyteClientBrowserCore` and its suite (no JavaScriptKit). Each
    package is cleaned by the same per-package build-graph rule as on the
-   Mac.
+   Mac. Wire then runs again with `-c release` (optimized code, with
+   `-enable-testing` for its `@testable` suite) and `LYTE_ARQ_TRIALS=25000`:
+   about a minute to build cold, seconds to run.
 3. Plain and release Host builds with `-warnings-as-errors`.
 4. Stages a host image and runs `test-host-package-image.sh`,
    `test-host-installer.sh IMAGE` and `--self-test`, and
