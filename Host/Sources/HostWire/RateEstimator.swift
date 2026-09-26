@@ -320,8 +320,9 @@ public struct RateEstimatorStats: Equatable, Sendable {
 /// The evidence on the table when an overuse FALL fired (holds are only
 /// counted), for post-mortem logs.
 public struct OveruseFallForensics: Equatable, Sendable {
-    /// The median of recent raw full-train samples (forensic only).
-    public var anchorBitsPerSecond: Int
+    /// The median of recent raw full-train samples (forensic only);
+    /// nil when no full train landed inside the sample window.
+    public var anchorBitsPerSecond: Int?
     /// The standing rate the instant before the fall.
     public var rateBeforeBitsPerSecond: Int
     /// Worst inflation anywhere in the streak, µs.
@@ -423,9 +424,10 @@ public final class RateEstimator {
     private var lastDeliveryRate: Double?
     private var lastDeliveryAt: UInt64?
     /// The last `overuseAnchorSampleCount` raw full-train measurements,
-    /// FIFO. Their median is reporting-grade and forensic only; falls
+    /// FIFO, expired past `sampleWindowNS` like every other delivery
+    /// sample. Their median is reporting-grade and forensic only; falls
     /// answer to the capacity belief.
-    private var recentRawDeliveries: BoundedRing<Double>
+    private var recentRawDeliveries = Deque<(at: UInt64, rate: Double)>()
 
     // MARK: Capacity belief
 
@@ -510,9 +512,6 @@ public final class RateEstimator {
 
     public init(config: RateEstimatorConfig, now: UInt64) {
         self.config = config
-        self.recentRawDeliveries = BoundedRing(
-            capacity: Self.overuseAnchorSampleCount
-        )
         let initial = min(
             max(config.initialRateBitsPerSecond ?? config.ceilingBitsPerSecond,
                 config.floorBitsPerSecond),
@@ -814,7 +813,7 @@ public final class RateEstimator {
     /// lone outlier either way, follows a majority. Nil before evidence.
     private var overuseAnchorRate: Double? {
         guard !recentRawDeliveries.isEmpty else { return nil }
-        let sorted = recentRawDeliveries.sorted()
+        let sorted = recentRawDeliveries.map(\.rate).sorted()
         return sorted[sorted.count / 2]
     }
 
@@ -860,6 +859,9 @@ public final class RateEstimator {
         }
         recentHonestDeliveries.removeAll {
             now &- $0.at > Self.honestVoteWindowNS
+        }
+        recentRawDeliveries.removeAll {
+            now &- $0.at > Self.sampleWindowNS
         }
         while let credit = hostDroppedVideoCredits.first,
               now > credit.at, now - credit.at > Self.lossWindowNS {
@@ -1056,7 +1058,10 @@ public final class RateEstimator {
             // measure their own pacing. Short trains still feed the
             // windowed max (×0.5) and evidence freshness.
             if train.count >= Self.minTrainPackets {
-                recentRawDeliveries.append(rate)
+                recentRawDeliveries.append((at: now, rate: rate))
+                if recentRawDeliveries.count > Self.overuseAnchorSampleCount {
+                    recentRawDeliveries.removeFirst()
+                }
                 // Freshest reading, not a max: a squeeze right after a
                 // drain must not inherit the drain's super-rate sample.
                 lastFullTrainRate = rate
@@ -1271,7 +1276,7 @@ public final class RateEstimator {
             // queue, a fresh honest median under the belief, or no
             // standing backlog all testify; standing backlog with only
             // censored samples is us measuring ourselves.
-            let anchor = overuseAnchorRate.map(Int.init) ?? rateBitsPerSecond
+            let anchor = overuseAnchorRate.map(Int.init)
             let queueGrew = inflatedStreakStartMicros.map {
                 saturatingDifference(queuingDelayMicroseconds ?? 0, $0)
                     >= Self.overuseThresholdMicroseconds
