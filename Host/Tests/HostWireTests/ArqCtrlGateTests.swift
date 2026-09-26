@@ -591,8 +591,8 @@ final class ArqCtrlGateTests: XCTestCase {
 
     // MARK: API guards
 
-    func testReliableSendRefusesBadGroups() throws {
-        // The endpoint's own refusals surface unchanged.
+    func testReliableSendRefusesAnEmptyMessage() throws {
+        // The endpoint's refusal surfaces unchanged.
         var sent: [VideoChannelDatagram] = []
         let (live, _) = try establish(
             sent: { sent }, append: { sent.append($0) }
