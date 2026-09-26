@@ -363,22 +363,18 @@ final class PeerSession {
         paired && capabilitiesAgreed
     }
 
-    /// One inbound datagram, then the emitters and a flush.
-    func receive(_ packet: UdpSocket.Packet, now: UInt64) {
-        let tuple = FourTuple(
-            localAddress: sock.localHost,
-            localPort: sock.localPort,
-            remoteAddress: packet.host,
-            remotePort: packet.port
-        )
-        handleEvents(
-            session.receive(
-                packet.bytes, from: tuple,
-                now: now, hostMicroseconds: now / 1_000
-            ),
-            now: now
-        )
+    /// One inbound datagram, then the emitters and a flush. True when it
+    /// is another handshake initiation at this unconfirmed session: the
+    /// acceptor's to judge.
+    func receive(
+        _ packet: UdpSocket.Packet, from tuple: FourTuple, now: UInt64
+    ) -> Bool {
+        let events = session.receive(
+            packet.bytes, from: tuple,
+            now: now, hostMicroseconds: now / 1_000)
+        handleEvents(events, now: now)
         service(now: now)
+        return events.contains(.initiationWhileUnconfirmed)
     }
 
     /// A timer pass with no datagram.
@@ -789,16 +785,19 @@ final class ControlPeer {
             }
 
             if let packet = sock.recv() {
-                if let peer = current {
-                    peer.receive(packet, now: now)
-                    continue
-                }
                 let tuple = FourTuple(
                     localAddress: sock.localHost, localPort: sock.localPort,
                     remoteAddress: packet.host, remotePort: packet.port)
+                if let peer = current,
+                   !peer.receive(packet, from: tuple, now: now) {
+                    continue
+                }
                 guard case .authenticated(let handshake) = acceptor.accept(
                     packet.bytes[...], from: tuple, now: now
                 ).verdict else { continue }
+                if current != nil {
+                    print("noise: a newer handshake replaces the unconfirmed one")
+                }
                 current = try PeerSession(
                     answering: handshake,
                     sock: sock,
