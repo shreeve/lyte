@@ -148,7 +148,9 @@ In order:
    `test-frozen-vectors.sh`, `test-benchmark-safety.sh`,
    `test-host-release-posture.sh`, `test-host-package-image.sh --self-test`,
    `test-host-installer.sh --self-test` (which also runs
-   `test-host-deploy.sh`), `test-sign-dev.sh`, `test-setup-dev-signing.sh`.
+   `test-host-deploy.sh`), `test-sign-dev.sh`, `test-setup-dev-signing.sh`,
+   `test-install.sh` (the one-line installer against local archives and
+   fake `codesign`, `spctl` and `pgrep`; never `/Applications`).
 6. **Python:** `test_analyze_app_benchmark.py`, `test_motion_preflight.py`,
    then `test-app-identity.sh`.
 7. **Signed debug CLI:** `Scripts/build-cli.sh debug`,

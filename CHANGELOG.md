@@ -4,7 +4,7 @@ User-visible changes to the Lyte macOS app and the Linux host, newest
 first. Each release's section is its GitHub release notes and the notes
 Sparkle shows in the update window (`Scripts/release.sh`).
 
-## Unreleased
+## 0.7.0 — 2026-09-26
 
 - **⌘ shortcuts reach Linux as Ctrl (breaking).** In a stream, ⌘ plus a
   letter is sent as Ctrl plus that letter: ⌘S saves, ⌘Z undoes, ⌘⇧Z is
@@ -32,7 +32,7 @@ Sparkle shows in the update window (`Scripts/release.sh`).
   asked for again. A frame the Mac cannot decode no longer freezes the
   picture: the client flushes and asks for a fresh keyframe. Pairing
   ends with a goodbye, so a `--pair` host exits at once.
-- **Wi-Fi rate recovery (experimental).** A brief Wi-Fi delay spike
+- **Wi-Fi rate recovery.** A brief Wi-Fi delay spike
   whose queue is already draining no longer drops the stream to a few
   Mbps; after a real dip the rate climbs back to where it was within a
   few seconds instead of half a minute; a fall from the ceiling no longer
@@ -53,6 +53,9 @@ Sparkle shows in the update window (`Scripts/release.sh`).
   milliseconds).
 - **Browser.** The proof page no longer forwards volume keys, matching the
   Mac client.
+- **One-command install.** `curl -fsSL https://raw.githubusercontent.com/shreeve/lyte/main/Scripts/install.sh | bash`
+  installs the latest release, and only a notarized one signed with
+  Lyte's Developer ID.
 
 ### Migration
 

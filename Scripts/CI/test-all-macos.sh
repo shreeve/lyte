@@ -153,6 +153,9 @@ echo "==> signing policy tests"
 Scripts/Tests/test-sign-dev.sh
 Scripts/Tests/test-setup-dev-signing.sh
 
+echo "==> app installer tests"
+Scripts/Tests/test-install.sh
+
 echo "==> analyzer tests"
 python_env="$repo_root/.build/ci-python"
 python_requirements="$repo_root/Scripts/requirements.txt"
