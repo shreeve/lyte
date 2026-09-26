@@ -929,17 +929,18 @@ final class RateEstimatorGateTests: XCTestCase {
             bottleneckMbps: Double, extraDelayMicros: UInt64 = 0,
             backlogBytes: Int = 0,
             channels: [FeedbackReport.ChannelStats] = [],
-            nacks: [FeedbackReport.NackEntry] = []
+            nacks: [FeedbackReport.NackEntry] = [],
+            count: Int = 12
         ) -> RateEstimatorVerdict {
             now += 25 * RateEstimatorGateTests.ms
             clientMicros += 25_000
             let samples = test.train(
-                estimator, seqStart: seq, count: 12,
+                estimator, seqStart: seq, count: count,
                 sendStartNS: now - RateEstimatorGateTests.ms,
                 bottleneckBitsPerSecond: bottleneckMbps * 1e6,
                 extraDelayMicros: extraDelayMicros
             )
-            seq += 12
+            seq += count
             return estimator.ingest(
                 test.report(samples: samples, clientMicros: clientMicros,
                             channels: channels, nacks: nacks),
@@ -3126,6 +3127,233 @@ final class RateEstimatorGateTests: XCTestCase {
                 Int(5e6 * 1.10) + 100_000,
                 "the climb outran what the path proved")
         }
+    }
+
+    // MARK: - Rate recovery on a quiet screen
+    // After a genuine collapse the belief sits on what the collapse
+    // measured, and only full trains move it. A quiet screen sends almost
+    // none, so the evidence climb cannot see the path come back and the
+    // next motion starts under a stale cap. Once the path has run clean on
+    // real traffic, the rate returns to where the collapse found it; fresh
+    // trouble takes that back at once, and motion's trains judge it.
+
+    /// The soak's shape on a 50 Mbps path, one 25 ms report per beat,
+    /// every report carrying the video channel's cumulative ledger.
+    private final class QuietScreenRig {
+        let estimator: RateEstimator
+        let driver: EstimatorDriver
+        private unowned let test: RateEstimatorGateTests
+        private var received: UInt32 = 0
+        private var missing: UInt32 = 0
+        private var quietBeats = 0
+        private(set) var preFallRate = 0
+
+        init(_ test: RateEstimatorGateTests) {
+            self.test = test
+            estimator = test.makeEstimator {
+                $0.ceilingBitsPerSecond = 50_000_000
+            }
+            driver = EstimatorDriver(test, estimator)
+        }
+
+        /// The next report's cumulative ledger after `sent` datagrams.
+        func ledger(sent: Int, lost: Int)
+            -> [FeedbackReport.ChannelStats] {
+            received += UInt32(sent - lost)
+            missing += UInt32(lost)
+            return test.lossLedger(received: received, missing: missing)
+        }
+
+        /// Primes at the ceiling, then 2 s of collapse: trains at 5 Mbps
+        /// under a 247 ms queue with one datagram in six lost.
+        func collapse() {
+            for _ in 0..<40 {
+                driver.beat(bottleneckMbps: 50,
+                            channels: ledger(sent: 12, lost: 0))
+            }
+            preFallRate = estimator.rateBitsPerSecond
+            for _ in 0..<80 {
+                driver.beat(
+                    bottleneckMbps: 5, extraDelayMicros: 247_000,
+                    backlogBytes: 19_558,
+                    channels: ledger(sent: 12, lost: 2))
+            }
+        }
+
+        /// A quiet screen: a 5-datagram frame per report, and one
+        /// 12-datagram frame every 10 s. The path delivers `pathMbps`
+        /// (trains read at most our own pace) and loses `lost` of each
+        /// report's datagrams.
+        @discardableResult
+        func quietBeat(pathMbps: Double = 50, lost: Int = 0)
+            -> RateEstimatorVerdict {
+            quietBeats += 1
+            let count = quietBeats % 400 == 0 ? 12 : 5
+            let paceMbps = Double(estimator.rateBitsPerSecond) / 1e6
+            return driver.beat(
+                bottleneckMbps: min(paceMbps, pathMbps),
+                channels: ledger(sent: count, lost: lost), count: count)
+        }
+
+        /// Motion on a path that delivers `pathMbps`: a 12-datagram frame
+        /// per report, and the standing queue our excess over the path
+        /// builds (capped at 300 ms).
+        @discardableResult
+        func motionBeat(pathMbps: Double, queueMicros: inout UInt64)
+            -> RateEstimatorVerdict {
+            let paceMbps = Double(estimator.rateBitsPerSecond) / 1e6
+            let excess = max(paceMbps - pathMbps, 0) / pathMbps
+            queueMicros = min(
+                queueMicros + UInt64(25_000 * excess), 300_000)
+            return driver.beat(
+                bottleneckMbps: min(paceMbps, pathMbps),
+                extraDelayMicros: queueMicros,
+                backlogBytes: queueMicros > 0 ? 19_558 : 0,
+                channels: ledger(sent: 12, lost: 0))
+        }
+
+        var restored: Bool {
+            estimator.rateBitsPerSecond * 10 >= preFallRate * 9
+        }
+
+        /// Quiet clean beats until the rate stands at ≥ 90% of the
+        /// pre-fall rate; returns how long that took (nil: not in
+        /// `limitSeconds`).
+        func quietUntilRestored(limitSeconds: Int = 60) -> UInt64? {
+            let start = driver.now
+            for _ in 0..<(limitSeconds * 40) {
+                quietBeat()
+                if restored { return driver.now - start }
+            }
+            return nil
+        }
+    }
+
+    /// The soak (15.6% loss, a 247 ms queue, trains at 5 Mbps, then a
+    /// static desktop): the collapse must still fall to what it
+    /// measured, and once the air clears the quiet stream must be back at
+    /// ≥ 90% of the pre-fall rate within 15 s — not parked near its
+    /// sparse full trains for minutes.
+    func testQuietScreenRestoresThePreFallRateOnceThePathRunsClean() {
+        let rig = QuietScreenRig(self)
+        rig.collapse()
+        XCTAssertEqual(rig.preFallRate, 50_000_000)
+        XCTAssertLessThanOrEqual(rig.estimator.rateBitsPerSecond, 5_000_000,
+            "a genuine collapse must fall to what it measured")
+        let recovered = rig.quietUntilRestored()
+        XCTAssertLessThanOrEqual(recovered ?? .max, 15_000 * Self.ms,
+            """
+                back to ≥ 90% \
+                \(recovered.map { "after \($0 / Self.ms) ms" } ?? "never") \
+                of a clean quiet path; the rate stood at \
+                \(rig.estimator.rateBitsPerSecond / 1_000) kbps after 60 s
+                """)
+    }
+
+    /// A restore is a hypothesis that the path is clean again. Loss on
+    /// the quiet stream refutes it: the rate is back under the rate it
+    /// was restored from as soon as the loss window leaves the clean band
+    /// (not at the 10% fall threshold, not after FEC's hold), and it
+    /// stays there while the loss continues. Only a fresh clean stretch
+    /// restores again.
+    func testRestoreOnAStillLossyPathIsWithdrawnPromptly() {
+        let rig = QuietScreenRig(self)
+        rig.collapse()
+        var restoredFrom = rig.estimator.rateBitsPerSecond
+        var restoredAt: UInt64?
+        for _ in 0..<2_400 where restoredAt == nil {
+            restoredFrom = rig.estimator.rateBitsPerSecond
+            rig.quietBeat()
+            if rig.restored { restoredAt = rig.driver.now }
+        }
+        XCTAssertNotNil(restoredAt, "the clean quiet path never restored")
+        XCTAssertLessThan(restoredFrom * 2, rig.preFallRate)
+
+        // One datagram in five lost.
+        let lossStart = rig.driver.now
+        var withdrawnAfter: UInt64?
+        for _ in 0..<40 where withdrawnAfter == nil {
+            let verdict = rig.quietBeat(lost: 1)
+            if rig.estimator.rateBitsPerSecond <= restoredFrom {
+                XCTAssertEqual(verdict.change, .loss)
+                withdrawnAfter = rig.driver.now - lossStart
+            }
+        }
+        XCTAssertLessThanOrEqual(withdrawnAfter ?? .max, 150 * Self.ms,
+            """
+                20% loss left the restore standing \
+                \(withdrawnAfter.map { "for \($0 / Self.ms) ms" } ?? "for 1 s")
+                """)
+        for _ in 0..<400 {
+            rig.quietBeat(lost: 1)
+            XCTAssertLessThanOrEqual(
+                rig.estimator.rateBitsPerSecond, restoredFrom,
+                "a lossy path was restored again")
+        }
+        XCTAssertNotNil(rig.quietUntilRestored(limitSeconds: 30),
+            "a quiet path that runs clean again must restore again")
+    }
+
+    /// A quiet screen cannot see a path that came back slower. Motion
+    /// does: its trains read the path, its excess builds a queue, and the
+    /// restored rate falls to no more than it was restored from on the
+    /// first overuse verdict — an unproven rate does not wait out the fall
+    /// law's 500 ms persistence. The path has now answered under load, so
+    /// the next quiet stretch does not restore again.
+    func testMotionOnASlowerPathUndoesTheRestore() {
+        let rig = QuietScreenRig(self)
+        rig.collapse()
+        var restoredFrom = rig.estimator.rateBitsPerSecond
+        var restored = false
+        for _ in 0..<2_400 where !restored {
+            restoredFrom = rig.estimator.rateBitsPerSecond
+            rig.quietBeat()
+            restored = rig.restored
+        }
+        XCTAssertTrue(restored, "the clean quiet path never restored")
+
+        // Motion on a path that now carries only 10 Mbps.
+        var queue: UInt64 = 0
+        var withdrawnAfter: UInt64?
+        let motionStart = rig.driver.now
+        for _ in 0..<80 where withdrawnAfter == nil {
+            rig.motionBeat(pathMbps: 10, queueMicros: &queue)
+            if rig.estimator.rateBitsPerSecond <= restoredFrom {
+                withdrawnAfter = rig.driver.now - motionStart
+            }
+        }
+        XCTAssertLessThanOrEqual(withdrawnAfter ?? .max, 100 * Self.ms,
+            """
+                motion on a 10 Mbps path left the restored rate standing \
+                \(withdrawnAfter.map { "for \($0 / Self.ms) ms" } ?? "for 2 s")
+                """)
+        // The queue drains; the screen goes quiet again on the slow path.
+        for _ in 0..<1_200 {
+            rig.quietBeat(pathMbps: 10)
+            XCTAssertLessThan(rig.estimator.rateBitsPerSecond, 25_000_000,
+                "a restore the path refuted under load was retried")
+        }
+    }
+
+    /// Silence is not a clean path: a stream that carries almost nothing
+    /// after the collapse (one keepalive datagram a second) never
+    /// restores, however long it stays quiet.
+    func testSilenceNeverRestores() {
+        let rig = QuietScreenRig(self)
+        rig.collapse()
+        let fallen = rig.estimator.rateBitsPerSecond
+        for beat in 1...2_400 {
+            rig.driver.now += 25 * Self.ms
+            rig.driver.clientMicros += 25_000
+            let channels = beat % 40 == 0
+                ? rig.ledger(sent: 1, lost: 0) : []
+            _ = rig.estimator.ingest(
+                report(samples: [], clientMicros: rig.driver.clientMicros,
+                       channels: channels),
+                now: rig.driver.now, inRecovery: false)
+        }
+        XCTAssertLessThanOrEqual(rig.estimator.rateBitsPerSecond,
+            fallen * 2, "a silent path restored the pre-fall rate")
     }
 }
 

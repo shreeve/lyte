@@ -11,7 +11,7 @@ section applies to any installed host. Fresh-machine installation is in
 
 | Machine | Role | Facts |
 |---|---|---|
-| `pup` | Linux reference host | Ubuntu 26.04; Intel Meteor Lake GPU drives the panel (Direct Eye and VAAPI run there); RTX 4050 with no attached connectors. Wired `10.0.0.232` on `enxf8e43b7ede7c`, Wi-Fi `10.0.0.249` on `wlp0s20f3`. Swift 6.1.2 at `/usr/local/bin/swift`. `ssh pup`. |
+| `pup` | Linux reference host | Ubuntu 26.04; Intel Meteor Lake GPU drives the panel (Direct Eye and VAAPI run there); RTX 4050 with no attached connectors. Wi-Fi only: `10.0.0.249` on `wlp0s20f3`, where the service advertises (the wired leg, `10.0.0.232` on `enxf8e43b7ede7c`, is absent). Swift 6.1.2 at `/usr/local/bin/swift`. `ssh pup`. |
 | the Mac | client and development machine | Xcode, the signing identity, `.build/Lyte.app` (the owner's interactive app) |
 
 The standing host is `lyte-host.service` on UDP **41151**, advertised over
@@ -156,7 +156,8 @@ why they hold and how the tools enforce them.
   client, with no undo. The pup gate and the benchmark's handshake leg
   fingerprint the identity, `host.conf`, `/etc/lyte/lyte-host.conf`, the
   pre-XDG copies, the unit and the deployed link before and after
-  (`Scripts/lib/pup-side.sh`) and fail on any change or unreadable file.
+  (`Scripts/lib/pup-side.sh`) and fail on any change or unreadable file;
+  a handshake leg that dies after its restart re-checks on the way out.
 - **The standing port.** A listener on a port another socket holds
   refuses to start, so a stray host on 41151 fails rather than sharing the
   service's traffic.
@@ -165,6 +166,13 @@ why they hold and how the tools enforce them.
   eye and is safe beside the service.
 - **Hand-run binaries.** `/tmp` is mounted `nosuid`, which strips file
   capabilities, so a hand-run host lives under the home build tree.
+- **`lyte-uinput-check` reaches the desktop.** Its virtual devices join
+  seat0, so on a host with a live session it types `a`, clicks and moves
+  the pointer there. For the run, keep them off the seat with a udev rule
+  (`ACTION=="add", SUBSYSTEM=="input", ATTRS{name}=="Lyte Virtual *",
+  ENV{ID_SEAT}="seat-lytecheck"` in `/etc/udev/rules.d/`, then
+  `udevadm control --reload`), and remove it afterwards: the service's own
+  devices use the same names.
 - **Ambient `CAP_SYS_ADMIN` (accepted risk).** The unit runs a seat-user
   symlink into seat-user-owned versions, with arguments from the user's
   `host.conf`, ambient `CAP_SYS_ADMIN` and `Restart=always`; treat the seat

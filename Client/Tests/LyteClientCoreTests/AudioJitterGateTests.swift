@@ -357,22 +357,46 @@ final class AudioJitterGateTests: XCTestCase {
         for _ in 0..<25 {
             XCTAssertEqual(buffer.pull(nowMicroseconds: 100_000, urgent: true), .starved)
         }
-        // The pre-roll's quiet head goes to the hard-cap recenter; its
-        // newest packets (the sound that tripped the wire) survive.
-        for n in UInt32(10)..<50 {
+        // The host's pre-roll (the trip run) fits under the hard cap: it
+        // plays whole, from its first packet, with nothing re-centered.
+        for n in UInt32(10)..<30 {
             buffer.insert(packet(n), arrivalMicroseconds: 3_000_000)
         }
         XCTAssertEqual(buffer.pull(nowMicroseconds: 3_000_000, urgent: true),
-                       .packet(packet(30)))
-        for n in UInt32(50)..<150 {
-            let at = 3_000_000 + UInt64(n - 49) * 5_000
+                       .packet(packet(10)))
+        for n in UInt32(30)..<130 {
+            let at = 3_000_000 + UInt64(n - 29) * 5_000
             buffer.insert(packet(n), arrivalMicroseconds: at)
             _ = buffer.pull(nowMicroseconds: at, urgent: true)
         }
         let stats = buffer.snapshotStats()
         XCTAssertEqual(stats.plcInvocations, 3)
         XCTAssertEqual(stats.latePacketsDropped, 0)
+        XCTAssertEqual(stats.recenterEvents, 0)
+        XCTAssertEqual(stats.packetsDroppedInRecenter, 0)
         XCTAssertEqual(stats.targetPackets, 5)
+    }
+
+    /// The wake grants no depth of its own: a burst deeper than the hard
+    /// cap re-centers like any other, so a wake never parks latency.
+    func testWakeBurstDeeperThanTheHardCapStillRecenters() {
+        let buffer = AudioJitterBuffer()
+        for n in UInt32(0)..<10 {
+            buffer.insert(packet(n), arrivalMicroseconds: UInt64(n) * 5_000)
+        }
+        for n in UInt32(0)..<10 {
+            XCTAssertEqual(buffer.pull(nowMicroseconds: 50_000, urgent: true),
+                           .packet(packet(n)))
+        }
+        buffer.noteAnnouncedQuiet()
+        for n in UInt32(10)..<50 {
+            buffer.insert(packet(n), arrivalMicroseconds: 3_000_000)
+        }
+        XCTAssertEqual(buffer.pull(nowMicroseconds: 3_000_000, urgent: true),
+                       .packet(packet(30)))
+        let stats = buffer.snapshotStats()
+        XCTAssertEqual(stats.recenterEvents, 1)
+        XCTAssertEqual(stats.packetsDroppedInRecenter, 20)
     }
 
     /// Only a wire-carried packet ahead of the last one played wakes an
@@ -398,6 +422,82 @@ final class AudioJitterGateTests: XCTestCase {
         XCTAssertEqual(buffer.pull(nowMicroseconds: 200_000, urgent: true),
                        .packet(packet(10)))
         XCTAssertEqual(buffer.snapshotStats().plcInvocations, 0)
+    }
+
+    /// The wake burst can land reordered: an onset packet that arrives
+    /// just after its successor still plays first, and the reorder is
+    /// not evidence against the cushion.
+    func testReorderedWakeOnsetPlaysInOrder() {
+        let buffer = AudioJitterBuffer()
+        for n in UInt32(0)..<10 {
+            buffer.insert(packet(n), arrivalMicroseconds: UInt64(n) * 5_000)
+        }
+        for n in UInt32(0)..<10 {
+            XCTAssertEqual(buffer.pull(nowMicroseconds: 50_000, urgent: true),
+                           .packet(packet(n)))
+        }
+        buffer.noteAnnouncedQuiet()
+        buffer.insert(packet(11), arrivalMicroseconds: 3_000_000)
+        buffer.insert(packet(10), arrivalMicroseconds: 3_000_100)
+        for n in UInt32(12)..<15 {
+            buffer.insert(packet(n), arrivalMicroseconds: 3_000_200)
+        }
+        for n in UInt32(10)..<15 {
+            XCTAssertEqual(buffer.pull(nowMicroseconds: 3_000_300, urgent: true),
+                           .packet(packet(n)))
+        }
+        let stats = buffer.snapshotStats()
+        XCTAssertEqual(stats.latePacketsDropped, 0)
+        XCTAssertEqual(stats.plcInvocations, 0)
+        XCTAssertEqual(stats.targetPackets, 5)
+    }
+
+    /// A concealment issued on an empty buffer stands in for a packet
+    /// that may only be late. When that packet arrives before anything
+    /// else has played, it plays after the concealment, which becomes one
+    /// packet of delay instead of a lost packet.
+    func testPacketLateForAnEmptyBufferConcealmentPlaysAfterIt() {
+        let buffer = AudioJitterBuffer()
+        for n in UInt32(0)..<5 {
+            buffer.insert(packet(n), arrivalMicroseconds: UInt64(n) * 5_000)
+        }
+        for n in UInt32(0)..<5 {
+            XCTAssertEqual(buffer.pull(nowMicroseconds: 25_000, urgent: true),
+                           .packet(packet(n)))
+        }
+        XCTAssertEqual(buffer.pull(nowMicroseconds: 30_000, urgent: true),
+                       .conceal(number: 5))
+        buffer.insert(packet(5), arrivalMicroseconds: 30_100)
+        buffer.insert(packet(6), arrivalMicroseconds: 35_100)
+        XCTAssertEqual(buffer.pull(nowMicroseconds: 35_100, urgent: true),
+                       .packet(packet(5)))
+        XCTAssertEqual(buffer.pull(nowMicroseconds: 35_100, urgent: true),
+                       .packet(packet(6)))
+        // Once a later packet has played, the slot is gone for good.
+        XCTAssertEqual(buffer.pull(nowMicroseconds: 40_000, urgent: true),
+                       .conceal(number: 7))
+        buffer.insert(packet(8), arrivalMicroseconds: 40_100)
+        XCTAssertEqual(buffer.pull(nowMicroseconds: 40_100, urgent: true),
+                       .packet(packet(8)))
+        buffer.insert(packet(7), arrivalMicroseconds: 40_200)
+        let stats = buffer.snapshotStats()
+        XCTAssertEqual(stats.latePacketsDropped, 1)
+        XCTAssertEqual(stats.plcInvocations, 2)
+    }
+
+    /// The skew is a rate per packet number: packets that never arrive
+    /// (or arrive late and are dropped) must not compress the time axis
+    /// and inflate the estimate toward the clamp.
+    func testSkewReadsThePacketRateWhenPacketsAreMissing() {
+        let buffer = AudioJitterBuffer()
+        // +200 ppm: one µs of stretch per packet; every third packet lost.
+        for n in 0..<900 where n % 3 != 2 {
+            buffer.insert(
+                packet(UInt32(n)),
+                arrivalMicroseconds: 10_000 + UInt64(n) * 5_001)
+        }
+        XCTAssertEqual(buffer.snapshotStats().skewPartsPerMillion, 200,
+                       accuracy: 20)
     }
 
     /// Before playout starts nothing orders the pending packets by

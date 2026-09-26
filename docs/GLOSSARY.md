@@ -100,7 +100,7 @@ Decision record: [postures](decisions/20260802-013946-postures-design.md).
 | posture | An announced mode the peer can rely on, never inferred from silence |
 | quiet / active (audio) | Tripwire: capture never stops; transmission gates during silence and resumes instantly on sound (0x25) |
 | quiet / active (video) | The keepalive backs off toward 30 s after ~30 s without damage; damage or input wakes it (0x26) |
-| pre-roll | The ~200 ms audio ring shipped first on wake so the onset is intact |
+| pre-roll | The ~100 ms audio ring (the trip run) shipped first on wake so the onset is intact |
 | rewind | A deeper host-side replay ring (filed, not built) |
 | chroma tier | Good = 4:2:0, Better = 4:2:2 (dormant), Best = 4:4:4; fixed per session |
 | host audio routing | Host speakers audible, muted (virtual "Lyte Audio" sink), or stream off |

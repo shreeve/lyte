@@ -39,19 +39,27 @@ func decodeCStringBuffer(_ buffer: [CChar]) -> String {
         as: UTF8.self)
 }
 
-func findNode(named want: String) -> String? {
+func nodes(named want: String) -> [String] {
     let base = "/sys/class/input"
     guard let entries = try? FileManager.default
-        .contentsOfDirectory(atPath: base) else { return nil }
-    for entry in entries.sorted() where entry.hasPrefix("event") {
-        let namePath = "\(base)/\(entry)/device/name"
-        if let name = try? String(contentsOfFile: namePath,
-                                  encoding: .utf8),
-           name.trimmingCharacters(in: .whitespacesAndNewlines) == want {
-            return "/dev/input/\(entry)"
-        }
-    }
-    return nil
+        .contentsOfDirectory(atPath: base) else { return [] }
+    return entries.sorted().filter { entry in
+        guard entry.hasPrefix("event"),
+              let name = try? String(
+                  contentsOfFile: "\(base)/\(entry)/device/name",
+                  encoding: .utf8) else { return false }
+        return name.trimmingCharacters(in: .whitespacesAndNewlines) == want
+    }.map { "/dev/input/\($0)" }
+}
+
+/// Nodes a running host's own devices already hold under the same names;
+/// the check reads only the devices it creates.
+let preexisting = Set(["Keyboard", "Mouse", "Tablet"].flatMap {
+    nodes(named: "Lyte Virtual \($0)")
+})
+
+func findNode(named want: String) -> String? {
+    nodes(named: want).first { !preexisting.contains($0) }
 }
 
 /// One evdev reader: nonblocking, 24-byte input_event records
@@ -155,11 +163,12 @@ mouse.expect([
     Ev(type: EV_SYN, code: SYN_REPORT, value: 0),
 ], scenario: "button press/release")
 
-// Absolute motion: pixel center scales to 32767/65535 on the tablet.
+// Absolute motion: the centre pixel is value 32768, which libinput
+// places at v · extent / 65536 — pixel (1024, 640) itself.
 _ = lyte_uinput_move_abs(handle, 1024, 640, &err, err.count)
 tablet.expect([
-    Ev(type: EV_ABS, code: ABS_X, value: 32767),
-    Ev(type: EV_ABS, code: ABS_Y, value: 32767),
+    Ev(type: EV_ABS, code: ABS_X, value: 32768),
+    Ev(type: EV_ABS, code: ABS_Y, value: 32768),
     Ev(type: EV_SYN, code: SYN_REPORT, value: 0),
 ], scenario: "absolute center scales exactly")
 

@@ -18,9 +18,11 @@ let package = Package(
             name: "LyteClientHostTests",
             dependencies: [
                 .product(name: "LyteTransport", package: "Client"),
+                .product(name: "LyteClientCore", package: "Client"),
                 .product(name: "LyteClientSession", package: "Client"),
                 .product(name: "LyteClientTestKit", package: "Client"),
                 .product(name: "LyteCore", package: "Common"),
+                .product(name: "HostCore", package: "Host"),
                 .product(name: "HostSession", package: "Host"),
                 .product(name: "HostWire", package: "Host"),
                 .product(name: "HostWireTestKit", package: "Host"),

@@ -194,6 +194,12 @@ run_gate() {
 
     run_package_tests Common
     run_package_tests Wire
+    # The Wire suite again as optimized code, with the long form of the
+    # seeded ARQ simulation. Wire tests use only the public API, so a
+    # release build needs no -enable-testing.
+    echo "==> Wire tests, release, 25,000 ARQ trials"
+    (cd "$gate_root/Wire" && LYTE_ARQ_TRIALS=25000 swift test -c release \
+        -Xswiftc -warnings-as-errors)
     # Off macOS the Client manifest keeps only its IO-free policy targets.
     run_package_tests Client
     run_package_tests Host

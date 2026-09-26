@@ -133,3 +133,32 @@ tail -c +\$((offset + 1)) \"\$log\"" > "$OUT_DIR/$run_id-host-output.log" || tru
   FRESH_HOST_JOURNAL_SINCE=""
   FRESH_HOST_LOG_OFFSET=0
 }
+
+# recover_fresh_host: the exit path of a leg that may have died between
+# start_fresh_host and finish_fresh_host. Starts a service the restart left
+# down, then proves the protected state still matches its fingerprint from
+# before the restart; a change or an unreadable file fails loudly.
+recover_fresh_host() {
+  if (( FRESH_HOST_RECOVERY_NEEDED )); then
+    pup_ssh \
+      "sudo -n systemctl start lyte-host; \
+systemctl is-active --quiet lyte-host" || {
+      echo "WARNING: failed to restore lyte-host.service" >&2
+    }
+    FRESH_HOST_RECOVERY_NEEDED=0
+  fi
+  [[ -n "$FRESH_HOST_PROTECTED_STATE" ]] || return 0
+  local expected="$FRESH_HOST_PROTECTED_STATE"
+  FRESH_HOST_PROTECTED_STATE=""
+  [[ "$(pup_run lyte_protected_state_fingerprint)" == "$expected" ]] \
+    && return 0
+  cat >&2 <<EOF
+ERROR: ============================================================
+ERROR: PROTECTED HOST STATE CHANGED OR UNREADABLE on $PUP after the
+ERROR: handshake leg restarted lyte-host.service. Check the identity
+ERROR: (~/.config/lyte/noise_static.key, paired_clients) and host.conf
+ERROR: against their known SHA-256 before trusting the host.
+ERROR: ============================================================
+EOF
+  return 1
+}

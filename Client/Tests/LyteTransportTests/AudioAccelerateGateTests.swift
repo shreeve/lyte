@@ -185,7 +185,8 @@ final class AudioAccelerateGateTests: XCTestCase {
         receiver: AudioReceiver,
         accelerator: AudioAccelerator,
         arrivals: [(at: UInt64, envelope: Envelope, payload: [UInt8])],
-        untilMicros: UInt64
+        untilMicros: UInt64,
+        announcedQuietAtMicros: UInt64? = nil
     ) -> PumpResult {
         var result = PumpResult()
         var ringFrames = 0
@@ -193,6 +194,7 @@ final class AudioAccelerateGateTests: XCTestCase {
         var cursor = 0
         var t: UInt64 = 0
         while t <= untilMicros {
+            if t == announcedQuietAtMicros { receiver.noteAnnouncedQuiet() }
             while cursor < arrivals.count, arrivals[cursor].at <= t {
                 receiver.ingest(
                     envelope: arrivals[cursor].envelope,
@@ -419,6 +421,91 @@ final class AudioAccelerateGateTests: XCTestCase {
             "drift parked as latency: depth \(result.maxDepthPackets)")
         XCTAssertEqual(result.played, result.played.sorted())
         XCTAssertEqual(result.played.count, Set(result.played).count)
+    }
+
+    // MARK: Sender-slow drift costs one concealment per packet of
+    // drift, never a concealment storm
+
+    /// A sender slower than the DAC drains the cushion; once it is gone a
+    /// packet lands just after its slot was concealed. That packet plays
+    /// after the concealment (which becomes delay) instead of dropping,
+    /// so drift costs one PLC per 5 ms accrued and every packet plays.
+    func testSenderSlowDriftCostsOnePlcPerPacketOfDrift() throws {
+        let receiver = AudioReceiver()
+        let accelerator = AudioAccelerator()
+        // 2,000 ppm slow for 30 s: 60 ms of drift against a 25 ms cushion.
+        let count = 6_000
+        let arrivals = try wireArrivals(count: count, arrivalStride: 5_010)
+        let result = runPump(
+            receiver: receiver, accelerator: accelerator,
+            arrivals: arrivals, untilMicros: arrivals.last!.at + 1_000)
+
+        let stats = receiver.snapshotStats()
+        XCTAssertEqual(stats.jitter.latePacketsDropped, 0)
+        XCTAssertEqual(result.played.count + receiver.pendingPackets, count,
+                       "every packet plays or is still queued")
+        XCTAssertEqual(result.played, result.played.sorted())
+        XCTAssertLessThanOrEqual(stats.jitter.plcInvocations, 12,
+            "60 ms of drift is at most a dozen concealments")
+        XCTAssertEqual(result.underrunFrames, 0)
+        XCTAssertEqual(stats.jitter.recenterEvents, 0)
+    }
+
+    // MARK: The host's pre-roll plays whole through the pump
+
+    func testWakePreRollPlaysWholeFromItsFirstPacket() throws {
+        let receiver = AudioReceiver()
+        let accelerator = AudioAccelerator()
+        // One second of steady audio, an announced quiet, and 2 s later
+        // the host's 20-packet pre-roll at once, then steady again.
+        let steady = try wireArrivals(count: 1_600)
+        let quietAt: UInt64 = 10_000 + 200 * Self.packetMicros
+        let wakeAt: UInt64 = quietAt + 2_000_000
+        var arrivals = Array(steady.prefix(200))
+        for (index, arrival) in steady.dropFirst(200).enumerated() {
+            let at = index < 20
+                ? wakeAt
+                : wakeAt + UInt64(index - 19) * Self.packetMicros
+            arrivals.append((at, arrival.envelope, arrival.payload))
+        }
+        let result = runPump(
+            receiver: receiver, accelerator: accelerator,
+            arrivals: arrivals, untilMicros: arrivals.last!.at + 1_000,
+            announcedQuietAtMicros: quietAt)
+
+        let stats = receiver.snapshotStats()
+        XCTAssertEqual(stats.jitter.recenterEvents, 0)
+        XCTAssertEqual(stats.jitter.packetsDroppedInRecenter, 0)
+        XCTAssertEqual(result.played.count + receiver.pendingPackets, 1_600,
+                       "the whole pre-roll plays, and nothing is dropped")
+        XCTAssertEqual(result.played, result.played.sorted())
+        XCTAssertEqual(stats.jitter.plcInvocations, 0)
+    }
+
+    /// The pump marks the ring quiet from the decision, so the silence
+    /// after an announced quiet never reads as starvation.
+    func testPullDecisionsCarryTheAnnouncedQuietUntilTheWake() throws {
+        let receiver = AudioReceiver()
+        let arrivals = try wireArrivals(count: 20)
+        for arrival in arrivals.prefix(10) {
+            receiver.ingest(envelope: arrival.envelope, payload: arrival.payload,
+                            now: ClientTimestamp(microseconds: arrival.at))
+        }
+        let now = ClientTimestamp(microseconds: 100_000)
+        while case .packet = receiver.pullDecision(now: now, urgent: true).verdict {}
+        XCTAssertFalse(receiver.pullDecision(now: now).announcedQuiet)
+
+        receiver.noteAnnouncedQuiet()
+        let quiet = receiver.pullDecision(now: now, urgent: true)
+        XCTAssertEqual(quiet.verdict, .starved)
+        XCTAssertTrue(quiet.announcedQuiet)
+
+        for arrival in arrivals.dropFirst(10) {
+            receiver.ingest(envelope: arrival.envelope, payload: arrival.payload,
+                            now: ClientTimestamp(microseconds: 200_000))
+        }
+        XCTAssertFalse(receiver.pullDecision(
+            now: ClientTimestamp(microseconds: 200_000)).announcedQuiet)
     }
 
     // MARK: Drain-then-underrun hands to PLC cleanly

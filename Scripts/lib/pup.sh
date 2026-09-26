@@ -30,8 +30,12 @@ pup_rsync() {
 }
 
 # pup_run SCRIPT: runs SCRIPT in bash on pup with lib/pup-side.sh loaded.
+# `bash -s` reads its script as it runs, so SCRIPT is one group, parsed
+# whole before it starts, whose stdin is /dev/null: a command in it that
+# reads stdin cannot swallow the lines after it.
 pup_run() {
-  { cat "$lyte_pup_side"; printf '%s\n' "$1"; } | pup_ssh 'bash -s'
+  { cat "$lyte_pup_side"; printf '{\n%s\n} </dev/null\n' "$1"; } \
+    | pup_ssh 'bash -s'
 }
 
 # True when the standing lyte-host.service MainPID owns UDP <port> on pup

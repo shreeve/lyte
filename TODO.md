@@ -51,16 +51,6 @@ live state: [HANDOFF.md](HANDOFF.md).
 
 ## Host
 
-- **Rate recovery on a quiet screen.** After a genuine Wi-Fi collapse
-  (soak, 2026-09-26 15:32Z: 15.6% post-FEC loss, 247 ms queue, trains at
-  5 Mbps) the estimator correctly fell to 3.9 Mbps, but a static desktop
-  sends too few full trains to prove capacity, so the climb stalled near
-  9 Mbps for minutes; the next motion then starts under that cap. `main`
-  shares this (every climb is evidence-gated). Options: probe with FEC or
-  padding when idle below the pre-fall rate, or let a loss-driven fall
-  restore toward the pre-fall rate once the path has run clean for a
-  while. Reproduce with `lyte-control-peer --stream-corpus` plus
-  `Scripts/netem/port-netem.sh` loss bursts, and in RateEstimatorGateTests.
 - **Wayland clipboard leaf (blocked on GNOME).** The host clipboard still
   needs the Mutter RemoteDesktop session bus (`MutterClipboardLeaf`); pup's
   GNOME 50.1 offers no data-control protocol and the portal Clipboard
@@ -73,43 +63,28 @@ live state: [HANDOFF.md](HANDOFF.md).
   one priority-inheriting lock. Direction: a single-owner sender thread
   that alone touches `Session`, with capture, audio and shell work posted
   through mailboxes.
-- **RS parity after the data shards.** `Session.prepareVideoFrame` computes
-  a frame's whole RS parity before any shard can leave, though the code is
-  systematic and data shards are plain slices of the Annex-B: about 41 µs
-  at 100 KB and 190 µs at 240 KB ahead of the first data byte. Wanted:
-  data shards enter the pacer first and parity follows, which needs
-  not-ready parity tokens in the pacer (seqs stay contiguous in
-  shard-index order, so wire bytes are unchanged), an off-lock parity
-  phase, and repair enqueue deferred while a frame's parity is pending.
-- **Absolute pointer pixel centre.** `lyte_uinput_move_abs`
-  (`Host/Sources/CInputUinput/uinput.c`) truncates `x / width * 65535`, so
-  each pixel maps back about 0.03 px short and roughly half the pixels
-  hit-test one pixel up or left. Candidate: `v = min(65535,
-  ceil(x · 65536 / W))`, adopted only after a live `libinput
-  debug-events` check on the host shows it lands every pixel; then
-  `lyte-uinput-check`'s centre expectation moves from 32767 to 32768.
 
 ## Client
 
-- **Typed host address.** `Lyte.app` lists hosts mDNS advertises plus
-  paired hosts as "last seen at address:port", but a first connect to a
-  host on a routed or mDNS-less network still needs `lyte-cli`. Wanted: a
-  typed address in the connection window.
-- **First connect as a roaming dial.** `ConnectionModel`'s first connect
-  runs its own silence hunt (45 s budget, re-browses, address following,
-  replaced-identity check) beside `RoamingPolicy`'s ladders: two dial
-  drivers, two adoption paths, two fence sets. Start the policy at connect
-  in a never-established state whose budget ends the window on expiry, and
-  let the first dial be a roaming dial.
-- **Audio books on a quiet LAN session.** Open: slow-sender underruns
-  whose skew hides behind the ±500 ppm detrend clamp; the underrun metric
-  counts announced-quiet silence as underrun; one recenter per wake,
-  because the 40-packet pre-roll exceeds the 24-packet hard cap. Next: one
-  live `lyte-cli wire-view --audio` read against pup to separate the
-  three.
-- **Reordered onset after announced quiet.** When the first two packets
-  after an announced audio quiet arrive reordered (n+1 before n), n is
-  still dropped as late and the onset loses its first 5 ms.
+- **Audio primes before the player exists.** `LyteUdpSession` receives
+  audio before the AVAudioEngine spins up on the audio queue, so the
+  jitter buffer primes and re-centers about every 100 ms until the pump
+  starts (a 30 s read against pup showed 3 recenters, 2 PLC and 2 late at
+  session start). Start the player first, or drop pre-player audio
+  without booking recenters. Confirm with a `lyte-cli wire-view --audio`
+  read against pup.
+- **Audio target after a wake.** On pup, a sound that starts after a
+  quiet (`pw-play`) arrives irregularly at first (captureToFeed p99
+  70–90 ms against a steady 25 ms), which lifts the jitter target from 5
+  to about 11 packets; it then decays only one step per 10 s, so the
+  whole sound plays about 30 ms later than it needs to. Find whether the
+  irregularity is PipeWire's graph requantizing on the host or the
+  capture leaf, and whether the target should discount the first
+  hundred milliseconds after a wake.
+- **Pairing sheet for an already-paired key.** A typed address that no
+  pin knows asks "Which host is at …?" before offering pairing; the
+  pairing sheet could instead offer Connect when the pasted key is
+  already paired.
 
 ## Wire
 
@@ -127,7 +102,12 @@ live state: [HANDOFF.md](HANDOFF.md).
   the host itself), live Direct Eye in Chrome, a persistent interactive
   session, Safari, real host clipboard where the platform allows it, and
   product composition (`LyteBrowserApp`). Do not scaffold empty
-  `Applications/` stubs before composition earns them.
+  `Applications/` stubs before composition earns them. The page's
+  worklet ring (`Browser/Page/audio-ring-worklet.js`) books every silent
+  frame as underrun, including before the first audio and under an
+  announced quiet (0x25); the native player ring books neither. Carry the
+  shared `ClientControlSession.hostAnnouncedAudioQuiet` through the bridge
+  and post it to the worklet, which stops booking until its next write.
 
 ## Gates
 
@@ -135,18 +115,6 @@ live state: [HANDOFF.md](HANDOFF.md).
   on whoever lands a PR running `Scripts/CI/test-all-macos.sh` and
   `test-all-pup.sh` by hand. A self-hosted runner on pup (Linux leg) plus
   the owner's Mac (macOS leg), or a pre-merge hook, would make it a check.
-- Add a release-mode leg (`-c release`) for the Wire property tests, run
-  `LYTE_ARQ_TRIALS=25000` in a pre-merge or pup gate, and add an optional
-  `LYTE_HARDWARE_TESTS=1` leg on the owner's Mac.
-- **Benchmark cleanup after a restart.** A handshake leg that dies after
-  `start_fresh_host` restarted the service (app deadline, signal) is
-  restored by `cleanup` in `Scripts/benchmark-app.sh`, which never
-  compares `FRESH_HOST_PROTECTED_STATE` again. Re-fingerprint there and
-  fail loudly on a mismatch or an unreadable file.
-- **`pup_run` stdin.** `Scripts/lib/pup.sh` feeds its script to `bash -s`,
-  which reads as it runs, so a command that reads stdin would swallow the
-  lines after it. Wrap the body (`{ …; } </dev/null`) so it is parsed
-  whole first.
 - **A video-quality gate with a host encode leg.** The orphaned corpus
   pipeline (`corpus-gen`, `corpus-gate`, `decode-probe`, the text goldens)
   was deleted in `23d329c`; recover it from `23d329c^` if a gate that

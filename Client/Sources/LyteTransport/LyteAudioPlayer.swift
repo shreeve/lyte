@@ -49,8 +49,9 @@ final class AudioPcmRing: @unchecked Sendable {
     let buffer: UnsafeMutablePointer<Float>
     let readCounter = Atomic<Int>(0)
     let writeCounter = Atomic<Int>(0)
-    /// µs uptime of the last write; underruns count only while the stream
-    /// is flowing (a blackout's silence is not an underrun).
+    /// µs uptime of the last write, 0 once the host announces quiet;
+    /// underruns count only while the stream is flowing (a blackout's
+    /// silence and an announced quiet are not underruns).
     let lastWriteMicros = Atomic<UInt64>(0)
     let underrunFrames = Atomic<UInt64>(0)
     let framesRendered = Atomic<UInt64>(0)
@@ -183,6 +184,13 @@ final class AudioPcmRing: @unchecked Sendable {
         lastWriteMicros.store(
             SystemMonotonicClock.nowMicroseconds,
             ordering: .relaxed)
+    }
+
+    /// Pump-thread side: the host announced the stream quiet, so the
+    /// silence after the ring's content is contract; the next write
+    /// resumes the underrun books.
+    func noteAnnouncedQuiet() {
+        lastWriteMicros.store(0, ordering: .relaxed)
     }
 }
 
@@ -438,6 +446,7 @@ public final class LyteAudioPlayer: @unchecked Sendable {
                 plcPacketsFed += 1
                 statsLock.unlock()
             case .starved:
+                if decision.announcedQuiet { ring.noteAnnouncedQuiet() }
                 snapshotAccelBooks()
                 return
             }

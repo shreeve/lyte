@@ -17,6 +17,10 @@ struct ConnectView: View {
     // never per render.
     @State private var pairingTarget: DiscoveredLyteHost?
     @State private var pinnedStore = PinnedHostStore()
+    // The typed address, and the one awaiting "which paired host is
+    // this?" when no pin knows it.
+    @State private var typedAddress = ""
+    @State private var typedTarget: TypedHostAddress?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -97,9 +101,67 @@ struct ConnectView: View {
                     .buttonStyle(.borderless)
                     .disabled(browsing)
             }
+            typedAddressField
             Spacer()
         }
         .padding(32)
+    }
+
+    // MARK: - Typed address
+
+    /// Routed and mDNS-less networks: a host name or IPv4 address, with
+    /// an optional port, dialed like any listed host.
+    private var typedAddressField: some View {
+        let parsed = TypedHostAddress.parse(typedAddress)
+        return VStack(spacing: 4) {
+            HStack(spacing: 6) {
+                TextField("Host address", text: $typedAddress,
+                          prompt: Text("Host name or IPv4 address[:port]"))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 260)
+                    .onSubmit(connectTyped)
+                Button("Connect", action: connectTyped)
+                    .disabled((try? parsed.get()) == nil)
+            }
+            if case .failure(let problem) = parsed, problem != .empty {
+                Text(problem.message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+        .confirmationDialog(
+            "Which host is at \(typedTarget?.host ?? "this address")?",
+            isPresented: Binding(
+                get: { typedTarget != nil },
+                set: { if !$0 { typedTarget = nil } }),
+            presenting: typedTarget
+        ) { typed in
+            ForEach(pinnedStore.hosts.values.sorted {
+                $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            }, id: \.staticPublicKeyHex) { pinned in
+                Button("Connect to \(pinned.name)") {
+                    Task { await model.connectLyte(typed.dialing(pinned)) }
+                }
+            }
+            Button("Pair a New Host…") { pairingTarget = typed.unpaired }
+        } message: { _ in
+            Text("A paired host is dialed under its pinned identity; a new one pairs with its key and PIN.")
+        }
+    }
+
+    /// A paired host the text names (or was last seen at) dials at once;
+    /// an address no pin knows asks which paired host lives there, or
+    /// pairs a new one — never a dial without a pinned or pasted key.
+    private func connectTyped() {
+        guard case .success(let typed) = TypedHostAddress.parse(typedAddress)
+        else { return }
+        if let pinned = typed.pinned(in: pinnedStore) {
+            Task { await model.connectLyte(typed.dialing(pinned)) }
+        } else if pinnedStore.hosts.isEmpty {
+            pairingTarget = typed.unpaired
+        } else {
+            typedTarget = typed
+        }
     }
 
     private func browse(afterSettings: Bool = false) async {
