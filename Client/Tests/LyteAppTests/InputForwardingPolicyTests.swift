@@ -239,7 +239,7 @@ final class InputForwardingPolicyTests: XCTestCase {
         var policy = InputForwardingPolicy()
         XCTAssertEqual(policy.modifier(leftMeta, pressed: true), .swallow)
         let chord = policy.keyDown(keyC, isRepeat: false, commandHeld: true,
-                                   isLocalShortcut: false, modifiersDown: [])
+                                   isLocalShortcut: false, typesLetter: true, modifiersDown: [])
         XCTAssertEqual(chord.sends, [down(leftCtrl), down(keyC)])
         XCTAssertTrue(chord.consumed)
         XCTAssertEqual(policy.keyDown(keyC, isRepeat: true, commandHeld: true,
@@ -256,7 +256,7 @@ final class InputForwardingPolicyTests: XCTestCase {
         _ = policy.modifier(leftShift, pressed: true)
         XCTAssertEqual(
             policy.keyDown(keyZ, isRepeat: false, commandHeld: true,
-                           isLocalShortcut: false, modifiersDown: [leftShift]).sends,
+                           isLocalShortcut: false, typesLetter: true, modifiersDown: [leftShift]).sends,
             [down(leftCtrl), down(keyZ)])
         XCTAssertEqual(policy.heldKeys, [leftShift, keyZ])
     }
@@ -266,7 +266,7 @@ final class InputForwardingPolicyTests: XCTestCase {
         _ = policy.modifier(leftMeta, pressed: true)
         XCTAssertEqual(
             policy.keyDown(keyC, isRepeat: false, commandHeld: true,
-                           isLocalShortcut: false, modifiersDown: [leftCtrl]).sends,
+                           isLocalShortcut: false, typesLetter: true, modifiersDown: [leftCtrl]).sends,
             [down(leftCtrl), down(keyC)])
         XCTAssertEqual(policy.keyUp(keyC, commandHeld: true).sends, [up(keyC)])
         XCTAssertEqual(policy.heldKeys, [leftCtrl])
@@ -276,9 +276,9 @@ final class InputForwardingPolicyTests: XCTestCase {
         var policy = InputForwardingPolicy()
         _ = policy.modifier(leftMeta, pressed: true)
         _ = policy.keyDown(keyC, isRepeat: false, commandHeld: true,
-                           isLocalShortcut: false)
+                           isLocalShortcut: false, typesLetter: true)
         XCTAssertEqual(policy.keyDown(keyZ, isRepeat: false, commandHeld: true,
-                                      isLocalShortcut: false).sends, [down(keyZ)])
+                                      isLocalShortcut: false, typesLetter: true).sends, [down(keyZ)])
         XCTAssertEqual(policy.modifier(leftMeta, pressed: false).sends, [])
         XCTAssertEqual(policy.keyUp(keyC, commandHeld: false).sends, [up(keyC)])
         XCTAssertEqual(policy.keyUp(keyZ, commandHeld: false).sends,
@@ -290,7 +290,7 @@ final class InputForwardingPolicyTests: XCTestCase {
         var policy = InputForwardingPolicy()
         _ = policy.modifier(leftMeta, pressed: true)
         _ = policy.keyDown(keyC, isRepeat: false, commandHeld: true,
-                           isLocalShortcut: false)
+                           isLocalShortcut: false, typesLetter: true)
         XCTAssertEqual(policy.releaseAll(), [up(keyC), up(leftCtrl)])
         XCTAssertTrue(policy.controlChordKeys.isEmpty)
     }
@@ -304,9 +304,70 @@ final class InputForwardingPolicyTests: XCTestCase {
         _ = policy.keyUp(keyRight, commandHeld: true)
         XCTAssertEqual(
             policy.keyDown(keyC, isRepeat: false, commandHeld: true,
-                           isLocalShortcut: false).sends,
+                           isLocalShortcut: false, typesLetter: true).sends,
             [up(leftMeta), down(leftCtrl), down(keyC)])
         XCTAssertEqual(policy.pendingCommandKeys, [leftMeta])
+    }
+
+    /// ⌘ comes up while S is still down (rollover): the Control the chord
+    /// added must not ride the next key or click out.
+    func testTheChordsControlNeverRidesALaterKeyOrClick() {
+        let keyH: UInt32 = 35
+        var typing = InputForwardingPolicy()
+        _ = typing.modifier(leftMeta, pressed: true)
+        _ = typing.keyDown(keyS, isRepeat: false, commandHeld: true,
+                           isLocalShortcut: false, typesLetter: true)
+        _ = typing.modifier(leftMeta, pressed: false)
+        XCTAssertEqual(typing.keyDown(keyH, isRepeat: false, commandHeld: false,
+                                      isLocalShortcut: false).sends,
+                       [up(leftCtrl), down(keyH)])
+        XCTAssertEqual(typing.keyUp(keyS, commandHeld: false).sends, [up(keyS)])
+        XCTAssertEqual(typing.keyUp(keyH, commandHeld: false).sends, [up(keyH)])
+        XCTAssertTrue(typing.heldKeys.isEmpty)
+
+        var clicking = InputForwardingPolicy()
+        _ = clicking.modifier(leftMeta, pressed: true)
+        _ = clicking.keyDown(keyS, isRepeat: false, commandHeld: true,
+                             isLocalShortcut: false, typesLetter: true)
+        _ = clicking.modifier(leftMeta, pressed: false)
+        XCTAssertEqual(
+            clicking.button(buttonLeft, pressed: true, onVideo: true,
+                            commandHeld: false).sends,
+            [up(leftCtrl), .pointerButton(button: buttonLeft, pressed: true)])
+    }
+
+    /// A physical Ctrl pressed mid-chord takes over the Control the chord
+    /// added: one press and one release on the host.
+    func testAControlPressedMidChordTakesOverTheChordsControl() {
+        var policy = InputForwardingPolicy()
+        var sends: [InputEvent.Body] = []
+        _ = policy.modifier(leftMeta, pressed: true)
+        sends += policy.keyDown(keyC, isRepeat: false, commandHeld: true,
+                                isLocalShortcut: false, typesLetter: true).sends
+        sends += policy.modifier(leftCtrl, pressed: true).sends
+        sends += policy.modifier(leftCtrl, pressed: false).sends
+        sends += policy.keyUp(keyC, commandHeld: true).sends
+        XCTAssertEqual(sends, [down(leftCtrl), down(keyC), up(leftCtrl), up(keyC)])
+        XCTAssertTrue(policy.heldKeys.isEmpty)
+        XCTAssertTrue(policy.controlChordKeys.isEmpty)
+    }
+
+    /// The typed letter, not the key's QWERTY position, makes the Control
+    /// chord: Dvorak types S on the semicolon key and ' on Q's.
+    func testTheTypedLetterNotTheKeyPositionMakesAControlChord() {
+        let semicolon: UInt32 = 39
+        let keyQ: UInt32 = 16
+        var policy = InputForwardingPolicy()
+        _ = policy.modifier(leftMeta, pressed: true)
+        XCTAssertEqual(
+            policy.keyDown(semicolon, isRepeat: false, commandHeld: true,
+                           isLocalShortcut: false, typesLetter: true).sends,
+            [down(leftCtrl), down(semicolon)])
+        _ = policy.keyUp(semicolon, commandHeld: true)
+        XCTAssertEqual(
+            policy.keyDown(keyQ, isRepeat: false, commandHeld: true,
+                           isLocalShortcut: false, typesLetter: false).sends,
+            [down(leftMeta), down(keyQ)])
     }
 
     func testAnAppOwnedLetterChordStaysLocal() {
@@ -342,6 +403,28 @@ final class InputForwardingPolicyTests: XCTestCase {
         XCTAssertFalse(answers("r"), "a hidden item answers nothing")
         XCTAssertFalse(answers("c"), "Edit's copy is the host's in a stream")
         XCTAssertFalse(answers("z"))
+    }
+
+    /// The main menu enables its items lazily, by validation; a chord is
+    /// judged by the item's state now, not at the last validation pass.
+    @MainActor
+    func testAChordIsJudgedByTheItemsCurrentValidation() {
+        _ = NSApplication.shared    // menu validation runs through NSApp
+        let menu = NSMenu()
+        let validator = MenuValidator()
+        let item = NSMenuItem(
+            title: "Disconnect", action: #selector(MenuValidator.act(_:)),
+            keyEquivalent: "d")
+        item.target = validator
+        menu.addItem(item)
+        func answers() -> Bool {
+            LyteInputCapture.menuAnswers(menu, characters: "d", modifiers: .command)
+        }
+        XCTAssertFalse(answers(), "a command that validates disabled answers nothing")
+        validator.enabled = true
+        XCTAssertTrue(answers())
+        validator.enabled = false
+        XCTAssertFalse(answers())
     }
 
     // MARK: - A ⌘ release AppKit never delivered
@@ -424,4 +507,13 @@ final class InputForwardingPolicyTests: XCTestCase {
         // ⌘ comes back up after focus returns: nothing to say.
         XCTAssertEqual(policy.modifier(leftMeta, pressed: false).sends, [])
     }
+}
+
+@MainActor
+private final class MenuValidator: NSObject, NSMenuItemValidation {
+    var enabled = false
+
+    @objc func act(_ sender: Any?) {}
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool { enabled }
 }

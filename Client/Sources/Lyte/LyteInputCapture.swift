@@ -276,6 +276,7 @@ final class LyteInputCapture {
                 isRepeat: event.isARepeat, commandHeld: commandHeld,
                 isLocalShortcut: commandHeld
                     && Self.isLocalShortcut(event),
+                typesLetter: Self.typesLetter(event),
                 modifiersDown: Self.modifiersDown(event.modifierFlags),
                 capsLockOn: event.modifierFlags.contains(.capsLock)), event)
 
@@ -324,6 +325,15 @@ final class LyteInputCapture {
         return down
     }
 
+    /// True when the key types a letter a–z in the current layout, wherever
+    /// the layout puts it (Dvorak's S is QWERTY's semicolon key).
+    static func typesLetter(_ event: NSEvent) -> Bool {
+        guard let typed = event.charactersIgnoringModifiers?.lowercased(),
+              typed.count == 1, let letter = typed.unicodeScalars.first
+        else { return false }
+        return ("a"..."z").contains(letter)
+    }
+
     /// True when an enabled, visible menu item (the app's own commands,
     /// which own every window-management chord: ⌘W, ⌘Q, ⌘H, ⌘M, the
     /// Actions menu) answers this ⌘ key equivalent. The standard Edit
@@ -342,6 +352,9 @@ final class LyteInputCapture {
     static func menuAnswers(
         _ menu: NSMenu, characters: String, modifiers: NSEvent.ModifierFlags
     ) -> Bool {
+        // Auto-enabled items hold the last validation pass's verdict, and
+        // the capture swallows the key equivalents that would run one.
+        menu.update()
         for item in menu.items where item.isEnabled && !item.isHidden {
             if let action = item.action,
                editActions.contains(NSStringFromSelector(action)) { continue }

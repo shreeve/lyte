@@ -375,6 +375,31 @@ final class AudioJitterGateTests: XCTestCase {
         XCTAssertEqual(stats.targetPackets, 5)
     }
 
+    /// Only a wire-carried packet ahead of the last one played wakes an
+    /// announced quiet: a late FEC-recovered or replayed packet arriving
+    /// first neither rewinds playout nor ends the quiet.
+    func testAnOldPacketAfterAnAnnouncedQuietNeitherReplaysNorWakesIt() {
+        let buffer = AudioJitterBuffer()
+        for n in UInt32(0)..<10 {
+            buffer.insert(packet(n), arrivalMicroseconds: UInt64(n) * 5_000)
+        }
+        for n in UInt32(0)..<10 {
+            XCTAssertEqual(buffer.pull(nowMicroseconds: 50_000, urgent: true),
+                           .packet(packet(n)))
+        }
+        buffer.noteAnnouncedQuiet()
+        buffer.insert(packet(7, recovered: true), arrivalMicroseconds: 100_000)
+        buffer.insert(packet(8), arrivalMicroseconds: 100_000)
+        XCTAssertEqual(buffer.pull(nowMicroseconds: 100_000, urgent: true), .starved,
+                       "nothing replays, and the quiet still conceals nothing")
+        for n in UInt32(10)..<15 {
+            buffer.insert(packet(n), arrivalMicroseconds: 200_000)
+        }
+        XCTAssertEqual(buffer.pull(nowMicroseconds: 200_000, urgent: true),
+                       .packet(packet(10)))
+        XCTAssertEqual(buffer.snapshotStats().plcInvocations, 0)
+    }
+
     /// Before playout starts nothing orders the pending packets by
     /// distance, and serial order is ambiguous across 2^31. A packet far
     /// from those already pending re-primes from itself, so playout never

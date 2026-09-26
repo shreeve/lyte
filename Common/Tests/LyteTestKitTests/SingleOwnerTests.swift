@@ -169,6 +169,24 @@ final class SingleOwnerTests: XCTestCase {
             "a shipping Browser target depends on Host")
     }
 
+    /// Client and Host never depend on each other, test targets included:
+    /// they meet only in SystemTests and the browser's tests.
+    func testClientAndHostManifestsNeverDependOnEachOther() throws {
+        let root = RepositorySourceTree().repositoryRoot
+        let host = try Self.dumpPackage(root.appendingPathComponent("Host"))
+        let client = try Self.dumpPackage(root.appendingPathComponent("Client"))
+        for (package, other, name) in [(client, host, "host"),
+                                       (host, client, "client")] {
+            let products = Set(other.products.map(\.name))
+            XCTAssertFalse(products.isEmpty)
+            XCTAssertEqual(package.targets.filter { target in
+                target.dependencies.contains {
+                    $0.dependsOnPackage(name, products: products)
+                }
+            }.map(\.name), [], "a target depends on the \(name) package")
+        }
+    }
+
     func testDependsOnPackageReadsProductAndByNameEdges() throws {
         let json = Data(#"""
             {"name": "X", "products": [], "targets": [
