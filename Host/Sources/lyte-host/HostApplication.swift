@@ -942,10 +942,12 @@ static func printSessionBooks(
     \(wire.estimatorStats.selfReferenceHolds) self-ref holds, \
     \(wire.estimatorStats.stallHolds) stall holds, \
     \(wire.estimatorStats.fallDeferrals) dwell deferrals, \
+    \(wire.estimatorStats.drainRestarts) drain restarts, \
     \(wire.estimatorStats.sparseEvidenceHolds) sparse holds), \
     \(wire.estimatorStats.upshifts) upshifts \
     (\(wire.estimatorStats.upshiftsDamped) probe-damped, \
-    \(wire.estimatorStats.upshiftsCadenceHeld) cadence-held), \
+    \(wire.estimatorStats.upshiftsCadenceHeld) cadence-held, \
+    \(wire.estimatorStats.recoveryUpshifts) recovery), \
     \(s.rateChanges) pacer moves, \
     \(s.fallPurges) fall purges (\(s.fallPurgedVideoBytes) B dropped \
     pre-stale); frameByteCeiling@\(DirectEyeLeg.fps)fps \

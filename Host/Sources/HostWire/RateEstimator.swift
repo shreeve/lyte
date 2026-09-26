@@ -34,7 +34,14 @@
 //     - post-FEC loss > 2% falls ×0.85 (not held: FEC did not absorb it);
 //     - rises need fresh delivery evidence, pre-FEC < 2%, post-FEC ≤ 2%,
 //       1 s after any fall: ≤10%/s toward the PROBE ceiling
-//       min(ceiling, belief × probeHeadroomFactor). The rate may sit
+//       min(ceiling, belief × probeHeadroomFactor) — or, while the rate
+//       sits under 90% of the rate an overuse fall left behind (for 10 s;
+//       any fall after that climb began cancels it),
+//       `recoveryUpshiftPerSecond` back toward it. A crash (belief
+//       demoted below half the rate) arms no probe cadence: it located
+//       no wall. The probe ceiling still bounds every step to what
+//       the latest trains proved, so a path that stayed low parks the
+//       climb exactly as before. The rate may sit
 //       above the delivery max: paced sends self-limit the measurement
 //       to ≈ the rate, so a max-derived cap would spiral to the floor.
 //       Only post-FEC < 0.5% (the clean column) updates lastGoodRate;
@@ -68,7 +75,7 @@
 //     closes windows of ≥25 ms; a window is clean iff it saw no fresh
 //     loss and no overuse. Silence is the silence detector's job.
 //   • IDR PACING — lastGoodRate = min(btlRate, rate last seen healthy);
-//     halfStaleEstimate = max(floor, 0.5 × stale delivery estimate).
+//     halfStaleEstimate = max(floor, 0.5 × min(stale delivery, belief)).
 //     frameByteCeiling = R×B/8 − higherClassBytes(B), B = min(2/fps,
 //     25 ms).
 //   • FEC REGIME — clean → lossy with the rung-3 threshold (latched, not
@@ -173,6 +180,12 @@ extension RateEstimator {
     /// demote the belief later.
     static let honestVoteWindowNS: UInt64 = 2_000_000_000
 
+    /// Consecutive reports whose inflation sits at or below half the
+    /// streak's peak (and at least `overuseThresholdMicroseconds` under
+    /// it) before the streak counts as DRAINED. Two, like the overuse
+    /// verdict itself: one lucky report minimum is not a trend.
+    static let drainCorroborationReports: Int = 2
+
     /// Pre-FEC loss fraction below which the window reads clean.
     static let lossCleanThreshold: Double = 0.02
 
@@ -208,11 +221,26 @@ extension RateEstimator {
     /// wall it already located. Must exceed 1.0.
     static let probeHeadroomFactor: Double = 1.10
 
-    /// After a fall that fired while probing near the belief (rate ≥
-    /// belief / probeHeadroomFactor: a failed probe), rises back into
-    /// that band wait this long (BBR PROBE_BW's cadence). Below the band
-    /// the climb stays continuous.
+    /// After a fall that fired while probing (rate above the belief it
+    /// held, and ≥ demoted belief / probeHeadroomFactor: a failed probe),
+    /// rises back into that band wait this long (BBR PROBE_BW's cadence).
+    /// Below the band the climb stays continuous.
     static let probeCadenceNS: UInt64 = 10_000_000_000
+
+    /// A fall whose demoted belief is below this fraction of the standing
+    /// rate is a CRASH, not a failed probe: the rate was nowhere near a
+    /// located wall, so it arms no cadence.
+    static let crashDemotionFraction: Double = 0.5
+
+    /// The recovery climb: while the rate sits under
+    /// `recoveryTargetFraction` of the rate an overuse fall left behind,
+    /// rises run at this per-second budget instead of `upshiftPerSecond`
+    /// (1.0 ≈ ×2.7 per second compounded at the report cadence), still
+    /// capped per step by the probe ceiling.
+    static let recoveryUpshiftPerSecond: Double = 1.0
+    static let recoveryTargetFraction: Double = 0.9
+    /// How long a fall's pre-fall rate stays a recovery target.
+    static let recoveryTargetWindowNS: UInt64 = 10_000_000_000
 
     /// No upshift this long after a downshift (queue drain time).
     static let upshiftHoldAfterDownshiftNS: UInt64 = 1_000_000_000
@@ -277,6 +305,8 @@ public struct RateEstimatorStats: Equatable, Sendable {
     public var upshiftsDamped = 0
     /// Rises held by the probe cadence.
     public var upshiftsCadenceHeld = 0
+    /// Rises taken at the recovery budget toward a pre-fall rate.
+    public var recoveryUpshifts = 0
     /// Climbs admitted while post-FEC sat between the clean column and
     /// rung 3.
     public var upshiftsUnderMildPostFec = 0
@@ -292,6 +322,9 @@ public struct RateEstimatorStats: Equatable, Sendable {
     /// Other overuse withheld awaiting invariant 2's persistence; the
     /// fall limiter stays unconsumed.
     public var fallDeferrals = 0
+    /// Inflation streaks restarted because the queue drained to half
+    /// its peak: the pressure was spent, its honest votes purged.
+    public var drainRestarts = 0
     public var lossDownshifts = 0
     /// Full-train samples classified CENSORED (or compressed).
     public var censoredSamples = 0
@@ -444,6 +477,13 @@ public final class RateEstimator {
     private var recentHonestDeliveries = Deque<(at: UInt64, rate: Double)>()
     /// When the current overuse streak opened (invariant 2's clock).
     private var inflatedStreakSinceNS: UInt64?
+    /// The rate an overuse fall left behind, and until when the climb
+    /// may recover toward it at the recovery budget. Cleared on arrival,
+    /// on expiry, and by any fall after the recovery climb began (the
+    /// path pushed back).
+    private var recoveryTargetBits: Double?
+    private var recoveryTargetUntilNS: UInt64 = 0
+    private var recoveryClimbStarted = false
 
     private struct DelaySample {
         var at: UInt64
@@ -462,6 +502,9 @@ public final class RateEstimator {
     /// The worst inflation in the current streak; packets held through
     /// a dwell carry its length as delay, so this bounds the hole.
     private var inflatedStreakPeakMicros: Int64?
+    /// Consecutive reports of the current streak drained to half its
+    /// peak (see `drainCorroborationReports`).
+    private var drainedStreakReports = 0
     /// The freshest full train's raw measurement (drain evidence).
     private var lastFullTrainRate: Double?
     private var lastFullTrainAt: UInt64?
@@ -706,9 +749,13 @@ public final class RateEstimator {
         case .halfStaleEstimate:
             // RECOVERY: the path is unknown; the stale estimate may be
             // 10× the new path's capacity.
-            let stale = deliveryRateBitsPerSecond
+            // A compressed burst can read far above the path; the belief
+            // never exceeds what was paced, so it bounds the estimate.
+            let delivered = deliveryRateBitsPerSecond
                 ?? lastDeliveryRate.map(Int.init)
                 ?? rateBitsPerSecond
+            let stale = beliefBits.map { min(delivered, Int($0)) }
+                ?? delivered
             rate = clamp(stale / 2)
             // RECOVERY is a path discontinuity: belief = the applied
             // half-stale rate, and no old-path delivery sample, honest
@@ -752,6 +799,8 @@ public final class RateEstimator {
         lastFullTrainAt = nil
         cadenceHoldUntilNS = 0
         cadenceBandFloorBits = .infinity
+        recoveryTargetBits = nil
+        recoveryClimbStarted = false
     }
 
     /// The burst-budget window B = min(2/fps, 25 ms) in ns, shared with
@@ -1220,23 +1269,44 @@ public final class RateEstimator {
         queuingDelayMicroseconds = worstInflation
         if worstInflation > Self.overuseThresholdMicroseconds {
             if consecutiveInflatedReports == 0 {
-                inflatedStreakStartMicros = worstInflation
-                inflatedStreakPeakMicros = worstInflation
-                inflatedStreakSinceNS = now
+                openInflatedStreak(at: worstInflation, now: now)
             } else {
-                inflatedStreakPeakMicros = max(
-                    inflatedStreakPeakMicros ?? worstInflation,
-                    worstInflation
-                )
+                let peak = inflatedStreakPeakMicros ?? worstInflation
+                let drained = worstInflation <= peak / 2
+                    && peak - worstInflation
+                        >= Self.overuseThresholdMicroseconds
+                drainedStreakReports = drained ? drainedStreakReports + 1 : 0
+                if drainedStreakReports >= Self.drainCorroborationReports {
+                    // The queue fell to half its peak on consecutive
+                    // reports: the path is outrunning what we offer, so
+                    // the pressure this streak measured is spent. Its
+                    // honest votes were taken inside the hole; a real
+                    // standing queue must persist again, from here, to
+                    // move the rate.
+                    recentHonestDeliveries.removeAll()
+                    openInflatedStreak(at: worstInflation, now: now)
+                    stats.drainRestarts += 1
+                } else {
+                    inflatedStreakPeakMicros = max(peak, worstInflation)
+                }
             }
             consecutiveInflatedReports += 1
             return true
         }
         consecutiveInflatedReports = 0
+        drainedStreakReports = 0
         inflatedStreakStartMicros = nil
         inflatedStreakPeakMicros = nil
         inflatedStreakSinceNS = nil
         return false
+    }
+
+    /// Starts invariant 2's persistence clock at this report.
+    private func openInflatedStreak(at inflation: Int64, now: UInt64) {
+        inflatedStreakStartMicros = inflation
+        inflatedStreakPeakMicros = inflation
+        inflatedStreakSinceNS = now
+        drainedStreakReports = 0
     }
 
     /// Climb needs a delivery train inside `upshiftEvidenceWindowNS`.
@@ -1332,13 +1402,21 @@ public final class RateEstimator {
                     honestAnchorBitsPerSecond: honestMedian.map(Int.init),
                     streakAgeNS: inflatedStreakSinceNS.map { now &- $0 }
                 )
-                // A fall inside the belief's headroom band is a failed
-                // probe: arm the cadence.
+                // A fall while probing ABOVE the belief it held, inside
+                // the demoted belief's headroom band, is a failed probe:
+                // arm the cadence. A fall from at or below the belief (the
+                // rate was only using capacity it had proven) or a crash
+                // located no wall.
                 let bandFloor = demoted / Self.probeHeadroomFactor
-                if Double(rateBitsPerSecond) >= bandFloor {
+                let probing = Double(rateBitsPerSecond) > belief
+                let crash = demoted
+                    < Double(rateBitsPerSecond) * Self.crashDemotionFraction
+                if probing, Double(rateBitsPerSecond) >= bandFloor, !crash {
                     cadenceHoldUntilNS = now &+ Self.probeCadenceNS
                     cadenceBandFloorBits = bandFloor
                 }
+                noteFallForRecovery(from: rateBitsPerSecond, now: now,
+                                    armsTarget: true)
                 rateBitsPerSecond = clamp(min(
                     Int(demoted * Self.downshiftFactor),
                     Int(Double(rateBitsPerSecond) * Self.downshiftFactor)
@@ -1377,6 +1455,8 @@ public final class RateEstimator {
                 lastAdjustAt = now
                 return nil
             }
+            noteFallForRecovery(from: rateBitsPerSecond, now: now,
+                                armsTarget: false)
             // GCC's loss response: rate × (1 − loss/2) — a 20% loss
             // window falls 10%, a 50% catastrophe falls 25% per beat.
             rateBitsPerSecond = clamp(Int(
@@ -1396,6 +1476,8 @@ public final class RateEstimator {
                 lastAdjustAt = now
                 return nil
             }
+            noteFallForRecovery(from: rateBitsPerSecond, now: now,
+                                armsTarget: false)
             // Rung 3: loss FEC could not absorb, so no hold band.
             rateBitsPerSecond = clamp(Int(
                 Double(rateBitsPerSecond) * Self.downshiftFactor
@@ -1445,8 +1527,18 @@ public final class RateEstimator {
         }
         let elapsedSeconds = Double(now &- lastAdjustAt) / 1e9
         guard elapsedSeconds > 0 else { return nil }
-        let factor = 1 + Self.upshiftPerSecond * min(elapsedSeconds, 1)
-        let wanted = Int(Double(rateBitsPerSecond) * factor)
+        let recoveryTarget = activeRecoveryTarget(now: now)
+        let gain = recoveryTarget == nil
+            ? Self.upshiftPerSecond : Self.recoveryUpshiftPerSecond
+        let factor = 1 + gain * min(elapsedSeconds, 1)
+        var wanted = Int(Double(rateBitsPerSecond) * factor)
+        if let recoveryTarget {
+            // The recovery budget returns to the pre-fall rate, never
+            // past it; above it the ordinary probe resumes.
+            wanted = min(wanted, Int(recoveryTarget))
+            recoveryClimbStarted = true
+            stats.recoveryUpshifts += 1
+        }
         if wanted > probeCeiling, probeCeiling < config.ceilingBitsPerSecond {
             stats.upshiftsDamped += 1
         }
@@ -1455,6 +1547,38 @@ public final class RateEstimator {
         stats.upshifts += 1
         if mildPostFec { stats.upshiftsUnderMildPostFec += 1 }
         return .evidence
+    }
+
+    /// Every executing fall passes through here. A fall after the
+    /// recovery climb began means the path pushed back: the target is
+    /// dropped. Otherwise an overuse fall arms (or keeps) the target at
+    /// the highest pre-fall rate of the episode.
+    private func noteFallForRecovery(
+        from rateBefore: Int, now: UInt64, armsTarget: Bool
+    ) {
+        if recoveryClimbStarted {
+            recoveryTargetBits = nil
+            recoveryClimbStarted = false
+            return
+        }
+        guard armsTarget else { return }
+        let alive = activeRecoveryTarget(now: now) ?? 0
+        recoveryTargetBits = max(alive, Double(rateBefore))
+        recoveryTargetUntilNS = now &+ Self.recoveryTargetWindowNS
+    }
+
+    /// The live recovery target, or nil (none armed, expired, or the
+    /// rate is back within `recoveryTargetFraction` of it — which
+    /// retires it).
+    private func activeRecoveryTarget(now: UInt64) -> Double? {
+        guard let target = recoveryTargetBits else { return nil }
+        if now >= recoveryTargetUntilNS
+            || Double(rateBitsPerSecond) >= target * Self.recoveryTargetFraction {
+            recoveryTargetBits = nil
+            recoveryClimbStarted = false
+            return nil
+        }
+        return target
     }
 
     /// The FEC regime step law (see the header). Returns the new regime
