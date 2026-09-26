@@ -102,9 +102,9 @@ public struct SessionConfig: Sendable {
     public var repairQueueUsefulnessNS: UInt64
     /// How long a committed host IDR suppresses older-named client 0x10
     /// retries as "already answered". Storm control for an in-flight
-    /// offer, not delivery proof: it matches the client's 500 ms
-    /// `IdrRequester` retry so a wholly lost recovery IDR re-arms on the
-    /// next episode tick.
+    /// offer, not delivery proof: it matches the client's 500 ms IDR
+    /// request retry (`ClientIdrRecovery`) so a wholly lost recovery IDR
+    /// re-arms on the next episode tick.
     public var clientIdrOfferInFlightNS: UInt64
 
     public init(
