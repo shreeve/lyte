@@ -231,6 +231,13 @@ Scripts/Tests/test-hermetic-linkage.sh \
     "$ci_app/Contents/MacOS/lyte-helperd"
 
 echo "toolchain legs run: ${ran_legs:-none}"
+# The package suites inherit the environment: LYTE_HARDWARE_TESTS=1 runs the
+# tests that drive this machine's real devices.
+if [[ "${LYTE_HARDWARE_TESTS:-}" == 1 ]]; then
+    echo "hardware tests: run (LYTE_HARDWARE_TESTS=1)"
+else
+    echo "hardware tests: skipped (LYTE_HARDWARE_TESTS=1 runs them)"
+fi
 if [[ -n "$skipped_legs" ]]; then
     echo "macOS gate PASSED WITH SKIPPED LEGS: $skipped_legs"
 else

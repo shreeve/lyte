@@ -25,7 +25,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "$ROOT/Scripts/lib/pup.sh"
 PUP="$(lyte_pup_host)"
-HOST="${LYTE_BENCHMARK_HOST:-10.0.0.232}"
+HOST="${LYTE_BENCHMARK_HOST:-10.0.0.249}"
 PROFILE="${1:-moderate}"
 HOST_PORT="${LYTE_BENCHMARK_PORT:-}"
 NETEM_HELPER="$ROOT/Scripts/netem/port-netem.sh"
