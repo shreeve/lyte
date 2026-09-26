@@ -100,3 +100,16 @@ final class HostLogTests: XCTestCase {
         XCTAssertEqual(try contents(path + ".1"), "<missing>")
     }
 }
+
+final class HostLogStampTests: XCTestCase {
+    /// 2026-09-26T14:59:01.234Z, and a multi-line message stamps each line.
+    func testEveryLineCarriesItsUtcInstant() {
+        let instant: UInt64 = 1_790_434_741_234_567_890
+        XCTAssertEqual(
+            HostLog.stamped("rate: ↓ 2794 kbps", unixNanoseconds: instant),
+            "2026-09-26T14:59:01.234Z rate: ↓ 2794 kbps")
+        XCTAssertEqual(
+            HostLog.stamped("a\nb", unixNanoseconds: 0),
+            "1970-01-01T00:00:00.000Z a\n1970-01-01T00:00:00.000Z b")
+    }
+}

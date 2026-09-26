@@ -118,6 +118,9 @@ public final class EyePipeline {
     }
 
     /// Makes the current scanout fresh on the next fingerprint.
+    /// The encoder's one-line description (driver, entrypoint, rate).
+    public var encoderSummary: String { encoder.summary }
+
     public func resetFingerprint() {
         gl.resetFingerprint()
     }

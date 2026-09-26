@@ -18,6 +18,33 @@ import Glibc
 #endif
 
 public enum HostLog {
+    /// `text` with each line prefixed by the UTC instant `unixNanoseconds`
+    /// (ISO 8601, milliseconds), so host.log lines up with a client's log.
+    public static func stamped(_ text: String, unixNanoseconds: UInt64) -> String {
+        var seconds = time_t(unixNanoseconds / 1_000_000_000)
+        var parts = tm()
+        gmtime_r(&seconds, &parts)
+        func pad(_ value: Int32, _ width: Int) -> String {
+            let digits = String(value)
+            return String(repeating: "0", count: max(0, width - digits.count)) + digits
+        }
+        let millis = Int32(unixNanoseconds / 1_000_000 % 1_000)
+        let stamp = "\(pad(parts.tm_year + 1900, 4))-\(pad(parts.tm_mon + 1, 2))-"
+            + "\(pad(parts.tm_mday, 2))T\(pad(parts.tm_hour, 2)):"
+            + "\(pad(parts.tm_min, 2)):\(pad(parts.tm_sec, 2)).\(pad(millis, 3))Z"
+        return text.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { "\(stamp) \($0)" }
+            .joined(separator: "\n")
+    }
+
+    /// The wall clock, for `stamped` (never for policy: cores use the
+    /// monotonic clock).
+    public static var nowUnixNanoseconds: UInt64 {
+        var now = timespec()
+        clock_gettime(CLOCK_REALTIME, &now)
+        return UInt64(now.tv_sec) * 1_000_000_000 + UInt64(now.tv_nsec)
+    }
+
     /// The unit's own bound (`find -size +65536k`).
     public static let rotateAboveBytes = 64 << 20
 
