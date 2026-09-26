@@ -20,6 +20,9 @@
 // capabilities agree — no pairing, so `lyte-cli wire-view --host-key`
 // dials it with a throwaway identity and nothing is pinned — and prints
 // every estimator rate move plus a once-a-second estimator line.
+// `--quiet-after S` turns the stream into a quiet screen S seconds in: the
+// corpus's small P-frames (frame-10x, k=4) looped at 10 fps: ~0.5 Mbps on
+// the wire, and never a full delivery train.
 
 import Foundation
 import HostAudio
@@ -59,6 +62,8 @@ struct Options {
     var streamCorpusDir: String?
     /// The session ceiling for `--stream-corpus`, Mbps.
     var rateMbps: Int = 50
+    /// Seconds into the stream after which only small P-frames loop.
+    var quietAfterSeconds: Double?
 }
 
 /// ~3 Conductor beats between frames: slower than 60 Hz so the browser's
@@ -71,8 +76,9 @@ let tonePacketIntervalNS: UInt64 = 5_000_000
 /// ~240 ms of tone — enough for WebCodecs + AudioWorklet smoke.
 let tonePacketCount = 48
 let toneHz: Float = 440
-/// The rate rig's frame cadence (60 fps).
+/// The rate rig's frame cadence (60 fps), and its quiet phase's (10 fps).
 let streamFrameIntervalNS: UInt64 = 16_666_667
+let quietFrameIntervalNS: UInt64 = 100_000_000
 
 func parseArgs(_ argv: [String]) throws -> Options {
     var opts = Options()
@@ -116,6 +122,10 @@ func parseArgs(_ argv: [String]) throws -> Options {
             opts.rateMbps = try value(a, "a ceiling in Mbps (1–1000)") {
                 Int($0).flatMap { (1...1_000).contains($0) ? $0 : nil }
             }
+        case "--quiet-after":
+            opts.quietAfterSeconds = try value(a, "seconds (≥ 0)") {
+                Double($0).flatMap { $0 >= 0 && $0.isFinite ? $0 : nil }
+            }
         case "--help", "-h":
             print(
                 """
@@ -140,6 +150,9 @@ func parseArgs(_ argv: [String]) throws -> Options {
                                       pairing (dial with lyte-cli wire-view
                                       --host-key), printing every rate move
                   --rate-mbps N       --stream-corpus ceiling (default 50)
+                  --quiet-after S     --stream-corpus goes quiet S s in:
+                                      only the small P-frames (frame-10x)
+                                      at 10 fps
 
                 Safe beside standing lyte-host on 41151 — no Direct Eye / DRM.
                 """
@@ -153,9 +166,23 @@ func parseArgs(_ argv: [String]) throws -> Options {
 }
 
 func loadCorpusFrames(from directory: String) throws -> [[UInt8]] {
-    let names = (0..<10).map {
+    let frames = try loadFrames((0..<10).map {
         "frame-00\($0)-\($0 == 0 ? "idr" : "p").annexb"
+    }, from: directory)
+    guard AnnexBCheck.containsIrap(frames[0]) else {
+        throw PeerError.message("frame-000 is not IRAP-shaped")
     }
+    return frames
+}
+
+/// The corpus's steady-state small P-frames: a quiet screen's cargo.
+func loadQuietFrames(from directory: String) throws -> [[UInt8]] {
+    try loadFrames((100..<103).map { "frame-\($0)-p-small.annexb" },
+                   from: directory)
+}
+
+func loadFrames(_ names: [String], from directory: String) throws
+    -> [[UInt8]] {
     var frames: [[UInt8]] = []
     for name in names {
         let path = (directory as NSString).appendingPathComponent(name)
@@ -168,9 +195,6 @@ func loadCorpusFrames(from directory: String) throws -> [[UInt8]] {
             throw PeerError.message("empty corpus frame \(path)")
         }
         frames.append(Array(data))
-    }
-    guard AnnexBCheck.containsIrap(frames[0]) else {
-        throw PeerError.message("frame-000 is not IRAP-shaped")
     }
     return frames
 }
@@ -317,6 +341,10 @@ final class PeerSession {
     let corpusFrames: [[UInt8]]?
     /// Frames looped for the whole session (the rate rig), or nil.
     let streamFrames: [[UInt8]]?
+    /// The quiet phase: its frames, and how long after the stream's first
+    /// frame they take over.
+    let quiet: (frames: [[UInt8]], afterNS: UInt64)?
+    var streamStartNS: UInt64 = 0
     let toneEncoder: HostOpusEncoder?
     let outbox = Outbox()
     let answeredAtNS: UInt64
@@ -344,12 +372,14 @@ final class PeerSession {
         pin: String,
         corpusFrames: [[UInt8]]?,
         streamFrames: [[UInt8]]? = nil,
+        quiet: (frames: [[UInt8]], afterNS: UInt64)? = nil,
         rateBitsPerSecond: Int = 50_000_000,
         now: UInt64
     ) throws {
         self.sock = sock
         self.corpusFrames = corpusFrames
         self.streamFrames = streamFrames
+        self.quiet = quiet
         self.answeredAtNS = now
         pairing = PairingResponderService(
             pin: Array(pin.utf8),
@@ -446,21 +476,31 @@ final class PeerSession {
     /// a once-a-second estimator line.
     func maybeStreamCorpus(now: UInt64) {
         guard let frames = streamFrames, streamReady, !closed else { return }
-        if streamNextEmitNS == 0 { streamNextEmitNS = now }
+        if streamNextEmitNS == 0 {
+            streamNextEmitNS = now
+            streamStartNS = now
+        }
         if now >= streamNextEmitNS {
-            let frame = frames[streamIndex % frames.count]
+            var frame = frames[streamIndex % frames.count]
+            var isKeyframe = streamIndex % frames.count == 0
+            var interval = streamFrameIntervalNS
+            if let quiet, now &- streamStartNS >= quiet.afterNS {
+                frame = quiet.frames[streamIndex % quiet.frames.count]
+                isKeyframe = false
+                interval = quietFrameIntervalNS
+            }
             do {
                 _ = try session.ingestVideoFrame(
                     frame,
                     captureTimestampMicroseconds: now / 1_000,
-                    isKeyframe: streamIndex % frames.count == 0,
+                    isKeyframe: isKeyframe,
                     now: now
                 )
             } catch {
                 streamRefused += 1
             }
             streamIndex += 1
-            streamNextEmitNS &+= streamFrameIntervalNS
+            streamNextEmitNS &+= interval
             if streamNextEmitNS < now { streamNextEmitNS = now }
         }
         if now >= estimatorLineAtNS {
@@ -820,6 +860,7 @@ final class ControlPeer {
     let sessions: Int
     let corpusFrames: [[UInt8]]?
     let streamFrames: [[UInt8]]?
+    let quiet: (frames: [[UInt8]], afterNS: UInt64)?
     let rateBitsPerSecond: Int
 
     init(opts: Options) throws {
@@ -835,6 +876,14 @@ final class ControlPeer {
         guard corpusFrames == nil || streamFrames == nil else {
             throw PeerError.message(
                 "--emit-corpus and --stream-corpus are exclusive")
+        }
+        if let seconds = opts.quietAfterSeconds {
+            guard let dir = opts.streamCorpusDir else {
+                throw PeerError.message("--quiet-after needs --stream-corpus")
+            }
+            quiet = (try loadQuietFrames(from: dir), UInt64(seconds * 1e9))
+        } else {
+            quiet = nil
         }
 
         let shape = corpusFrames == nil
@@ -858,7 +907,10 @@ final class ControlPeer {
         if streamFrames != nil {
             print("""
                 stream: looping corpus at 60 fps under \(opts.rateMbps) \
-                Mbps once capabilities agree (no pairing)
+                Mbps once capabilities agree (no pairing)\
+                \(opts.quietAfterSeconds.map {
+                    "; quiet (small P-frames only) after \($0) s"
+                } ?? "")
                 """)
         }
         print("note: no Direct Eye; safe beside standing UDP 41151")
@@ -957,6 +1009,7 @@ final class ControlPeer {
                     pin: pin,
                     corpusFrames: corpusFrames,
                     streamFrames: streamFrames,
+                    quiet: quiet,
                     rateBitsPerSecond: rateBitsPerSecond,
                     now: now
                 )
