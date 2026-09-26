@@ -33,6 +33,27 @@ responsiveness and the conveniences of a remote desktop.
 Remote use beyond the LAN means Tailscale or an explicit port forward;
 Lyte ships no rendezvous or relay service.
 
+## Install
+
+The Mac app needs Apple Silicon and macOS 15 or later. Install it with
+Homebrew:
+
+```sh
+brew install --cask shreeve/tap/lyte
+```
+
+or with one command, which installs the latest release into
+`/Applications` (or `~/Applications`) only when it is signed with Lyte's
+Developer ID and notarized, and never while Lyte is running:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/shreeve/lyte/main/Scripts/install.sh | bash
+```
+
+Either way the app then updates itself through **Lyte → Check for
+Updates…** (Sparkle). The Linux host installs separately; see
+[Host/INSTALL.md](Host/INSTALL.md).
+
 ## Architecture
 
 Six SwiftPM packages:
@@ -86,8 +107,7 @@ Scripts/launch-app.sh
 
 Client binaries that talk to a host must be signed with a stable identity
 so the Keychain grant for the pairing key survives rebuilds; see
-[docs/MACOS-SIGNING.md](docs/MACOS-SIGNING.md). Released apps install with
-Homebrew and update themselves with Sparkle; cutting a release is in
+[docs/MACOS-SIGNING.md](docs/MACOS-SIGNING.md). Cutting a release is in
 [docs/RELEASING.md](docs/RELEASING.md). To install a host, follow
 [Host/INSTALL.md](Host/INSTALL.md), then
 [pair a client](docs/OPERATIONS.md#pairing-a-client).

@@ -8,13 +8,14 @@
 #   Scripts/release.sh 0.6.0             # also tag v0.6.0, push the tag, and publish
 #
 # The release carries Lyte-<version>.zip (the Homebrew cask and the feed both
-# download it) and appcast.xml, the Sparkle feed installed copies read from
-# the latest release (SUFeedURL). The app is signed with the Developer ID and
-# notarized, with the ticket stapled, so Gatekeeper accepts it however it was
-# downloaded. The feed's enclosure carries an EdDSA signature (edSignature)
-# made with the key the login keychain holds under the account "lyte", the
-# private half of Client/Updates/sparkle-public-key.txt; the feed document
-# itself is not signed.
+# download it); Lyte.zip, the same bytes under the one name Scripts/install.sh
+# fetches from the latest release; and appcast.xml, the Sparkle feed installed
+# copies read from the latest release (SUFeedURL). The app is signed with the
+# Developer ID and notarized, with the ticket stapled, so Gatekeeper accepts
+# it however it was downloaded. The feed's enclosure carries an EdDSA
+# signature (edSignature) made with the key the login keychain holds under the
+# account "lyte", the private half of Client/Updates/sparkle-public-key.txt;
+# the feed document itself is not signed.
 #
 # The notes are the version's section of CHANGELOG.md, which a release must
 # have: the GitHub release shows them, and the feed embeds them for Sparkle's
@@ -68,6 +69,10 @@ notes="$section
 Install with Homebrew:
 
     brew install --cask shreeve/tap/lyte
+
+or with one command:
+
+    curl -fsSL https://raw.githubusercontent.com/$repo/main/Scripts/install.sh | bash
 
 Installed copies update themselves through Lyte → Check for Updates…"
 
@@ -184,6 +189,9 @@ grep -qx "source=Notarized Developer ID" <<< "$assessment" \
 
 archive="Lyte-$version.zip"
 ditto -c -k --keepParent "$app" "$out/feed/$archive"
+# Beside the feed folder, not in it: generate_appcast would list a second
+# archive.
+cp "$out/feed/$archive" "$out/Lyte.zip"
 [[ -z "$section" ]] || printf '%s\n' "$section" > "$out/feed/Lyte-$version.md"
 printf '%s\n' "$notes" > "$out/notes.md"
 
@@ -233,7 +241,7 @@ undo() {
 trap undo EXIT
 trap 'exit 130' INT TERM HUP
 
-gh release create "$tag" "$out/feed/$archive" "$out/appcast.xml" \
+gh release create "$tag" "$out/Lyte.zip" "$out/feed/$archive" "$out/appcast.xml" \
     --repo "$repo" --title "Lyte $version" --notes-file "$out/notes.md" --draft >/dev/null
 git tag -a "$tag" -m "Lyte $version"
 git push -q origin "$tag"
