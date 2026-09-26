@@ -1,58 +1,105 @@
-# Lyte
+<p align="center">
+  <img src="Client/AppIcon/lyte-icon.svg" alt="Lyte" width="160">
+</p>
 
-*Streaming at the speed of Lyte.*
+<h1 align="center">Lyte</h1>
 
-Lyte is an MIT-licensed remote-desktop system that owns both ends of the
-wire: a SwiftUI macOS client and a Swift Linux host that speak one
-protocol, **Lyte-UDP**, over plain UDP. There is no RTSP, RTP, GameStream,
-Sunshine, Moonlight, VNC or RDP compatibility path. After a Noise
-handshake every datagram is encrypted, paced, measured and repaired by
-Lyte's own transport.
+<p align="center"><em>Streaming at the speed of Lyte.</em></p>
 
-The goal: use another computer as if it were local, with game-streaming
-responsiveness and the conveniences of a remote desktop.
+<p align="center">
+  <a href="https://github.com/shreeve/lyte/releases/latest">Latest release</a> ·
+  <a href="#install">Install</a> ·
+  <a href="#using-lyte">Using Lyte</a> ·
+  <a href="docs/ARCHITECTURE.md">Architecture</a> ·
+  <a href="LICENSE">MIT license</a>
+</p>
 
-## What works today
+Lyte lets you use a Linux desktop from your Mac as if it were in front of
+you: game-streaming responsiveness with the conveniences of a remote
+desktop. It owns both ends of the wire, a SwiftUI macOS client and a Swift
+Linux host that speak one encrypted protocol, **Lyte-UDP**, over plain
+UDP. There is no VNC, RDP, RTSP, GameStream, Sunshine or Moonlight
+underneath; every datagram is sealed after a Noise handshake, and paced,
+measured and repaired by Lyte's own transport.
 
-- **Linux host** (Ubuntu, GNOME/Mutter, Intel GPU): captures the KMS
-  scanout directly, converts color on the GPU, and encodes HEVC with VAAPI
-  through Lyte's own Swift bitstream writers. No portal, ffmpeg or libav.
-  Static screens are change-driven and nearly silent on the wire.
-- **macOS client**: VideoToolbox decode through
-  `AVSampleBufferDisplayLayer`, one Conductor timing video and audio, 5 ms
-  Opus audio, keyboard and mouse input, clipboard text and images, file
-  transfer, PIN pairing, and roaming when the host moves or restarts.
-- **Transport**: Noise IK sealing every session datagram, adaptive
-  Reed-Solomon FEC, targeted NACK repair, reliable control beside
-  low-latency media, application-level congestion control,
-  capability-negotiated and consent-gated feature channels.
-- **Browser**: a Chrome proof harness (Swift WebAssembly + WebTransport +
-  WebCodecs + WebGPU) against a DRM-free test peer. It is not yet a product
-  client; see [docs/BROWSER.md](docs/BROWSER.md).
+## What you get
 
-Remote use beyond the LAN means Tailscale or an explicit port forward;
-Lyte ships no rendezvous or relay service.
+- **A crisp, live picture.** The host captures the screen straight from
+  the GPU and encodes HEVC in hardware; the Mac decodes it in hardware and
+  presents each frame on a steady beat. A still screen costs almost
+  nothing on the wire. Picture tiers: Good (4:2:0) and Best (4:4:4) for
+  sharp text; Better (4:2:2) waits for hardware that offers it.
+- **Your keyboard and mouse, Mac-style.** ⌘ plus a letter reaches Linux
+  as Ctrl plus that letter (⌘C copies, ⌘S saves, ⌘Z undoes), following
+  whatever layout you type. Held keys survive a brief Wi-Fi hiccup.
+- **Sound** from the host in 5 ms Opus packets, with its own mute on each
+  side.
+- **Clipboard and files.** Share text and images both ways, per host, and
+  drop files onto the window to send them to a host that accepts files.
+- **Security by default.** Every packet is encrypted; a Mac pairs with a
+  host once, with a PIN, and the host is pinned by its key thereafter.
+- **Resilience.** Error correction, targeted repair, congestion control
+  that recovers from Wi-Fi spikes in seconds, and roaming when the host
+  restarts or moves.
 
 ## Install
 
-The Mac app needs Apple Silicon and macOS 15 or later. Install it with
-Homebrew:
+The Mac app needs Apple silicon and macOS 15 or later. It is signed with a
+Developer ID and notarized by Apple, so it opens normally however you get
+it.
 
-```sh
+**Homebrew**
+
+```bash
 brew install --cask shreeve/tap/lyte
 ```
 
-or with one command, which installs the latest release into
-`/Applications` (or `~/Applications`) only when it is signed with Lyte's
-Developer ID and notarized, and never while Lyte is running:
+**One command**, which installs the newest release into `/Applications`
+(or `~/Applications`) only when it is signed with Lyte's Developer ID and
+notarized, and never while Lyte is running:
 
-```sh
+```bash
 curl -fsSL https://raw.githubusercontent.com/shreeve/lyte/main/Scripts/install.sh | bash
 ```
 
-Either way the app then updates itself through **Lyte → Check for
-Updates…** (Sparkle). The Linux host installs separately; see
+**Download** `Lyte.zip` from the
+[latest release](https://github.com/shreeve/lyte/releases/latest) and drag
+`Lyte.app` to Applications.
+
+Lyte updates itself: **Lyte → Check for Updates…** (Sparkle), and it checks
+daily on its own.
+
+**The host** runs on Linux: one GNOME/Mutter Wayland seat with an Intel
+GPU that drives the display. Build and install it with
 [Host/INSTALL.md](Host/INSTALL.md).
+
+## Using Lyte
+
+1. **First connection.** Start the host in pairing mode
+   ([pairing a client](docs/OPERATIONS.md#pairing-a-client)); its console
+   shows the host key and a six-digit PIN. Pick the host in Lyte, paste
+   the key (Lyte checks it against the host's advertised identity) and
+   enter the PIN. When macOS asks whether Lyte may find devices on your
+   local network, choose **Allow**. From then on reconnects need nothing.
+2. **After that**, hosts on your network appear in the connection window
+   by name; a paired host the network does not advertise appears as
+   "last seen at address:port". Beyond the LAN, use Tailscale or a port
+   forward; Lyte runs no relay service.
+3. **In the stream window**, click to type and point on the host.
+
+| Shortcut | What it does |
+|---|---|
+| ⌘ + letter | Ctrl + that letter on the host |
+| ⌘⇧C · ⌘⇧V | Copy · paste in a Linux terminal (plain ⌘C there is Ctrl+C, which interrupts) |
+| ⌥⌘C | Share Clipboard on or off |
+| ⌥⌘I | Session stats: picture, network, audio, and why each keyframe was asked for |
+| ⌘R · ⌘D | Reconnect · Disconnect |
+| ⇧⌘M · ⇧⌘H | Mute on this Mac · mute the host's speakers |
+
+The **Actions** menu also holds the picture tier, clipboard defaults per
+host, **Secure Keyboard Entry** (hides your typing from other Mac apps
+while the stream window is focused; off by default) and the control strip.
+For Ctrl+R, Ctrl+D or Ctrl+N on the host, use the physical Ctrl key.
 
 ## Architecture
 
@@ -85,7 +132,7 @@ macOS, Linux and WebAssembly.
 Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and
 [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
-## Quickstart
+## Build from source
 
 Requirements: macOS with full Xcode (Command Line Tools lack XCTest); for
 the host, a Linux machine as described in
