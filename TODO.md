@@ -51,6 +51,16 @@ live state: [HANDOFF.md](HANDOFF.md).
 
 ## Host
 
+- **Rate recovery on a quiet screen.** After a genuine Wi-Fi collapse
+  (soak, 2026-09-26 15:32Z: 15.6% post-FEC loss, 247 ms queue, trains at
+  5 Mbps) the estimator correctly fell to 3.9 Mbps, but a static desktop
+  sends too few full trains to prove capacity, so the climb stalled near
+  9 Mbps for minutes; the next motion then starts under that cap. `main`
+  shares this (every climb is evidence-gated). Options: probe with FEC or
+  padding when idle below the pre-fall rate, or let a loss-driven fall
+  restore toward the pre-fall rate once the path has run clean for a
+  while. Reproduce with `lyte-control-peer --stream-corpus` plus
+  `Scripts/netem/port-netem.sh` loss bursts, and in RateEstimatorGateTests.
 - **Wayland clipboard leaf (blocked on GNOME).** The host clipboard still
   needs the Mutter RemoteDesktop session bus (`MutterClipboardLeaf`); pup's
   GNOME 50.1 offers no data-control protocol and the portal Clipboard
