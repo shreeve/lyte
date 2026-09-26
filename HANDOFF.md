@@ -15,17 +15,15 @@
 ## Live rig
 
 - **pup** is on Wi-Fi only (`10.0.0.249`, advertised on `wlp0s20f3`).
-- `lyte-host.service` serves UDP **41151**: `~/.local/bin/lyte-host` →
-  `versions/bb4ce518dd2f` (#252's host; it logs `direct: capturing
-  /dev/dri/card1 (i915, discovered)`). Previous `7188d8b60f68` (#248)
-  is kept: `cd ~/src/lyte-host && ./Scripts/deploy-host.sh --rollback
-  --restart`. `host.conf` passes only `--wire-listen 41151
-  --clipboard=images --advertise-interface wlp0s20f3`.
+- `lyte-host.service` serves UDP **41151** from `versions/31052cd5263a`: the
+  **soak** of local branch `experiment/wifi-resilience` (this Mac only; Wi-Fi
+  rate recovery, see its CHANGELOG note). `main`'s host is
+  `bb4ce518dd2f`: `cd ~/src/lyte-host && ./Scripts/deploy-host.sh
+  --rollback --restart`. It logs `direct: capturing /dev/dri/card1`.
 - Identity `~/.config/lyte/`; log `~/.local/state/lyte/host.log`. Kept for
   the owner: `~/.config/lyte-host/`, `~/lyte-revamp-backup/`, `~/lyte-migration-*`.
-- **This Mac is paired**, but `Lyte.app` lacks the **Local Network** grant
-  (`Local network prohibited`); `lyte-cli wire-view 0 --host 10.0.0.249
-  --host-port 41151` works from a terminal.
+- **This Mac is paired**; `.build/Lyte.app` (built from the experiment)
+  streams from pup with keyboard and mouse.
 
 ## Next
 
