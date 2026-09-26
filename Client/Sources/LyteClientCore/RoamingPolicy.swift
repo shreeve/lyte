@@ -1,7 +1,12 @@
-// RoamingPolicy: pure client roaming/reconnect policy — what to do when
-// the host moves out from under a standing session, or the Mac itself
-// hops networks mid-session. FROZEN/RECOVERY are local overlays of the
-// session machine; its 30 s liveness clock closes a dead session.
+// RoamingPolicy: pure client dial policy — the window's first connect,
+// and what to do when the host moves out from under a standing session
+// or the Mac itself hops networks mid-session. FROZEN/RECOVERY are local
+// overlays of the session machine; its 30 s liveness clock closes a dead
+// session.
+//
+// Before any session, `connect` dials at once and a silent dial climbs
+// the ladders below as a lost session does, inside the establishment
+// budget; past it the policy gives up (`.expired`).
 //
 // The detection ladder:
 //   1. A short gap is the machine's FROZEN; this policy only starts its
@@ -25,11 +30,12 @@
 // so a dead path is observably FROZEN at expiry) before escalating, and
 // the same-address re-dial is allowed at once.
 //
-// There is no give-up: backoff ladders are capped (scan 1 s → 15 s,
-// dial 2 s → 30 s); Disconnect is the exit and Reconnect resets every
-// ladder. While scanning is wanted, a scan is always in flight, scheduled,
-// or waiting on the one dial in flight; a sighting that lands mid-dial is
-// held and dialed the moment that dial fails.
+// Once established there is no give-up: backoff ladders are capped
+// (scan 1 s → 15 s, dial 2 s → 30 s); Disconnect is the exit and
+// Reconnect resets every ladder. While scanning is wanted, a scan is
+// always in flight, scheduled, or waiting on the one dial in flight; a
+// sighting that lands mid-dial is held and dialed the moment that dial
+// fails.
 //
 // Sans-IO: a struct fed inputs with an injected monotonic `now` (µs),
 // returning actions; `nextDeadline` tells the driver (ConnectionModel)
@@ -54,9 +60,12 @@ public struct RoamingSighting: Equatable, Sendable {
 /// (the driver answers with `scanCompleted`); `dial` = tear down any
 /// standing wire session and run a fresh 1-RTT handshake at the target
 /// (the driver answers with `sessionEstablished` or `dialFailed`).
+/// `expired` = the first connect's establishment budget ran out with no
+/// session: the driver ends the window.
 public enum RoamingAction: Equatable, Sendable {
     case beginScan
     case dial(address: String, port: UInt16, discovered: Bool)
+    case expired
 }
 
 /// The UI-facing posture (the stream overlay's banner reads this).
@@ -93,6 +102,9 @@ public struct RoamingPolicyConfig: Hashable, Sendable {
     /// a dial with silence — retry, don't hammer.
     public var dialRetryFloorMicroseconds: Int64
     public var dialRetryCeilingMicroseconds: Int64
+    /// The first connect's patience: silence keeps re-dialing until the
+    /// budget runs out — a full host restart (10–15 s) with margin.
+    public var establishBudgetMicroseconds: Int64
 
     public init(
         scanAfterSilenceMicroseconds: Int64 = 3_000_000,
@@ -101,7 +113,8 @@ public struct RoamingPolicyConfig: Hashable, Sendable {
         scanIntervalFloorMicroseconds: Int64 = 1_000_000,
         scanIntervalCeilingMicroseconds: Int64 = 15_000_000,
         dialRetryFloorMicroseconds: Int64 = 2_000_000,
-        dialRetryCeilingMicroseconds: Int64 = 30_000_000
+        dialRetryCeilingMicroseconds: Int64 = 30_000_000,
+        establishBudgetMicroseconds: Int64 = 45_000_000
     ) {
         self.scanAfterSilenceMicroseconds = scanAfterSilenceMicroseconds
         self.redialSameAddressAfterMicroseconds =
@@ -112,6 +125,7 @@ public struct RoamingPolicyConfig: Hashable, Sendable {
             scanIntervalCeilingMicroseconds
         self.dialRetryFloorMicroseconds = dialRetryFloorMicroseconds
         self.dialRetryCeilingMicroseconds = dialRetryCeilingMicroseconds
+        self.establishBudgetMicroseconds = establishBudgetMicroseconds
     }
 }
 
@@ -127,8 +141,12 @@ public struct RoamingPolicy: Sendable {
     public private(set) var lastKnownPort: UInt16
 
     /// False once the session closed (liveness) or the policy decided
-    /// to tear it down for a dial.
+    /// to tear it down for a dial, and before the first establishment.
     private var sessionAlive = true
+    /// Armed by `connect`, cleared by the first establishment.
+    private var establishDeadline: UInt64?
+    /// The budget ran out: nothing more is ever dialed or scanned.
+    private var expired = false
     /// The silence clock: set at FROZEN entry, cleared by evidence.
     private var silentSince: UInt64?
     /// The path-change grace deadline; dissolves on evidence.
@@ -194,6 +212,10 @@ public struct RoamingPolicy: Sendable {
         if probeDialPending { deadlines.append(nextDialAllowedAt) }
         // A same-address redial waits out the silence threshold.
         if let at = sameAddressRedialReadyAt { deadlines.append(at) }
+        // The budget is judged between dials: one in flight finishes.
+        if let deadline = establishDeadline, !dialInFlight {
+            deadlines.append(deadline)
+        }
         return deadlines.min()
     }
 
@@ -201,7 +223,7 @@ public struct RoamingPolicy: Sendable {
     /// session is GONE — while it merely stands silent, discovery
     /// sightings are the evidence that justifies a teardown.
     private var probeDialPending: Bool {
-        !sessionAlive && !dialInFlight
+        !sessionAlive && !dialInFlight && !expired
     }
 
     /// A pending same-address sighting is remembered here until the
@@ -217,6 +239,16 @@ public struct RoamingPolicy: Sendable {
 
     // MARK: Session lifecycle inputs
 
+    /// The window's first dial: no session yet, so the target is dialed
+    /// now and the establishment budget starts.
+    public mutating func connect(now: UInt64) -> [RoamingAction] {
+        sessionAlive = false
+        establishDeadline =
+            now &+ UInt64(config.establishBudgetMicroseconds)
+        nextDialAllowedAt = now
+        return tick(now: now)
+    }
+
     /// A session (re)established at this target: everything resets.
     public mutating func sessionEstablished(
         address: String, port: UInt16, now: UInt64
@@ -224,6 +256,7 @@ public struct RoamingPolicy: Sendable {
         lastKnownAddress = address
         lastKnownPort = port
         sessionAlive = true
+        establishDeadline = nil
         silentSince = nil
         pathChangeDeadline = nil
         sameAddressRedialWaived = false
@@ -357,6 +390,9 @@ public struct RoamingPolicy: Sendable {
         guard dialInFlight else { return [] }
         dialInFlight = false
         dialInFlightTarget = nil
+        if let deadline = establishDeadline, now >= deadline {
+            return expire()
+        }
         if let held = sightingAwaitingDial {
             sightingAwaitingDial = nil
             return dialSighting(held, now: now)
@@ -376,6 +412,9 @@ public struct RoamingPolicy: Sendable {
     /// beat that commits to a dial launches no fresh browse — the
     /// dial is the decision; scanning resumes if it fails.
     public mutating func tick(now: UInt64) -> [RoamingAction] {
+        if let deadline = establishDeadline, now >= deadline, !dialInFlight {
+            return expire()
+        }
         var actions: [RoamingAction] = []
         var dialedThisBeat = false
 
@@ -429,6 +468,16 @@ public struct RoamingPolicy: Sendable {
     }
 
     // MARK: Interior
+
+    /// The first connect never established inside its budget.
+    private mutating func expire() -> [RoamingAction] {
+        establishDeadline = nil
+        expired = true
+        scanning = false
+        nextScanAt = nil
+        sightingAwaitingDial = nil
+        return [.expired]
+    }
 
     private mutating func beginScanningIfNeeded(
         now: UInt64

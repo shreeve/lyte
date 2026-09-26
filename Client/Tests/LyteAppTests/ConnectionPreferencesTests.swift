@@ -11,7 +11,7 @@ final class ConnectionPreferencesTests: XCTestCase {
         let harness = LifecycleHarness()
         harness.startPlan = [.succeed]
         let model = ConnectionModel(services: harness.services)
-        await model.connectLyte(harness.host)
+        try await harness.connect(model)
         let loads = harness.pinLoads
 
         for _ in 0..<50 {
@@ -26,7 +26,7 @@ final class ConnectionPreferencesTests: XCTestCase {
         let harness = LifecycleHarness()
         harness.startPlan = [.succeed]
         let model = ConnectionModel(services: harness.services)
-        await model.connectLyte(harness.host)
+        try await harness.connect(model)
         let pkh = try XCTUnwrap(harness.host.publicKeyHash)
 
         XCTAssertTrue(model.hostPreference(.startHostMuted), "unset means start muted")

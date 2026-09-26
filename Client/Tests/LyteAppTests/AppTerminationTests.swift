@@ -50,7 +50,7 @@ final class AppTerminationTests: XCTestCase {
         let harness = LifecycleHarness()
         harness.startPlan = [.succeed]
         let model = ConnectionModel(services: harness.services)
-        await model.connectLyte(harness.host)
+        try await harness.connect(model)
         let session = try XCTUnwrap(model.lyteSession)
         OpenConnections.shared.insert(model)
 

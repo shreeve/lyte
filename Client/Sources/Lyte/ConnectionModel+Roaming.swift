@@ -2,12 +2,13 @@ import LyteClientCore
 import LyteTransport
 import LyteWire
 
-/// The roaming driver: executes `RoamingPolicy`'s actions (discovery
-/// scans, re-dials) and feeds their results back. The policy decides; this
-/// file owns the sockets, browses, and session swaps — and fences every
-/// completion with the lifecycle generation, so a scan or dial that
-/// outlives its roaming machinery (Disconnect, a new connect) is dropped
-/// and any session it made is closed.
+/// The dial driver: executes `RoamingPolicy`'s actions (discovery scans,
+/// dials) and feeds their results back, from the connect's first dial to
+/// every re-acquisition. The policy decides; this file owns the sockets,
+/// browses, and session swaps — and fences every completion with the
+/// lifecycle generation, so a scan or dial that outlives its window's
+/// machinery (Disconnect, a new connect) is dropped and any session it
+/// made is closed.
 extension ConnectionModel {
     /// The Actions menu's Reconnect verb: tear the wire session down
     /// (typed goodbye) and act now — a probe dial at the last-known
@@ -47,15 +48,10 @@ extension ConnectionModel {
 
     /// The peer is gone (liveness) or restarting (its goodbye): keep the
     /// window (the last frame + the roaming banner), keep everything
-    /// per-host, drop the wire session, hunt the identity.
+    /// per-host, drop the wire session, hunt the identity. The policy is
+    /// born before any session, so every attached session has one.
     func beginRoamingAfterLoss(_ reason: SessionCloseReason) {
-        guard roaming != nil else {
-            // No identity to hunt: the policy is born with a pinned
-            // session, so only an unpinned window lands here.
-            endLyteSession(reason: reason == .livenessTimeout
-                ? "host unreachable for 30 s" : nil)
-            return
-        }
+        guard roaming != nil else { return }
         // A closed session has nobody to say goodbye to.
         detachWireSession(.silent)
         roamingInput { policy, now in policy.sessionClosed(now: now) }
@@ -75,8 +71,11 @@ extension ConnectionModel {
             switch action {
             case .beginScan:
                 runRoamingScan()
-            case .dial(let address, let port, let discovered):
-                runRoamingDial(address: address, port: port, discovered: discovered)
+            case .dial(let address, let port, _):
+                runRoamingDial(address: address, port: port)
+            case .expired:
+                endLyteSession(reason:
+                    "Lyte-UDP connect: \(lastDialFailure ?? "no answer")")
             }
         }
         armRoamingTask()
@@ -125,11 +124,11 @@ extension ConnectionModel {
         }
     }
 
-    /// One re-acquisition dial: fresh 1-RTT Noise IK against the same
-    /// pinned static (no re-PIN). A shorter retry window than the first
-    /// connect: a host that hasn't freed the dead session answers with
+    /// One dial: a 1-RTT Noise IK against the pinned static (never a
+    /// re-PIN). The connect's first dial retries longest; every later one
+    /// is short — a host that hasn't freed a dead session answers with
     /// silence, and the ladder retries rather than camping.
-    private func runRoamingDial(address: String, port: UInt16, discovered: Bool) {
+    private func runRoamingDial(address: String, port: UInt16) {
         detachWireSession(.goodbye)
         guard let pkh = hostPublicKeyHash,
               let pinned = services.loadPins().host(publicKeyHash: pkh),
@@ -137,21 +136,22 @@ extension ConnectionModel {
             endLyteSession(reason: "\(hostName ?? "host") is no longer paired")
             return
         }
-        // A roaming dial follows an established session, so the process
-        // cache holds the identity. Never summon SecurityAgent from an
-        // automatic path.
+        dialsSinceConnect += 1
+        let round = dialsSinceConnect
+        // The connect looked the identity up interactively, so the process
+        // cache holds it. Never summon SecurityAgent from an automatic path.
         guard let identity = services.cachedIdentity(),
               let crypto = try? NoiseTransportCrypto(
                 hostAddress: address,
                 hostPort: port,
                 hostStaticPublicKey: hostStatic,
                 staticKeys: identity,
-                retry: .redial)
+                retry: round == 1 ? .firstDial : .redial)
         else {
             roamingInput { policy, now in policy.dialFailed(now: now) }
             return
         }
-        // The LIVE posture rides every re-dial, not the per-host default:
+        // The LIVE posture rides every dial, not the per-host default:
         // the confirmed host-audio state, the current consent, and the
         // tier a chroma flip or fallback means.
         let config = LyteUdpSession.Config(
@@ -163,6 +163,9 @@ extension ConnectionModel {
         abandonDial()
         let lyte = makeLyteSession(crypto: crypto, config: config)
         beginDial(lyte)
+        HandshakeWitness.record("sessionStartBegin", fields: [
+            "round": String(round), "host": address, "port": String(port),
+        ])
         let generation = lifecycleGeneration
         let start = services.startSession
         let endSession = services.endSession
@@ -170,14 +173,21 @@ extension ConnectionModel {
             do {
                 try await start(lyte)
             } catch {
+                HandshakeWitness.record("sessionStartFailed", fields: [
+                    "round": String(round), "error": String(describing: error),
+                ])
                 guard let self else { return endSession(lyte, .silent) }
                 // Abandoned: whoever abandoned it ended it.
                 guard self.claimDial(lyte) else { return }
+                // A dial that failed after binding still holds its socket.
                 endSession(lyte, .silent)
                 guard self.isCurrent(generation) else { return }
-                self.roamingInput { policy, now in policy.dialFailed(now: now) }
+                self.dialFailed(error)
                 return
             }
+            HandshakeWitness.record("sessionStartCompleted", fields: [
+                "round": String(round),
+            ])
             guard let self else { return endSession(lyte, .goodbye) }
             guard self.claimDial(lyte) else { return }
             // The window disconnected (and perhaps connected afresh)
@@ -186,20 +196,48 @@ extension ConnectionModel {
                 endSession(lyte, .goodbye)
                 return
             }
-            self.adoptReconnectedSession(lyte, address: address, port: port)
+            self.adoptDialedSession(lyte, address: address, port: port)
         }
     }
 
-    /// A re-dial became a session: swap it in without touching per-host
+    /// Before the first establishment only silence is worth another dial
+    /// — a restarting host looks exactly like it; Local Network privacy
+    /// and every refusal end the connect at once. Once streaming, every
+    /// failure climbs the ladder.
+    private func dialFailed(_ error: any Error) {
+        if case .connecting = phase {
+            switch DialFailure(error) {
+            case .unanswered:
+                lastDialFailure = String(describing: error)
+                phase = .connecting("\(hostName ?? "The host") isn't answering — "
+                    + "it may be restarting; still trying…")
+            case .localNetwork(let problem):
+                return endLyteSession(failure: .localNetwork(
+                    problem, diagnosticDetail: String(describing: error)))
+            case .refused:
+                return endLyteSession(reason: "Lyte-UDP connect: \(error)")
+            }
+        }
+        roamingInput { policy, now in policy.dialFailed(now: now) }
+    }
+
+    /// A dial became a session: swap it in without touching per-host
     /// state and refresh the pinned dial hints (the host lives HERE now).
-    private func adoptReconnectedSession(
+    /// The connect's first session also opens the stream.
+    private func adoptDialedSession(
         _ lyte: LyteUdpSession, address: String, port: UInt16
     ) {
+        let first = if case .connecting = phase { true } else { false }
+        if first, let pkh = hostPublicKeyHash {
+            prepareBulkCoordinator(hostKey: pkh)
+        }
         attach(lyte, address: address)
         // The refresh keeps pairedAt and every per-host preference.
         updatePin { store, pkh in
             guard let pinned = store.host(publicKeyHash: pkh),
-                  let key = pinned.staticPublicKey else { return false }
+                  let key = pinned.staticPublicKey,
+                  pinned.address != address || pinned.port != port
+            else { return false }
             store.pin(
                 staticPublicKey: key, name: pinned.name,
                 address: address, port: port, pairedAt: pinned.pairedAt)
@@ -207,6 +245,10 @@ extension ConnectionModel {
         }
         roamingInput { policy, now in
             policy.sessionEstablished(address: address, port: port, now: now)
+        }
+        if first {
+            phase = .streaming
+            services.streamBegan()
         }
         replayPendingTerminal()
     }
