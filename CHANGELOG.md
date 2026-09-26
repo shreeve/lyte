@@ -32,6 +32,10 @@ Sparkle shows in the update window (`Scripts/release.sh`).
   asked for again. A frame the Mac cannot decode no longer freezes the
   picture: the client flushes and asks for a fresh keyframe. Pairing
   ends with a goodbye, so a `--pair` host exits at once.
+- **Why a keyframe was asked for.** Each keyframe the Mac asks for now
+  names its cause in the stats overlay's "idr" row, in `lyte-cli
+  wire-view`, and in the app's log ("lyte video: IDR requested after
+  frame N — cause").
 - **Host.** Input carrying a key or button code the host never declared
   is refused. Dropped file names can no longer become hidden dotfiles, and
   a transfer that fails its final rename leaves no staging file behind.
