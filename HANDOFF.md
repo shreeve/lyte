@@ -24,10 +24,11 @@
 - Identity `~/.config/lyte/`; log `~/.local/state/lyte/host.log`. Kept for
   the owner: `~/.config/lyte-host/`, `~/lyte-revamp-backup/`, `~/lyte-migration-*`.
   `libinput-tools` is installed on pup (pointer checks).
-- **This Mac (pop) is paired** and streams from pup with `.build/Lyte.app`,
-  a release build of `main` @ #259 (`Scripts/make-app.sh release`; it
-  reports 0.7.0). Homebrew's `/Applications/Lyte.app` (0.7.0) is still
-  installed; the next release returns the Mac to that one copy.
+- **This Mac (pop) is paired**; its one Lyte is `.build/Lyte.app`, a
+  release build of `main` @ #259 (`Scripts/make-app.sh release`, launched
+  with `Scripts/launch-app.sh`; it reports 0.7.0). The Homebrew cask is
+  uninstalled (settings kept); after the next release,
+  `brew install --cask shreeve/tap/lyte` restores the Sparkle-updated copy.
 
 ## Next
 
