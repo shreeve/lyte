@@ -39,19 +39,27 @@ func decodeCStringBuffer(_ buffer: [CChar]) -> String {
         as: UTF8.self)
 }
 
-func findNode(named want: String) -> String? {
+func nodes(named want: String) -> [String] {
     let base = "/sys/class/input"
     guard let entries = try? FileManager.default
-        .contentsOfDirectory(atPath: base) else { return nil }
-    for entry in entries.sorted() where entry.hasPrefix("event") {
-        let namePath = "\(base)/\(entry)/device/name"
-        if let name = try? String(contentsOfFile: namePath,
-                                  encoding: .utf8),
-           name.trimmingCharacters(in: .whitespacesAndNewlines) == want {
-            return "/dev/input/\(entry)"
-        }
-    }
-    return nil
+        .contentsOfDirectory(atPath: base) else { return [] }
+    return entries.sorted().filter { entry in
+        guard entry.hasPrefix("event"),
+              let name = try? String(
+                  contentsOfFile: "\(base)/\(entry)/device/name",
+                  encoding: .utf8) else { return false }
+        return name.trimmingCharacters(in: .whitespacesAndNewlines) == want
+    }.map { "/dev/input/\($0)" }
+}
+
+/// Nodes a running host's own devices already hold under the same names;
+/// the check reads only the devices it creates.
+let preexisting = Set(["Keyboard", "Mouse", "Tablet"].flatMap {
+    nodes(named: "Lyte Virtual \($0)")
+})
+
+func findNode(named want: String) -> String? {
+    nodes(named: want).first { !preexisting.contains($0) }
 }
 
 /// One evdev reader: nonblocking, 24-byte input_event records
