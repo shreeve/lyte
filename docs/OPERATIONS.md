@@ -156,7 +156,8 @@ why they hold and how the tools enforce them.
   client, with no undo. The pup gate and the benchmark's handshake leg
   fingerprint the identity, `host.conf`, `/etc/lyte/lyte-host.conf`, the
   pre-XDG copies, the unit and the deployed link before and after
-  (`Scripts/lib/pup-side.sh`) and fail on any change or unreadable file.
+  (`Scripts/lib/pup-side.sh`) and fail on any change or unreadable file;
+  a handshake leg that dies after its restart re-checks on the way out.
 - **The standing port.** A listener on a port another socket holds
   refuses to start, so a stray host on 41151 fails rather than sharing the
   service's traffic.

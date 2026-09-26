@@ -333,14 +333,7 @@ cleanup() {
       "rm -f '$REMOTE_MOTION_PRESENTER' '$REMOTE_MOTION_DEFINITION' \
 '$REMOTE_MOTION_LOG' '$REMOTE_MOTION_LOG.stderr'" || true
   fi
-  if (( FRESH_HOST_RECOVERY_NEEDED )); then
-    pup_ssh \
-      "sudo -n systemctl start lyte-host; \
-systemctl is-active --quiet lyte-host" || {
-      echo "WARNING: failed to restore lyte-host.service" >&2
-    }
-    FRESH_HOST_RECOVERY_NEEDED=0
-  fi
+  recover_fresh_host || true
 }
 
 handle_signal() {

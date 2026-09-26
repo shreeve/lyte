@@ -676,9 +676,16 @@ source "$REPO_ROOT/Scripts/lib/pup.sh"
 source "$REPO_ROOT/Scripts/lib/benchmark-handshake.sh"
 PUP=fake-pup.invalid HOST=10.0.0.232 BENCH_PORT=41151 BENCH_SECONDS=1
 OUT_DIR="$1"
-trap collect_handshake_evidence EXIT
+# benchmark-app.sh's cleanup runs these two on every exit.
+trap 'collect_handshake_evidence; recover_fresh_host' EXIT
 start_handshake_evidence "$2"
 start_fresh_host "$2"
+# FAKE_LEG_DIES: runs after the restart, then the leg dies as an app
+# deadline would.
+if [[ -n "${FAKE_LEG_DIES:-}" ]]; then
+    sh -c "$FAKE_LEG_DIES"
+    exit 1
+fi
 collect_handshake_evidence
 finish_fresh_host "$2"
 EOF
@@ -714,6 +721,33 @@ then
 fi
 grep -Fq 'restart changed protected host state' \
     "$test_root/legacy-rewrite.stderr"
+
+# A leg that dies after the restart re-proves the protected state on its
+# way out: quiet when it is unchanged, loud when it changed or cannot be
+# read.
+if run_handshake died-unchanged FAKE_LEG_DIES=:; then
+    fail "the dying handshake leg passed"
+fi
+refute grep -Fq 'PROTECTED HOST STATE' "$test_root/died-unchanged.stderr"
+if run_handshake died-changed \
+    FAKE_LEG_DIES='echo adopted >> "$HOME/.config/lyte/paired_clients"'
+then
+    fail "the dying handshake leg passed"
+fi
+grep -Fq 'PROTECTED HOST STATE CHANGED OR UNREADABLE' \
+    "$test_root/died-changed.stderr" \
+    || fail "a dying leg missed a changed identity"
+if run_handshake died-unreadable \
+    FAKE_LEG_DIES='chmod 000 "$HOME/.config/lyte/host.conf"'
+then
+    fail "the dying handshake leg passed"
+fi
+chmod 600 "$pup_home/.config/lyte/host.conf"
+grep -Fq 'cannot read' "$test_root/died-unreadable.stderr" \
+    || fail "a dying leg's unreadable-file refusal did not name the file"
+grep -Fq 'PROTECTED HOST STATE CHANGED OR UNREADABLE' \
+    "$test_root/died-unreadable.stderr" \
+    || fail "a dying leg trusted an unreadable protected file"
 
 # A protected file that exists but cannot be read, even through sudo, fails
 # the fingerprint rather than dropping out of it.
