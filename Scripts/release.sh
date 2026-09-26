@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# release.sh — build Lyte <version>, notarize it, sign its update feed, and
+# release.sh — build Lyte <version>, notarize it, write its update feed, and
 # publish it as a GitHub release (docs/RELEASING.md).
 #
 #   Scripts/release.sh 0.6.0 --notes     # print the notes it would publish; nothing else
@@ -11,9 +11,10 @@
 # download it) and appcast.xml, the Sparkle feed installed copies read from
 # the latest release (SUFeedURL). The app is signed with the Developer ID and
 # notarized, with the ticket stapled, so Gatekeeper accepts it however it was
-# downloaded. The feed is signed with the EdDSA key the login keychain holds
-# under the account "lyte", the private half of
-# Client/Updates/sparkle-public-key.txt.
+# downloaded. The feed's enclosure carries an EdDSA signature (edSignature)
+# made with the key the login keychain holds under the account "lyte", the
+# private half of Client/Updates/sparkle-public-key.txt; the feed document
+# itself is not signed.
 #
 # The notes are the version's section of CHANGELOG.md, which a release must
 # have: the GitHub release shows them, and the feed embeds them for Sparkle's
