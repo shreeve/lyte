@@ -180,7 +180,7 @@ struct Options {
                     Int($0).flatMap { $0 >= 0 ? $0 : nil }
                 }
             case "--help", "-h":
-                print(usage)
+                Swift.print(usage)
                 exit(0)
             default:
                 throw HostError("unknown argument \(flag) (try --help)")

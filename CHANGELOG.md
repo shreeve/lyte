@@ -43,6 +43,8 @@ Sparkle shows in the update window (`Scripts/release.sh`).
   Handshake flood protection and retry-cookie state now last for the
   whole host process instead of resetting with each session, and the
   flood statistics are cumulative. `--audio-bitrate-kbps` accepts 1–512.
+  Every `host.log` line now starts with its UTC time (ISO 8601,
+  milliseconds).
 - **Browser.** The proof page no longer forwards volume keys, matching the
   Mac client.
 

@@ -39,6 +39,7 @@ final class WarmEye {
     ) throws -> EyePipeline {
         if let pipeline {
             try pipeline.beginSession(chroma444: chroma444)
+            print(pipeline.encoderSummary)
             return pipeline
         }
         let opened = try EyePipeline(
@@ -51,6 +52,7 @@ final class WarmEye {
                     fps: DirectEyeLeg.fps, vbvBits: config.vbvBits))
                 : nil,
             chroma444: chroma444)
+        print(opened.encoderSummary)
         pipeline = opened
         return opened
     }

@@ -26,7 +26,7 @@ func sniff(_ args: [String]) throws {
                 Int($0).flatMap { $0 > 0 ? $0 : nil }
             }
         case "--help", "-h":
-            print("""
+            Swift.print("""
             usage: lyte-host sniff --port PORT [--seconds N] [--count N]
             Binds PORT and prints one decoded Lyte-UDP header line per
             received datagram (envelope + fec fields; payload stays

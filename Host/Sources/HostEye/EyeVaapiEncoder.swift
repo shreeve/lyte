@@ -36,6 +36,9 @@ public final class EyeVaapiEncoder {
     public let qp: Int32
     /// The Best tier: Rext Main 4:4:4 on packed AYUV surfaces.
     public let chroma444: Bool
+    /// One line naming the driver, entrypoint and rate control, for the
+    /// host's log.
+    public private(set) var summary = ""
     /// The GL blit's render targets, exported via `exportLayers`.
     public private(set) var inputSurfaces: [VASurfaceID] = []
 
@@ -234,11 +237,11 @@ public final class EyeVaapiEncoder {
         let rc = bitrateBitsPerSecond > 0
             ? "vbr \(bitrateBitsPerSecond / 1_000_000) Mbps cap"
             : "cqp \(qp)"
-        print("""
+        summary = """
             vaapi-native: \(String(cString: vaQueryVendorString(display))) — \
             \(entrypoint == VAEntrypointEncSliceLP ? "LP" : "std") entrypoint, \
             GPB, \(rc)\(chroma444 ? ", Rext Main444 (AYUV)" : "")
-            """)
+            """
     }
 
     deinit {
