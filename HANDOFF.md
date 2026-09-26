@@ -4,10 +4,12 @@
 
 ## Tip
 
-- `main` @ **#256**: the third revamp pass (#252), the decode-stall fix
-  (#253), keyframe-cause attribution (#254), timestamped `host.log`
-  (#255) and Wi-Fi rate recovery (#256); user-visible changes in
-  [CHANGELOG.md](CHANGELOG.md) "Unreleased".
+- `main` @ **#257**. **0.7.0 is released** (`v0.7.0`, notarized; the
+  enclosure is EdDSA-signed, the feed is not): the third revamp pass,
+  the decode-stall fix, keyframe causes, timestamped `host.log`, Wi-Fi
+  rate recovery and the one-line installer ([CHANGELOG.md](CHANGELOG.md)).
+  Install: `brew install --cask shreeve/tap/lyte` (tap #9 is 0.7.0) or
+  `Scripts/install.sh` via curl ([README.md](README.md)); Sparkle updates.
 - Gates (`-warnings-as-errors`): Wire 469 (468 wasm32), Common 113, Host
   391, Client 510, SystemTests 12, Browser 38 (+10 page); pup Host 459,
   Client 156, Browser 38.
@@ -26,12 +28,13 @@
 
 ## Next
 
-1. Merge shreeve/homebrew-tap#5; then cut a release from `main`
-   ([docs/RELEASING.md](docs/RELEASING.md)), install it, grant Local
-   Network once, and check ⌘-letter as Ctrl (⌘⇧C/⌘⇧V in a Linux terminal),
-   Secure Keyboard Entry, last-seen host rows, clipboard both ways, roam on
-   `sudo systemctl restart lyte-host`; then
-   `LYTE_BENCHMARK_HOST=10.0.0.249 Scripts/benchmark-app.sh motion`.
-2. Next pass: the daily-driver browser client ([TODO.md](TODO.md#browser)).
+1. This Mac has two copies of Lyte: Homebrew's `/Applications/Lyte.app`
+   (0.6.0, installed 2026-09-26) and the dev build `.build/Lyte.app`,
+   which is running. Keep one (Local Network identity): quit the dev
+   build, delete `.build/Lyte.app`, update the Homebrew copy (Lyte →
+   Check for Updates, or `brew upgrade --cask lyte`) and grant Local
+   Network once.
+2. Next: rate recovery on a quiet screen (TODO, Host), then the
+   daily-driver browser client ([TODO.md](TODO.md#browser)).
 3. Owner decisions in [TODO.md](TODO.md): signing the update feed, netem
    reordering, enforcing the gates, pairing enforcement before 1.0.
