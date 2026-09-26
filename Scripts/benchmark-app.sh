@@ -23,9 +23,11 @@ source "$ROOT/Scripts/AppArtifact/app-artifact.sh"
 source "$ROOT/Scripts/lib/source-fingerprint.sh"
 LSREGISTER="${LYTE_LSREGISTER:-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister}"
 PUP="$(lyte_pup_host)"
-# The standing host advertises on the ethernet leg (10.0.0.232); over wifi
-# replies can source from the wrong interface and the handshake dies.
-HOST="${LYTE_BENCHMARK_HOST:-10.0.0.232}"
+# pup's one network leg, the interface the standing host advertises on
+# (host.conf's --advertise-interface). Dial that interface's address: on a
+# multi-homed host, replies to another address can source from the wrong
+# interface and the handshake dies.
+HOST="${LYTE_BENCHMARK_HOST:-10.0.0.249}"
 BENCH_PORT="${LYTE_BENCHMARK_PORT:-41151}"
 BENCH_SECONDS="${LYTE_BENCHMARK_SECONDS:-30}"
 OUT_DIR="${LYTE_BENCHMARK_OUT_DIR:-$ROOT/.build/benchmarks}"

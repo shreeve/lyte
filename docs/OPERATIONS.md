@@ -11,7 +11,7 @@ section applies to any installed host. Fresh-machine installation is in
 
 | Machine | Role | Facts |
 |---|---|---|
-| `pup` | Linux reference host | Ubuntu 26.04; Intel Meteor Lake GPU drives the panel (Direct Eye and VAAPI run there); RTX 4050 with no attached connectors. Wired `10.0.0.232` on `enxf8e43b7ede7c`, Wi-Fi `10.0.0.249` on `wlp0s20f3`. Swift 6.1.2 at `/usr/local/bin/swift`. `ssh pup`. |
+| `pup` | Linux reference host | Ubuntu 26.04; Intel Meteor Lake GPU drives the panel (Direct Eye and VAAPI run there); RTX 4050 with no attached connectors. Wi-Fi only: `10.0.0.249` on `wlp0s20f3`, where the service advertises (the wired leg, `10.0.0.232` on `enxf8e43b7ede7c`, is absent). Swift 6.1.2 at `/usr/local/bin/swift`. `ssh pup`. |
 | the Mac | client and development machine | Xcode, the signing identity, `.build/Lyte.app` (the owner's interactive app) |
 
 The standing host is `lyte-host.service` on UDP **41151**, advertised over

@@ -292,7 +292,7 @@ presentation-gap p99, decoded fps, renderer, audio continuity). See
 | Variable | Used by | Meaning |
 |---|---|---|
 | `LYTE_PUP_HOST` | both, pup gate | ssh host (default `pup`); `PUP` and `LYTE_BENCHMARK_PUP` are refused |
-| `LYTE_BENCHMARK_HOST` | both | address the app dials (default `10.0.0.232`, pup's wired leg; the address in use is in [HANDOFF.md](../HANDOFF.md)) |
+| `LYTE_BENCHMARK_HOST` | both | address the app dials (default `10.0.0.249`, pup's Wi-Fi leg, the interface its service advertises on; the address in use is in [HANDOFF.md](../HANDOFF.md)) |
 | `LYTE_BENCHMARK_PORT` | both | UDP port `lyte-host.service` must own (app default 41151; netem requires it) |
 | `LYTE_BENCHMARK_ALLOW_STANDING_PORT` | netem | `1` to impair the standing 41151 flow |
 | `LYTE_BENCHMARK_SECONDS` | app | leg length (default 30) |
