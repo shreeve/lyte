@@ -29,7 +29,8 @@ Sparkle shows in the update window (`Scripts/release.sh`).
   embedded Sparkle is arm64 only. Audio after an announced quiet no longer
   loses the start of the next sound. Video recovers faster when playback
   flushes: the keyframe that tripped the flush is kept, not dropped and
-  asked for again. Pairing
+  asked for again. A frame the Mac cannot decode no longer freezes the
+  picture: the client flushes and asks for a fresh keyframe. Pairing
   ends with a goodbye, so a `--pair` host exits at once.
 - **Host.** Input carrying a key or button code the host never declared
   is refused. Dropped file names can no longer become hidden dotfiles, and
