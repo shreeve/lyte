@@ -2882,6 +2882,95 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertNil(estimator.lastOveruseFall?.anchorBitsPerSecond,
             "the fall's anchor cited a full train from 12 s ago")
     }
+
+    // MARK: - A transient Wi-Fi spike
+    // One radio episode on an otherwise clean 50 Mbps path: the queue
+    // climbs to ~230 ms and drains again inside ~600 ms, nothing is
+    // lost, and every full train measured inside the episode reads
+    // ~4 Mbps. A draining queue is the path outrunning what we offer,
+    // so the episode must not crater the rate, and the rate must be
+    // back near the pre-spike level within a few seconds.
+
+    /// Queuing delay per 25 ms report through the episode, µs: it opens
+    /// at 42 ms, peaks at 231 ms, and is back to 51 ms 500 ms after the
+    /// streak opened (the fall instant of the base law).
+    private static let wifiSpikeDelaysMicros: [UInt64] = [
+        42_000, 80_000, 120_000, 160_000, 200_000, 231_000, 225_000,
+        215_000, 200_000, 185_000, 170_000, 155_000, 140_000, 125_000,
+        110_000, 95_000, 85_000, 75_000, 65_000, 58_000, 51_000,
+        45_000, 35_000, 25_000, 10_000,
+    ]
+
+    /// What one spike scenario did to the standing rate.
+    private struct SpikeOutcome {
+        var preSpikeRate: Int
+        var minimumRate: Int
+        /// From the report that opened the spike until the rate stood
+        /// at ≥ 90% of the pre-spike rate again (nil: never, or never
+        /// left it).
+        var recoveryNS: UInt64?
+        var overuseFalls: Int
+    }
+
+    /// Primes a 50 Mbps path, plays the spike (trains read
+    /// `spikeTrainMbps` throughout), then `afterBeats` clean reports.
+    private func playWifiSpike(
+        spikeTrainMbps: Double = 3.9,
+        afterBeats: Int = 1_200
+    ) -> SpikeOutcome {
+        let estimator = makeEstimator { $0.ceilingBitsPerSecond = 50_000_000 }
+        let driver = EstimatorDriver(self, estimator)
+        driver.prime(bottleneckMbps: 50, beats: 40)
+        let pre = estimator.rateBitsPerSecond
+        let spikeStart = driver.now + 25 * Self.ms
+        var minimum = pre
+        var left = false
+        var recovered: UInt64?
+        var falls = 0
+        func track(_ verdict: RateEstimatorVerdict) {
+            if verdict.change == .overuse { falls += 1 }
+            minimum = min(minimum, estimator.rateBitsPerSecond)
+            if estimator.rateBitsPerSecond * 10 < pre * 9 {
+                left = true
+                recovered = nil
+            } else if left, recovered == nil {
+                recovered = driver.now - spikeStart
+            }
+        }
+        for delay in Self.wifiSpikeDelaysMicros {
+            track(driver.beat(
+                bottleneckMbps: spikeTrainMbps, extraDelayMicros: delay,
+                backlogBytes: 19_558))
+        }
+        for _ in 0..<afterBeats {
+            track(driver.beat(bottleneckMbps: 50))
+        }
+        return SpikeOutcome(
+            preSpikeRate: pre, minimumRate: minimum,
+            recoveryNS: left ? recovered : 0, overuseFalls: falls)
+    }
+
+    /// The live episode: a transient spike whose trains read ~4 Mbps
+    /// must not take a 50 Mbps rate below half, and whatever it costs
+    /// must be repaid within 3 s of the spike opening.
+    func testTransientWifiSpikeNeitherCratersNorLingers() {
+        let outcome = playWifiSpike()
+        XCTAssertEqual(outcome.preSpikeRate, 50_000_000)
+        XCTAssertGreaterThanOrEqual(
+            outcome.minimumRate, outcome.preSpikeRate / 2,
+            """
+                one transient spike took the rate from \
+                \(outcome.preSpikeRate / 1_000) to \
+                \(outcome.minimumRate / 1_000) kbps
+                """)
+        let recovery = outcome.recoveryNS ?? .max
+        XCTAssertLessThanOrEqual(
+            recovery, 3_000 * Self.ms,
+            """
+                back to ≥ 90% after \
+                \(outcome.recoveryNS.map { "\($0 / Self.ms) ms" } ?? "never")
+                """)
+    }
 }
 
 private func XCTAssertEqual(

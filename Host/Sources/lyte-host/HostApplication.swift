@@ -942,6 +942,7 @@ static func printSessionBooks(
     \(wire.estimatorStats.selfReferenceHolds) self-ref holds, \
     \(wire.estimatorStats.stallHolds) stall holds, \
     \(wire.estimatorStats.fallDeferrals) dwell deferrals, \
+    \(wire.estimatorStats.drainRestarts) drain restarts, \
     \(wire.estimatorStats.sparseEvidenceHolds) sparse holds), \
     \(wire.estimatorStats.upshifts) upshifts \
     (\(wire.estimatorStats.upshiftsDamped) probe-damped, \

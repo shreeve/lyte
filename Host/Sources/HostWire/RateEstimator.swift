@@ -173,6 +173,12 @@ extension RateEstimator {
     /// demote the belief later.
     static let honestVoteWindowNS: UInt64 = 2_000_000_000
 
+    /// Consecutive reports whose inflation sits at or below half the
+    /// streak's peak (and at least `overuseThresholdMicroseconds` under
+    /// it) before the streak counts as DRAINED. Two, like the overuse
+    /// verdict itself: one lucky report minimum is not a trend.
+    static let drainCorroborationReports: Int = 2
+
     /// Pre-FEC loss fraction below which the window reads clean.
     static let lossCleanThreshold: Double = 0.02
 
@@ -292,6 +298,9 @@ public struct RateEstimatorStats: Equatable, Sendable {
     /// Other overuse withheld awaiting invariant 2's persistence; the
     /// fall limiter stays unconsumed.
     public var fallDeferrals = 0
+    /// Inflation streaks restarted because the queue drained to half
+    /// its peak: the pressure was spent, its honest votes purged.
+    public var drainRestarts = 0
     public var lossDownshifts = 0
     /// Full-train samples classified CENSORED (or compressed).
     public var censoredSamples = 0
@@ -462,6 +471,9 @@ public final class RateEstimator {
     /// The worst inflation in the current streak; packets held through
     /// a dwell carry its length as delay, so this bounds the hole.
     private var inflatedStreakPeakMicros: Int64?
+    /// Consecutive reports of the current streak drained to half its
+    /// peak (see `drainCorroborationReports`).
+    private var drainedStreakReports = 0
     /// The freshest full train's raw measurement (drain evidence).
     private var lastFullTrainRate: Double?
     private var lastFullTrainAt: UInt64?
@@ -1220,23 +1232,44 @@ public final class RateEstimator {
         queuingDelayMicroseconds = worstInflation
         if worstInflation > Self.overuseThresholdMicroseconds {
             if consecutiveInflatedReports == 0 {
-                inflatedStreakStartMicros = worstInflation
-                inflatedStreakPeakMicros = worstInflation
-                inflatedStreakSinceNS = now
+                openInflatedStreak(at: worstInflation, now: now)
             } else {
-                inflatedStreakPeakMicros = max(
-                    inflatedStreakPeakMicros ?? worstInflation,
-                    worstInflation
-                )
+                let peak = inflatedStreakPeakMicros ?? worstInflation
+                let drained = worstInflation <= peak / 2
+                    && peak - worstInflation
+                        >= Self.overuseThresholdMicroseconds
+                drainedStreakReports = drained ? drainedStreakReports + 1 : 0
+                if drainedStreakReports >= Self.drainCorroborationReports {
+                    // The queue fell to half its peak on consecutive
+                    // reports: the path is outrunning what we offer, so
+                    // the pressure this streak measured is spent. Its
+                    // honest votes were taken inside the hole; a real
+                    // standing queue must persist again, from here, to
+                    // move the rate.
+                    recentHonestDeliveries.removeAll()
+                    openInflatedStreak(at: worstInflation, now: now)
+                    stats.drainRestarts += 1
+                } else {
+                    inflatedStreakPeakMicros = max(peak, worstInflation)
+                }
             }
             consecutiveInflatedReports += 1
             return true
         }
         consecutiveInflatedReports = 0
+        drainedStreakReports = 0
         inflatedStreakStartMicros = nil
         inflatedStreakPeakMicros = nil
         inflatedStreakSinceNS = nil
         return false
+    }
+
+    /// Starts invariant 2's persistence clock at this report.
+    private func openInflatedStreak(at inflation: Int64, now: UInt64) {
+        inflatedStreakStartMicros = inflation
+        inflatedStreakPeakMicros = inflation
+        inflatedStreakSinceNS = now
+        drainedStreakReports = 0
     }
 
     /// Climb needs a delivery train inside `upshiftEvidenceWindowNS`.
