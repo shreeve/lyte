@@ -19,7 +19,7 @@
   **soak** of local branch `experiment/wifi-resilience` (this Mac only; Wi-Fi
   rate recovery, see its CHANGELOG note). `main`'s host is
   `bb4ce518dd2f`: `cd ~/src/lyte-host && ./Scripts/deploy-host.sh
-  --rollback --restart`. It logs `direct: capturing /dev/dri/card1`.
+  --restart ~/.local/share/lyte/versions/bb4ce518dd2f`. It logs `direct: capturing /dev/dri/card1`.
 - Identity `~/.config/lyte/`; log `~/.local/state/lyte/host.log`. Kept for
   the owner: `~/.config/lyte-host/`, `~/lyte-revamp-backup/`, `~/lyte-migration-*`.
 - **This Mac is paired**; `.build/Lyte.app` (built from the experiment)
