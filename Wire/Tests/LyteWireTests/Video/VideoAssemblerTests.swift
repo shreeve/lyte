@@ -1,7 +1,7 @@
 import XCTest
 import LyteCore
 import LyteWireTestKit
-@testable import LyteWire
+import LyteWire
 
 // Deterministic assembler coverage: every event, every drop reason, and
 // every clause of the holdback policy exercised by hand-scripted

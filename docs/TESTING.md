@@ -194,8 +194,8 @@ session:
    `LyteClientCore`, `LyteClientSession` and their suites, and Browser's
    only `LyteClientBrowserCore` and its suite (no JavaScriptKit). Each
    package is cleaned by the same per-package build-graph rule as on the
-   Mac. Wire then runs again with `-c release` (optimized code, with
-   `-enable-testing` for its `@testable` suite) and `LYTE_ARQ_TRIALS=25000`:
+   Mac. Wire then runs again with `-c release` (optimized code; its suite
+   uses no `@testable` import) and `LYTE_ARQ_TRIALS=25000`:
    about a minute to build cold, seconds to run.
 3. Plain and release Host builds with `-warnings-as-errors`.
 4. Stages a host image and runs `test-host-package-image.sh`,
