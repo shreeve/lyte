@@ -155,11 +155,12 @@ mouse.expect([
     Ev(type: EV_SYN, code: SYN_REPORT, value: 0),
 ], scenario: "button press/release")
 
-// Absolute motion: pixel center scales to 32767/65535 on the tablet.
+// Absolute motion: the centre pixel is value 32768, which libinput
+// places at v · extent / 65536 — pixel (1024, 640) itself.
 _ = lyte_uinput_move_abs(handle, 1024, 640, &err, err.count)
 tablet.expect([
-    Ev(type: EV_ABS, code: ABS_X, value: 32767),
-    Ev(type: EV_ABS, code: ABS_Y, value: 32767),
+    Ev(type: EV_ABS, code: ABS_X, value: 32768),
+    Ev(type: EV_ABS, code: ABS_Y, value: 32768),
     Ev(type: EV_SYN, code: SYN_REPORT, value: 0),
 ], scenario: "absolute center scales exactly")
 

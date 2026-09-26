@@ -218,6 +218,21 @@ int lyte_uinput_key(lyte_uinput *u, uint32_t code, int pressed,
     return batch_send(fd, &b, err, errlen);
 }
 
+/* libinput places value v at v · extent / (ABS_RANGE + 1), so pixel p
+   owns the values ceil(p · k) … ceil((p + 1) · k) − 1, k = 65536 / extent.
+   The first value at or past px lands in pixel floor(px) unless px sits
+   within 1/k of the next pixel; the cap at the pixel's last value
+   covers that, and px clamps into [0, extent]. */
+int32_t lyte_uinput_abs_value(double px, uint32_t extent) {
+    if (px < 0) px = 0;
+    if (px > extent) px = extent;
+    uint64_t pixel = (uint64_t)px;
+    if (pixel == extent) pixel--;
+    double first = ceil(px * (ABS_RANGE + 1) / extent);
+    uint64_t last = ((pixel + 1) * (ABS_RANGE + 1) + extent - 1) / extent - 1;
+    return (int32_t)(first < (double)last ? first : (double)last);
+}
+
 int lyte_uinput_move_abs(lyte_uinput *u, double x, double y,
                          char *err, size_t errlen) {
     if (!u->width || !u->height) {
@@ -233,15 +248,9 @@ int lyte_uinput_move_abs(lyte_uinput *u, double x, double y,
         if (err && errlen) snprintf(err, errlen, "non-finite absolute move");
         return -1;
     }
-    double sx = x / (double)u->width * ABS_RANGE;
-    double sy = y / (double)u->height * ABS_RANGE;
-    if (sx < 0) sx = 0;
-    if (sy < 0) sy = 0;
-    if (sx > ABS_RANGE) sx = ABS_RANGE;
-    if (sy > ABS_RANGE) sy = ABS_RANGE;
     event_batch b = {.count = 0};
-    batch_add(&b, EV_ABS, ABS_X, (int32_t)sx);
-    batch_add(&b, EV_ABS, ABS_Y, (int32_t)sy);
+    batch_add(&b, EV_ABS, ABS_X, lyte_uinput_abs_value(x, u->width));
+    batch_add(&b, EV_ABS, ABS_Y, lyte_uinput_abs_value(y, u->height));
     return batch_send(u->tablet, &b, err, errlen);
 }
 

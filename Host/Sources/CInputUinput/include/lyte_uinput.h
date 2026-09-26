@@ -49,6 +49,11 @@ int lyte_uinput_key(lyte_uinput *u, uint32_t code, int pressed,
 int lyte_uinput_move_abs(lyte_uinput *u, double x, double y,
                          char *err, size_t errlen);
 
+/* The tablet axis value move_abs emits for a finite pixel coordinate
+   on an axis `extent` pixels long (nonzero): libinput places it in
+   pixel floor(px), px clamped into [0, extent - 1]. Pure. */
+int32_t lyte_uinput_abs_value(double px, uint32_t extent);
+
 /* Relative pointer motion, whole pixels. */
 int lyte_uinput_move_rel(lyte_uinput *u, int32_t dx, int32_t dy,
                          char *err, size_t errlen);
