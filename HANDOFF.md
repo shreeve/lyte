@@ -4,8 +4,8 @@
 
 ## Tip
 
-- `main` @ **#252**: the third revamp pass ("shrink and fix"; user-visible
-  changes in [CHANGELOG.md](CHANGELOG.md) "Unreleased"). 0.6.0 is the last
+- `main` @ **#253**: the third revamp pass (#252) and the decode-stall fix
+  (#253); user-visible changes in [CHANGELOG.md](CHANGELOG.md) "Unreleased". 0.6.0 is the last
   release (`v0.6.0`; the enclosure is EdDSA-signed, the feed is not); cask
   shreeve/homebrew-tap#5 is open.
 - Gates (`-warnings-as-errors`): Wire 468 (467 wasm32), Common 113, Host
