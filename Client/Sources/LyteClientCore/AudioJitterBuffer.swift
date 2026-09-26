@@ -199,6 +199,9 @@ public final class AudioJitterBuffer {
         resetAdaptationWindows()
     }
 
+    /// True from an announced quiet until the packet that wakes it.
+    public var isAnnouncedQuiet: Bool { announcedQuiet }
+
     private func resetAdaptationWindows() {
         skewAnchor = nil
         lastArrival = nil

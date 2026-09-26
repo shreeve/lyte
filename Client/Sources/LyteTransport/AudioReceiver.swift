@@ -32,11 +32,13 @@ public struct AudioReceiverStats: Sendable {
     public init() {}
 }
 
-/// One pump step: what to feed the decoder, and whether its output
-/// rides the WSOLA accelerate path.
+/// One pump step: what to feed the decoder, whether its output rides
+/// the WSOLA accelerate path, and whether the host has announced the
+/// stream quiet (its silence is then contract, not starvation).
 public struct AudioPullDecision: Sendable {
     public let verdict: AudioPullVerdict
     public let accelerate: Bool
+    public let announcedQuiet: Bool
 }
 
 public final class AudioReceiver: @unchecked Sendable {
@@ -122,7 +124,9 @@ public final class AudioReceiver: @unchecked Sendable {
                 }
             }
         }
-        return AudioPullDecision(verdict: verdict, accelerate: accelerating)
+        return AudioPullDecision(
+            verdict: verdict, accelerate: accelerating,
+            announcedQuiet: buffer.isAnnouncedQuiet)
     }
 
     /// The adaptive delay target, in packets.

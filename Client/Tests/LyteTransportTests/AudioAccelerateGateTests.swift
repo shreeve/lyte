@@ -491,6 +491,32 @@ final class AudioAccelerateGateTests: XCTestCase {
             "the pre-roll's surplus drained back to target")
     }
 
+    /// The pump marks the ring quiet from the decision, so the silence
+    /// after an announced quiet never reads as starvation.
+    func testPullDecisionsCarryTheAnnouncedQuietUntilTheWake() throws {
+        let receiver = AudioReceiver()
+        let arrivals = try wireArrivals(count: 20)
+        for arrival in arrivals.prefix(10) {
+            receiver.ingest(envelope: arrival.envelope, payload: arrival.payload,
+                            now: ClientTimestamp(microseconds: arrival.at))
+        }
+        let now = ClientTimestamp(microseconds: 100_000)
+        while case .packet = receiver.pullDecision(now: now, urgent: true).verdict {}
+        XCTAssertFalse(receiver.pullDecision(now: now).announcedQuiet)
+
+        receiver.noteAnnouncedQuiet()
+        let quiet = receiver.pullDecision(now: now, urgent: true)
+        XCTAssertEqual(quiet.verdict, .starved)
+        XCTAssertTrue(quiet.announcedQuiet)
+
+        for arrival in arrivals.dropFirst(10) {
+            receiver.ingest(envelope: arrival.envelope, payload: arrival.payload,
+                            now: ClientTimestamp(microseconds: 200_000))
+        }
+        XCTAssertFalse(receiver.pullDecision(
+            now: ClientTimestamp(microseconds: 200_000)).announcedQuiet)
+    }
+
     // MARK: Drain-then-underrun hands to PLC cleanly
 
     func testDrainThenStallHandsToPlcCleanlyAndGoesQuiet() throws {
