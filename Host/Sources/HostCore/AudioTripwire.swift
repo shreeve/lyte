@@ -32,7 +32,10 @@ public struct AudioTripwireConfig: Sendable {
     public var tripPackets: Int
     /// Consecutive silent packets before the gate closes.
     public var quietHoldPackets: Int
-    /// Ring capacity: packets shipped on wake.
+    /// Ring capacity: packets shipped on wake. The default is the trip
+    /// run itself, the onset: the burst lands at once, so it must fit
+    /// under the client jitter buffer's hard cap, or the client
+    /// re-centers its head away.
     public var preRollPackets: Int
     /// Still-quiet check-in cadence while gated, in packets.
     public var checkInPackets: Int
@@ -41,7 +44,7 @@ public struct AudioTripwireConfig: Sendable {
         soundRmsFloor: Float = 1e-3,
         tripPackets: Int = 20,
         quietHoldPackets: Int = 1_000,
-        preRollPackets: Int = 40,
+        preRollPackets: Int = 20,
         checkInPackets: Int = 1_000
     ) {
         self.soundRmsFloor = max(soundRmsFloor, 0)
