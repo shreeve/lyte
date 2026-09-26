@@ -23,18 +23,12 @@
   ~/.local/share/lyte/versions/bb4ce518dd2f`.
 - Identity `~/.config/lyte/`; log `~/.local/state/lyte/host.log`. Kept for
   the owner: `~/.config/lyte-host/`, `~/lyte-revamp-backup/`, `~/lyte-migration-*`.
-- **This Mac is paired**; `.build/Lyte.app` streams from pup with
-  keyboard and mouse.
+- **This Mac is paired**; its one Lyte is Homebrew's `/Applications/Lyte.app`
+  (0.7.0, Sparkle-updated), streaming from pup with keyboard and mouse.
 
 ## Next
 
-1. This Mac has two copies of Lyte: Homebrew's `/Applications/Lyte.app`
-   (0.6.0, installed 2026-09-26) and the dev build `.build/Lyte.app`,
-   which is running. Keep one (Local Network identity): quit the dev
-   build, delete `.build/Lyte.app`, update the Homebrew copy (Lyte →
-   Check for Updates, or `brew upgrade --cask lyte`) and grant Local
-   Network once.
-2. Next: rate recovery on a quiet screen (TODO, Host), then the
+1. Next: rate recovery on a quiet screen (TODO, Host), then the
    daily-driver browser client ([TODO.md](TODO.md#browser)).
-3. Owner decisions in [TODO.md](TODO.md): signing the update feed, netem
+2. Owner decisions in [TODO.md](TODO.md): signing the update feed, netem
    reordering, enforcing the gates, pairing enforcement before 1.0.
