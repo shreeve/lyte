@@ -660,6 +660,12 @@ final class ConnectionModel {
         case .orderedStreamPoisoned:
             // The core's own teardown and close follow; the close acts.
             hostPoisonedStream = true
+        case .videoRecoveryRequested(let cause, let frame):
+            // The wire request carries no cause: this line (Console,
+            // `log stream --predicate 'process == "Lyte"'`) is where the
+            // host log's "ctrl: IDR request" lines are explained.
+            NSLog("lyte video: IDR requested after frame %u — %@",
+                  frame.rawValue, cause.shortName)
         case .capabilityUpdateAnswered, .modeChanged, .idleFrameReceived,
              .teardownSent, .protocolNote:
             break

@@ -366,6 +366,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         }
         guard let request else { return }
         sendIdrRequest(request)
+        noteVideoRecoveryOpened(cause: cause, frame: frame)
         onVideoRecoveryTrace(.init(
             kind: "coreRecoveryReopenedForRendererGate",
             frame: frame,
@@ -389,11 +390,22 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             ($0.recordDemand(frame: frame), $0.requestDue(now: now))
         }
         sendIdrRequest(request)
+        if !overlap { noteVideoRecoveryOpened(cause: cause, frame: frame) }
         onVideoRecoveryTrace(.init(
             kind: overlap ? "coreDamageOverlap" : "coreDamageKnown",
             frame: frame,
             cause: cause))
         if notifyHandoff { onVideoRecoveryDemand(cause, frame) }
+    }
+
+    /// The one place an episode's cause is booked and announced.
+    private func noteVideoRecoveryOpened(
+        cause: VideoRecoveryCause, frame: FrameNumber
+    ) {
+        lock.withLock {
+            counters.videoRecoveryEpisodesByCause[cause, default: 0] &+= 1
+        }
+        onEvent(.videoRecoveryRequested(cause: cause, frame: frame))
     }
 
     private func sendIdrRequest(_ request: IdrRequest?) {
@@ -440,7 +452,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         }
         for frame in decision.escalations {
             beginVideoRecovery(
-                cause: .fecAssemblerDamage, frame: frame, now: now)
+                cause: .repairAbandoned, frame: frame, now: now)
             onEvent(.protocolNote(
                 "nack: frame \(frame.rawValue) repair abandoned — "
                 + "IDR instead"))

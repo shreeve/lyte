@@ -69,15 +69,37 @@ public enum LyteUdpSessionEvent: Sendable {
     case closed(SessionCloseReason)
     /// Protocol weather worth a log line, never fatal.
     case protocolNote(String)
+    /// A video recovery episode opened and its IDR request (0x10) left.
+    /// The wire request carries no cause; this is the only place it is
+    /// named. Demands that join an open episode, and its 500 ms retries,
+    /// do not fire it.
+    case videoRecoveryRequested(cause: VideoRecoveryCause, frame: FrameNumber)
 }
 
 /// What opened a video recovery episode (telemetry only; not wire).
 public enum VideoRecoveryCause: String, Sendable, Codable, CaseIterable {
+    /// FEC could not rebuild a frame and no repair ask was live for it.
     case fecAssemblerDamage
+    /// The host skipped or evicted frames (a fall purge, a stale drop).
     case hostPurgeInferredDamage
     case freshPresentationDebt
     case rendererFailure
     case rendererBackpressure
+    /// A NACK repair was given up: its deadline expired, the frame was
+    /// gone, or the host refused it (0x23).
+    case repairAbandoned
+
+    /// The short name the stats row and logs print.
+    public var shortName: String {
+        switch self {
+        case .fecAssemblerDamage: "fec"
+        case .hostPurgeInferredDamage: "host purge"
+        case .freshPresentationDebt: "present debt"
+        case .rendererFailure: "decode"
+        case .rendererBackpressure: "backpressure"
+        case .repairAbandoned: "repair"
+        }
+    }
 }
 
 public struct VideoRecoveryTraceEvent: Sendable {
@@ -144,6 +166,9 @@ public struct LyteUdpSessionCounters: Sendable {
     /// Loud bulk drops: a chan-8 message without negotiated key 11,
     /// or bytes the bulk codecs refused.
     public var bulkDropsLoud: UInt64 = 0
+    /// Video recovery episodes (each one IDR request, plus retries) by
+    /// the cause that opened them.
+    public var videoRecoveryEpisodesByCause: [VideoRecoveryCause: UInt64] = [:]
 }
 
 extension LyteUdpSessionCounters {

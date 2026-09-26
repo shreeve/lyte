@@ -6,6 +6,7 @@
 // leads with the deficit. Payload bytes never appear.
 
 import Foundation
+import LyteClientSession
 import LyteCore
 import LyteWire
 
@@ -89,6 +90,10 @@ public enum SessionStatsFormatter {
                 + " · \(images.imagesApplied) applied"
                 + " · \(images.sharesSuppressed) suppressed")
         }
+        if let idr = idrLine(
+            core.idrStats, causes: counters.videoRecoveryEpisodesByCause) {
+            row("idr", idr)
+        }
         if counters.bulkMessagesSent + counters.bulkMessagesReceived > 0 {
             var line = "\(counters.bulkMessagesSent) sent"
                 + " · \(counters.bulkMessagesReceived) recv"
@@ -110,6 +115,26 @@ public enum SessionStatsFormatter {
         let percent = String(
             format: "%.3f", 100 * Double(lost) / Double(max(1, expected)))
         return "lost \(lost) of \(compactCount(expected)) host packets (\(percent)%)"
+    }
+
+    /// The IDR row: episodes by the cause that opened them (the wire
+    /// request carries none), then retries. Nil before any episode.
+    public static func idrLine(
+        _ stats: ClientIdrRecovery.Stats,
+        causes: [VideoRecoveryCause: UInt64]
+    ) -> String? {
+        guard stats.episodesStarted > 0 else { return nil }
+        var parts = ["\(stats.episodesStarted) requested"]
+        for cause in VideoRecoveryCause.allCases {
+            if let count = causes[cause], count > 0 {
+                parts.append("\(cause.shortName) \(count)")
+            }
+        }
+        if stats.retryRequests > 0 {
+            parts.append("\(stats.retryRequests) retried")
+        }
+        if stats.recoveryOutstanding { parts.append("AWAITING IDR") }
+        return parts.joined(separator: " · ")
     }
 
     // MARK: Rows
