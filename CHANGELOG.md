@@ -4,7 +4,7 @@ User-visible changes to the Lyte macOS app and the Linux host, newest
 first. Each release's section is its GitHub release notes and the notes
 Sparkle shows in the update window (`Scripts/release.sh`).
 
-## Unreleased
+## 0.7.1 — 2026-09-26
 
 - **Type a host address.** The connection window takes a host name or
   IPv4 address, with an optional port (41151 by default), for a host on a
