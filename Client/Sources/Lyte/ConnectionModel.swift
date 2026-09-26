@@ -13,8 +13,9 @@ import LyteWire
 ///
 /// Files: this one holds the phase machine, the session lifecycle (connect,
 /// attach, detach, end), event dispatch, and the stats readout;
-/// `+Roaming` the re-acquisition driver; `+Features` host audio,
-/// clipboard, bulk, chroma, and the per-host preferences.
+/// `+Roaming` the one dial driver (the first connect and every re-dial);
+/// `+Features` host audio, clipboard, bulk, chroma, and the per-host
+/// preferences.
 @MainActor
 @Observable
 final class ConnectionModel {
@@ -49,10 +50,6 @@ final class ConnectionModel {
     init(services: ConnectionServices = .live) {
         self.services = services
     }
-
-    /// Fresh-connect patience: silence keeps re-dialing until this budget
-    /// runs out — a full host restart (10–15 s observed) with margin.
-    static let freshConnectBudgetMicroseconds: UInt64 = 45_000_000
 
     /// Advances on every lifecycle edge — a connect begins, the human
     /// disconnects, roaming starts or stops. Asynchronous work (identity
@@ -151,12 +148,19 @@ final class ConnectionModel {
 
     // MARK: Roaming (driven by +Roaming)
 
-    /// Lives for a window's whole streaming life — it IS the "can this
-    /// window reconnect" verdict; its status drives the overlay banner.
+    /// Born at connect (its first dial is the connect's) and lives for
+    /// the window's whole streaming life; its status drives the overlay
+    /// banner.
     var roaming: RoamingPolicy?
     var roamingTask: Task<Void, Never>?
     var roamingStatus: RoamingStatus = .attached
     var stopPathWatch: (@MainActor () -> Void)?
+    /// Dials since the connect began: the first gets the patient
+    /// handshake schedule.
+    var dialsSinceConnect = 0
+    /// The last failed dial before the first establishment — what the
+    /// window reports when the establishment budget runs out.
+    var lastDialFailure: String?
 
     // MARK: Video
 
@@ -216,7 +220,10 @@ final class ConnectionModel {
     /// Reconnect exists while a streaming window has an identity to hunt
     /// (roaming or not — a manual reconnect over a limping session is
     /// legitimate).
-    var canReconnect: Bool { roaming != nil }
+    var canReconnect: Bool {
+        guard case .streaming = phase else { return false }
+        return roaming != nil
+    }
 
     /// Disconnect works during roaming too — the session object is gone
     /// but the window still hunts.
@@ -241,14 +248,14 @@ final class ConnectionModel {
         abandonDial()
         let generation = advanceLifecycle()
         guard let pinned = services.loadPins().host(publicKeyHash: host.publicKeyHash),
-              let hostStatic = pinned.staticPublicKey else {
+              let publicKeyHash = pinned.publicKeyHash else {
             phase = .failed(.ordinary(
                 "\(host.name) is not paired — use Pair… first"))
             return
         }
         hostAddress = host.address
         hostName = host.name
-        hostPublicKeyHash = host.publicKeyHash
+        hostPublicKeyHash = publicKeyHash
         pinnedHost = pinned
         poisonedStreamEnds.removeAll()
         phase = .connecting("Connecting to \(host.name) over Lyte-UDP…")
@@ -264,16 +271,15 @@ final class ConnectionModel {
         // first handshake byte; an ACL problem must fail bounded and loud.
         let identityAuthenticationUI:
             ClientNoiseIdentityProvider.AuthenticationUI = benchmarking ? .fail : .allow
-        let identity: NoiseKeyPair
         do {
             // SecItemCopyMatching may synchronously cross securityd and
             // wait for Keychain authorization; the provider keeps that off
-            // the MainActor.
+            // the MainActor. Its cache then serves every dial.
             HandshakeWitness.record("identityLookupBegin", fields: [
                 "authenticationUI":
                     identityAuthenticationUI == .allow ? "allow" : "fail",
             ])
-            identity = try await services.identity(identityAuthenticationUI)
+            _ = try await services.identity(identityAuthenticationUI)
             HandshakeWitness.record("identityLookupCompleted")
         } catch {
             HandshakeWitness.record("identityLookupFailed", fields: [
@@ -291,129 +297,34 @@ final class ConnectionModel {
         guard isCurrent(generation) else { return }
 
         // The per-host preferences seed the session-start posture; the
-        // strip's toggles are the live override thereafter. The images
-        // default is meaningful only on top of text consent.
+        // strip's toggles are the live override thereafter, and every
+        // dial declares the live state. The images default is meaningful
+        // only on top of text consent. Seeded before the dial: the host's
+        // first status and the agreement can land before it returns.
         let benchmarkChroma = benchmarking
             ? environment["LYTE_BENCHMARK_CHROMA_TIER"].flatMap(ChromaTier.init(rawValue:))
             : nil
         chromaTier = benchmarkChroma.flatMap { $0.isSelectable ? $0 : nil }
             ?? pinned.sessionChromaTier
-        let sessionConfig = LyteUdpSession.Config(
-            hostAudioRouting: pinned.sessionStartHostAudioRouting,
-            shareClipboard: pinned.shareClipboard == true,
-            shareClipboardImages: pinned.shareClipboard == true
-                && pinned.shareClipboardImages == true,
-            chroma: chromaTier)
-        // Seeded before the dial: the host's first status and the
-        // agreement can land before `startSession` returns.
         hostAudioPosture = nil
-        clipboardSharing = sessionConfig.core.shareClipboard
-        clipboardImageSharing = sessionConfig.core.shareClipboardImages
+        clipboardSharing = pinned.shareClipboard == true
+        clipboardImageSharing = clipboardSharing
+            && pinned.shareClipboardImages == true
 
-        // Silence from a host that answered discovery moments ago almost
-        // always means it is restarting (10–15 s boot; one dial gives up
-        // in ~10 s). So silence hunts — short dials with a 2 s re-browse
-        // between them, following the freshest address, inside one
-        // budget. Every other failure fails immediately.
-        let deadline = services.now() + Self.freshConnectBudgetMicroseconds
-        var dialAddress = host.address
-        var dialPort = host.port
-        var round = 0
-        let lyte: LyteUdpSession
-        while true {
-            round += 1
-            let crypto: NoiseTransportCrypto
-            do {
-                crypto = try NoiseTransportCrypto(
-                    hostAddress: dialAddress,
-                    hostPort: dialPort,
-                    hostStaticPublicKey: hostStatic,
-                    staticKeys: identity,
-                    retry: round == 1 ? .firstDial : .redial)
-            } catch {
-                phase = .failed(.ordinary("host key: \(error)"))
-                return
-            }
-            let candidate = makeLyteSession(crypto: crypto, config: sessionConfig)
-            beginDial(candidate)
-            do {
-                HandshakeWitness.record("sessionStartBegin", fields: [
-                    "round": String(round),
-                    "host": dialAddress,
-                    "port": String(dialPort),
-                ])
-                try await services.startSession(candidate)
-                HandshakeWitness.record("sessionStartCompleted", fields: [
-                    "round": String(round),
-                ])
-                // Abandoned mid-dial: whoever abandoned it ended it.
-                guard claimDial(candidate) else { return }
-                guard isCurrent(generation) else {
-                    services.endSession(candidate, .goodbye)
-                    return
-                }
-                lyte = candidate
-                break
-            } catch {
-                HandshakeWitness.record("sessionStartFailed", fields: [
-                    "round": String(round),
-                    "error": String(describing: error),
-                ])
-                guard claimDial(candidate) else { return }
-                // A dial that failed after binding still holds its socket.
-                services.endSession(candidate, .silent)
-                guard isCurrent(generation) else { return }
-                let failure = DialFailure(error)
-                guard failure == .unanswered, services.now() < deadline else {
-                    if case .localNetwork(let problem) = failure {
-                        phase = .failed(.localNetwork(
-                            problem,
-                            diagnosticDetail: String(describing: error)))
-                    } else {
-                        phase = .failed(.ordinary(
-                            "Lyte-UDP connect: \(error)"))
-                    }
-                    return
-                }
-                phase = .connecting("\(host.name) isn't answering — "
-                    + "it may be restarting; still trying…")
-                // The quiet re-browse: if the reborn host is already
-                // advertising, dial where it lives NOW.
-                let hosts = await services.browse(2.0)
-                guard isCurrent(generation) else { return }
-                if let sighting = hosts.first(where: {
-                    $0.publicKeyHash?.lowercased()
-                        == host.publicKeyHash?.lowercased()
-                }) {
-                    dialAddress = sighting.address
-                    dialPort = sighting.port
-                } else if let pkh = host.publicKeyHash,
-                          Self.identityReplaced(
-                            in: hosts, name: host.name, publicKeyHash: pkh) {
-                    phase = .failed(.ordinary(
-                        Self.identityReplacedMessage(host.name)))
-                    return
-                }
-            }
-        }
-        // The pinned lookup above guarantees a pkh in practice; the
-        // address fallback keeps the key total.
-        prepareBulkCoordinator(hostKey: host.publicKeyHash ?? host.address)
-        attach(lyte, address: dialAddress)
-        if let pkh = host.publicKeyHash {
-            startRoamingMachinery(
-                publicKeyHash: pkh, address: dialAddress, port: dialPort)
-        }
-        phase = .streaming
-        services.streamBegan()
-        replayPendingTerminal()
+        // The first dial is a roaming dial under the establishment
+        // budget: silence (a restarting host) re-browses, follows the
+        // freshest address and re-dials until the budget ends the window.
+        dialsSinceConnect = 0
+        lastDialFailure = nil
+        startRoamingMachinery(
+            publicKeyHash: publicKeyHash, address: host.address, port: host.port)
+        roamingInput { policy, now in policy.connect(now: now) }
     }
 
     // MARK: - Session lifecycle
 
     /// Builds one wire session against this window's display layer,
-    /// minting a fresh event epoch — the shared leg of the first
-    /// connect and every roaming re-dial.
+    /// minting a fresh event epoch — every dial's leg.
     func makeLyteSession(
         crypto: NoiseTransportCrypto, config: LyteUdpSession.Config
     ) -> LyteUdpSession {
@@ -456,8 +367,8 @@ final class ConnectionModel {
     }
 
     /// A started session becomes the window's — the one attach path for
-    /// the first connect and every roaming re-dial. The core receives
-    /// before `startSession` returns, so an early agreement applies here.
+    /// every dial. The core receives before `startSession` returns, so an
+    /// early agreement applies here.
     func attach(_ lyte: LyteUdpSession, address: String) {
         lyteSession = lyte
         hostAddress = address
@@ -547,10 +458,16 @@ final class ConnectionModel {
     }
 
     /// Ends the window's session for good — the session (typed goodbye,
-    /// off-main), any roaming hunt, and every per-host live state.
+    /// off-main), any dial or roaming hunt, and every per-host live state.
     /// `reason` turns the end into a failure screen.
     func endLyteSession(reason: String?) {
+        endLyteSession(failure: reason.map(Failure.ordinary))
+    }
+
+    func endLyteSession(failure: Failure?) {
         guard lyteSession != nil || roaming != nil else { return }
+        // Only a window that reached its host took the stream hold.
+        let streamed = if case .streaming = phase { true } else { false }
         abandonDial()
         stopRoamingMachinery()
         lyteInputCapture?.stop()
@@ -574,8 +491,8 @@ final class ConnectionModel {
         linkHealthMeter.resetSessionBooks()
         statsVisible = false
         lyteVideoSize = .zero
-        services.streamEnded()
-        phase = reason.map { .failed(.ordinary($0)) } ?? .pickHost
+        if streamed { services.streamEnded() }
+        phase = failure.map { .failed($0) } ?? .pickHost
     }
 
     /// The human's exit, whatever the phase (Cancel, Disconnect, ⌘W).

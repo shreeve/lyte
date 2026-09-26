@@ -473,8 +473,8 @@ final class ConnectionLifecycleTests: XCTestCase {
         let connect = Task { await model.connectLyte(harness.host) }
         try await harness.waitForStarts(2, timeout: .seconds(5))
 
-        harness.advanceClock(
-            microseconds: ConnectionModel.freshConnectBudgetMicroseconds)
+        harness.advanceClock(microseconds: UInt64(
+            RoamingPolicyConfig().establishBudgetMicroseconds))
         let last = HandshakeExhausted(
             host: "10.9.9.9", port: 41_999, counters: .init(),
             lastRejection: "budget (harness)")

@@ -330,6 +330,79 @@ final class RoamingPolicyTests: XCTestCase {
             .dial(address: "10.0.0.60", port: 41_161, discovered: false)))
     }
 
+    // MARK: The first connect: a dial before any session
+
+    /// The connect dials at once; its silence hunts like a lost
+    /// session (scan, follow the identity to a new address), and the
+    /// first establishment retires the budget for good.
+    func testFirstConnectDialsAtOnceAndHuntsLikeALostSession() {
+        var policy = makePolicy()
+        XCTAssertEqual(policy.connect(now: 0), [
+            .dial(address: "10.0.0.60", port: 41_161, discovered: false),
+        ])
+        XCTAssertEqual(policy.status,
+                       .reconnecting(address: "10.0.0.60", discovered: false))
+        XCTAssertNil(policy.nextDeadline,
+                     "the budget waits for the dial in flight")
+
+        // Silence: the quiet browse begins, the next probe waits out
+        // the dial ladder's floor.
+        XCTAssertEqual(policy.dialFailed(now: 10_000_000), [.beginScan])
+        XCTAssertEqual(policy.status, .searching)
+        XCTAssertEqual(policy.nextDeadline, 12_000_000)
+
+        // The restarted host advertises at a new address: dial it now.
+        XCTAssertEqual(
+            policy.scanCompleted(
+                sightings: [sighting("10.0.0.61")], now: 10_500_000),
+            [.dial(address: "10.0.0.61", port: 41_161, discovered: true)])
+        _ = policy.sessionEstablished(
+            address: "10.0.0.61", port: 41_161, now: 11_000_000)
+        XCTAssertEqual(policy.status, .attached)
+        XCTAssertNil(policy.nextDeadline)
+
+        // Long after the budget, a lost session still hunts — no expiry.
+        let closed = policy.sessionClosed(now: 100_000_000)
+        XCTAssertTrue(closed.contains(
+            .dial(address: "10.0.0.61", port: 41_161, discovered: false)))
+        XCTAssertFalse(closed.contains(.expired))
+        XCTAssertFalse(policy.dialFailed(now: 101_000_000).contains(.expired))
+    }
+
+    /// The budget ends the connect between dials, never under one: a
+    /// dial in flight at the deadline finishes, and its failure expires
+    /// the policy even with a sighting waiting to be dialed.
+    func testFirstConnectBudgetExpiresBetweenDials() {
+        var gap = makePolicy()
+        _ = gap.connect(now: 0)
+        XCTAssertEqual(gap.dialFailed(now: 44_000_000), [.beginScan])
+        XCTAssertEqual(gap.scanCompleted(sightings: [], now: 44_500_000), [])
+        XCTAssertEqual(gap.nextDeadline, 45_000_000,
+                       "the budget comes due before the next probe")
+        XCTAssertEqual(gap.tick(now: 44_999_999), [])
+        XCTAssertEqual(gap.tick(now: 45_000_000), [.expired])
+        XCTAssertNil(gap.nextDeadline, "an expired policy pends nothing")
+        XCTAssertEqual(gap.tick(now: 90_000_000), [])
+        XCTAssertEqual(
+            gap.scanCompleted(sightings: [sighting("10.0.0.61")],
+                              now: 90_000_000),
+            [], "no dial rises after expiry")
+
+        var inFlight = makePolicy()
+        _ = inFlight.connect(now: 0)
+        _ = inFlight.dialFailed(now: 10_000_000)
+        XCTAssertTrue(inFlight.tick(now: 12_000_000).contains(
+            .dial(address: "10.0.0.60", port: 41_161, discovered: false)))
+        XCTAssertEqual(
+            inFlight.scanCompleted(sightings: [sighting("10.0.0.61")],
+                                   now: 13_000_000),
+            [], "the sighting waits on the dial in flight")
+        XCTAssertFalse(inFlight.tick(now: 50_000_000).contains(.expired),
+                       "the dial in flight is not cut short")
+        XCTAssertEqual(inFlight.dialFailed(now: 50_000_000), [.expired])
+        XCTAssertNil(inFlight.nextDeadline)
+    }
+
     func testStatusLinesDescribePolicyState() {
         XCTAssertNil(RoamingStatusLine.line(for: .attached, hostName: "pup"))
         XCTAssertNil(RoamingStatusLine.line(for: .silent, hostName: "pup"),
