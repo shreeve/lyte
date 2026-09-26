@@ -75,7 +75,7 @@
 //     closes windows of ≥25 ms; a window is clean iff it saw no fresh
 //     loss and no overuse. Silence is the silence detector's job.
 //   • IDR PACING — lastGoodRate = min(btlRate, rate last seen healthy);
-//     halfStaleEstimate = max(floor, 0.5 × stale delivery estimate).
+//     halfStaleEstimate = max(floor, 0.5 × min(stale delivery, belief)).
 //     frameByteCeiling = R×B/8 − higherClassBytes(B), B = min(2/fps,
 //     25 ms).
 //   • FEC REGIME — clean → lossy with the rung-3 threshold (latched, not
@@ -749,9 +749,13 @@ public final class RateEstimator {
         case .halfStaleEstimate:
             // RECOVERY: the path is unknown; the stale estimate may be
             // 10× the new path's capacity.
-            let stale = deliveryRateBitsPerSecond
+            // A compressed burst can read far above the path; the belief
+            // never exceeds what was paced, so it bounds the estimate.
+            let delivered = deliveryRateBitsPerSecond
                 ?? lastDeliveryRate.map(Int.init)
                 ?? rateBitsPerSecond
+            let stale = beliefBits.map { min(delivered, Int($0)) }
+                ?? delivered
             rate = clamp(stale / 2)
             // RECOVERY is a path discontinuity: belief = the applied
             // half-stale rate, and no old-path delivery sample, honest

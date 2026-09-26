@@ -2171,6 +2171,27 @@ final class RateEstimatorGateTests: XCTestCase {
         )
     }
 
+    /// RECOVERY halves what the path last proved, not a burst. Trains
+    /// that arrive compressed (a drained Wi-Fi queue) can read several
+    /// times the path's rate; the capacity belief never exceeds what
+    /// was paced, so the half-stale restart answers to it.
+    func testHalfStaleIgnoresACompressedDeliveryBurst() {
+        let estimator = makeEstimator()
+        let samples = train(
+            estimator, seqStart: 0, count: 40,
+            sendStartNS: 100 * Self.ms,
+            bottleneckBitsPerSecond: 480e6)
+        _ = estimator.ingest(
+            report(samples: samples, clientMicros: 200_000),
+            now: 200 * Self.ms, inRecovery: false)
+        let belief = try! XCTUnwrap(estimator.capacityBeliefBitsPerSecond)
+        XCTAssertLessThanOrEqual(belief, Self.ceiling)
+        XCTAssertEqual(
+            estimator.applyIdrPacing(.halfStaleEstimate, now: 300 * Self.ms),
+            belief / 2, accuracy: belief / 20,
+            "RECOVERY restarted from a compressed burst, not the proven path")
+    }
+
     /// Reports still in flight at a path change describe datagrams sent on
     /// the old path. A fast old path (0 ms standing delay) followed by a
     /// slower new one (30 ms): if those reports seeded the new path's
