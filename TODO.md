@@ -73,6 +73,14 @@ live state: [HANDOFF.md](HANDOFF.md).
   session start). Start the player first, or drop pre-player audio
   without booking recenters. Confirm with a `lyte-cli wire-view --audio`
   read against pup.
+- **Audio target after a wake.** On pup, a sound that starts after a
+  quiet (`pw-play`) arrives irregularly at first (captureToFeed p99
+  70–90 ms against a steady 25 ms), which lifts the jitter target from 5
+  to about 11 packets; it then decays only one step per 10 s, so the
+  whole sound plays about 30 ms later than it needs to. Find whether the
+  irregularity is PipeWire's graph requantizing on the host or the
+  capture leaf, and whether the target should discount the first
+  hundred milliseconds after a wake.
 - **Pairing sheet for an already-paired key.** A typed address that no
   pin knows asks "Which host is at …?" before offering pairing; the
   pairing sheet could instead offer Connect when the pasted key is
