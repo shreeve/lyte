@@ -2,8 +2,10 @@
 // (docs/decisions/20260720-145840-audio-continuity.md). It absorbs delay
 // variance with a skew-spread target, conceals true gaps through Opus
 // PLC, and stays bounded (late packets drop, a post-stall burst
-// re-centers). Depth between target and the hard cap belongs to
-// LyteTransport's AudioAccelerator; clock skew is detrended so drift
+// re-centers). A packet late only for a concealment issued on an empty
+// buffer still plays, so a slow sender's drift becomes delay rather than
+// a concealment per packet. Depth between target and the hard cap belongs
+// to LyteTransport's AudioAccelerator; clock skew is detrended so drift
 // reads as a rate to absorb, never as depth to cover.
 //
 // Pull model: the render side drains a PCM ring at the hardware rate and
@@ -66,8 +68,8 @@ public struct AudioJitterConfig: Sendable {
 
     public init() {}
 
-    /// The absolute pending bound (and the pump's ring hard cap):
-    /// backlog past this is dropped by a re-center. maxTarget + slack.
+    /// The pending bound outside a wake burst's drain: backlog past this
+    /// is dropped by a re-center. maxTarget + slack.
     public var hardCapPackets: Int { maxTargetPackets + slackPackets }
 }
 
@@ -135,6 +137,16 @@ public final class AudioJitterBuffer {
     /// The latest arrival of the wake burst that ends a quiet: the host
     /// ships its pre-roll at once, which describes its ring, not the path.
     private var wakeBurstArrival: UInt64?
+    /// The oldest number playout may still step back to. The slots from
+    /// here to nextNumber were concealed on an empty buffer or skipped by
+    /// a wake re-prime, and nothing has played since, so a wire-carried
+    /// packet for one of them plays (the concealment becomes delay)
+    /// instead of dropping.
+    private var rewindFloor: UInt32?
+    /// The pending depth past which a re-center fires: the hard cap, or
+    /// the depth a wake burst delivered (the host's pre-roll is announced
+    /// contract, not a stall), lowered with the depth as it drains.
+    private var overgrowthLimit: Int
 
     // Adaptation state: each fresh arrival's skew off the 5 ms arrival
     // lattice — (arrival_n − anchorArrival) − (n − anchorNumber) × 5 ms —
@@ -145,7 +157,10 @@ public final class AudioJitterBuffer {
     /// Signed: the wrap-fold shifts it by the window minimum, which a
     /// sender-fast drift makes negative.
     private var skewAnchor: (number: UInt32, arrivalMicroseconds: Int64)?
-    private var skewWindow: [Int64] = []
+    /// Each sample's packet number (as its offset from the anchor) is the
+    /// detrend's x-axis: lost, late or recovered packets leave no sample,
+    /// and the drift is a rate per packet, not per sample.
+    private var skewWindow: [(number: Int64, skew: Int64)] = []
     private var skewCursor = 0
     /// The window's least-squares slope read as clock skew, clamped.
     private var estimatedSkewPpm: Double = 0
@@ -167,14 +182,16 @@ public final class AudioJitterBuffer {
         self.config = config
         self.targetPackets = config.initialTargetPackets
         self.stats.targetPackets = config.initialTargetPackets
+        self.overgrowthLimit = config.hardCapPackets
         self.deviationWindow.reserveCapacity(config.deviationWindowPackets)
     }
 
     /// An announced audio quiet is contract, not path evidence: until a
     /// wire-carried packet ahead of the last one played arrives, an empty
     /// buffer is not concealed, and that packet re-primes playout at
-    /// itself (the host numbers on from the last packet it sent). A
-    /// recovered or replayed packet neither wakes the quiet nor rewinds
+    /// itself (the host numbers on from the last packet it sent); a
+    /// reordered predecessor arriving before anything plays still leads.
+    /// A recovered or replayed packet neither wakes the quiet nor rewinds
     /// playout. The adaptation windows reset so the wake burst re-bases
     /// the epoch; the target survives. Idempotent.
     public func noteAnnouncedQuiet() {
@@ -201,11 +218,17 @@ public final class AudioJitterBuffer {
                ?? true {
             announcedQuiet = false
             wakeBurstArrival = arrivalMicroseconds
-            if pending.isEmpty { nextNumber = packet.number }
+            if pending.isEmpty {
+                nextNumber = packet.number
+                rewindFloor = lastPlayedNumber.map { $0 &+ 1 }
+            }
         }
         if started {
             let distance = Int32(bitPattern: packet.number &- nextNumber)
-            if distance < 0 {
+            if distance < 0, !packet.recovered, let floor = rewindFloor,
+               Int32(bitPattern: packet.number &- floor) >= 0 {
+                nextNumber = packet.number
+            } else if distance < 0 {
                 // A narrowly late packet is direct evidence that the current
                 // cushion was too shallow. Learn from its sequence distance,
                 // not its arrival timestamp (which may include repair time).
@@ -252,6 +275,9 @@ public final class AudioJitterBuffer {
             }
             return
         }
+        if wakeBurstArrival != nil {
+            overgrowthLimit = max(overgrowthLimit, pending.count)
+        }
         recenterIfOvergrown()
     }
 
@@ -264,11 +290,15 @@ public final class AudioJitterBuffer {
     ) -> AudioPullVerdict {
         guard started else { return .starved }
         stats.depthPackets.record(UInt64(pending.count))
+        overgrowthLimit = max(
+            config.hardCapPackets,
+            min(overgrowthLimit, pending.count + config.slackPackets))
 
         if let entry = pending.removeValue(forKey: nextNumber) {
             lastPlayedNumber = nextNumber
             nextNumber &+= 1
             consecutiveConcealments = 0
+            rewindFloor = nil
             stats.packetsPlayed += 1
             return .packet(entry.packet)
         }
@@ -281,7 +311,13 @@ public final class AudioJitterBuffer {
                 stats.starvedVerdicts += 1
                 return .starved
             }
-            return concealOrGoQuiet()
+            // The stream may only be late: the concealment stands in for
+            // the packet, which still plays after it if it arrives next.
+            let verdict = concealOrGoQuiet()
+            if case .conceal(let number) = verdict, rewindFloor == nil {
+                rewindFloor = number
+            }
+            return verdict
         }
 
         // A gap at the head with material behind it. A huge jump is a
@@ -308,6 +344,7 @@ public final class AudioJitterBuffer {
         // after the backlog overgrows and a recenter discards it.
         guard consecutiveConcealments < config.maxConsecutiveConcealments
         else { return resume(at: oldest) }
+        rewindFloor = nil
         return concealOrGoQuiet()
     }
 
@@ -330,6 +367,7 @@ public final class AudioJitterBuffer {
     private func resume(at number: UInt32) -> AudioPullVerdict {
         stats.recenterEvents += 1
         consecutiveConcealments = 0
+        rewindFloor = nil
         let entry = pending.removeValue(forKey: number)!
         lastPlayedNumber = number
         nextNumber = number &+ 1
@@ -356,12 +394,11 @@ public final class AudioJitterBuffer {
         }
     }
 
-    /// Backlog between target and the hard cap belongs to WSOLA
-    /// accelerate; only past the cap does the skip fire, so a blackout's
+    /// Backlog between target and the overgrowth limit belongs to WSOLA
+    /// accelerate; only past the limit does the skip fire, so a blackout's
     /// burst never becomes unbounded latency.
     private func recenterIfOvergrown() {
-        let limit = config.hardCapPackets
-        guard pending.count > limit else { return }
+        guard pending.count > overgrowthLimit else { return }
         guard let newest = pending.keys.max(by: { a, b in
             Int32(bitPattern: a &- b) < 0
         }) else { return }
@@ -375,6 +412,8 @@ public final class AudioJitterBuffer {
         }
         nextNumber = newNext
         consecutiveConcealments = 0
+        rewindFloor = nil
+        overgrowthLimit = config.hardCapPackets
         stats.recenterEvents += 1
         stats.packetsDroppedInRecenter += dropped
     }
@@ -424,18 +463,21 @@ public final class AudioJitterBuffer {
         let numberDelta = Int32(bitPattern: packet.number &- anchor.number)
         let skew = Int64(arrivalMicroseconds) - anchor.arrivalMicroseconds
             - Int64(numberDelta) * config.packetDurationMicroseconds
+        let sample = (number: Int64(numberDelta), skew: skew)
         if skewWindow.count < config.deviationWindowPackets {
-            skewWindow.append(skew)
+            skewWindow.append(sample)
         } else {
-            skewWindow[skewCursor] = skew
+            skewWindow[skewCursor] = sample
             skewCursor = (skewCursor + 1) % skewWindow.count
             // Re-anchor periodically so the lattice reference cannot
             // wander (clock drift, a re-centered epoch): when the
             // cursor wraps, fold the window's min back into the anchor.
-            if skewCursor == 0, let low = skewWindow.min() {
+            if skewCursor == 0, let low = skewWindow.lazy.map(\.skew).min() {
                 skewAnchor = (anchor.number,
                               anchor.arrivalMicroseconds + low)
-                for index in skewWindow.indices { skewWindow[index] -= low }
+                for index in skewWindow.indices {
+                    skewWindow[index].skew -= low
+                }
             }
         }
         retargetProof += 1
@@ -460,23 +502,26 @@ public final class AudioJitterBuffer {
 
         var slopePerPacket = 0.0
         if count >= 128 {
-            // Least squares over (index, skew): index steps are one
-            // packet interval apart on the arrival lattice.
+            // Least squares over (packet number, skew).
             let n = Double(count)
-            let meanX = (n - 1) / 2
+            var meanX = 0.0
             var meanY = 0.0
-            forEachChronologicalSkew { _, value in meanY += Double(value) }
+            for sample in skewWindow {
+                meanX += Double(sample.number)
+                meanY += Double(sample.skew)
+            }
+            meanX /= n
             meanY /= n
             var num = 0.0
             var den = 0.0
-            forEachChronologicalSkew { index, value in
-                let dx = Double(index) - meanX
-                num += dx * (Double(value) - meanY)
+            for sample in skewWindow {
+                let dx = Double(sample.number) - meanX
+                num += dx * (Double(sample.skew) - meanY)
                 den += dx * dx
             }
             let clamp = config.maxSkewPartsPerMillion * 1e-6
                 * Double(config.packetDurationMicroseconds)
-            slopePerPacket = min(max(num / den, -clamp), clamp)
+            if den > 0 { slopePerPacket = min(max(num / den, -clamp), clamp) }
         }
         estimatedSkewPpm = slopePerPacket
             / Double(config.packetDurationMicroseconds) * 1e6
@@ -484,8 +529,9 @@ public final class AudioJitterBuffer {
         // The detrended spread in one pass: no copy, no sort.
         var lowest = Double.infinity
         var highest = -Double.infinity
-        forEachChronologicalSkew { index, value in
-            let residual = Double(value) - slopePerPacket * Double(index)
+        for sample in skewWindow {
+            let residual = Double(sample.skew)
+                - slopePerPacket * Double(sample.number)
             lowest = min(lowest, residual)
             highest = max(highest, residual)
         }
@@ -516,25 +562,6 @@ public final class AudioJitterBuffer {
             }
         }
         stats.targetPackets = targetPackets
-    }
-
-    /// Visits the skew ring in arrival order (oldest first) with each
-    /// sample's chronological index — the detrend's x-axis must be time,
-    /// and the ring wraps once full.
-    private func forEachChronologicalSkew(
-        _ body: (_ index: Int, _ value: Int64) -> Void
-    ) {
-        let count = skewWindow.count
-        let start = count == config.deviationWindowPackets ? skewCursor : 0
-        var index = 0
-        for position in start..<count {
-            body(index, skewWindow[position])
-            index += 1
-        }
-        for position in 0..<start {
-            body(index, skewWindow[position])
-            index += 1
-        }
     }
 
     private func windowStdDev() -> Double {
