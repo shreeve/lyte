@@ -2843,46 +2843,6 @@ final class RateEstimatorGateTests: XCTestCase {
             "RECOVERY carried an old-path cadence band into the new path")
     }
 
-    /// A full train is evidence for the sample window, not forever. A
-    /// static desktop sends only micro-train frames for minutes; the
-    /// reporting anchor and a fall's forensic anchor must then read
-    /// "none", never the last full train from minutes ago.
-    func testStaleFullTrainsNeitherReportNorAnchor() {
-        let estimator = makeEstimator()
-        var now: UInt64 = 0
-        var clientMicros: UInt64 = 0
-        var seq = 0
-        func beat(count: Int, mbps: Double, delay: UInt64 = 0)
-            -> RateEstimatorVerdict {
-            now += 25 * Self.ms
-            clientMicros += 25_000
-            let samples = train(
-                estimator, seqStart: seq, count: count,
-                sendStartNS: now - Self.ms,
-                bottleneckBitsPerSecond: mbps * 1e6,
-                extraDelayMicros: delay)
-            seq += count
-            return estimator.ingest(
-                report(samples: samples, clientMicros: clientMicros),
-                now: now, inRecovery: false)
-        }
-        for _ in 0..<10 { _ = beat(count: 12, mbps: 20) }
-        XCTAssertNotNil(estimator.measuredDeliveryRateBitsPerSecond)
-        // Twelve seconds of micro-train frames only.
-        for _ in 0..<480 { _ = beat(count: 4, mbps: 20) }
-        XCTAssertNil(estimator.measuredDeliveryRateBitsPerSecond,
-            "a full train from 12 s ago still reports as measured delivery")
-        // A persisted streak with no backlog falls (bounded
-        // multiplicative); its forensics must not cite the stale train.
-        var fell = false
-        for _ in 0..<40 where !fell {
-            fell = beat(count: 4, mbps: 20, delay: 40_000).change == .overuse
-        }
-        XCTAssertTrue(fell)
-        XCTAssertNil(estimator.lastOveruseFall?.anchorBitsPerSecond,
-            "the fall's anchor cited a full train from 12 s ago")
-    }
-
     // MARK: - A transient Wi-Fi spike
     // One radio episode on an otherwise clean 50 Mbps path: the queue
     // climbs to ~230 ms and drains again inside ~600 ms, nothing is
@@ -3044,6 +3004,84 @@ final class RateEstimatorGateTests: XCTestCase {
                 \(recovered.map { "\($0 / Self.ms) ms" } ?? "never") after \
                 the spike opened
                 """)
+    }
+
+    /// Live Wi-Fi's common case: the rate sits at the ceiling, where the
+    /// belief sits too, and a 1.2 s radio episode (a flat 150 ms queue)
+    /// stretches the trains to ~30 Mbps. The fall lands on that honest
+    /// evidence — but the rate was not probing above anything it knew,
+    /// so no wall was located and no cadence may park the climb at the
+    /// demoted band for 10 s once the air clears.
+    func testFallFromTheBeliefIsNotAFailedProbe() {
+        let estimator = makeEstimator { $0.ceilingBitsPerSecond = 50_000_000 }
+        let driver = EstimatorDriver(self, estimator)
+        driver.prime(bottleneckMbps: 50, beats: 40)
+        let pre = estimator.rateBitsPerSecond
+        XCTAssertEqual(estimator.capacityBeliefBitsPerSecond, pre)
+        var fell = false
+        for _ in 0..<48 {
+            fell = driver.beat(
+                bottleneckMbps: 30, extraDelayMicros: 150_000,
+                backlogBytes: 19_558
+            ).change == .overuse || fell
+        }
+        XCTAssertTrue(fell, "a 1.2 s standing queue with honest trains falls")
+        let clearedAt = driver.now
+        var recovered: UInt64?
+        for _ in 0..<1_200 where recovered == nil {
+            driver.beat(bottleneckMbps: 50)
+            if estimator.rateBitsPerSecond * 10 >= pre * 9 {
+                recovered = driver.now - clearedAt
+            }
+        }
+        XCTAssertEqual(estimator.stats.upshiftsCadenceHeld, 0,
+            "a fall from the belief armed the failed-probe cadence")
+        XCTAssertLessThanOrEqual(recovered ?? .max, 4_000 * Self.ms,
+            """
+                back to ≥ 90% \
+                \(recovered.map { "\($0 / Self.ms) ms" } ?? "never") after \
+                the air cleared
+                """)
+    }
+
+    /// A full train is evidence for the sample window, not forever. A
+    /// static desktop sends only micro-train frames for minutes; the
+    /// reporting anchor and a fall's forensic anchor must then read
+    /// "none", never the last full train from minutes ago.
+    func testStaleFullTrainsNeitherReportNorAnchor() {
+        let estimator = makeEstimator()
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+        func beat(count: Int, mbps: Double, delay: UInt64 = 0)
+            -> RateEstimatorVerdict {
+            now += 25 * Self.ms
+            clientMicros += 25_000
+            let samples = train(
+                estimator, seqStart: seq, count: count,
+                sendStartNS: now - Self.ms,
+                bottleneckBitsPerSecond: mbps * 1e6,
+                extraDelayMicros: delay)
+            seq += count
+            return estimator.ingest(
+                report(samples: samples, clientMicros: clientMicros),
+                now: now, inRecovery: false)
+        }
+        for _ in 0..<10 { _ = beat(count: 12, mbps: 20) }
+        XCTAssertNotNil(estimator.measuredDeliveryRateBitsPerSecond)
+        // Twelve seconds of micro-train frames only.
+        for _ in 0..<480 { _ = beat(count: 4, mbps: 20) }
+        XCTAssertNil(estimator.measuredDeliveryRateBitsPerSecond,
+            "a full train from 12 s ago still reports as measured delivery")
+        // A persisted streak with no backlog falls (bounded
+        // multiplicative); its forensics must not cite the stale train.
+        var fell = false
+        for _ in 0..<40 where !fell {
+            fell = beat(count: 4, mbps: 20, delay: 40_000).change == .overuse
+        }
+        XCTAssertTrue(fell)
+        XCTAssertNil(estimator.lastOveruseFall?.anchorBitsPerSecond,
+            "the fall's anchor cited a full train from 12 s ago")
     }
 
     /// The fast climb's safeguard: when the path STAYS low after a

@@ -221,10 +221,10 @@ extension RateEstimator {
     /// wall it already located. Must exceed 1.0.
     static let probeHeadroomFactor: Double = 1.10
 
-    /// After a fall that fired while probing near the belief (rate ≥
-    /// belief / probeHeadroomFactor: a failed probe), rises back into
-    /// that band wait this long (BBR PROBE_BW's cadence). Below the band
-    /// the climb stays continuous.
+    /// After a fall that fired while probing (rate above the belief it
+    /// held, and ≥ demoted belief / probeHeadroomFactor: a failed probe),
+    /// rises back into that band wait this long (BBR PROBE_BW's cadence).
+    /// Below the band the climb stays continuous.
     static let probeCadenceNS: UInt64 = 10_000_000_000
 
     /// A fall whose demoted belief is below this fraction of the standing
@@ -1398,12 +1398,16 @@ public final class RateEstimator {
                     honestAnchorBitsPerSecond: honestMedian.map(Int.init),
                     streakAgeNS: inflatedStreakSinceNS.map { now &- $0 }
                 )
-                // A fall inside the belief's headroom band is a failed
-                // probe: arm the cadence. A crash located no wall.
+                // A fall while probing ABOVE the belief it held, inside
+                // the demoted belief's headroom band, is a failed probe:
+                // arm the cadence. A fall from at or below the belief (the
+                // rate was only using capacity it had proven) or a crash
+                // located no wall.
                 let bandFloor = demoted / Self.probeHeadroomFactor
+                let probing = Double(rateBitsPerSecond) > belief
                 let crash = demoted
                     < Double(rateBitsPerSecond) * Self.crashDemotionFraction
-                if Double(rateBitsPerSecond) >= bandFloor, !crash {
+                if probing, Double(rateBitsPerSecond) >= bandFloor, !crash {
                     cadenceHoldUntilNS = now &+ Self.probeCadenceNS
                     cadenceBandFloorBits = bandFloor
                 }
