@@ -17,7 +17,7 @@
 - **pup** is on Wi-Fi only (`10.0.0.249`, advertised on `wlp0s20f3`).
 - `lyte-host.service` serves UDP **41151** from `versions/8d5e83fcc831`: the
   **soak** of local branch `experiment/wifi-resilience` (this Mac only; Wi-Fi
-  rate recovery, see its CHANGELOG note). `main`'s host is
+  rate recovery, see its CHANGELOG note). The #253 host (pre-soak) is
   `bb4ce518dd2f`: `cd ~/src/lyte-host && ./Scripts/deploy-host.sh
   --restart ~/.local/share/lyte/versions/bb4ce518dd2f`. It logs `direct: capturing /dev/dri/card1`.
 - Identity `~/.config/lyte/`; log `~/.local/state/lyte/host.log`. Kept for
