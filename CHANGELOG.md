@@ -32,6 +32,12 @@ Sparkle shows in the update window (`Scripts/release.sh`).
   asked for again. A frame the Mac cannot decode no longer freezes the
   picture: the client flushes and asks for a fresh keyframe. Pairing
   ends with a goodbye, so a `--pair` host exits at once.
+- **Wi-Fi rate recovery (experimental).** A brief Wi-Fi delay spike
+  whose queue is already draining no longer drops the stream to a few
+  Mbps; after a real dip the rate climbs back to where it was within a
+  few seconds instead of half a minute; a fall from the ceiling no longer
+  holds the climb for 10 s; and a restart after a blackout begins at half
+  the proven rate, not at the ceiling.
 - **Why a keyframe was asked for.** Each keyframe the Mac asks for now
   names its cause in the stats overlay's "idr" row, in `lyte-cli
   wire-view`, and in the app's log ("lyte video: IDR requested after
