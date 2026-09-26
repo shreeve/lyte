@@ -47,9 +47,9 @@ swift test --package-path SystemTests --scratch-path SystemTests/.build -Xswiftc
 swift test --package-path Browser     --scratch-path Browser/.build     -Xswiftc -warnings-as-errors
 ```
 
-Never point Client's scratch path at the repository root `.build`: it holds
-the published `Lyte.app`, and `swift package clean` would delete it while it
-runs.
+Never test or clean Client with its scratch path at the repository root
+`.build` (only `Scripts/build-cli.sh` builds there): it holds the published
+`Lyte.app`, and `swift package clean` would delete it.
 
 Which suites to run after a change: the changed package, Common (its lints
 read every package's sources), and every package that depends on the
@@ -74,7 +74,7 @@ fakes:
 |---|---|---|
 | `SealedCtrlPeer` | `LyteWireTestKit` | A role-agnostic sealed far end: handshake, per-channel seqs, ARQ, capability declaration, retry answers |
 | `HostSessionHarness`, `PeerBackedClient` | `HostWireTestKit` (product for test targets only) | A shipping `HostWire.Session` with an outbox and virtual time |
-| `ScriptedHost`, `ClientCoreHarness`, `ManualMicrosClock` | `LyteClientTestKit` | The real `LyteUdpSessionCore` without a socket, against a scripted host |
+| `ClientCoreHarness`, `CoreHarnessHost`, `ScriptedHost`, `ManualMicrosClock` | `LyteClientTestKit` | The real `LyteUdpSessionCore` without a socket, against a scripted or real host |
 | `SimNet`, `SplitMix64` | `LyteWireTestKit` | Deterministic impairment; 64-bit seeded draws identical on every platform |
 
 ### What the suites contain
@@ -83,9 +83,9 @@ fakes:
 |---|---|
 | Common | `LyteCoreTests`, `LyteIOTests`, `LyteTestKitTests` (the sans-IO lint and the single-owner ratchets), `COpusTests` |
 | Wire | `LyteWireTests` — codecs, vector files, `VectorRegenerationTests`, ARQ/FEC/Noise/pairing simulations |
-| Host | `HostCoreTests`, `HostSessionTests`, `HostWireTests` (session gates and HostIO), `HostAudioTests`, `HostLayoutTests` (the seeded `host.conf`); Linux only: `HostEyeTests`, `CNetIOTests`, `CPipeWireAudioTests` (against a silent PipeWire socket in a temp runtime dir, never the desktop's server), `LyteHostIntegrationTests` |
-| Client | `LyteTransportTests`, `LyteClientSessionTests`, `LyteClientCoreTests`, `LyteCorpusTests` (slow corpus legs), `LyteAppTests` (app lifecycle under injected services), `LyteHelperTests` |
-| SystemTests | `LyteClientHostTests` — real client and host composed in one process |
+| Host | `HostCoreTests`, `HostSessionTests`, `HostWireTests` (session gates), `HostIOTests`, `HostAudioTests`, `HostLayoutTests` (the seeded `host.conf`); Linux only: `HostEyeTests`, `CNetIOTests`, `CPipeWireAudioTests` (against a silent PipeWire socket in a temp runtime dir, never the desktop's server), `LyteHostIntegrationTests` |
+| Client | `LyteTransportTests`, `LyteClientSessionTests`, `LyteClientCoreTests`, `LyteCorpusTests` (benchmark scoring), `LyteAppTests` (app lifecycle under injected services), `LyteHelperTests`, `LyteCLITests` |
+| SystemTests | `LyteClientHostTests` — the real client core and host session composed in one process, on the client and host test kits |
 | Browser | `LyteClientBrowserCoreTests` — the browser core against an in-process `HostWire.Session`; page input rules in `Browser/Tests/Page/page.test.mjs` (Node, not SwiftPM) |
 
 ### Repository lints (run inside the Common suite)
@@ -102,23 +102,24 @@ fakes:
   trip it): every top-level type `LyteCore` and `LyteIO` declare (and
   `HostSession`, within Host) is declared nowhere else; the `ScreenSource`
   and `VideoSink` seams are declared once by their owners; the monotonic
-  clock, SHA-256, the eye pipeline's constructors, scanout grabs and the
-  host lifecycle machine are spelled only by their owners. The Opus leaf
-  ratchet (`LyteCoreTests/COpusDeclarationRatchetTests`) scans every
-  package manifest.
+  clock, SHA-256, the eye pipeline's constructors, scanout grabs, the host
+  lifecycle machine, the handshake flood gate (only `HandshakeAcceptor`
+  builds one), the plaintext test modes and each client control word's
+  decoder are spelled only by their owners; ARQ carrier packing lives only
+  in Wire. Two manifest rules read the evaluated package graph: only
+  Browser's test targets depend on Host, and Client and Host never depend
+  on each other.
+- `LyteTestKitTests/RoleBoundaryTests`: client and host code import none
+  of each other's modules (an import scan that attributes and qualifiers
+  cannot evade), and no shipping target in any package imports XCTest, a
+  `*TestKit` or `LyteWireVectorGen`.
+- `COpusTests/COpusDeclarationRatchetTests`: libopus enters once, as
+  Common's pinned `COpus` source leaf; no package manifest links a system
+  Opus.
 
-Boundary tests in the other packages:
-
-- `ClientLayoutTests` (`LyteTransportTests`): every Client manifest target
-  owns exactly `Sources/<Target>/` (tests `Tests/<Target>Tests/`), the
-  shipping client has no plaintext transport mode, and each control
-  concept is reached from one `LyteClientSession` owner.
-- `SystemTestsLayoutTests`: the client and host roles meet only in
-  SystemTests and the Browser tests (an import scan that attributes and
-  qualifiers cannot evade), and shipping client code carries no test
-  equipment.
-- `WireLayoutTests`: every Wire target files its sources under
-  `LyteWire`'s domain directories.
+`ClientLayoutTests` (`LyteTransportTests`) holds the Client package to the
+target grammar: every manifest target owns exactly `Sources/<Target>/`
+(tests `Tests/<Target>Tests/`), and nothing else is a directory there.
 
 ## The macOS gate — `Scripts/CI/test-all-macos.sh`
 
@@ -167,34 +168,37 @@ second gate fails at once with that name, and a lock path that is a symlink
 or not a regular file fails the gate untouched. The lock lives as long as the
 session's processes, and the session terminates its whole process tree
 when the local gate goes away, so an interrupted gate leaves nothing
-running. Under the lock the local side mirrors Client, Common, Wire, Host,
-`Scripts/`, `LICENSE` and `docs/THIRD-PARTY.md` (the host image carries
-both) to `~/src/lyte-gates/deterministic/`, plus only the manifest and
-`Sources/` of Browser and SystemTests (Common's lints scan them), then the
+running. Under the lock the local side mirrors Client, Common, Wire, Host and
+Browser (without `.build`, `.serve` and `node_modules`), `Scripts/`,
+`LICENSE` and `docs/THIRD-PARTY.md` (the host image carries both) to
+`~/src/lyte-gates/deterministic/`, plus only the manifest and `Sources/`
+of SystemTests (Common's lints scan them), then the
 session:
 
-1. Fingerprints protected state: `~/.config/lyte/{noise_static.key,
-   paired_clients,host.conf}` (required: a missing one fails the gate
-   before any build), the pre-XDG copies when present,
+1. Fingerprints protected state (`lyte_protected_state_fingerprint` in
+   `Scripts/lib/pup-side.sh`, shared with the benchmarks):
+   `~/.config/lyte/{noise_static.key,paired_clients,host.conf}` (required:
+   a missing one fails the gate before any build), the pre-XDG copies and
+   `/etc/lyte/lyte-host.conf` when present,
    `/etc/systemd/system/lyte-host.service`, and the `~/.local/bin/lyte-host`
-   link target.
+   link target. A file that exists but cannot be read fails the gate.
 2. Package tests (`swift test -Xswiftc -warnings-as-errors`) for Common,
-   Wire, Client and Host. Off macOS the Client manifest keeps only
-   `LyteClientCore`, `LyteClientSession` and their suites.
-   Each package is cleaned by the same per-package build-graph rule as on
-   the Mac.
+   Wire, Client, Host and Browser. Off macOS the Client manifest keeps only
+   `LyteClientCore`, `LyteClientSession` and their suites, and Browser's
+   only `LyteClientBrowserCore` and its suite (no JavaScriptKit). Each
+   package is cleaned by the same per-package build-graph rule as on the
+   Mac.
 3. Plain and release Host builds with `-warnings-as-errors`.
 4. Stages a host image and runs `test-host-package-image.sh`,
    `test-host-installer.sh IMAGE` and `--self-test`, and
    `test-hermetic-linkage.sh`.
-5. Checks `lyte-host` links no libav/libsw* library and carries the pinned
-   Opus encoder.
+5. Checks `lyte-host` links no libav/libsw* library, and that `lyte-host`
+   and `lyte-audio-check` are hermetic and carry the pinned Opus encoder.
 6. Runs `lyte-netio-check` and `lyte-pace-check`.
 7. Verifies the protected-state fingerprint is unchanged.
 
-The pup gate never deploys or restarts the standing service. Browser is
-not built on pup: its JavaScriptKit dependency needs Swift 6.2 or later.
-SystemTests composes the macOS client and is not built either.
+The pup gate never deploys or restarts the standing service. SystemTests
+composes the macOS client and is not built on pup.
 
 ## WebAssembly
 
@@ -202,9 +206,6 @@ SystemTests composes the macOS client and is not built either.
 Wire/Scripts/wasm-test.sh     # the whole Wire suite on wasm32-unknown-wasip1 under wasmtime
 Browser/Scripts/build.sh      # LyteClientBrowser.wasm + page staged in Browser/.serve/
 ```
-
-Without binaryen's `wasm-opt` the staged module is about 77 MB and behaves
-the same.
 
 ## Browser smoke — `Browser/Scripts/smoke-chrome.sh`
 
@@ -270,13 +271,20 @@ WARNING with that command if the restore fails. `all` builds once and runs
 each leg in its own `--no-build` process. `--no-build` builds and restores
 nothing, and refuses a bundle without the diagnostic entry points. The
 benchmark takes the app-artifact lock and refuses to run while the owner's
-interactive app is open.
+interactive app is open. It also refuses unless the local Host, Wire and
+Common sources match pup's mirror byte for byte, the deployed
+`lyte-host` is the one built from them and is what the service runs, and
+the service owns the benchmarked port. `handshake-only` restarts the
+standing service (it needs passwordless `sudo -n` on pup) and requires the
+protected-state fingerprint unchanged across the restart and at the end.
 
 `Scripts/benchmark-netem.sh moderate` shapes one host→client flow with
 `Scripts/netem/port-netem.sh` (20 ms delay, 10 ms jitter, 1 % loss) around
-one motion leg and judges the impairment SLOs (`analyze-app-benchmark.py
---netem-profile`: presentation-gap p99, decoded fps, renderer, audio
-continuity). See
+one `--no-build` motion leg, so it needs a diagnostic bundle first
+(`Scripts/make-app.sh --diagnostics release`) and a plain rebuild after.
+It judges the JSONL that leg names (`benchmark JSONL:`) against the
+impairment SLOs (`analyze-app-benchmark.py --netem-profile`:
+presentation-gap p99, decoded fps, renderer, audio continuity). See
 [`Scripts/netem/README.md`](../Scripts/netem/README.md).
 
 | Variable | Used by | Meaning |
