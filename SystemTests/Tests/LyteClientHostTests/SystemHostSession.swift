@@ -24,16 +24,20 @@ final class SystemHostSession: NoiseHandshakeIO {
     private(set) var nowMicroseconds: UInt64 = 0
     private var nextFrameNumber: UInt32 = 0
     private var repairsTaken = 0
+    private var challengesForwarded = 0
     private(set) var events: [SessionEvent] = []
 
     var session: Session { harness.session }
 
-    init(tweak: (inout SessionConfig) -> Void = { _ in }) {
+    init(
+        gate: HandshakeGate.Config = HandshakeGate.Config(),
+        tweak: (inout SessionConfig) -> Void = { _ in }
+    ) {
         var config = SessionConfig(rateBitsPerSecond: 1_000_000_000)
         tweak(&config)
         harness = HostSessionHarness(
             config: config,
-            acceptor: HandshakeAcceptor.Config(hostStatic: staticKeys),
+            acceptor: HandshakeAcceptor.Config(hostStatic: staticKeys, gate: gate),
             tuple: Self.initialClientTuple,
             rng: SplitMix64(seed: 0xC1_12))
     }
@@ -42,7 +46,13 @@ final class SystemHostSession: NoiseHandshakeIO {
         events += harness.receive(datagram, at: nowMicroseconds)
     }
 
+    /// The acceptor's RetryChallenges first, as the listening socket sends
+    /// them, then the session's datagrams.
     func receiveDatagram(timeoutMilliseconds: Int) throws -> [UInt8]? {
+        if challengesForwarded < harness.challenges.count {
+            challengesForwarded += 1
+            return harness.challenges[challengesForwarded - 1]
+        }
         service(for: UInt64(timeoutMilliseconds) * 1_000) {
             harness.forwarded < harness.sent.count
         }

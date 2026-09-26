@@ -1,12 +1,13 @@
 import CNetIO
 import Glibc
+import HostSession
 import HostWire
 @testable import lyte_host
 import LyteWire
 import XCTest
 
 /// The listening host's handshake admission end to end on loopback.
-final class HandshakeLatchLoopbackTests: XCTestCase {
+final class HandshakeAdmissionLoopbackTests: XCTestCase {
     /// A spoofed message 1 arrives first and a real client handshakes
     /// from another tuple: the host completes with the real client,
     /// answers it with message 2 from the session port, and commits once
@@ -35,6 +36,43 @@ final class HandshakeLatchLoopbackTests: XCTestCase {
                 "message 2 leaves from the session port")
             try client.confirm(message2: reply.payload)
         }, .established)
+    }
+
+    /// Under flood the listener answers a bare message 1 with a
+    /// RetryChallenge from its own port; the client's RetryHandshake1
+    /// echoing the cookie is answered and establishes.
+    func testACookieChallengeFromTheListenerCompletesTheHandshake() throws {
+        let hostStatic = NoiseKeyPair.generate()
+        let listener = try HostListener(port: 0, acceptor: .init(
+            hostStatic: hostStatic,
+            gate: HandshakeGate.Config(
+                cookieSecret: [UInt8](repeating: 0x5A, count: 32),
+                cookieEnterThreshold: 1, cookieExitThreshold: 0)))
+        let wire = try SessionWire(
+            listener: listener, rateBitsPerSecond: 1_000_000)
+        defer { wire.shutdown(reason: .shuttingDown, lingerSeconds: 0) }
+        let client = try LoopbackDialer(
+            port: wire.localPort, hostStaticPublicKey: hostStatic.publicKey)
+        try client.dial()
+
+        XCTAssertEqual(try awaitClient(
+            wire, timeoutSeconds: 5
+        ) {
+            let asked = try XCTUnwrap(
+                client.awaitCtrl(type: CtrlMessageType.retryChallenge),
+                "a bare message 1 under flood is challenged")
+            XCTAssertEqual(asked.sourcePort, wire.localPort,
+                "the challenge leaves from the listening port")
+            let message1 = try Envelope.decode(client.message1Datagram).payload
+            client.send(try LoopbackDialer.ctrl(try RetryHandshake1(
+                echoing: RetryChallenge.decode(asked.payload[...]),
+                message1: Array(message1.dropFirst())
+            ).encode(), seq: 1))
+            let reply = try XCTUnwrap(client.awaitMessage2())
+            try client.confirm(message2: reply.payload)
+        }, .established)
+        XCTAssertEqual(listener.acceptor.counters.challengesMinted, 1)
+        XCTAssertEqual(listener.acceptor.counters.cookiesVerified, 1)
     }
 
     /// A replayed message 1 is answered, but an answer commits nothing:
