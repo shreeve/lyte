@@ -2,22 +2,22 @@
 
 The host serves one GNOME/Mutter Wayland seat with an Intel GPU that
 owns the panel (the direct eye encodes on the die that owns the
-scanout). Everything below is idempotent — re-run any step freely.
+scanout). Setup and installation are idempotent: re-run them freely.
 Operating an installed host (layout, deploys, rollback, pairing, uninstall,
 safety) is in [docs/OPERATIONS.md](../docs/OPERATIONS.md).
 
 ## 0. Build
 
 ```sh
-# Dependencies (Ubuntu): the Swift toolchain, plus the narrow OS leaves
+# Dependencies (Ubuntu): a Swift 6.1 or later toolchain (swift.org), plus
+# the narrow OS leaves
 sudo apt-get install -y pkg-config libdbus-1-dev libpipewire-0.3-dev \
     libva-dev libdrm-dev libgbm-dev libegl-dev libgl-dev avahi-daemon
 swift build --package-path Host -c release
 ```
 
-The binaries land in `Host/.build/release/`. No setcap is needed when
-running under the service (step 2) — the capability rides the unit. Swift
-6.1.2 on Ubuntu 26.04 needs a `libxml2.so.2` shim for its build tools; see
+The binaries land in `Host/.build/release/`. Swift 6.1.2 on Ubuntu 26.04
+needs a `libxml2.so.2` shim for its build tools; see
 [docs/OPERATIONS.md](../docs/OPERATIONS.md#build-on-pup).
 
 ### Stage the release image
@@ -26,8 +26,9 @@ Turn the release binary into the exact image that packaging and installation
 consume:
 
 ```sh
-Host/Scripts/stage-host-image.sh /tmp/lyte-host-image
-Scripts/Tests/test-host-package-image.sh /tmp/lyte-host-image
+image="$(mktemp -d)/image"     # the destination must not exist yet
+Host/Scripts/stage-host-image.sh "$image"
+Scripts/Tests/test-host-package-image.sh "$image"
 ```
 
 The image holds `bin/lyte-host`, the `etc/host.conf` seed, the
@@ -92,9 +93,10 @@ What it does, idempotently:
 - `daemon-reload` + `enable`. Start is left to you.
 
 Before the first start, check the seeded `--advertise-interface` in
-`~/.config/lyte/host.conf`: the installer seeds the first wired (`en*` or
-`eth*`) interface it finds and prints it, or leaves `CHANGE_ME` when it
-finds none. Clients find the host over mDNS only on that interface.
+`~/.config/lyte/host.conf`: the installer seeds `LYTE_ADVERTISE_INTERFACE`
+when set, else the first wired (`en*` or `eth*`) interface it finds, and
+prints it; `CHANGE_ME` means it found none. Clients find the host over mDNS
+only on that interface.
 
 ```sh
 sudo systemctl start lyte-host
