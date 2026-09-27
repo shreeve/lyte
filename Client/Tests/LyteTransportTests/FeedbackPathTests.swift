@@ -192,6 +192,55 @@ final class FeedbackPathTests: XCTestCase {
         XCTAssertEqual(feedback.snapshotStats().nackEntriesSent, 8)
     }
 
+    // MARK: - Idle feedback
+
+    /// Under key 17 the beat keeps running (IDR retries and NACK
+    /// deadlines ride it) but a still stream sends one report per
+    /// heartbeat, and the first arrival after the quiet is reported on
+    /// the next beat.
+    func testIdleFeedbackSendsOnHeartbeatAndOnArrival() throws {
+        let demux = ReceiveDemux(crypto: PassthroughTransportCrypto())
+        let capture = Capture()
+        let sender = TransportSender(crypto: PassthroughTransportCrypto(),
+                                     transmit: { capture.append($0) })
+        let beats = Capture()
+        let feedback = FeedbackSender(
+            demux: demux, sender: sender,
+            onTick: { _ in _ = beats.append([]) })
+        feedback.setIdleFeedback(true)
+
+        // 3 s of 40 ms beats with nothing arriving.
+        for beat in 0..<75 {
+            feedback.tick(now: ClientTimestamp(microseconds: UInt64(beat) * 40_000))
+        }
+        XCTAssertEqual(beats.datagrams.count, 75, "every beat runs its deadlines")
+        XCTAssertEqual(capture.datagrams.count, 2,
+                       "the first beat and one 2 s heartbeat")
+
+        let envelope = Envelope(
+            channel: .videoActive, seq: ChannelSeq(rawValue: 0),
+            frame: FrameNumber(rawValue: 0), timestamp: 0, fec: 0)
+        demux.ingest(datagram: try envelope.encode(payload: [0xAA])[...],
+                     arrivalMicroseconds: 3_010_000)
+        feedback.tick(now: ClientTimestamp(microseconds: 3_040_000))
+        XCTAssertEqual(capture.datagrams.count, 3, "an arrival is reported next beat")
+        feedback.tick(now: ClientTimestamp(microseconds: 3_080_000))
+        XCTAssertEqual(capture.datagrams.count, 3, "and then the stream is quiet again")
+    }
+
+    /// Without the agreement every beat reports, as an old host needs.
+    func testWithoutIdleFeedbackEveryBeatReports() {
+        let demux = ReceiveDemux(crypto: PassthroughTransportCrypto())
+        let capture = Capture()
+        let sender = TransportSender(crypto: PassthroughTransportCrypto(),
+                                     transmit: { capture.append($0) })
+        let feedback = FeedbackSender(demux: demux, sender: sender)
+        for beat in 0..<25 {
+            feedback.tick(now: ClientTimestamp(microseconds: UInt64(beat) * 40_000))
+        }
+        XCTAssertEqual(capture.datagrams.count, 25)
+    }
+
     // MARK: - Cadence
 
     func testCadenceClampsToBuildPlanRange() {

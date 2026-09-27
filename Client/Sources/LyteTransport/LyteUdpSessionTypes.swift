@@ -223,7 +223,8 @@ public struct LyteUdpSessionCoreConfig: Sendable {
             .declaringClipboardImages()
             .declaringCursorShape()
             .declaringAudioQuietPosture()
-            .declaringVideoQuietPosture(),
+            .declaringVideoQuietPosture()
+            .declaringIdleFeedback(),
         tightenedBlackoutSilenceMicroseconds: Int64? =
             ClientControlSession.tightenedBlackoutSilenceMicroseconds,
         audioJitter: AudioJitterConfig = AudioJitterConfig(),

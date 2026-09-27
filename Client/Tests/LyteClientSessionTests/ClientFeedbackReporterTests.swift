@@ -51,4 +51,36 @@ final class ClientFeedbackReporterTests: XCTestCase {
         XCTAssertEqual(reporter.stats.dispersionSamplesDecimated, 1)
         XCTAssertNoThrow(try report.encode())
     }
+
+    /// Idle feedback: a beat with nothing new waits for the heartbeat;
+    /// an arrival, a ledger change or a queued NACK makes it due at once.
+    /// Without the agreement every beat is due.
+    func testIdleFeedbackSendsOnlyNewsAndTheHeartbeat() throws {
+        var reporter = ClientFeedbackReporter()
+        let ledger = ClientFeedbackReporter.Ledger(
+            channel: .videoActive, highestSeq: ChannelSeq(rawValue: 3),
+            datagrams: 4, duplicates: 0, missing: 0)
+        func at(_ ms: UInt64) -> ClientTimestamp {
+            ClientTimestamp(microseconds: ms * 1_000)
+        }
+        func due(_ ledgers: [ClientFeedbackReporter.Ledger], arrivals: Int = 0,
+                 idle: Bool = true, _ ms: UInt64) -> Bool {
+            reporter.isDue(ledgers: ledgers, arrivalCount: arrivals,
+                           idleFeedback: idle, now: at(ms))
+        }
+
+        XCTAssertTrue(due([ledger], 0), "the first beat always reports")
+        _ = reporter.report(ledgers: [ledger], arrivals: [], now: at(0))
+        XCTAssertFalse(due([ledger], 40), "nothing new: silent")
+        XCTAssertFalse(due([ledger], 1_999))
+        XCTAssertTrue(due([ledger], 2_000), "the heartbeat")
+        XCTAssertTrue(due([ledger], idle: false, 40),
+                      "without key 17 every beat reports")
+        XCTAssertTrue(due([ledger], arrivals: 1, 40), "an arrival is news")
+        var grown = ledger
+        grown.datagrams += 1
+        XCTAssertTrue(due([grown], 40), "a ledger change is news")
+        reporter.enqueueNacks([try entry(9)])
+        XCTAssertTrue(due([ledger], 40), "a NACK never waits")
+    }
 }
