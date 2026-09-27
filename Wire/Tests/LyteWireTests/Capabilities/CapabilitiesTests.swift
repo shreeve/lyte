@@ -5,7 +5,7 @@ import LyteWireTestKit
 
 // The typed capability set: the hand-computed CBOR anchor (breaking
 // the vector file's circularity), the forward-compat rules no vector
-// pins, the rejects' associated values, the keys 9–16 flag spine, and
+// pins, the rejects' associated values, the keys 9–17 flag spine, and
 // the intersect algebra as seeded properties (commutative, idempotent,
 // associative, absorbing).
 
@@ -189,7 +189,7 @@ final class CapabilitiesTests: XCTestCase {
         XCTAssertEqual(try Capabilities.decodeCbor(a.encodeCbor()), a)
     }
 
-    /// Keys 9–16 each ride `unknownEntries` as one canonical `key F5`
+    /// Keys 9–17 each ride `unknownEntries` as one canonical `key F5`
     /// entry: the frozen v1 bytes plus exactly that entry, read back by
     /// the v1 decoder, declared idempotently, surviving intersection only
     /// on mutual declaration, and replacing a peer's `false` (which reads
@@ -208,6 +208,7 @@ final class CapabilitiesTests: XCTestCase {
             (14, { $0.declaringAudioStreamOff() }, \.audioStreamOff),
             (15, { $0.declaringAudioQuietPosture() }, \.audioQuietPosture),
             (16, { $0.declaringVideoQuietPosture() }, \.videoQuietPosture),
+            (17, { $0.declaringIdleFeedback() }, \.idleFeedback),
         ]
         let base = hex(Self.wireDefaultHex)
         for (key, declare, read) in flags {

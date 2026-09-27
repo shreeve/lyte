@@ -97,6 +97,7 @@ final class SessionStateMachineCoverageTests: XCTestCase {
             // ───────────── sender / ACTIVE ─────────────
             Row(S, .active, .mediaPathEvidence, .active, []),
             Row(S, .active, .ctrlEvidence, .active, []),
+            Row(S, .active, .mediaSent, .active, []),
             Row(S, .active, .feedbackWindow(clean: true), .active, []),
             Row(S, .active, .feedbackWindow(clean: false), .active, []),
             Row(S, .active, .preArmInput, .active, []),
@@ -113,6 +114,7 @@ final class SessionStateMachineCoverageTests: XCTestCase {
             // ───────────── sender / IDLE ─────────────
             Row(S, .idle, .mediaPathEvidence, .idle, []),
             Row(S, .idle, .ctrlEvidence, .idle, []),
+            Row(S, .idle, .mediaSent, .idle, []),
             Row(S, .idle, .feedbackWindow(clean: true), .idle, []),
             Row(S, .idle, .feedbackWindow(clean: false), .idle, []),
             // WAKE, both triggers: mode flip on CTRL + pre-armed IDR
@@ -137,6 +139,7 @@ final class SessionStateMachineCoverageTests: XCTestCase {
                 [.resumeDatagramSends, .forceIdr(.halfStaleEstimate)]),
             Row(S, .frozen, .ctrlEvidence, .recovery,
                 [.resumeDatagramSends, .forceIdr(.halfStaleEstimate)]),
+            Row(S, .frozen, .mediaSent, .frozen, []),
             Row(S, .frozen, .feedbackWindow(clean: true), .frozen, []),
             Row(S, .frozen, .feedbackWindow(clean: false), .frozen, []),
             // The pre-arm persists silently (flag asserted below).
@@ -150,6 +153,7 @@ final class SessionStateMachineCoverageTests: XCTestCase {
             // ───────────── sender / RECOVERY ─────────────
             Row(S, .recovery, .mediaPathEvidence, .recovery, []),
             Row(S, .recovery, .ctrlEvidence, .recovery, []),
+            Row(S, .recovery, .mediaSent, .recovery, []),
             // One clean window of the required two: still RECOVERY
             // (graduation is asserted in the behavior suite).
             Row(S, .recovery, .feedbackWindow(clean: true), .recovery, []),
@@ -165,6 +169,7 @@ final class SessionStateMachineCoverageTests: XCTestCase {
             // ───────────── receiver / ACTIVE ─────────────
             Row(R, .active, .mediaPathEvidence, .active, []),
             Row(R, .active, .ctrlEvidence, .active, []),
+            Row(R, .active, .mediaSent, .active, []),
             Row(R, .active, .feedbackWindow(clean: true), .active, []),
             Row(R, .active, .feedbackWindow(clean: false), .active, []),
             Row(R, .active, .preArmInput, .active, []),
@@ -177,6 +182,7 @@ final class SessionStateMachineCoverageTests: XCTestCase {
             // ───────────── receiver / IDLE ─────────────
             Row(R, .idle, .mediaPathEvidence, .idle, []),
             Row(R, .idle, .ctrlEvidence, .idle, []),
+            Row(R, .idle, .mediaSent, .idle, []),
             Row(R, .idle, .feedbackWindow(clean: true), .idle, []),
             Row(R, .idle, .feedbackWindow(clean: false), .idle, []),
             Row(R, .idle, .preArmInput, .idle, []),
@@ -192,6 +198,7 @@ final class SessionStateMachineCoverageTests: XCTestCase {
             // itself evidence AND a mode change.
             Row(R, .frozen, .mediaPathEvidence, .active, []),
             Row(R, .frozen, .ctrlEvidence, .active, []),
+            Row(R, .frozen, .mediaSent, .frozen, []),
             Row(R, .frozen, .feedbackWindow(clean: true), .frozen, []),
             Row(R, .frozen, .feedbackWindow(clean: false), .frozen, []),
             Row(R, .frozen, .preArmInput, .frozen, []),
@@ -241,7 +248,7 @@ final class SessionStateMachineCoverageTests: XCTestCase {
     }
 
     static let allInputs: [SessionInput] = [
-        .mediaPathEvidence, .ctrlEvidence,
+        .mediaPathEvidence, .ctrlEvidence, .mediaSent,
         .feedbackWindow(clean: true), .feedbackWindow(clean: false),
         .preArmInput, .damage,
         .ratchetConverged, .finalFrameAcknowledged,
