@@ -11,9 +11,9 @@ import LyteWire
 ///
 /// Under idle feedback (capability key 17) a beat with nothing new — no
 /// arrival, no ledger change, no NACK — sends nothing until the heartbeat
-/// is due: the host owes its blackout bar only to sends it made. After
-/// any news the full cadence runs for `idleLingerMicroseconds`, so one
-/// lost report cannot leave a send unanswered past the host's 350 ms bar.
+/// is due: the host owes its blackout bar only to sends it made. Each
+/// report of news is repeated at `idleEchoMicroseconds` after it, so two
+/// lost reports cannot leave a send unanswered past the host's 350 ms bar.
 public struct ClientFeedbackReporter: Sendable {
     public struct Stats: Sendable, Equatable {
         public var dispersionSamplesReported: UInt64 = 0
@@ -74,9 +74,9 @@ public struct ClientFeedbackReporter: Sendable {
     /// The longest an idle-feedback client stays silent: it keeps the
     /// host's estimator and ledgers current on a still screen.
     public static let idleHeartbeatMicroseconds: UInt64 = 2_000_000
-    /// How long the full cadence runs after the last news: most of the
-    /// host's 350 ms bar, leaving room for the last report's flight.
-    public static let idleLingerMicroseconds: UInt64 = 250_000
+    /// When a report of news is repeated, after the news: inside the
+    /// host's 350 ms bar with room for the last one's flight.
+    public static let idleEchoMicroseconds: [UInt64] = [80_000, 200_000]
 
     public private(set) var stats = Stats()
     private var pendingNacks: [FeedbackReport.NackEntry] = []
@@ -102,11 +102,14 @@ public struct ClientFeedbackReporter: Sendable {
         now: ClientTimestamp
     ) -> Bool {
         guard idleFeedback, let last = lastReportAt else { return true }
-        let lingering = lastNewsAt.map {
-            now.microseconds &- $0.microseconds < Self.idleLingerMicroseconds
+        let echoDue = lastNewsAt.map { news in
+            Self.idleEchoMicroseconds.contains { offset in
+                let at = news.microseconds &+ offset
+                return now.microseconds >= at && last.microseconds < at
+            }
         } ?? false
         return arrivalCount > 0 || !pendingNacks.isEmpty
-            || ledgers != lastReportedLedgers || lingering
+            || ledgers != lastReportedLedgers || echoDue
             || now.microseconds &- last.microseconds
                 >= Self.idleHeartbeatMicroseconds
     }
