@@ -4,6 +4,15 @@ User-visible changes to the Lyte macOS app and the Linux host, newest
 first. Each release's section is its GitHub release notes and the notes
 Sparkle shows in the update window (`Scripts/release.sh`).
 
+## Unreleased
+
+- **A still screen costs almost nothing upstream.** The Mac sent a
+  feedback report 25 times a second whether or not anything arrived
+  (about 25 kbps). Against a host that agrees (capability key 17), it now
+  reports only after something arrives, plus a heartbeat every 2 s; the
+  host no longer expects feedback when it has sent nothing. Needs both a
+  new client and a new host; either one alone behaves as before.
+
 ## 0.7.1 — 2026-09-26
 
 - **Type a host address.** The connection window takes a host name or
