@@ -4,12 +4,10 @@
 
 ## Tip
 
-- `main` @ **#260**: capability key 17 (idle feedback) on top of **0.7.1**,
-  the latest release (`v0.7.1`, notarized; the enclosure is EdDSA-signed,
-  the feed is not). #260 is under Unreleased in
-  [CHANGELOG.md](CHANGELOG.md). Install: `brew install --cask
-  shreeve/tap/lyte` (tap #12 is 0.7.1) or `Scripts/install.sh`
-  ([README.md](README.md)); Sparkle updates.
+- `main` @ **#260** (idle feedback, key 17; Unreleased in
+  [CHANGELOG.md](CHANGELOG.md)) on **0.7.1**, the latest release
+  (notarized; enclosure EdDSA-signed, feed not). Install: `brew install
+  --cask shreeve/tap/lyte` (tap #12) or `Scripts/install.sh`.
 - Gates (`-warnings-as-errors`): Wire 476 (475 wasm32), Common 113, Host
   398, Client 534, SystemTests 13, Browser 38 (+10 page); pup Host 468,
   Client 164, Browser 38, Wire release 476 at 25,000 ARQ trials.
@@ -24,14 +22,11 @@
 - Identity `~/.config/lyte/`; log `~/.local/state/lyte/host.log`. Kept for
   the owner: `~/.config/lyte-host/`, `~/lyte-revamp-backup/`, `~/lyte-migration-*`.
   `libinput-tools` is installed on pup (pointer checks).
-- **This Mac (pop) is paired** and streams with `.build/Lyte.app`, a
-  release build of #260 (it reports 0.7.1). Homebrew's
-  `/Applications/Lyte.app` (0.7.1) is also installed; a 0.7.2 release
-  brings #260 to it and returns the Mac to one copy.
-- Still desktop, live: Mac → pup 8.0 kbps (was 25.0). pup → Mac ~46 kbps
-  is the screen itself: pup's clock shows seconds
-  (`clock-show-seconds true`), so the video quiet ladder never engages,
-  and one-shard frames carry two parity copies.
+- **This Mac (pop) is paired**, streaming with `.build/Lyte.app` (#260);
+  Homebrew's 0.7.1 is also in `/Applications` until 0.7.2 ships.
+- Still desktop: Mac → pup 8.0 kbps (was 25.0); pup → Mac ~46 kbps is the
+  screen (pup's clock shows seconds, so the quiet ladder never engages;
+  one-shard frames carry two parity copies).
 
 ## Next
 
