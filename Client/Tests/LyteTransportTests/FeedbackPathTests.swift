@@ -196,8 +196,8 @@ final class FeedbackPathTests: XCTestCase {
 
     /// Under key 17 the beat keeps running (IDR retries and NACK
     /// deadlines ride it) but a still stream sends one report per
-    /// heartbeat, and the first arrival after the quiet is reported on
-    /// the next beat.
+    /// heartbeat; an arrival is reported on the next beat and the full
+    /// cadence lingers 250 ms after it.
     func testIdleFeedbackSendsOnHeartbeatAndOnArrival() throws {
         let demux = ReceiveDemux(crypto: PassthroughTransportCrypto())
         let capture = Capture()
@@ -224,8 +224,13 @@ final class FeedbackPathTests: XCTestCase {
                      arrivalMicroseconds: 3_010_000)
         feedback.tick(now: ClientTimestamp(microseconds: 3_040_000))
         XCTAssertEqual(capture.datagrams.count, 3, "an arrival is reported next beat")
-        feedback.tick(now: ClientTimestamp(microseconds: 3_080_000))
-        XCTAssertEqual(capture.datagrams.count, 3, "and then the stream is quiet again")
+        for beat in 1...6 {
+            feedback.tick(now: ClientTimestamp(
+                microseconds: 3_040_000 + UInt64(beat) * 40_000))
+        }
+        XCTAssertEqual(capture.datagrams.count, 9, "the cadence lingers 250 ms")
+        feedback.tick(now: ClientTimestamp(microseconds: 3_320_000))
+        XCTAssertEqual(capture.datagrams.count, 9, "and then the stream is quiet again")
     }
 
     /// Without the agreement every beat reports, as an old host needs.

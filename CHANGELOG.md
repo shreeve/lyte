@@ -9,8 +9,8 @@ Sparkle shows in the update window (`Scripts/release.sh`).
 - **A still screen costs almost nothing upstream.** The Mac sent a
   feedback report 25 times a second whether or not anything arrived
   (about 25 kbps). Against a host that agrees (capability key 17), it now
-  reports only after something arrives, plus a heartbeat every 2 s; the
-  host no longer expects feedback when it has sent nothing. Needs both a
+  reports for a quarter second after something arrives, plus a heartbeat
+  every 2 s; the host no longer expects feedback when it has sent nothing. Needs both a
   new client and a new host; either one alone behaves as before.
 
 ## 0.7.1 — 2026-09-26

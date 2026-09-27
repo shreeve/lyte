@@ -11,8 +11,9 @@ import LyteWire
 ///
 /// Under idle feedback (capability key 17) a beat with nothing new — no
 /// arrival, no ledger change, no NACK — sends nothing until the heartbeat
-/// is due: the host owes its blackout bar only to sends it made, and each
-/// one is answered on the next beat after it arrives.
+/// is due: the host owes its blackout bar only to sends it made. After
+/// any news the full cadence runs for `idleLingerMicroseconds`, so one
+/// lost report cannot leave a send unanswered past the host's 350 ms bar.
 public struct ClientFeedbackReporter: Sendable {
     public struct Stats: Sendable, Equatable {
         public var dispersionSamplesReported: UInt64 = 0
@@ -73,10 +74,14 @@ public struct ClientFeedbackReporter: Sendable {
     /// The longest an idle-feedback client stays silent: it keeps the
     /// host's estimator and ledgers current on a still screen.
     public static let idleHeartbeatMicroseconds: UInt64 = 2_000_000
+    /// How long the full cadence runs after the last news: most of the
+    /// host's 350 ms bar, leaving room for the last report's flight.
+    public static let idleLingerMicroseconds: UInt64 = 250_000
 
     public private(set) var stats = Stats()
     private var pendingNacks: [FeedbackReport.NackEntry] = []
     private var lastReportAt: ClientTimestamp?
+    private var lastNewsAt: ClientTimestamp?
     private var lastReportedLedgers: [Ledger] = []
 
     public init() {}
@@ -97,8 +102,11 @@ public struct ClientFeedbackReporter: Sendable {
         now: ClientTimestamp
     ) -> Bool {
         guard idleFeedback, let last = lastReportAt else { return true }
+        let lingering = lastNewsAt.map {
+            now.microseconds &- $0.microseconds < Self.idleLingerMicroseconds
+        } ?? false
         return arrivalCount > 0 || !pendingNacks.isEmpty
-            || ledgers != lastReportedLedgers
+            || ledgers != lastReportedLedgers || lingering
             || now.microseconds &- last.microseconds
                 >= Self.idleHeartbeatMicroseconds
     }
@@ -108,6 +116,10 @@ public struct ClientFeedbackReporter: Sendable {
     public mutating func report(
         ledgers: [Ledger], arrivals: [Arrival], now: ClientTimestamp
     ) -> FeedbackReport {
+        if !arrivals.isEmpty || !pendingNacks.isEmpty
+            || ledgers != lastReportedLedgers {
+            lastNewsAt = now
+        }
         lastReportAt = now
         lastReportedLedgers = ledgers
         let channels = ledgers.prefix(FeedbackBounds.maxChannelBlocks).map {

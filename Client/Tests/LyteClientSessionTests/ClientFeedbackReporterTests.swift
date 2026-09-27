@@ -71,7 +71,7 @@ final class ClientFeedbackReporterTests: XCTestCase {
 
         XCTAssertTrue(due([ledger], 0), "the first beat always reports")
         _ = reporter.report(ledgers: [ledger], arrivals: [], now: at(0))
-        XCTAssertFalse(due([ledger], 40), "nothing new: silent")
+        XCTAssertFalse(due([ledger], 300), "nothing new past the linger: silent")
         XCTAssertFalse(due([ledger], 1_999))
         XCTAssertTrue(due([ledger], 2_000), "the heartbeat")
         XCTAssertTrue(due([ledger], idle: false, 40),
@@ -82,5 +82,30 @@ final class ClientFeedbackReporterTests: XCTestCase {
         XCTAssertTrue(due([grown], 40), "a ledger change is news")
         reporter.enqueueNacks([try entry(9)])
         XCTAssertTrue(due([ledger], 40), "a NACK never waits")
+    }
+
+    /// After news the full cadence runs for the linger window, so one
+    /// lost report cannot leave the host's send unanswered; then quiet.
+    func testIdleFeedbackLingersAfterNews() {
+        var reporter = ClientFeedbackReporter()
+        let before = ClientFeedbackReporter.Ledger(
+            channel: .videoActive, highestSeq: ChannelSeq(rawValue: 3),
+            datagrams: 4, duplicates: 0, missing: 0)
+        var after = before
+        after.datagrams += 3
+        func at(_ ms: UInt64) -> ClientTimestamp {
+            ClientTimestamp(microseconds: ms * 1_000)
+        }
+        _ = reporter.report(ledgers: [before], arrivals: [], now: at(0))
+        _ = reporter.report(ledgers: [after], arrivals: [], now: at(1_000))
+        for ms in stride(from: UInt64(1_040), through: 1_240, by: 40) {
+            XCTAssertTrue(reporter.isDue(
+                ledgers: [after], arrivalCount: 0, idleFeedback: true,
+                now: at(ms)), "lingering at +\(ms - 1_000) ms")
+            _ = reporter.report(ledgers: [after], arrivals: [], now: at(ms))
+        }
+        XCTAssertFalse(reporter.isDue(
+            ledgers: [after], arrivalCount: 0, idleFeedback: true,
+            now: at(1_280)), "past the linger window the stream is quiet")
     }
 }

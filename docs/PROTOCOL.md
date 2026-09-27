@@ -322,7 +322,8 @@ monotonic stamps) and up to six NACK entries. Under key 17 a host counts
 its blackout bar only from its first media send no report has answered,
 so the client skips a beat that has nothing new (no arrival, no counter
 change, no NACK) and sends a heartbeat every 2 s instead; any arrival is
-still reported on the next beat. The host's `RateEstimator`
+reported on the next beat, and the full cadence runs for 250 ms after it
+so one lost report cannot leave a send unanswered. The host's `RateEstimator`
 prices the path from these reports; there is no client-side rate control.
 
 Pinned by `beacon-v1.json`.
