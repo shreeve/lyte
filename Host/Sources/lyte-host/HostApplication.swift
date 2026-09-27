@@ -418,6 +418,9 @@ final class SessionHost {
         // The cursor plane travels as metadata, never composited.
         declared = declared.declaringCursorShape()
         declared = declared.declaringVideoQuietPosture()
+        // Silence is owed only after a send, so an idle client may
+        // report at a heartbeat.
+        declared = declared.declaringIdleFeedback()
 
         // Chroma is declared on proof: only a Main444 encode entrypoint
         // declares the Best tier. The client's singleton declaration

@@ -83,6 +83,17 @@ public struct SessionLifecycleLane: Sendable {
         )
     }
 
+    /// A media datagram was committed for the client. It never
+    /// transitions: under send-anchored silence it only starts the
+    /// blackout bar when nothing was owed, so the timer is re-armed here
+    /// without a poll.
+    public mutating func noteMediaSent(now: UInt64) {
+        _ = machine.apply(.mediaSent, now: Self.instant(now))
+        nextDeadlineNanoseconds = machine.timerDeadline.map {
+            $0.microseconds &* 1_000
+        }
+    }
+
     private static func instant(_ nanoseconds: UInt64) -> HostTimestamp {
         HostTimestamp(microseconds: nanoseconds / 1_000)
     }

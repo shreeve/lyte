@@ -764,8 +764,14 @@ public final class Session {
             role: .host, local: config.capabilities
         )
         self.isPeerConfirmed = transport == nil
+        // Declaring key 17 is the promise that silence is owed only
+        // after a send; the machine keeps it.
+        var lifecycle = config.lifecycle
+        if config.capabilities.idleFeedback {
+            lifecycle.silenceCountsFromUnansweredSend = true
+        }
         self.lifecycleLane = SessionLifecycleLane(
-            config: config.lifecycle, establishedAt: now
+            config: lifecycle, establishedAt: now
         )
         self.validator = PathValidator(
             connectionId: connectionId,
@@ -1136,6 +1142,7 @@ public final class Session {
             lastKeyframeOfferedAtNS = now
         }
         lastAdmittedVideoFrameNumber = context.frameNumber
+        lifecycleLane.noteMediaSent(now: now)
         return shards
     }
 
@@ -1176,6 +1183,7 @@ public final class Session {
                 now: now
             )
         }
+        if !datagrams.isEmpty { lifecycleLane.noteMediaSent(now: now) }
         counters.audioPacketsIngested += 1
         counters.audioDatagramsEnqueued += datagrams.count
         counters.audioGroupsCompleted = audio.counters.groupsCompleted

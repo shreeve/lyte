@@ -393,6 +393,57 @@ final class SessionLifecycleGateTests: XCTestCase {
         XCTAssertEqual(loop.session.lifecycleState, .active)
     }
 
+    // MARK: Idle feedback — silence is owed only after a send
+
+    /// A host declaring key 17 counts the blackout bar from its first
+    /// unanswered media send: a still screen with no sends and no
+    /// reports stays ACTIVE for seconds, and a frame the client never
+    /// answers still freezes 350 ms after it left.
+    func testGateIdleFeedbackHostFreezesOnlyAfterAnUnansweredSend() throws {
+        let idle = Capabilities.wireDefault.declaringIdleFeedback()
+        let loopValue = try establish(
+            clientCapabilities: idle, hostCapabilities: idle)
+        var loop = loopValue
+        XCTAssertEqual(loop.session.agreedCapabilities?.idleFeedback, true)
+
+        var t: UInt64 = 300_000
+        try loop.feedback(t: t)
+        // Five quiet seconds: nothing sent, nothing reported.
+        t += 5_000_000
+        loop.hostEvents += loop.session.advance(
+            now: t * 1_000, hostMicroseconds: t)
+        XCTAssertEqual(loop.session.lifecycleState, .active,
+                       "nothing was sent, so no feedback was owed")
+
+        // A frame leaves; its report never comes.
+        let sent = try loop.session.ingestVideoFrame(
+            syntheticFrame(byteCount: 500),
+            captureTimestampMicroseconds: 1, isKeyframe: false,
+            now: t * 1_000)
+        XCTAssertGreaterThan(sent, 0)
+        loop.hostEvents += loop.session.advance(
+            now: (t + 349_000) * 1_000, hostMicroseconds: t + 349_000)
+        XCTAssertEqual(loop.session.lifecycleState, .active)
+        loop.hostEvents += loop.session.advance(
+            now: (t + 350_000) * 1_000, hostMicroseconds: t + 350_000)
+        XCTAssertEqual(loop.session.lifecycleState, .frozen,
+                       "an unanswered frame still freezes at 350 ms")
+    }
+
+    /// Without key 17 the host keeps the evidence clock: the same quiet
+    /// seconds freeze it, so a client that has not agreed must keep
+    /// reporting.
+    func testGateWithoutIdleFeedbackSilenceStillFreezes() throws {
+        let loopValue = try establish()
+        var loop = loopValue
+        var t: UInt64 = 300_000
+        try loop.feedback(t: t)
+        t += 5_000_000
+        loop.hostEvents += loop.session.advance(
+            now: t * 1_000, hostMicroseconds: t)
+        XCTAssertEqual(loop.session.lifecycleState, .frozen)
+    }
+
     // MARK: Input silence — held keys outlive a hitch, not a long silence
 
     /// FROZEN is not input silence: a 400 ms hitch freezes video but asks
