@@ -23,7 +23,10 @@
 //     IDR paced at `.lastGoodRate`.
 //   - ACTIVE/IDLE, `blackoutSilence` with no media-path evidence (feedback
 //     or audio acks — never the 1 Hz beacon) → FROZEN: datagram video
-//     stops, audio continues as the path probe, CTRL stays alive.
+//     stops, audio continues as the path probe, CTRL stays alive. With
+//     `silenceCountsFromUnansweredSend`, silence is counted only from the
+//     first media send no evidence has answered yet: a sender that sent
+//     nothing is owed nothing, so a still screen never freezes.
 //   - FROZEN, any evidence returns → RECOVERY: force an IDR paced at
 //     `.halfStaleEstimate`, re-send mode=active if frozen from IDLE. A
 //     pre-arm input received while FROZEN is consumed exactly once by
@@ -57,12 +60,17 @@ public struct SessionMachineConfig: Hashable, Sendable {
     /// Consecutive clean feedback windows that graduate RECOVERY back
     /// to ACTIVE.
     public var cleanWindowsToRecover: Int
+    /// Sender: the blackout bar runs from the first `.mediaSent` that no
+    /// media-path evidence has answered, not from the last evidence, so
+    /// a peer may go quiet while nothing is in flight to it.
+    public var silenceCountsFromUnansweredSend: Bool
 
     public init(
         blackoutSilenceMicroseconds: Int64 = 350_000,
         recoveryBlackoutSilenceMicroseconds: Int64? = nil,
         livenessTimeoutMicroseconds: Int64 = 30_000_000,
-        cleanWindowsToRecover: Int = 2
+        cleanWindowsToRecover: Int = 2,
+        silenceCountsFromUnansweredSend: Bool = false
     ) {
         self.blackoutSilenceMicroseconds = blackoutSilenceMicroseconds
         self.recoveryBlackoutSilenceMicroseconds = max(
@@ -72,6 +80,7 @@ public struct SessionMachineConfig: Hashable, Sendable {
         )
         self.livenessTimeoutMicroseconds = livenessTimeoutMicroseconds
         self.cleanWindowsToRecover = max(cleanWindowsToRecover, 1)
+        self.silenceCountsFromUnansweredSend = silenceCountsFromUnansweredSend
     }
 }
 
@@ -156,6 +165,10 @@ public enum SessionInput: Hashable, Sendable {
     /// sealed CTRL). Feeds the liveness clock and exits FROZEN, but
     /// deliberately NOT the blackout detector: 1 Hz beacons cannot drive it.
     case ctrlEvidence
+    /// A media datagram left for the peer (sender). Under
+    /// `silenceCountsFromUnansweredSend` the first one after the last
+    /// evidence starts the blackout bar; otherwise it changes nothing.
+    case mediaSent
     /// The estimator's verdict on one elapsed feedback window
     /// (sender). Clean windows graduate RECOVERY; a dirty one resets.
     case feedbackWindow(clean: Bool)
@@ -202,6 +215,9 @@ public struct SessionStateMachine<ClockDomain>: Sendable {
 
     private var lastMediaEvidenceAt: Instant
     private var lastPeerEvidenceAt: Instant
+    /// The first media send no evidence has answered (sender, under
+    /// `silenceCountsFromUnansweredSend`); nil when nothing is owed.
+    private var unansweredSendAt: Instant?
 
     /// The machine begins at establishment (post-Noise, post-
     /// capabilities), streaming: ACTIVE, both evidence clocks fresh.
@@ -234,7 +250,16 @@ public struct SessionStateMachine<ClockDomain>: Sendable {
         case .mediaPathEvidence:
             lastMediaEvidenceAt = now
             lastPeerEvidenceAt = now
+            unansweredSendAt = nil
             return exitFrozenIfNeeded(now: now)
+
+        case .mediaSent:
+            guard role == .mediaSender,
+                  config.silenceCountsFromUnansweredSend,
+                  unansweredSendAt == nil
+            else { return [] }
+            unansweredSendAt = now
+            return []
 
         case .ctrlEvidence:
             lastPeerEvidenceAt = now
@@ -336,7 +361,8 @@ public struct SessionStateMachine<ClockDomain>: Sendable {
 
         var actions: [SessionAction] = []
         if let silenceLimit = silenceLimitMicroseconds,
-           now.microseconds(since: lastMediaEvidenceAt) >= silenceLimit {
+           let silentSince = silenceAnchor,
+           now.microseconds(since: silentSince) >= silenceLimit {
             // FROZEN entry: the pending idle flip dies with the path
             // (RECOVERY re-ratchets); the wire mode stays whatever it
             // was — FROZEN is never a wire mode.
@@ -361,14 +387,25 @@ public struct SessionStateMachine<ClockDomain>: Sendable {
         }
     }
 
+    /// Where the blackout bar is measured from; nil when nothing is owed.
+    private var silenceAnchor: Instant? {
+        config.silenceCountsFromUnansweredSend && role == .mediaSender
+            ? unansweredSendAt : lastMediaEvidenceAt
+    }
+
+    /// The instant `poll` must next run; nil once closed. A shell that
+    /// applies `.mediaSent` without polling reads it to re-arm its timer.
+    public var timerDeadline: Instant? {
+        state == .closed ? nil : nextDeadline()
+    }
+
     private func nextDeadline() -> Instant? {
         var earliest = lastPeerEvidenceAt.advanced(
             byMicroseconds: config.livenessTimeoutMicroseconds
         )
-        if let silenceLimit = silenceLimitMicroseconds {
-            let silence = lastMediaEvidenceAt.advanced(
-                byMicroseconds: silenceLimit
-            )
+        if let silenceLimit = silenceLimitMicroseconds,
+           let silentSince = silenceAnchor {
+            let silence = silentSince.advanced(byMicroseconds: silenceLimit)
             if silence < earliest { earliest = silence }
         }
         return earliest
@@ -396,6 +433,9 @@ public struct SessionStateMachine<ClockDomain>: Sendable {
     ) -> [SessionAction] {
         guard state == .frozen else { return [] }
         lastMediaEvidenceAt = now
+        // Sends made while FROZEN (the audio probe) earned nothing yet;
+        // the fresh window starts at the next send.
+        unansweredSendAt = nil
         guard role == .mediaSender else {
             state = wireMode == .active ? .active : .idle
             return []

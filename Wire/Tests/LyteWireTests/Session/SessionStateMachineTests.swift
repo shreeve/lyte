@@ -325,4 +325,94 @@ final class SessionStateMachineTests: XCTestCase {
         _ = m.apply(.feedbackWindow(clean: true), now: now)
         XCTAssertEqual(m.state, .active)
     }
+
+    // MARK: Send-anchored silence
+
+    func sendAnchoredSender() -> Machine {
+        Machine(
+            role: .mediaSender,
+            config: SessionMachineConfig(silenceCountsFromUnansweredSend: true),
+            now: t0)
+    }
+
+    /// A sender that sent nothing is owed nothing: minutes without
+    /// feedback never freeze it; only the liveness clock still runs.
+    func testNothingSentNeverFreezes() {
+        var m = sendAnchoredSender()
+        let late = t0.advanced(byMicroseconds: 29_000_000)
+        XCTAssertEqual(m.poll(now: late).actions, [])
+        XCTAssertEqual(m.state, .active)
+        XCTAssertEqual(m.timerDeadline, t0.advanced(byMicroseconds: 30_000_000))
+        let dead = t0.advanced(byMicroseconds: 30_000_000)
+        XCTAssertEqual(m.poll(now: dead).actions, [.sessionClosed(.livenessTimeout)])
+    }
+
+    /// The bar runs from the first unanswered send, not the last
+    /// evidence, and later sends do not move it.
+    func testSilenceCountsFromTheFirstUnansweredSend() {
+        var m = sendAnchoredSender()
+        let sent = t0.advanced(byMicroseconds: 5_000_000)
+        XCTAssertEqual(m.apply(.mediaSent, now: sent), [])
+        _ = m.apply(.mediaSent, now: sent.advanced(byMicroseconds: 200_000))
+        XCTAssertEqual(m.timerDeadline, sent.advanced(byMicroseconds: 350_000))
+        _ = m.poll(now: sent.advanced(byMicroseconds: 349_999))
+        XCTAssertEqual(m.state, .active)
+        XCTAssertEqual(
+            m.poll(now: sent.advanced(byMicroseconds: 350_000)).actions,
+            [.freezeDatagramSends])
+        XCTAssertEqual(m.state, .frozen)
+    }
+
+    /// Evidence answers every send before it; the next send opens a
+    /// fresh window.
+    func testEvidenceAnswersTheSendsBeforeIt() {
+        var m = sendAnchoredSender()
+        _ = m.apply(.mediaSent, now: t0)
+        _ = m.apply(.mediaPathEvidence, now: t0.advanced(byMicroseconds: 40_000))
+        let quiet = t0.advanced(byMicroseconds: 5_000_000)
+        _ = m.poll(now: quiet)
+        XCTAssertEqual(m.state, .active)
+        _ = m.apply(.mediaSent, now: quiet)
+        _ = m.poll(now: quiet.advanced(byMicroseconds: 349_999))
+        XCTAssertEqual(m.state, .active)
+        _ = m.poll(now: quiet.advanced(byMicroseconds: 350_000))
+        XCTAssertEqual(m.state, .frozen)
+    }
+
+    /// The audio probe keeps sending while FROZEN; those sends earned
+    /// nothing, so RECOVERY's window starts at its first send, not at
+    /// the probe's.
+    func testFrozenProbeSendsDoNotRefreezeRecovery() {
+        var m = sendAnchoredSender()
+        _ = m.apply(.mediaSent, now: t0)
+        let frozenAt = t0.advanced(byMicroseconds: 350_000)
+        _ = m.poll(now: frozenAt)
+        XCTAssertEqual(m.state, .frozen)
+        _ = m.apply(.mediaSent, now: frozenAt.advanced(byMicroseconds: 5_000))
+        let back = frozenAt.advanced(byMicroseconds: 5_000_000)
+        _ = m.apply(.ctrlEvidence, now: back)
+        _ = m.poll(now: back)
+        XCTAssertEqual(m.state, .recovery)
+        _ = m.apply(.mediaSent, now: back)
+        _ = m.poll(now: back.advanced(byMicroseconds: 1_999_999))
+        XCTAssertEqual(m.state, .recovery)
+        _ = m.poll(now: back.advanced(byMicroseconds: 2_000_000))
+        XCTAssertEqual(m.state, .frozen)
+    }
+
+    /// The flag is sender policy: a receiver keeps the evidence clock,
+    /// and `.mediaSent` changes nothing without the flag.
+    func testSendAnchoringIsSenderOnlyAndOptIn() {
+        var receiver = Machine(
+            role: .mediaReceiver,
+            config: SessionMachineConfig(silenceCountsFromUnansweredSend: true),
+            now: t0)
+        _ = receiver.poll(now: t0.advanced(byMicroseconds: 350_000))
+        XCTAssertEqual(receiver.state, .frozen)
+
+        var plain = freshSender()
+        _ = plain.apply(.mediaSent, now: t0.advanced(byMicroseconds: 300_000))
+        _ = plain.poll(now: t0.advanced(byMicroseconds: 350_000))
+        XCTAssertEqual(plain.state, .frozen)
+    }
 }

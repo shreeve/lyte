@@ -58,4 +58,5 @@ public let vectorFileBuilders: [VectorFileBuilder] = [
         try makeVideoDecisionVectorFile(corpusDirectory: videoCorpusDirectory)
     },
     VectorFileBuilder("audio-stream-off", makeAudioStreamOffVectorFile),
+    VectorFileBuilder("idle-feedback", makeIdleFeedbackVectorFile),
 ]

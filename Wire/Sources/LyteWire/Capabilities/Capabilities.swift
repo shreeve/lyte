@@ -108,6 +108,12 @@ public enum CapabilityKey {
     /// toward 30 s, each step announced; damage or client input wakes
     /// it). A host never backs off without it.
     public static let videoQuietPosture: UInt64 = 16
+    /// bool — this end runs idle feedback: the host counts the blackout
+    /// bar only from its first media send no feedback has answered, so
+    /// the client may space its chan-3 reports out to a heartbeat while
+    /// nothing arrives (it still reports within the 25–50 ms cadence
+    /// after any arrival). A client never slows its reports without it.
+    public static let idleFeedback: UInt64 = 17
 }
 
 /// Video codec ids for the `videoCodecs` list. Only HEVC is assigned
@@ -390,7 +396,7 @@ public struct Capabilities: Hashable, Sendable {
         CborMapEntry(key: .unsigned(key), value: .bool(true))
     }
 
-    // MARK: - Keys 9–16, one flag each
+    // MARK: - Keys 9–17, one flag each
 
     public var hostAudioRouting: Bool { declaresFlag(Key.hostAudioRouting) }
     public var clipboardText: Bool { declaresFlag(Key.clipboardText) }
@@ -400,6 +406,7 @@ public struct Capabilities: Hashable, Sendable {
     public var audioStreamOff: Bool { declaresFlag(Key.audioStreamOff) }
     public var audioQuietPosture: Bool { declaresFlag(Key.audioQuietPosture) }
     public var videoQuietPosture: Bool { declaresFlag(Key.videoQuietPosture) }
+    public var idleFeedback: Bool { declaresFlag(Key.idleFeedback) }
 
     public func declaringHostAudioRouting() -> Self {
         declaringFlag(Key.hostAudioRouting)
@@ -424,6 +431,9 @@ public struct Capabilities: Hashable, Sendable {
     }
     public func declaringVideoQuietPosture() -> Self {
         declaringFlag(Key.videoQuietPosture)
+    }
+    public func declaringIdleFeedback() -> Self {
+        declaringFlag(Key.idleFeedback)
     }
 
     /// The full image gate: keys 10 ∧ 12 both survived intersection.

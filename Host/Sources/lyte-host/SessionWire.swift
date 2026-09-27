@@ -1788,6 +1788,7 @@ final class SessionWire {
                 capabilities: agreed — wire minor \(agreed.wireMinor), \
                 codecs \(agreed.videoCodecs), chroma \(agreed.chromaModes), \
                 idle-silence \(agreed.idleSilence), \
+                idle-feedback \(agreed.idleFeedback), \
                 host-audio-routing \(agreed.hostAudioRouting), \
                 max datagram \(agreed.maxDatagramBytes) B
                 """)

@@ -62,7 +62,7 @@ Pinned by `envelope-v1.json`, `session-v1.json` (conn-id TLV),
 | 0 | CTRL | ARQ ordered stream (group 0) + ARQ-exempt datagrams | control |
 | 1 | audio | unreliable, RS-FEC | audio |
 | 2 | video-active | unreliable, RS-FEC + NACK repair | fresh video (repairs: video tail) |
-| 3 | feedback | unreliable, 25–50 ms reports, client → host | — |
+| 3 | feedback | unreliable, 25–50 ms reports (a 2 s heartbeat when idle under key 17), client → host | — |
 | 4 | video-idle | registered, unused in v1 | — |
 | 5–7 | reserved | never sent; dropped on receive | — |
 | 8 | bulk transfer | ARQ ordered stream | bulk (last) |
@@ -201,15 +201,16 @@ both sides declare byte-equal values.
 | 14 | audioStreamOff | flag | routing mode 0x04 |
 | 15 | audioQuietPosture | flag | 0x25 |
 | 16 | videoQuietPosture | flag | 0x26 |
+| 17 | idleFeedback | flag | the chan-3 report cadence on a still stream |
 
-Keys 9–16 are "flags": a canonical `key: true` entry carried as an unknown
+Keys 9–17 are "flags": a canonical `key: true` entry carried as an unknown
 entry of the v1 set, so `capabilities-v1.json` never moves.
 
 Pinned by `capabilities-v1.json` (keys 1–8, the CBOR profile, the
 intersection algebra) and the spine pins in `control-v1.json` (9),
 `clipboard-v1.json` (10), `bulk-v1.json` (11), `clipboard-images-v1.json`
-(12), `cursor-v1.json` (13), `audio-stream-off-v1.json` (14) and
-`postures-v1.json` (15, 16); `control-v1.json` also pins routing mode
+(12), `cursor-v1.json` (13), `audio-stream-off-v1.json` (14),
+`postures-v1.json` (15, 16) and `idle-feedback-v1.json` (17); `control-v1.json` also pins routing mode
 0x04 and the reserved 0x03.
 
 ## CTRL message registry
@@ -317,7 +318,12 @@ frozen or lying host clock cannot derail the fit. The host measures
 round-trip time from its own record of each beacon's send time, never from
 the echoed copy. The client sends a feedback report on chan 3 every
 25–50 ms: per-channel counters, per-packet arrival dispersion (kernel
-monotonic stamps) and up to six NACK entries. The host's `RateEstimator`
+monotonic stamps) and up to six NACK entries. Under key 17 a host counts
+its blackout bar only from its first media send no report has answered,
+so the client skips a beat that has nothing new (no arrival, no counter
+change, no NACK) and sends a heartbeat every 2 s instead; any arrival is
+reported on the next beat and repeated 80 ms and 200 ms later, so two
+lost reports cannot leave a send unanswered. The host's `RateEstimator`
 prices the path from these reports; there is no client-side rate control.
 
 Pinned by `beacon-v1.json`.

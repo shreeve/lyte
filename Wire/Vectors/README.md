@@ -134,6 +134,10 @@ the hand-computed bytes.
   vector's `flags` name the accessors and what they must read. Routing
   mode 0x04 itself is pinned in `control-v1.json`. Anchors in
   `AudioStreamOffVectorFileTests`.
+- `idle-feedback-v1.json` — the key-17 (`idleFeedback`) capability spine
+  declared, absent, and beside key 16 (`10 F5 11 F5`), in the same shape.
+  The cadence it permits is behavior, covered by the session machine and
+  client reporter suites. Anchors in `IdleFeedbackVectorFileTests`.
 
 The message files share one shape: `roundtrip` encodes the typed fields to
 exactly `messageHex` and decodes back; `decodeReject` decoding `messageHex`
@@ -575,8 +579,8 @@ over. Decode nesting is bounded at depth 8.
 **The key registry** — numbers, types, intersect rules and what each key
 gates — is the table in
 [docs/PROTOCOL.md](../../docs/PROTOCOL.md#capabilities) (source:
-`Capabilities.swift`). Keys 9–16 are not typed fields of the v1 set: each
-is one canonical `key: true` entry (`09 F5` … `10 F5`) carried through the
+`Capabilities.swift`). Keys 9–17 are not typed fields of the v1 set: each
+is one canonical `key: true` entry (`09 F5` … `11 F5`) carried through the
 unknown-entry rule below, so `capabilities-v1.json` never moves; each has
 its spine pin in the file named in the Files list.
 

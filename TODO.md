@@ -115,6 +115,14 @@ live state: [HANDOFF.md](HANDOFF.md).
   on whoever lands a PR running `Scripts/CI/test-all-macos.sh` and
   `test-all-pup.sh` by hand. A self-hosted runner on pup (Linux leg) plus
   the owner's Mac (macOS leg), or a pre-merge hook, would make it a check.
+- **Stale cross-package builds on pup.** Swift 6.1.2 on Linux did not
+  recompile Browser after `ClientFeedbackReporter` (Client), which the
+  browser core embeds by value, gained a stored property: the pup gate
+  failed with garbage values until `swift package clean` in Browser. The
+  gate cleans only when a manifest, pin or file list changes
+  (`Scripts/lib/build-graph.sh`), so the same staleness could pass a
+  broken tree. Clean a package whenever a package it depends on changed
+  sources, or key the check on a hash of each dependency's `Sources/`.
 - **A video-quality gate with a host encode leg.** The orphaned corpus
   pipeline (`corpus-gen`, `corpus-gate`, `decode-probe`, the text goldens)
   was deleted in `23d329c`; recover it from `23d329c^` if a gate that

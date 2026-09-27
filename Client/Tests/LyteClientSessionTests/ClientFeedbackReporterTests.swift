@@ -51,4 +51,65 @@ final class ClientFeedbackReporterTests: XCTestCase {
         XCTAssertEqual(reporter.stats.dispersionSamplesDecimated, 1)
         XCTAssertNoThrow(try report.encode())
     }
+
+    /// Idle feedback: a beat with nothing new waits for the heartbeat;
+    /// an arrival, a ledger change or a queued NACK makes it due at once.
+    /// Without the agreement every beat is due.
+    func testIdleFeedbackSendsOnlyNewsAndTheHeartbeat() throws {
+        var reporter = ClientFeedbackReporter()
+        let ledger = ClientFeedbackReporter.Ledger(
+            channel: .videoActive, highestSeq: ChannelSeq(rawValue: 3),
+            datagrams: 4, duplicates: 0, missing: 0)
+        func at(_ ms: UInt64) -> ClientTimestamp {
+            ClientTimestamp(microseconds: ms * 1_000)
+        }
+        func due(_ ledgers: [ClientFeedbackReporter.Ledger], arrivals: Int = 0,
+                 idle: Bool = true, _ ms: UInt64) -> Bool {
+            reporter.isDue(ledgers: ledgers, arrivalCount: arrivals,
+                           idleFeedback: idle, now: at(ms))
+        }
+
+        XCTAssertTrue(due([ledger], 0), "the first beat always reports")
+        _ = reporter.report(ledgers: [ledger], arrivals: [], now: at(0))
+        XCTAssertFalse(due([ledger], 40), "nothing new: silent")
+        for echo in [UInt64(80), 200] {
+            XCTAssertTrue(due([ledger], echo), "the first report is news: echoed")
+            _ = reporter.report(ledgers: [ledger], arrivals: [], now: at(echo))
+        }
+        XCTAssertFalse(due([ledger], 300), "echoes spent: silent")
+        XCTAssertFalse(due([ledger], 2_199))
+        XCTAssertTrue(due([ledger], 2_200), "the heartbeat")
+        XCTAssertTrue(due([ledger], idle: false, 40),
+                      "without key 17 every beat reports")
+        XCTAssertTrue(due([ledger], arrivals: 1, 40), "an arrival is news")
+        var grown = ledger
+        grown.datagrams += 1
+        XCTAssertTrue(due([grown], 40), "a ledger change is news")
+        reporter.enqueueNacks([try entry(9)])
+        XCTAssertTrue(due([ledger], 40), "a NACK never waits")
+    }
+
+    /// A report of news is repeated at +80 and +200 ms, so two lost
+    /// reports cannot leave the host's send unanswered; then quiet.
+    func testIdleFeedbackEchoesNewsTwice() {
+        var reporter = ClientFeedbackReporter()
+        let before = ClientFeedbackReporter.Ledger(
+            channel: .videoActive, highestSeq: ChannelSeq(rawValue: 3),
+            datagrams: 4, duplicates: 0, missing: 0)
+        var after = before
+        after.datagrams += 3
+        func at(_ ms: UInt64) -> ClientTimestamp {
+            ClientTimestamp(microseconds: ms * 1_000)
+        }
+        _ = reporter.report(ledgers: [before], arrivals: [], now: at(0))
+        _ = reporter.report(ledgers: [after], arrivals: [], now: at(1_000))
+        var sentAt: [UInt64] = []
+        for ms in stride(from: UInt64(1_040), through: 1_600, by: 40)
+        where reporter.isDue(ledgers: [after], arrivalCount: 0,
+                             idleFeedback: true, now: at(ms)) {
+            sentAt.append(ms - 1_000)
+            _ = reporter.report(ledgers: [after], arrivals: [], now: at(ms))
+        }
+        XCTAssertEqual(sentAt, [80, 200], "two echoes, then quiet")
+    }
 }

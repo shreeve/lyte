@@ -43,7 +43,7 @@ each.
 | ARQ | Lyte's reliable retransmission sublayer; group 0 is the ordered stream, other groups are one-shots |
 | one-shot group | An independent ARQ message that cannot block, or be blocked by, other groups |
 | capability key | A numbered entry in the capability declaration; features are gated on the intersection |
-| flag key | Keys 9–16: a `key: true` entry carried outside the typed v1 set |
+| flag key | Keys 9–17: a `key: true` entry carried outside the typed v1 set |
 | IRAP / IDR | HEVC random-access picture; the frame a decoder can start from |
 | NACK | Client request for specific missing shards of a frame |
 | repair refusal | Host's explicit "that repair will not come" (CTRL 0x23) |

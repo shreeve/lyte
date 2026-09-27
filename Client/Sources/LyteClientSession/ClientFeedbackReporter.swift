@@ -8,6 +8,12 @@ import LyteWire
 /// Reports are unreliable: a lost report is superseded by the next, and
 /// entries drained into a report are spent even if it is lost (the repair
 /// deadline covers a lost NACK).
+///
+/// Under idle feedback (capability key 17) a beat with nothing new — no
+/// arrival, no ledger change, no NACK — sends nothing until the heartbeat
+/// is due: the host owes its blackout bar only to sends it made. Each
+/// report of news is repeated at `idleEchoMicroseconds` after it, so two
+/// lost reports cannot leave a send unanswered past the host's 350 ms bar.
 public struct ClientFeedbackReporter: Sendable {
     public struct Stats: Sendable, Equatable {
         public var dispersionSamplesReported: UInt64 = 0
@@ -65,8 +71,18 @@ public struct ClientFeedbackReporter: Sendable {
     /// (closest to stale; the repair deadline backstops them).
     public static let pendingNackCap = 24
 
+    /// The longest an idle-feedback client stays silent: it keeps the
+    /// host's estimator and ledgers current on a still screen.
+    public static let idleHeartbeatMicroseconds: UInt64 = 2_000_000
+    /// When a report of news is repeated, after the news: inside the
+    /// host's 350 ms bar with room for the last one's flight.
+    public static let idleEchoMicroseconds: [UInt64] = [80_000, 200_000]
+
     public private(set) var stats = Stats()
     private var pendingNacks: [FeedbackReport.NackEntry] = []
+    private var lastReportAt: ClientTimestamp?
+    private var lastNewsAt: ClientTimestamp?
+    private var lastReportedLedgers: [Ledger] = []
 
     public init() {}
 
@@ -79,11 +95,36 @@ public struct ClientFeedbackReporter: Sendable {
         }
     }
 
+    /// Whether this beat sends. Without idle feedback every beat does;
+    /// with it, only one that carries news or is the heartbeat.
+    public func isDue(
+        ledgers: [Ledger], arrivalCount: Int, idleFeedback: Bool,
+        now: ClientTimestamp
+    ) -> Bool {
+        guard idleFeedback, let last = lastReportAt else { return true }
+        let echoDue = lastNewsAt.map { news in
+            Self.idleEchoMicroseconds.contains { offset in
+                let at = news.microseconds &+ offset
+                return now.microseconds >= at && last.microseconds < at
+            }
+        } ?? false
+        return arrivalCount > 0 || !pendingNacks.isEmpty
+            || ledgers != lastReportedLedgers || echoDue
+            || now.microseconds &- last.microseconds
+                >= Self.idleHeartbeatMicroseconds
+    }
+
     /// The report for this beat. The ledger counters truncate to the
     /// wire's u32 fields: the host differences successive reports.
     public mutating func report(
         ledgers: [Ledger], arrivals: [Arrival], now: ClientTimestamp
     ) -> FeedbackReport {
+        if !arrivals.isEmpty || !pendingNacks.isEmpty
+            || ledgers != lastReportedLedgers {
+            lastNewsAt = now
+        }
+        lastReportAt = now
+        lastReportedLedgers = ledgers
         let channels = ledgers.prefix(FeedbackBounds.maxChannelBlocks).map {
             FeedbackReport.ChannelStats(
                 channel: $0.channel,

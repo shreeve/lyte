@@ -1,7 +1,8 @@
 // The chan=3 feedback cadence: every 25–50 ms, LyteClientSession's
 // ClientFeedbackReporter turns ReceiveDemux's per-channel ledgers, its
 // drained arrival samples and any queued NACK entries into one report, and
-// this shell seals and sends it. Failures only count.
+// this shell seals and sends it; under idle feedback (key 17) a beat with
+// nothing new sends nothing until the heartbeat. Failures only count.
 
 import LyteIO
 import Dispatch
@@ -21,6 +22,7 @@ public final class FeedbackSender: Sendable {
 
     private struct Books {
         var reporter = ClientFeedbackReporter()
+        var idleFeedback = false
         var reportsSent: UInt64 = 0
         var reportsFailed: UInt64 = 0
     }
@@ -93,22 +95,36 @@ public final class FeedbackSender: Sendable {
         books.withLock { $0.reporter.enqueueNacks(entries) }
     }
 
-    /// One cadence beat: build the report and send it.
+    /// The agreement on capability key 17: a beat with nothing new
+    /// sends nothing until the reporter's heartbeat is due.
+    public func setIdleFeedback(_ agreed: Bool) {
+        books.withLock { $0.idleFeedback = agreed }
+    }
+
+    /// One cadence beat: build the report and send it when it is due.
+    /// The deadlines `onTick` runs fire every beat either way.
     public func tick(now: ClientTimestamp) {
-        let report = buildReport(now: now)
-        // Counted, not fatal: the next beat rebuilds from fresh state.
-        let sent = (try? sender.send(
-            channel: .feedback,
-            timestamp: now,
-            plaintext: report.encode())) ?? false
-        books.withLock {
-            if sent { $0.reportsSent += 1 } else { $0.reportsFailed += 1 }
+        if let report = buildReport(now: now, onlyIfDue: true) {
+            // Counted, not fatal: the next beat rebuilds from fresh state.
+            let sent = (try? sender.send(
+                channel: .feedback,
+                timestamp: now,
+                plaintext: report.encode())) ?? false
+            books.withLock {
+                if sent { $0.reportsSent += 1 } else { $0.reportsFailed += 1 }
+            }
         }
         onTick?(now)
     }
 
     /// Builds one report from the demux's ledgers and drained samples.
     public func buildReport(now: ClientTimestamp) -> FeedbackReport {
+        buildReport(now: now, onlyIfDue: false)!
+    }
+
+    private func buildReport(
+        now: ClientTimestamp, onlyIfDue: Bool
+    ) -> FeedbackReport? {
         let ledgers = demux.snapshotChannels().map {
             ClientFeedbackReporter.Ledger(
                 channel: ChannelId(rawValue: $0.channel),
@@ -118,8 +134,13 @@ public final class FeedbackSender: Sendable {
                 missing: $0.stats.seqMissing)
         }
         let arrivals = demux.drainArrivalSamples()
-        return books.withLock {
-            $0.reporter.report(ledgers: ledgers, arrivals: arrivals, now: now)
+        return books.withLock { books -> FeedbackReport? in
+            guard !onlyIfDue || books.reporter.isDue(
+                ledgers: ledgers, arrivalCount: arrivals.count,
+                idleFeedback: books.idleFeedback, now: now)
+            else { return nil }
+            return books.reporter.report(
+                ledgers: ledgers, arrivals: arrivals, now: now)
         }
     }
 

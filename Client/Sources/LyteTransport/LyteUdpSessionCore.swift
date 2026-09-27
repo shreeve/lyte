@@ -921,6 +921,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         notePosture(decision.detectorPosture)
         switch decision.event {
         case .capability(.agreed(let intersection)):
+            feedback.setIdleFeedback(intersection.idleFeedback)
             onEvent(.capabilitiesAgreed(intersection))
         case .capability(.failed(let failure)):
             onEvent(.capabilitiesFailed(failure))
