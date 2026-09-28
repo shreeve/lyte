@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Deploy lyte-host binaries as an immutable version and point the service's
-# executable at it. Run as the seat user (never root):
+# Deploy lyte-host binaries as an immutable, root-owned version and point the
+# service's executable at it. Run as the seat user (never root); every write
+# escalates through sudo:
 #
 #   deploy-host.sh [--restart] [--keep N] [RELEASE_DIR]
 #       copy RELEASE_DIR/lyte-host (+ lyte-audio-check when present) into
-#       versions/<sha256-prefix-12>/, then atomically flip ~/.local/bin/lyte-host
+#       versions/<sha256-prefix-12>/, then atomically flip the active link
 #       to it. RELEASE_DIR defaults to Host/.build/release. Redeploying the
 #       active binary is a no-op flip; the newest N versions (default 5) plus
 #       the active and previous ones are kept.
@@ -14,16 +15,17 @@
 #   deploy-host.sh --status
 #       print the active and previous versions and verify the active binary.
 #
-# --restart runs `sudo -n systemctl restart lyte-host` after the flip; without
+# --restart runs `sudo systemctl restart lyte-host` after the flip; without
 # it the running service keeps its open executable until the next restart.
 #
-# Layout (XDG_DATA_HOME is honored when it is an absolute path):
-#   ${XDG_DATA_HOME:-~/.local/share}/lyte/versions/<id>/lyte-host
-#   ${XDG_DATA_HOME:-~/.local/share}/lyte/previous      id of the prior version
-#   ~/.local/bin/lyte-host -> .../versions/<id>/lyte-host
+# Layout, root:root and read-only to the seat user, so code running as that
+# user cannot plant a binary the service runs with CAP_SYS_ADMIN:
+#   /usr/local/lib/lyte/versions/<id>/lyte-host
+#   /usr/local/lib/lyte/previous      id of the prior version
+#   /usr/local/lib/lyte/lyte-host -> versions/<id>/lyte-host
 #
-# LYTE_SYSTEMCTL is a test seam: when set, --restart runs it (without sudo)
-# instead of systemctl.
+# LYTE_INSTALL_ROOT and LYTE_SYSTEMCTL are test seams (lib/host-common.sh):
+# the layout lands under the prefix and nothing escalates.
 set -euo pipefail
 
 usage() {
@@ -67,15 +69,10 @@ done
 [[ "$mode" != status || "$restart" == 0 ]] || usage
 
 [[ "$(id -u)" != 0 ]] || fail "run as the seat user, not root"
-[[ "${HOME:-}" == /* && "$HOME" != / && -d "$HOME" ]] \
-    || fail "HOME must be an existing absolute directory"
-data_home="$HOME/.local/share"
-[[ "${XDG_DATA_HOME:-}" != /* ]] || data_home="$XDG_DATA_HOME"
-data_root="$data_home/lyte"
-versions="$data_root/versions"
-previous_file="$data_root/previous"
-bin_dir="$HOME/.local/bin"
-link="$bin_dir/lyte-host"
+system_side
+versions="$lib_dir/versions"
+previous_file="$lib_dir/previous"
+link="$lib_dir/lyte-host"
 companions=(lyte-audio-check)
 
 # The id of the version a symlink target names, or failure when the target
@@ -120,7 +117,7 @@ check_version() {
 
 check_layout() {
     local path
-    for path in "$data_root" "$versions" "$bin_dir"; do
+    for path in "$lib_dir" "$versions"; do
         [[ ! -L "$path" ]] || fail "$path is a symlink"
         [[ ! -e "$path" || -d "$path" ]] || fail "$path is not a directory"
     done
@@ -128,30 +125,27 @@ check_layout() {
 
 write_previous() {
     local temporary="$previous_file.tmp.$$"
-    printf '%s\n' "$1" > "$temporary"
-    mv -f "$temporary" "$previous_file"
+    printf '%s\n' "$1" | as_root tee "$temporary" >/dev/null
+    as_root mv -f "$temporary" "$previous_file"
 }
 
 # Replace the link in one rename(2): readers see the old or the new target,
 # never a missing file.
 flip_link() {
-    local id="$1" current="$2" temporary="$bin_dir/.lyte-host.tmp.$$"
-    rm -f -- "$temporary"
-    ln -s "$versions/$id/lyte-host" "$temporary"
-    mv_no_target_dir -f "$temporary" "$link" # the link never names a directory
+    local id="$1" current="$2" temporary="$lib_dir/.lyte-host.tmp.$$"
+    as_root rm -f -- "$temporary"
+    as_root ln -s "$versions/$id/lyte-host" "$temporary"
+    # The link never names a directory.
+    as_root_mv_no_target_dir -f "$temporary" "$link"
     if [[ -n "$current" && "$current" != "$id" ]]; then
         write_previous "$current"
     fi
-    touch "$versions/$id" # recency for pruning
+    as_root touch "$versions/$id" # recency for pruning
 }
 
 restart_service() {
     (( restart )) || return 0
-    if [[ -n "${LYTE_SYSTEMCTL:-}" ]]; then
-        "$LYTE_SYSTEMCTL" restart lyte-host
-    else
-        sudo -n systemctl restart lyte-host
-    fi
+    as_root "$systemctl_command" restart lyte-host
     echo "restarted lyte-host.service"
 }
 
@@ -168,7 +162,7 @@ prune() {
             kept=$((kept + 1))
             continue
         fi
-        find "$versions/$id" -xdev -depth -delete
+        as_root find "$versions/$id" -xdev -depth -delete
         echo "pruned version $id"
     done < <(ls -1t "$versions")
 }
@@ -190,30 +184,30 @@ deploy() {
             || fail "version $id exists with a different binary"
         echo "version $id already deployed"
     else
-        mkdir -p "$versions" "$bin_dir"
-        staging="$(mktemp -d "$versions/.staging.XXXXXX")"
-        trap 'find "$staging" -xdev -depth -delete 2>/dev/null || true' EXIT
-        install -m 0755 "$source/lyte-host" "$staging/lyte-host"
+        as_root install -d -m 0755 "$versions"
+        staging="$(as_root mktemp -d "$versions/.staging.XXXXXX")"
+        trap 'as_root find "$staging" -xdev -depth -delete 2>/dev/null || true' EXIT
+        # mktemp -d is 0700; the seat user verifies the copy below.
+        as_root chmod 0755 "$staging"
+        as_root install -m 0755 "$source/lyte-host" "$staging/lyte-host"
         for name in "${companions[@]}"; do
             if [[ -f "$source/$name" && -x "$source/$name" ]]; then
-                install -m 0755 "$source/$name" "$staging/$name"
+                as_root install -m 0755 "$source/$name" "$staging/$name"
             fi
         done
         [[ "$(sha256_file "$staging/lyte-host")" == "$sha" ]] \
             || fail "copied binary does not match $source/lyte-host"
-        chmod 0755 "$staging"
         # A version that appeared meanwhile (a concurrent deploy of the
         # same binary) fails the rename instead of receiving the staging
         # directory inside it.
         [[ ! -e "$versions/$id" ]] \
             || fail "version $id appeared during this deploy"
-        mv_no_target_dir "$staging" "$versions/$id" \
+        as_root_mv_no_target_dir "$staging" "$versions/$id" \
             || fail "version $id appeared during this deploy"
         trap - EXIT
         echo "deployed version $id from $source"
     fi
 
-    mkdir -p "$bin_dir"
     flip_link "$id" "$current"
     if [[ "$current" == "$id" ]]; then
         echo "$link already active at $id"

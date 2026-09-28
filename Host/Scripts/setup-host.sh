@@ -30,7 +30,7 @@ echo "lyte-host machine setup"
 
 # --- 1. The service and its CAP_SYS_ADMIN (the direct eye's DRM ticket)
 UNIT=/etc/systemd/system/lyte-host.service
-BIN="$HOME/.local/bin/lyte-host"
+BIN=/usr/local/lib/lyte/lyte-host
 if [ -f "$UNIT" ] && grep -q '^AmbientCapabilities=CAP_SYS_ADMIN' "$UNIT"; then
     ok "lyte-host.service grants CAP_SYS_ADMIN (ambient) — no setcap needed"
 else
@@ -58,6 +58,13 @@ for OLD in /etc/lyte/lyte-host.conf /usr/local/bin/lyte-host /tmp/lyte-host-sess
         printf '    sudo rm %s\n' "$OLD"
     fi
 done
+# --- pre-root-owned leftovers: the service no longer reads the home ----
+if [ -L "$HOME/.local/bin/lyte-host" ] || [ -d "$HOME/.local/share/lyte/versions" ]; then
+    todo "pre-root-owned $HOME/.local/bin/lyte-host and ~/.local/share/lyte/versions are unused by the current unit (Host/Scripts/uninstall-host.sh removes them)"
+fi
+if [ -f "$HOME/.config/lyte/host.conf" ] && [ -f /etc/lyte/host.conf ]; then
+    todo "$HOME/.config/lyte/host.conf is unused: the service reads /etc/lyte/host.conf"
+fi
 if [ -d "$HOME/.config/lyte-host" ]; then
     ok "pre-XDG identity $HOME/.config/lyte-host kept read-only (lyte-host copies from it, never writes it)"
 fi

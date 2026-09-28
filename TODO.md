@@ -11,22 +11,11 @@ live state: [HANDOFF.md](HANDOFF.md).
   Wanted: require-paired by default, and a pairing arm inside the running
   service (a signal or control socket that mints a PIN) instead of stop,
   hand-run, restart.
-- **Root-owned executable and knobs under ambient `CAP_SYS_ADMIN` (before
-  1.0).** The unit (`Host/Systemd/lyte-host.service`) execs the seat
-  user's `~/.local/bin/lyte-host` with ambient `CAP_SYS_ADMIN` and
-  `Restart=always`, so seat-user code can plant a binary and have it
-  re-executed with the capability
-  ([OPERATIONS](docs/OPERATIONS.md#safety)). A root-owned binary alone does
-  not close this: `EnvironmentFile=` is the seat user's
-  `~/.config/lyte/host.conf`, which can set `LD_PRELOAD` or
-  `LD_LIBRARY_PATH` for `/bin/sh` and `lyte-host`, and ambient
-  capabilities do not set `AT_SECURE`, so the loader honors them under
-  `CAP_SYS_ADMIN`. Wanted: `deploy-host.sh` installs root-owned versions
-  and the unit execs a root-owned link (or `setcap` on a root-owned copy);
-  the knobs move to a root-owned file (for example `/etc/lyte/host.conf`),
-  or `lyte-host` reads its own arguments file and `EnvironmentFile=` goes.
-  The unquoted `$$LYTE_HOST_ARGS` in `ExecStart` is also glob-expanded by
-  `sh`: add `set -f`, or exec `lyte-host` without a shell.
+- **Password-free sudo on pup.** The host now runs a root-owned binary
+  with root-owned knobs, but pup's seat user has `NOPASSWD: ALL`, so any
+  code running as that user is root anyway. Narrow it (for example to
+  `systemctl restart lyte-host` and the deploy's `install`/`ln`/`mv` under
+  `/usr/local/lib/lyte`) or require a password before 1.0 (owner).
 - **Helper registration residual (Mac).** Before `SMAppService`
   registration the app validates the embedded `lyte-helperd` against its
   own designated requirement

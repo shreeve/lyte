@@ -125,8 +125,8 @@ Operational detail and the reasons behind each rule:
 
 - Never modify or delete pup's host identity:
   `~/.config/lyte/{noise_static.key,paired_clients}`, its knobs
-  `~/.config/lyte/host.conf`, or the pre-XDG copies under
-  `~/.config/lyte-host/`. Verify their SHA-256 before and after any run
+  `/etc/lyte/host.conf` (and the earlier `~/.config/lyte/host.conf`), or
+  the pre-XDG copies under `~/.config/lyte-host/`. Verify their SHA-256 before and after any run
   that approaches identity state.
 - Never displace the owner's standing UDP 41151 service. Test hosts use a
   fresh 41xxx port and `--no-advertise`.

@@ -68,11 +68,12 @@ while IFS= read -r file; do
 done < <(find "$image/etc" "$image/systemd" "$image/doc" -type f)
 
 unit="$image/systemd/lyte-host.service"
-for token in '@USER@' '@UID@' '@HOME@' '@CONFIG_HOME@' '@STATE_HOME@'; do
+for token in '@USER@' '@UID@' '@CONFIG_HOME@' '@STATE_HOME@'; do
     grep -Fq "$token" "$unit"
 done
-grep -Fq 'exec @HOME@/.local/bin/lyte-host $$LYTE_HOST_ARGS' "$unit"
-grep -Fq 'EnvironmentFile=@CONFIG_HOME@/lyte/host.conf' "$unit"
+grep -Fq 'set -f;' "$unit"
+grep -Fq 'exec /usr/local/lib/lyte/lyte-host $$LYTE_HOST_ARGS' "$unit"
+grep -Fq 'EnvironmentFile=/etc/lyte/host.conf' "$unit"
 grep -Fq 'AmbientCapabilities=CAP_SYS_ADMIN' "$unit"
 grep -Fq 'LYTE_HOST_ARGS=' "$image/etc/host.conf"
 if grep -En 'LYTE_HOST_BIN|\.build/|/home/CHANGE_ME|/tmp/' \

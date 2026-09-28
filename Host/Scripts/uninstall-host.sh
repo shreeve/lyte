@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Remove what install-host.sh and deploy-host.sh own: the unit, the
-# ~/.local/bin/lyte-host link, every deployed version and the legal payload.
-# host.conf and the logs survive unless --purge. Identity (noise_static.key,
-# paired_clients — new and pre-XDG locations alike) is never removed. Run as
-# the seat user; only the unit removal escalates.
+# root-owned /usr/local/lib/lyte (every deployed version and the active
+# link) and the legal payload, plus a pre-root-owned install's
+# ~/.local/bin/lyte-host link and ~/.local/share/lyte versions.
+# /etc/lyte/host.conf and the logs survive unless --purge. Identity
+# (noise_static.key, paired_clients — new and pre-XDG locations alike) is
+# never removed. Run as the seat user; the root-owned side escalates.
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/lib/host-common.sh"
 
@@ -28,14 +30,17 @@ system_side
 home="${HOME%/}"
 config_dir="$(xdg_home "${XDG_CONFIG_HOME:-}" "$home/.config")/lyte"
 state_dir="$(xdg_home "${XDG_STATE_HOME:-}" "$home/.local/state")/lyte"
-data_dir="$(xdg_home "${XDG_DATA_HOME:-}" "$home/.local/share")/lyte"
+legacy_data_dir="$(xdg_home "${XDG_DATA_HOME:-}" "$home/.local/share")/lyte"
 unit="$install_root/etc/systemd/system/lyte-host.service"
-link="$home/.local/bin/lyte-host"
+legacy_link="$home/.local/bin/lyte-host"
 
+# remove_tree [as_root] PATH
 remove_tree() {
+    local run=()
+    if [[ "$1" == as_root ]]; then run=(as_root); shift; fi
     local path="$1"
     if [[ -d "$path" && ! -L "$path" ]]; then
-        find "$path" -xdev -depth -delete
+        "${run[@]}" find "$path" -xdev -depth -delete
     elif [[ -e "$path" || -L "$path" ]]; then
         fail "$path is not a real directory"
     fi
@@ -52,23 +57,27 @@ else
     ok "no unit installed — nothing to stop"
 fi
 
-if [[ -L "$link" ]]; then
-    case "$(readlink "$link")" in
-        "$data_dir/versions/"*) rm -f -- "$link"; ok "removed $link" ;;
-        *) ok "kept $link (not a deployed version)" ;;
+remove_tree as_root "$lib_dir"
+remove_tree as_root "$doc_dir"
+ok "removed $lib_path (every deployed version) and the legal payload"
+
+# A pre-root-owned install kept its versions in the seat user's home.
+if [[ -L "$legacy_link" ]]; then
+    case "$(readlink "$legacy_link")" in
+        "$legacy_data_dir/versions/"*) rm -f -- "$legacy_link" ;;
     esac
 fi
-remove_tree "$data_dir/versions"
-remove_tree "$data_dir/doc"
-rm -f -- "$data_dir/previous"
-rmdir -- "$data_dir" 2>/dev/null || true
-ok "removed deployed versions and the legal payload"
+remove_tree "$legacy_data_dir/versions"
+remove_tree "$legacy_data_dir/doc"
+rm -f -- "$legacy_data_dir/previous"
+rmdir -- "$legacy_data_dir" 2>/dev/null || true
 
 if (( purge )); then
+    as_root rm -f -- "$conf_file"
     rm -f -- "$config_dir/host.conf" "$state_dir/host.log" "$state_dir/host.log.1"
-    ok "purged $config_dir/host.conf and the host logs"
-elif [[ -f "$config_dir/host.conf" ]]; then
-    ok "kept $config_dir/host.conf (remove with --purge)"
+    ok "purged $conf_path, a pre-root-owned $config_dir/host.conf and the host logs"
+elif [[ -f "$conf_file" ]]; then
+    ok "kept $conf_path (remove with --purge)"
 fi
 
 ok "host identity in $config_dir untouched — see Host/INSTALL.md"

@@ -27,6 +27,11 @@ mv_no_target_dir() {
     if mv --version >/dev/null 2>&1; then mv -T "$@"; else mv "$@"; fi
 }
 
+# as_root_mv_no_target_dir: mv_no_target_dir through as_root.
+as_root_mv_no_target_dir() {
+    if mv --version >/dev/null 2>&1; then as_root mv -T "$@"; else as_root mv "$@"; fi
+}
+
 # Sets install_root, systemctl_command and as_root. LYTE_INSTALL_ROOT is a
 # test/package-construction seam for the system side only: the unit lands
 # under that prefix, nothing escalates, and only the injected
@@ -44,4 +49,12 @@ system_side() {
         as_root() { sudo "$@"; }
     fi
     systemctl_command="${LYTE_SYSTEMCTL:-systemctl}"
+    # The root-owned side: the seat user can read and run it, never change
+    # it, so nothing it plants reaches the service's CAP_SYS_ADMIN.
+    # Unprefixed paths are what the unit names.
+    lib_path=/usr/local/lib/lyte
+    conf_path=/etc/lyte/host.conf
+    lib_dir="$install_root$lib_path"
+    conf_file="$install_root$conf_path"
+    doc_dir="$install_root/usr/local/share/doc/lyte"
 }

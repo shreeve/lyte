@@ -18,7 +18,7 @@ relicenses them.
 The app bundle carries verbatim license and notice files for Opus, nanors,
 Swift Crypto, Swift ASN.1 and Sparkle in `Contents/Resources/`. The
 staged Linux host image carries the applicable notices under
-`doc/third-party/`, installed to `~/.local/share/lyte/doc/`. Both packaging
+`doc/third-party/`, installed to `/usr/local/share/doc/lyte/`. Both packaging
 gates pin the exact file set and verify every byte. A raw local development
 executable is not a distributable archive.
 

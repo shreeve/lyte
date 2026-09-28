@@ -5,21 +5,27 @@
 
 # lyte_protected_state_fingerprint: one digest of everything a run that
 # approaches host identity must leave byte-identical: the identity and the
-# service's knobs (XDG and pre-XDG), the system config, the installed unit
-# and the deployed link. The XDG identity and host.conf must exist.
+# service's knobs (root-owned, and the seat user's from before), the pre-XDG
+# config, the installed unit and the deployed links. The XDG identity and one
+# host.conf must exist.
 lyte_protected_state_fingerprint() {
     local config="$HOME/.config/lyte" file
-    for file in noise_static.key paired_clients host.conf; do
+    for file in noise_static.key paired_clients; do
         if [[ ! -f "$config/$file" ]]; then
             echo "protected state: required $config/$file is missing" >&2
             return 1
         fi
     done
+    if [[ ! -f /etc/lyte/host.conf && ! -f "$config/host.conf" ]]; then
+        echo "protected state: no host.conf in /etc/lyte or $config" >&2
+        return 1
+    fi
     local listing="" line
     for file in \
         "$config/noise_static.key" \
         "$config/paired_clients" \
         "$config/host.conf" \
+        /etc/lyte/host.conf \
         "$HOME/.config/lyte-host/noise_static.key" \
         "$HOME/.config/lyte-host/paired_clients" \
         /etc/lyte/lyte-host.conf \
@@ -42,7 +48,8 @@ lyte_protected_state_fingerprint() {
         fi
         listing+="$line"$'\n'
     done
-    listing+="link $(readlink -- "$HOME/.local/bin/lyte-host" || echo absent)"
+    listing+="link $(readlink -- /usr/local/lib/lyte/lyte-host || echo absent)"$'\n'
+    listing+="legacy link $(readlink -- "$HOME/.local/bin/lyte-host" || echo absent)"
     printf '%s\n' "$listing" | sha256sum | awk '{print $1}'
 }
 
@@ -69,10 +76,12 @@ lyte_host_exe_sha() {
         || sudo -n sha256sum "/proc/$1/exe"; } | awk '{print $1}'
 }
 
-# lyte_deployed_host_sha: the SHA-256 of the binary ~/.local/bin/lyte-host
-# names.
+# lyte_deployed_host_sha: the SHA-256 of the binary the service's link
+# names (the root-owned one, else a pre-root-owned install's).
 lyte_deployed_host_sha() {
-    sha256sum "$(readlink -f "$HOME/.local/bin/lyte-host")" | awk '{print $1}'
+    local link=/usr/local/lib/lyte/lyte-host
+    [[ -L "$link" ]] || link="$HOME/.local/bin/lyte-host"
+    sha256sum "$(readlink -f "$link")" | awk '{print $1}'
 }
 
 # lyte_host_snapshot: evidence of the service at one instant: the time, its

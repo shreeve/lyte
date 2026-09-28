@@ -6,6 +6,15 @@ Sparkle shows in the update window (`Scripts/release.sh`).
 
 ## Unreleased
 
+- **The Linux host runs root-owned code.** `install-host.sh` and
+  `deploy-host.sh` now put the service's binary under
+  `/usr/local/lib/lyte` and its knobs in `/etc/lyte/host.conf`, both
+  root-owned, so code running as the seat user can no longer plant a
+  binary or environment that runs with `CAP_SYS_ADMIN`. Reinstall once
+  (`Host/Scripts/install-host.sh`): it copies an existing
+  `~/.config/lyte/host.conf` and leaves it in place. Edit knobs with
+  `sudoedit /etc/lyte/host.conf`.
+
 - **A still screen costs almost nothing upstream.** The Mac sent a
   feedback report 25 times a second whether or not anything arrived
   (about 25 kbps). Against a host that agrees (capability key 17), it now
