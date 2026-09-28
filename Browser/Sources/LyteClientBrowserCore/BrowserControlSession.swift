@@ -80,7 +80,9 @@ public final class BrowserControlSession {
 
     private let hostStaticPublicKey: [UInt8]
     private let clientStatic: NoiseKeyPair
-    private let pin: [UInt8]
+    /// Nil connects unpaired, as the native app does against a host that
+    /// does not require pairing.
+    private let pin: [UInt8]?
     private let handshakeRetry: HandshakeRetry
 
     private var status: Status = .idle
@@ -159,12 +161,16 @@ public final class BrowserControlSession {
         else {
             throw BrowserControlError.badHostStatic
         }
-        guard let pinBytes = PairingPin.normalize(pin) else {
-            throw BrowserControlError.badPin
+        if pin.allSatisfy(\.isWhitespace) {
+            self.pin = nil
+        } else {
+            guard let pinBytes = PairingPin.normalize(pin) else {
+                throw BrowserControlError.badPin
+            }
+            self.pin = pinBytes
         }
         self.hostStaticPublicKey = hostKey
         self.clientStatic = NoiseKeyPair.generate()
-        self.pin = pinBytes
         self.handshakeRetry = handshakeRetry
     }
 
@@ -464,22 +470,25 @@ public final class BrowserControlSession {
             clipboardSharingAtStart: true,
             now: now
         )
-        var pairing = try ClientPairing(
-            pin: pin,
-            clientStaticPublicKey: clientStatic.publicKey,
-            hostStaticPublicKey: hostStaticPublicKey,
-            noiseHandshakeHash: made.handshakeHash
-        )
-
         // First reliable words: capability declaration, then pairing share A.
         if let declaration = try control.start() {
             try arq.send(message: declaration, now: now)
             note("capabilities: client declaration queued")
         }
         self.control = control
-        try arq.send(message: try pairing.start(), now: now)
-        self.pairing = pairing
-        note("pairing: share A queued")
+        if let pin {
+            var pairing = try ClientPairing(
+                pin: pin,
+                clientStaticPublicKey: clientStatic.publicKey,
+                hostStaticPublicKey: hostStaticPublicKey,
+                noiseHandshakeHash: made.handshakeHash
+            )
+            try arq.send(message: try pairing.start(), now: now)
+            self.pairing = pairing
+            note("pairing: share A queued")
+        } else {
+            note("pairing: none — connecting unpaired")
+        }
         return step(outbound: try pollArq(nowMicros: nowMicros))
     }
 
@@ -714,9 +723,11 @@ public final class BrowserControlSession {
     }
 
     private func promoteIfReady() {
-        if status == .established, capabilitiesAgreed, paired {
+        if status == .established, capabilitiesAgreed, paired || pin == nil {
             status = .ready
-            note("session: READY (Noise + pair + capabilities; video arm open)")
+            note(paired
+                ? "session: READY (Noise + pair + capabilities; video arm open)"
+                : "session: READY (Noise + capabilities, unpaired; video arm open)")
         }
     }
 
