@@ -95,6 +95,9 @@ public struct AudioJitterStats: Sendable {
     /// Re-center events (overgrowth or number jump) and what they cost.
     public var recenterEvents: UInt64 = 0
     public var packetsDroppedInRecenter: UInt64 = 0
+    /// Arrived before the first pull and aged out of the priming window:
+    /// the player was not yet running, so no path fault.
+    public var packetsDroppedBeforePlayout: UInt64 = 0
     /// Times a starved verdict was issued after priming (ring-cushion
     /// waits and blackout silence both land here).
     public var starvedVerdicts: UInt64 = 0
@@ -267,9 +270,12 @@ public final class AudioJitterBuffer {
         pending[packet.number] = (packet, arrivalMicroseconds)
 
         if !started {
-            if pending.count >= targetPackets {
-                started = true
-                nextNumber = oldestPendingNumber()!
+            // Until the player pulls, keep the newest target's worth:
+            // playout starts at the target depth, not behind a backlog.
+            while pending.count > targetPackets,
+                  let oldest = oldestPendingNumber() {
+                pending.removeValue(forKey: oldest)
+                stats.packetsDroppedBeforePlayout += 1
             }
             return
         }
@@ -283,7 +289,14 @@ public final class AudioJitterBuffer {
     public func pull(
         nowMicroseconds: UInt64, urgent: Bool = false
     ) -> AudioPullVerdict {
-        guard started else { return .starved }
+        if !started {
+            // Playout starts at the first pull that finds the target.
+            guard pending.count >= targetPackets,
+                  let oldest = oldestPendingNumber()
+            else { return .starved }
+            started = true
+            nextNumber = oldest
+        }
         stats.depthPackets.record(UInt64(pending.count))
 
         if let entry = pending.removeValue(forKey: nextNumber) {

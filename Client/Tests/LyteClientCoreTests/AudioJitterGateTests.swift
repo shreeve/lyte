@@ -85,6 +85,25 @@ final class AudioJitterGateTests: XCTestCase {
         return result
     }
 
+    /// Packets 0–9 at the 5 ms cadence, played in order as a running pump
+    /// plays them: it pulls as they arrive, so priming never trims them.
+    private func playFirstTen(
+        _ buffer: AudioJitterBuffer, file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        for n in UInt32(0)..<5 {
+            buffer.insert(packet(n), arrivalMicroseconds: UInt64(n) * 5_000)
+        }
+        for n in UInt32(0)..<10 {
+            XCTAssertEqual(buffer.pull(nowMicroseconds: 50_000, urgent: true),
+                           .packet(packet(n)), file: file, line: line)
+            if n + 5 < 10 {
+                buffer.insert(packet(n + 5),
+                              arrivalMicroseconds: UInt64(n + 5) * 5_000)
+            }
+        }
+    }
+
     private func packet(_ n: UInt32, recovered: Bool = false) -> AudioPacket {
         AudioPacket(
             number: n,
@@ -94,6 +113,25 @@ final class AudioJitterGateTests: XCTestCase {
     }
 
     // MARK: Steady cadence: silence-free, minimal delay
+
+    /// Audio that arrives before the player pulls (the engine is still
+    /// spinning up) is priming, not a stall: the buffer keeps the newest
+    /// target's worth, books no recenter, and playout starts from there at
+    /// the first pull.
+    func testAudioBeforeTheFirstPullPrimesWithoutRecentering() {
+        let buffer = AudioJitterBuffer()
+        let target = buffer.targetPackets
+        for n in UInt32(0)..<200 {
+            buffer.insert(packet(n), arrivalMicroseconds: UInt64(n) * 5_000)
+        }
+        let primed = buffer.snapshotStats()
+        XCTAssertEqual(primed.recenterEvents, 0, "priming is not a recenter")
+        XCTAssertEqual(primed.packetsDroppedInRecenter, 0)
+        XCTAssertEqual(buffer.pendingCount, target)
+        XCTAssertEqual(buffer.pull(nowMicroseconds: 1_000_000, urgent: true),
+                       .packet(packet(200 - UInt32(target))),
+                       "playout starts target packets behind the newest")
+    }
 
     func testSteadyTraceZeroPlcZeroUnderrunTightTarget() {
         let buffer = AudioJitterBuffer()
@@ -342,13 +380,7 @@ final class AudioJitterGateTests: XCTestCase {
     /// resume behind the playhead.
     func testAnnouncedQuietConcealsNothingAndTheWakeBurstPlays() {
         let buffer = AudioJitterBuffer()
-        for n in UInt32(0)..<10 {
-            buffer.insert(packet(n), arrivalMicroseconds: UInt64(n) * 5_000)
-        }
-        for n in UInt32(0)..<10 {
-            XCTAssertEqual(buffer.pull(nowMicroseconds: 50_000, urgent: true),
-                           .packet(packet(n)))
-        }
+        playFirstTen(buffer)
         for _ in 0..<3 {
             guard case .conceal = buffer.pull(nowMicroseconds: 60_000, urgent: true)
             else { return XCTFail("before the notice a gap conceals") }
@@ -381,13 +413,7 @@ final class AudioJitterGateTests: XCTestCase {
     /// cap re-centers like any other, so a wake never parks latency.
     func testWakeBurstDeeperThanTheHardCapStillRecenters() {
         let buffer = AudioJitterBuffer()
-        for n in UInt32(0)..<10 {
-            buffer.insert(packet(n), arrivalMicroseconds: UInt64(n) * 5_000)
-        }
-        for n in UInt32(0)..<10 {
-            XCTAssertEqual(buffer.pull(nowMicroseconds: 50_000, urgent: true),
-                           .packet(packet(n)))
-        }
+        playFirstTen(buffer)
         buffer.noteAnnouncedQuiet()
         for n in UInt32(10)..<50 {
             buffer.insert(packet(n), arrivalMicroseconds: 3_000_000)
@@ -404,13 +430,7 @@ final class AudioJitterGateTests: XCTestCase {
     /// first neither rewinds playout nor ends the quiet.
     func testAnOldPacketAfterAnAnnouncedQuietNeitherReplaysNorWakesIt() {
         let buffer = AudioJitterBuffer()
-        for n in UInt32(0)..<10 {
-            buffer.insert(packet(n), arrivalMicroseconds: UInt64(n) * 5_000)
-        }
-        for n in UInt32(0)..<10 {
-            XCTAssertEqual(buffer.pull(nowMicroseconds: 50_000, urgent: true),
-                           .packet(packet(n)))
-        }
+        playFirstTen(buffer)
         buffer.noteAnnouncedQuiet()
         buffer.insert(packet(7, recovered: true), arrivalMicroseconds: 100_000)
         buffer.insert(packet(8), arrivalMicroseconds: 100_000)
@@ -429,13 +449,7 @@ final class AudioJitterGateTests: XCTestCase {
     /// not evidence against the cushion.
     func testReorderedWakeOnsetPlaysInOrder() {
         let buffer = AudioJitterBuffer()
-        for n in UInt32(0)..<10 {
-            buffer.insert(packet(n), arrivalMicroseconds: UInt64(n) * 5_000)
-        }
-        for n in UInt32(0)..<10 {
-            XCTAssertEqual(buffer.pull(nowMicroseconds: 50_000, urgent: true),
-                           .packet(packet(n)))
-        }
+        playFirstTen(buffer)
         buffer.noteAnnouncedQuiet()
         buffer.insert(packet(11), arrivalMicroseconds: 3_000_000)
         buffer.insert(packet(10), arrivalMicroseconds: 3_000_100)

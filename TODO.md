@@ -55,13 +55,6 @@ live state: [HANDOFF.md](HANDOFF.md).
 
 ## Client
 
-- **Audio primes before the player exists.** `LyteUdpSession` receives
-  audio before the AVAudioEngine spins up on the audio queue, so the
-  jitter buffer primes and re-centers about every 100 ms until the pump
-  starts (a 30 s read against pup showed 3 recenters, 2 PLC and 2 late at
-  session start). Start the player first, or drop pre-player audio
-  without booking recenters. Confirm with a `lyte-cli wire-view --audio`
-  read against pup.
 - **Audio target after a wake.** On pup, a sound that starts after a
   quiet (`pw-play`) arrives irregularly at first (captureToFeed p99
   70–90 ms against a steady 25 ms), which lifts the jitter target from 5

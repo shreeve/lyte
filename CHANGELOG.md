@@ -15,6 +15,9 @@ Sparkle shows in the update window (`Scripts/release.sh`).
   `~/.config/lyte/host.conf` and leaves it in place. Edit knobs with
   `sudoedit /etc/lyte/host.conf`.
 
+- **Audio starts clean.** Audio that arrives before the Mac's audio
+  engine is running no longer overfills the buffer and re-centers every
+  100 ms; playout starts at its target depth on the first pull.
 - **A still screen costs almost nothing upstream.** The Mac sent a
   feedback report 25 times a second whether or not anything arrived
   (about 25 kbps). Against a host that agrees (capability key 17), it now

@@ -23,6 +23,12 @@ final class AudioReceiverFecGateTests: XCTestCase {
             dataShards: 4, parityShards: 2, groupByteCount: 320)
         let now: UInt64 = 1_000_000
         let stamps = [now &+ (1 << 63), now &- 10_000]
+        var played = 0
+        func pull() {
+            let decision = receiver.pullDecision(
+                now: ClientTimestamp(microseconds: now), urgent: true)
+            if case .packet = decision.verdict { played += 1 }
+        }
         for (group, stamp) in stamps.enumerated() {
             let shards = try FecEncoder.encode(
                 group: [UInt8](repeating: 7, count: 320), geometry: geometry)
@@ -37,14 +43,10 @@ final class AudioReceiverFecGateTests: XCTestCase {
                             index, of: geometry).encoded),
                     payload: shards[index],
                     now: ClientTimestamp(microseconds: now))
+                pull() // a running pump pulls as packets arrive
             }
         }
-        var played = 0
-        for _ in 0..<16 {
-            let decision = receiver.pullDecision(
-                now: ClientTimestamp(microseconds: now), urgent: true)
-            if case .packet = decision.verdict { played += 1 }
-        }
+        for _ in 0..<16 { pull() }
         XCTAssertEqual(played, 8)
         let recorded = receiver.snapshotStats().captureToFeed.count
         XCTAssertGreaterThan(recorded, 0)
