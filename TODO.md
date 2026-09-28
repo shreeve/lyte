@@ -23,13 +23,12 @@ live state: [HANDOFF.md](HANDOFF.md).
   that can sign with the owner's development identity (which signs without
   a prompt) still passes, and a window remains between validation and
   `register()`. A root-owned install under `/Applications` closes both.
-- **Sign the update feed (next release).** `Scripts/release.sh` signs
-  each enclosure (`sparkle:edSignature`) but publishes an unsigned
-  `appcast.xml`. Sign the feed itself (`generate_appcast` with the `lyte`
-  EdDSA key), verify the published feed carries its signature, and only
-  then add `SURequireSignedFeed` and `SUVerifyUpdateBeforeExtraction` to
-  `SPARKLE_KEYS` in `Scripts/make-app.sh` for the following release: a
-  bundle that requires a signed feed must never meet an unsigned one.
+- **Require the signed feed (0.7.3).** From 0.7.2 on, `Scripts/release.sh`
+  signs `appcast.xml` itself and verifies it before and after publishing.
+  Once a published signed feed has verified, add `SURequireSignedFeed` and
+  `SUVerifyUpdateBeforeExtraction` to `SPARKLE_KEYS` in
+  `Scripts/make-app.sh` for the next release; from then on every feed must
+  stay signed, which `release.sh` enforces.
 - **Noise message-1 freshness (wire-v2 decision).** A captured message 1
   replayed in a later host run can open one unconfirmed handshake per run —
   a delay for a dialing client, not a lockout. A timestamp in the message-1
