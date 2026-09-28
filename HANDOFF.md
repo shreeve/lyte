@@ -22,8 +22,8 @@
 - Identity `~/.config/lyte/`; log `~/.local/state/lyte/host.log`. Kept for
   the owner: `~/.config/lyte-host/`, `~/lyte-revamp-backup/`, `~/lyte-migration-*`.
   `libinput-tools` is installed on pup (pointer checks).
-- **This Mac (pop) is paired**, streaming with `.build/Lyte.app` (#260);
-  Homebrew's 0.7.1 is also in `/Applications` until 0.7.2 ships.
+- **This Mac (pop) is paired**; its one Lyte is Homebrew's 0.7.1 in
+  `/Applications` (Sparkle-updated). #260's client half reaches it in 0.7.2.
 - Still desktop: Mac → pup 8.0 kbps (was 25.0); pup → Mac ~46 kbps is the
   screen (pup's clock shows seconds, so the quiet ladder never engages;
   one-shard frames carry two parity copies).
