@@ -411,6 +411,30 @@ final class AudioJitterGateTests: XCTestCase {
 
     /// The wake grants no depth of its own: a burst deeper than the hard
     /// cap re-centers like any other, so a wake never parks latency.
+    /// Over Wi-Fi the wake burst lands in a few aggregates, not one
+    /// clump: 20 packets in 4 bursts of 5 with 6 ms between them, then the
+    /// live stream on its 5 ms cadence. The burst describes the host's
+    /// ring, not the path, so the target stays at its floor.
+    func testAWakeBurstInAggregatesDoesNotLiftTheTarget() {
+        let buffer = AudioJitterBuffer()
+        playFirstTen(buffer)
+        buffer.noteAnnouncedQuiet()
+        var now: UInt64 = 3_000_000
+        for n in UInt32(10)..<30 {
+            if n > 10, (n - 10) % 5 == 0 { now += 6_000 }
+            buffer.insert(packet(n), arrivalMicroseconds: now)
+            _ = buffer.pull(nowMicroseconds: now, urgent: false)
+        }
+        for n in UInt32(30)..<700 {
+            now += 5_000
+            buffer.insert(packet(n), arrivalMicroseconds: now)
+            _ = buffer.pull(nowMicroseconds: now, urgent: false)
+        }
+        XCTAssertEqual(buffer.snapshotStats().targetPackets,
+                       AudioJitterConfig().minTargetPackets,
+                       "the burst's aggregates are not path jitter")
+    }
+
     func testWakeBurstDeeperThanTheHardCapStillRecenters() {
         let buffer = AudioJitterBuffer()
         playFirstTen(buffer)

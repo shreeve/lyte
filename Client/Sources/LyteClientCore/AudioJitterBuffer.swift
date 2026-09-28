@@ -137,9 +137,12 @@ public final class AudioJitterBuffer {
     private var consecutiveConcealments = 0
     /// Set by an announced quiet, cleared by the packet that wakes it.
     private var announcedQuiet = false
-    /// The latest arrival of the wake burst that ends a quiet: the host
-    /// ships its pre-roll at once, which describes its ring, not the path.
-    private var wakeBurstArrival: UInt64?
+    /// Where the wake burst that ends a quiet is over: the host ships its
+    /// pre-roll at once, which describes its ring, not the path, and Wi-Fi
+    /// may land it in several aggregates. The burst fits the hard cap, so
+    /// numbers below the waking packet's plus the cap are not path
+    /// evidence.
+    private var wakeBurstEnd: UInt32?
     /// The oldest number playout may still step back to. The slots from
     /// here to nextNumber were concealed on an empty buffer or skipped by
     /// a wake re-prime, and nothing has played since, so a wire-carried
@@ -218,7 +221,7 @@ public final class AudioJitterBuffer {
            lastPlayedNumber.map({ Int32(bitPattern: packet.number &- $0) > 0 })
                ?? true {
             announcedQuiet = false
-            wakeBurstArrival = arrivalMicroseconds
+            wakeBurstEnd = packet.number &+ UInt32(config.hardCapPackets)
             if pending.isEmpty {
                 nextNumber = packet.number
                 rewindFloor = lastPlayedNumber.map { $0 &+ 1 }
@@ -430,14 +433,9 @@ public final class AudioJitterBuffer {
         _ packet: AudioPacket, arrivalMicroseconds: UInt64
     ) {
         guard !packet.recovered else { return }
-        if let burst = wakeBurstArrival {
-            guard arrivalMicroseconds &- burst
-                >= UInt64(config.packetDurationMicroseconds)
-            else {
-                wakeBurstArrival = arrivalMicroseconds
-                return
-            }
-            wakeBurstArrival = nil
+        if let end = wakeBurstEnd {
+            guard Int32(bitPattern: packet.number &- end) >= 0 else { return }
+            wakeBurstEnd = nil
         }
 
         // Diagnostics: pairwise inter-arrival deviation (σ, histogram).

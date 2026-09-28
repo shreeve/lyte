@@ -55,14 +55,13 @@ live state: [HANDOFF.md](HANDOFF.md).
 
 ## Client
 
-- **Audio target after a wake.** On pup, a sound that starts after a
-  quiet (`pw-play`) arrives irregularly at first (captureToFeed p99
-  70–90 ms against a steady 25 ms), which lifts the jitter target from 5
-  to about 11 packets; it then decays only one step per 10 s, so the
-  whole sound plays about 30 ms later than it needs to. Find whether the
-  irregularity is PipeWire's graph requantizing on the host or the
-  capture leaf, and whether the target should discount the first
-  hundred milliseconds after a wake.
+- **Confirm the wake target live.** The jitter buffer now ignores the
+  first hard cap's worth of packet numbers after a wake (the pre-roll burst
+  Wi-Fi may land in several aggregates), which kept a unit trace at the
+  floor where it rose to 13. The live reads on 2026-09-28 had 8–41 ms of
+  path jitter, which saturated the target for `main` and this client
+  alike; repeat the two-wake `wire-view --audio` read on a calm path and
+  expect the target to stay near 5 through a wake.
 - **Pairing sheet for an already-paired key.** A typed address that no
   pin knows asks "Which host is at …?" before offering pairing; the
   pairing sheet could instead offer Connect when the pasted key is
