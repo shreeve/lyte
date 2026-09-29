@@ -13,6 +13,17 @@ const FRAMES_PER_MS = 48;
 const DECLICK_FRAMES = 96;
 
 /**
+ * Frames the ring still holds: what it held at its last report drains in
+ * real time; frames pushed since count whole (at most one report period
+ * high, never low, so a refill after an underrun is not mistaken for
+ * audio already played).
+ */
+export function estimateRingDepth(heldAtReport, pushedSinceReport, msSinceReport) {
+  const drained = msSinceReport * FRAMES_PER_MS;
+  return Math.round(Math.max(0, heldAtReport - drained) + pushedSinceReport);
+}
+
+/**
  * AudioWorklet PCM ring bounded at WASM's `maxQueuedFrames`. Plays through
  * a realtime AudioContext; `offline` renders 100 ms into an
  * OfflineAudioContext instead — for headless smoke runs, where there is no
@@ -44,15 +55,18 @@ export async function createAudioRing({ offline = false, maxQueuedFrames } = {})
   });
   node.connect(ctx.destination);
   let framesPushed = 0;
-  // The ring's last report: frames it has consumed (played or dropped),
-  // and when the report arrived.
-  let consumed = 0;
+  // The ring's last report: what it held then (pushed minus consumed,
+  // played or dropped), what had been pushed by then, and when it arrived.
+  // Only what it held then drains in real time; later pushes count whole.
+  let heldAtReport = 0;
+  let pushedAtReport = 0;
   let reportedAt = null;
   let statsWaiters = [];
   node.port.onmessage = (event) => {
     const data = event.data;
     if (data?.type === "depth") {
-      consumed = data.consumedFrames;
+      heldAtReport = Math.max(0, framesPushed - data.consumedFrames);
+      pushedAtReport = framesPushed;
       reportedAt = performance.now();
     } else if (data?.type === "stats") {
       const waiters = statsWaiters;
@@ -71,9 +85,11 @@ export async function createAudioRing({ offline = false, maxQueuedFrames } = {})
     framesPushed: () => framesPushed,
     /** Frames pushed and not yet played, as of the ring's last report. */
     depthFrames() {
-      let depth = framesPushed - consumed;
-      if (reportedAt != null) depth -= (performance.now() - reportedAt) * FRAMES_PER_MS;
-      return Math.max(0, Math.round(depth));
+      return estimateRingDepth(
+        heldAtReport,
+        framesPushed - pushedAtReport,
+        reportedAt == null ? 0 : performance.now() - reportedAt
+      );
     },
     /** Resumes a context the autoplay policy held; call from a user gesture. */
     resume: () => (offline ? Promise.resolve() : ctx.resume()),

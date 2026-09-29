@@ -3,7 +3,7 @@
 // Run: node --test Browser/Tests/Page/page.test.mjs (the macOS gate does).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { AudioPlayout } from "../../Page/audio-playout.js";
+import { AudioPlayout, estimateRingDepth } from "../../Page/audio-playout.js";
 import { installCanvasInput } from "../../Page/interaction.js";
 import { runSessionProof } from "../../Page/session-proof.js";
 import { SessionPump } from "../../Page/session-pump.js";
@@ -268,4 +268,12 @@ test("a decoder that fails is replaced and its unfilled slots never block the ri
   playout.pump(0);
   decoders[1].output();
   assert.deepEqual(pushed.map((pcm) => pcm[0]), [9]);
+});
+
+test("audio pushed into an empty ring counts whole until the ring reports it played", () => {
+  // The ring ran dry 8 ms before its last report; 4 800 frames arrive now.
+  assert.equal(estimateRingDepth(0, 4_800, 8), 4_800);
+  // What it held at the report drains at 48 frames per ms, never below zero.
+  assert.equal(estimateRingDepth(960, 0, 5), 720);
+  assert.equal(estimateRingDepth(960, 240, 50), 240);
 });
