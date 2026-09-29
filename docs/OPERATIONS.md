@@ -11,7 +11,7 @@ section applies to any installed host. Fresh-machine installation is in
 
 | Machine | Role | Facts |
 |---|---|---|
-| `pup` | Linux reference host | Ubuntu 26.04; Intel Meteor Lake GPU drives the panel (Direct Eye and VAAPI run there); RTX 4050 with no attached connectors. Wi-Fi only: `10.0.0.249` on `wlp0s20f3`, where the service advertises (the wired leg, `10.0.0.232` on `enxf8e43b7ede7c`, is absent). Swift 6.1.2 at `/usr/local/bin/swift`. `ssh pup`. |
+| `pup` | Linux reference host | Ubuntu 26.04; Intel Meteor Lake GPU drives the panel (Direct Eye and VAAPI run there); RTX 4050 with no attached connectors. Wi-Fi only: `10.0.0.249` on `wlp0s20f3`, where the service advertises (the wired leg, `10.0.0.232` on `enxf8e43b7ede7c`, is absent). avahi advertises IPv4 only ([name resolution](#name-resolution-ipv4-only)). Swift 6.1.2 at `/usr/local/bin/swift`. `ssh pup`. |
 | the Mac | client and development machine | Xcode, the signing identity, `.build/Lyte.app` (the owner's interactive app) |
 
 The standing host is `lyte-host.service` on UDP **41151**, advertised over
@@ -30,6 +30,36 @@ ssh pup "sudo sed -i 's/--advertise-interface [^ ]*/--advertise-interface <iface
 dials an address directly without discovery (`0` binds a free local port).
 The key is the 64-hex-digit line `noise: host static public key …` that
 `lyte-host` logs at start; once paired, `--host-key` can be omitted.
+
+### Name resolution: IPv4 only
+
+pup's avahi advertises `pup.local` with its IPv4 address only. Otherwise it
+also publishes pup's global IPv6 addresses, and a browser dials those
+first: the page still loads (TCP falls back to IPv4), but WebTransport's
+QUIC dial to the relay is refused on IPv6 and never falls back, so the
+browser viewer cannot connect. Janus's `lan` mode, like `lyte-host` and
+the native client, is IPv4-only by design; the global addresses are
+routable from outside, so nothing should listen on them. pup keeps IPv6
+for everything else.
+
+`/etc/avahi/avahi-daemon.conf` (the original is `avahi-daemon.conf.pre-ipv4only`):
+
+```ini
+use-ipv6=no
+publish-aaaa-on-ipv4=no
+```
+
+Applied with `sudo systemctl restart avahi-daemon`; `lyte-host` files its
+`_lyte._udp` record again by itself within a second (`discovery: record
+withdrawn (avahi-daemon went away) — filing it again`). Check from the Mac
+that only the IPv4 address comes back, and undo by restoring the original:
+
+```sh
+dns-sd -G v4v6 pup.local     # Add … pup.local. 10.0.0.249, and no IPv6 line; Ctrl-C to stop
+ssh pup 'sudo cp -p /etc/avahi/avahi-daemon.conf.pre-ipv4only /etc/avahi/avahi-daemon.conf && sudo systemctl restart avahi-daemon'
+```
+
+`Host/Scripts/setup-host.sh` flags a host whose avahi still advertises IPv6.
 
 **Agents on the Mac:** a sandboxed agent shell cannot reach pup: `ssh pup`
 fails with `No route to host` because macOS Local Network privacy blocks

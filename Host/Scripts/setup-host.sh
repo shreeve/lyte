@@ -44,6 +44,17 @@ else
     printf '    Host/Scripts/deploy-host.sh\n'
 fi
 
+# --- 4. IPv4-only mDNS (browsers reach the host through a relay) ------
+AVAHI=/etc/avahi/avahi-daemon.conf
+if [ -f "$AVAHI" ]; then
+    if grep -qx 'use-ipv6=no' "$AVAHI" && grep -qx 'publish-aaaa-on-ipv4=no' "$AVAHI"; then
+        ok "avahi advertises IPv4 only"
+    else
+        todo "avahi also advertises IPv6 — a browser's QUIC dial to the relay is refused there; run:"
+        printf '%s\n' "    sudo sed -i -e 's/^#\\?use-ipv6=.*/use-ipv6=no/' -e 's/^#\\?publish-aaaa-on-ipv4=.*/publish-aaaa-on-ipv4=no/' $AVAHI && sudo systemctl restart avahi-daemon"
+    fi
+fi
+
 # --- portal-era leftover: the direct-scanout opt-out is obsolete -----
 CONF="$HOME/.config/environment.d/90-lyte-screencast.conf"
 if [ -f "$CONF" ]; then

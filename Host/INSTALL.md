@@ -63,6 +63,16 @@ prints:
    echo "$USER - rtprio 20" | sudo tee /etc/security/limits.d/90-lyte-rtprio.conf
    ```
 
+4. **IPv4-only mDNS** if browsers will reach this host through a
+   WebTransport relay (Janus). avahi otherwise also publishes the host's
+   IPv6 addresses, and a browser's QUIC dial to one of them is refused
+   without falling back to IPv4
+   ([OPERATIONS.md](../docs/OPERATIONS.md#name-resolution-ipv4-only)):
+
+   ```sh
+   sudo sed -i -e 's/^#\?use-ipv6=.*/use-ipv6=no/' -e 's/^#\?publish-aaaa-on-ipv4=.*/publish-aaaa-on-ipv4=no/' /etc/avahi/avahi-daemon.conf && sudo systemctl restart avahi-daemon
+   ```
+
 It also reports the service and deployed binary, and portal-era and
 pre-XDG leftovers ([OPERATIONS.md](../docs/OPERATIONS.md#pre-xdg-leftovers)).
 
