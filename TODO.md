@@ -76,18 +76,27 @@ live state: [HANDOFF.md](HANDOFF.md).
 
 ## Browser
 
-- **Daily-driver browser client.** The Chrome proof runs only against
-  `lyte-control-peer` with corpus video, whose blackout detector is
-  widened to 30 s. Remaining: a relay to a real host (or WebTransport on
-  the host itself), live Direct Eye in Chrome, a persistent interactive
-  session, Safari, real host clipboard where the platform allows it, and
-  product composition (`LyteBrowserApp`). Do not scaffold empty
-  `Applications/` stubs before composition earns them. The page's
-  worklet ring (`Browser/Page/audio-ring-worklet.js`) books every silent
-  frame as underrun, including before the first audio and under an
-  announced quiet (0x25); the native player ring books neither. Carry the
-  shared `ClientControlSession.hostAnnouncedAudioQuiet` through the bridge
-  and post it to the worklet, which stops booking until its next write.
+- **Daily-driver browser client.** The viewer streams a real host
+  through a Janus relay ([BROWSER.md](docs/BROWSER.md#live-setup-janus-relay)),
+  proven live by hand. Remaining:
+  - Protocol work and rendering in a worker with `OffscreenCanvas`
+    (everything runs on the page's main thread today).
+  - A smaller module: the WASM is about 78 MB before `wasm-opt`.
+  - Audio accelerate and loss concealment in the page. `AudioAccelerator`
+    lives in `LyteTransport` with Foundation, so the browser has no WSOLA;
+    WebCodecs has no Opus PLC, so a concealed packet decays to silence.
+  - Viewer clipboard, fullscreen, Keyboard Lock and Pointer Lock.
+  - A gate that drives the viewer in Chrome against a real host or relay.
+  - Safari, and product composition (`LyteBrowserApp`). Do not scaffold
+    empty `Applications/` stubs before composition earns them.
+  - `lyte-host` registering its relay route with Janus over `/1.0`,
+    instead of a hand-written site block.
+- **Browser underrun books.** The page's worklet ring
+  (`Browser/Page/audio-ring-worklet.js`) books every silent frame as
+  underrun, including before the first audio and under an announced
+  quiet (0x25); the native player ring books neither. Carry the shared
+  `ClientControlSession.hostAnnouncedAudioQuiet` through the bridge and
+  post it to the worklet, which stops booking until its next write.
 
 ## Gates
 

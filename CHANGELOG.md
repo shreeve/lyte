@@ -6,6 +6,14 @@ Sparkle shows in the update window (`Scripts/release.sh`).
 
 ## Unreleased
 
+- **Open the host's desktop in a browser.** Chrome or Edge shows the
+  desktop, plays its audio and sends keyboard and mouse with nothing
+  installed, through a WebTransport relay beside the host (Janus 1.19's
+  `webtransport` route). Encryption still runs end to end between the page
+  and the host; the relay carries only ciphertext. Setup:
+  [docs/BROWSER.md](docs/BROWSER.md#live-setup-janus-relay). A host's
+  mDNS name must resolve IPv4-only for a browser to reach it, and
+  `setup-host.sh` now flags one that also advertises IPv6.
 - **The Linux host runs root-owned code.** `install-host.sh` and
   `deploy-host.sh` now put the service's binary under
   `/usr/local/lib/lyte` and its knobs in `/etc/lyte/host.conf`, both

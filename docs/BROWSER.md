@@ -7,13 +7,16 @@ carrier and ownership are fixed by the
 [B-0 decision](decisions/20260807-021425-browser-client-platform-slice.md);
 this page owns the current state.
 
-**Status: a proof harness and a first viewer.** Chrome runs Lyte's Swift
-WebAssembly client through a complete control, video, audio, input and
-clipboard session against `lyte-control-peer`, a DRM-free test peer that
-replays the frozen video corpus and an Opus tone. The [viewer](#viewer)
-(`viewer.html`) holds a standing session through a same-origin
-WebTransport relay and re-dials when it ends; it has not yet streamed a
-real desktop from a host's Direct Eye.
+**Status: a working viewer and a proof harness.** The [viewer](#viewer)
+(`viewer.html`) streams a real host's Direct Eye desktop, audio and input
+in Chrome with nothing installed, through a [Janus relay](#live-setup-janus-relay)
+beside the host; Noise runs end to end between the page's WASM and
+`lyte-host`, and the relay carries only ciphertext. That path is proven
+live by hand, not by a gate. The gates drive the scripted proof harness
+(`index.html`): a complete control, video, audio, input and clipboard
+session against `lyte-control-peer`, a DRM-free test peer that replays
+the frozen video corpus and an Opus tone. The viewer is not yet a finished
+product client ([Viewer](#viewer), [TODO.md](../TODO.md#browser)).
 
 ## What exists
 
@@ -216,6 +219,69 @@ relay itself accepts WebTransport over HTTP/3 at `relayUrl`, carries each
 datagram opaquely to the host's UDP port and back, one UDP socket per
 WebTransport session, as `lyte-wt-sidecar` does.
 
+## Live setup: Janus relay
+
+A page cannot send UDP, so a host reached from a browser needs a relay
+that terminates WebTransport and forwards each datagram to the host's UDP
+port. The daily path is [Janus](https://github.com/shreeve/janus)
+capability 10, `webtransport` (Janus 1.19, a Caddy module): it accepts
+WebTransport over HTTP/3 on UDP 443, relays every datagram byte-exact to
+one UDP target fixed in its config, gives each session its own connected
+UDP socket (a stable source port for the host, closed when the session
+ends), and never batches, splits or reorders. Admission is Host, SNI,
+path, a required `Origin` and a small session cap; authentication stays
+end to end in Noise. The Node sidecar remains the harness's test relay.
+
+One Janus site serves the viewer and the relay route on the same origin:
+
+```caddyfile
+lyte.local {
+	tls {
+		issuer internal
+		on_demand
+	}
+	janus {
+		webtransport /lyte udp/127.0.0.1:41151
+		browse {
+			root /home/<seat user>/lyte-www revalidate
+		}
+	}
+}
+```
+
+with `webtransport` enabled in the global `janus` block and HTTP/3 left
+off on the HTTPS servers (`protocols h1 h2`), since the relay owns UDP
+443. Stage the page into the served root: build with `build.sh`, copy
+the files in the table above (`viewer.html` as `index.html`), add
+`LyteClientBrowser.wasm.zst` (zstd's default window: Chrome refuses
+windows above 8 MiB, so no `--long`) and `.gz` siblings, and write
+`lyte-viewer.json` with `"relayUrl": "/lyte"` and the host's key.
+
+What a live setup needs to know:
+
+- **Certificates.** Chrome enforces Certificate Transparency on the
+  WebTransport QUIC handshake even for a locally trusted root: the page
+  loads with a lock from Janus's local CA, but the relay dial fails with
+  `CERTIFICATE_VERIFY_FAILED`. Janus's descriptor therefore publishes the
+  live leaf's SHA-256 while the leaf is short-lived (Caddy's internal
+  leaves last about 12 h; Chrome accepts `serverCertificateHashes` for
+  certificates valid 14 days or less), and the viewer re-reads the
+  descriptor before every dial. The page's own HTTPS still needs the CA
+  trusted once, through Janus's `/trust` front door. A public name with an
+  ACME certificate needs neither.
+- **Names.** A browser's QUIC dial to an advertised IPv6 address is
+  refused and never falls back to IPv4, so the page's name must resolve
+  A-only ([OPERATIONS.md](OPERATIONS.md#name-resolution-ipv4-only)). Give
+  the viewer a name Janus announces itself (`lyte.local`), not the
+  machine name Avahi owns.
+- **One session.** The host serves one session at a time: a second
+  viewer, or the Mac app, waits at `Connecting…` until the first ends.
+- **Carriage.** The first live session carried 12.8 MB host → browser and
+  about 4,900 datagrams browser → host with no oversize drop, queue drop,
+  upstream refusal or panic in Janus's counters (`GET /1.0/webtransport`).
+  Over Wi-Fi to a UDP echo, 2,000 × 1152 B datagrams round-tripped at
+  p50 4.6 ms, p99 24.5 ms, none refused.
+
 ## Bridge API
 
 `globalThis.lyteBrowser` exposes: `classifyAnnexBBytes`, `controlOpen`,
@@ -246,9 +312,10 @@ relay sees only ciphertext, and every sealed datagram that crosses proves
 the carrier opaque (its AEAD would fail otherwise). The page requires an
 unreliable transport (no HTTP/2 fallback) and sets 100 ms incoming and
 outgoing datagram max-age; the relay drops what its writer refuses and
-anything that waited past 50 ms. The session keeps Lyte's 1152 B budget;
-Chrome reports `maxDatagramSize` 1024 and the smoke carries near-budget
-video shards inbound; a per-session ceiling measurement does not exist.
+anything that waited past 50 ms. The session keeps Lyte's 1152 B budget:
+Chrome reports `maxDatagramSize` 1024 yet carries 1152 B both ways, and
+Janus's relay admits datagrams up to 1200 B from the first packet, with
+no path-MTU discovery.
 
 ## Intended shape
 
@@ -293,8 +360,9 @@ The browser client must not:
 
 ## Commissioning ladder
 
-"Landed" means the gate tests the claim. B-4 to B-6 are proven against the
-control peer's corpus replay, not against a real desktop.
+"Landed" means the gate tests the claim. B-4 to B-6 are gated against the
+control peer's corpus replay; B-8, the real desktop, is proven live by
+hand.
 
 | Stage | Claim | Evidence |
 |---|---|---|
@@ -306,10 +374,13 @@ control peer's corpus replay, not against a real desktop.
 | B-5 | Sealed corpus video, FEC-assembled and presented on the Conductor's clock | smoke: `conductor-video/*` (paced, none early); native `BrowserPlayoutTests` |
 | B-6 | Input, clipboard text, Opus to AudioWorklet | smoke: `session-input/echo`, `clipboard/*`, `audio/*`, `audio-worklet/ring` (samples played); native `BrowserInputTests`, `BrowserAudioPostureTests`, the audio cases of `BrowserPlayoutTests`; DOM input rules and audio pull order in `page.test.mjs`, not driven by the headless smoke |
 | B-7 | A standing viewer session: config, re-dial ladder, teardown on stop | `page.test.mjs` (config parsing, WebTransport options, the ladder, re-dial after EOF and host close, teardown on stop) against fakes; no gate drives it in Chrome yet |
+| B-8 | A real host's Direct Eye desktop, audio and input in Chrome through a relay | live by hand: Chrome on macOS → Janus `webtransport` on pup → `lyte-host`, the desktop rendered, audio played, input echoed ([Live setup](#live-setup-janus-relay)); no gate drives it |
 
-Next, toward a usable client ([TODO.md](../TODO.md)): the viewer through a
-relay to a real host (or WebTransport on the host), live Direct Eye in
-Chrome, Safari, and product composition (`LyteBrowserApp`).
+Next, toward a daily-driver client ([TODO.md](../TODO.md#browser)): a
+worker with `OffscreenCanvas`, a smaller module (`wasm-opt`), accelerate
+and loss concealment for audio, clipboard, fullscreen and Keyboard Lock
+in the viewer, a gate that drives the viewer against a real host, Safari,
+and product composition (`LyteBrowserApp`).
 
 The original research, measurements and rejected alternatives are in the
 [bridge consult](history/20260720-184200-browser-client-caddy-bridge.md)

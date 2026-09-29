@@ -19,7 +19,7 @@ specification.
 | [PROTOCOL.md](PROTOCOL.md) | The current Lyte-UDP contract, section by section, with its vector files |
 | [TESTING.md](TESTING.md) | Every gate and the exact commands |
 | [OPERATIONS.md](OPERATIONS.md) | The pup rig, an installed host's layout, deploy and rollback, pairing, uninstall, safety runbook |
-| [BROWSER.md](BROWSER.md) | The browser client: what the proof covers, how to run it |
+| [BROWSER.md](BROWSER.md) | The browser client: the viewer, its live relay setup, the proof harness and how to run it |
 | [DESIGN.md](DESIGN.md) | Product and interaction decisions (including the keyboard), shipping vs directional |
 | [COMPARISON.md](COMPARISON.md) | Lyte against other remote-display products |
 | [MACOS-SIGNING.md](MACOS-SIGNING.md) | Signing, hardened runtime, the helper's security surface |
@@ -50,6 +50,7 @@ the status column says so.
 | [Direct Eye pixel observation](decisions/20260805-084033-direct-eye-pixel-observation.md) | 2026-08-05 | Binding: the GPU pixel fingerprint owns damage truth |
 | [Wayland clipboard: GNOME blocker](decisions/20260807-015743-wayland-clipboard-gnome-blocker.md) | 2026-08-07 | Binding: host clipboard stays on Mutter RemoteDesktop until an unlock lands |
 | [Browser client platform slice](decisions/20260807-021425-browser-client-platform-slice.md) | 2026-08-07 | Binding: naming, WebTransport carrier, ownership. Ladder status and §7 superseded by [BROWSER.md](BROWSER.md) |
+| [Browser relay: Janus](decisions/20260929-080000-browser-relay-janus.md) | 2026-09-29 | Binding: browsers reach a host through a generic datagram relay at the edge (Janus capability 10), not WebTransport in `lyte-host` |
 
 ## History (dated, superseded or closed)
 

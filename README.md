@@ -180,8 +180,9 @@ so the Keychain grant for the pairing key survives rebuilds; see
 
 ## Direction
 
-1. Make the browser client a real client: live Direct Eye against a real
-   host, a persistent session, Safari.
+1. Make the browser viewer a daily driver: it already streams a real
+   host through a relay ([docs/BROWSER.md](docs/BROWSER.md)); next are a
+   worker, a smaller module, clipboard and fullscreen, and Safari.
 2. A macOS host (ScreenCaptureKit and VideoToolbox leaves).
 3. Windows and Linux client and host shells around the same cores.
 4. Mobile and relay surfaces once the peer platforms earn them.
