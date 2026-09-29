@@ -73,6 +73,40 @@ export function parseViewerConfig(raw, baseUrl) {
 }
 
 /**
+ * The relay as its descriptor names it. A Janus `webtransport` route
+ * answers `GET <path>` with `{url, max_datagram, certificate_hashes}`
+ * (`certificate_hashes`: `{algorithm: "sha-256", value: <base64>}`), fetched
+ * before every dial because pinned hashes rotate. A relay that answers with
+ * anything else keeps the config's own URL and hashes.
+ */
+export async function resolveRelay(relay, fetchJson) {
+  let descriptor;
+  try {
+    descriptor = await fetchJson(relay.url);
+  } catch {
+    return relay;
+  }
+  if (!descriptor || typeof descriptor.url !== "string"
+      || !Array.isArray(descriptor.certificate_hashes)) {
+    return relay;
+  }
+  const url = new URL(descriptor.url, relay.url);
+  if (url.protocol !== "https:") return relay;
+  const certificateHashes = descriptor.certificate_hashes
+    .filter((h) => h && h.algorithm === "sha-256")
+    .map((h) => decodeCertificateHash(h.value));
+  return { url: url.href, certificateHashes };
+}
+
+async function fetchDescriptor(url) {
+  const response = await fetch(url, {
+    cache: "no-store", headers: { Accept: "application/json" },
+  });
+  if (!response.ok) throw new Error(`descriptor ${response.status}`);
+  return response.json();
+}
+
+/**
  * Milliseconds before re-dial `attempt` (0-based since the last session
  * that stayed live): the first is immediate, then the native dial ladder's
  * floor, doubling to its ceiling.
@@ -95,12 +129,15 @@ export class Viewer {
     canvas,
     onStatus = () => {},
     openPump = (b, relay, opts) => SessionPump.open(b, relay, opts),
+    fetchJson = fetchDescriptor,
     openSink = (b, surface) => VideoSink.open(b, surface),
     openAudio = (b) => AudioPlayout.open(b),
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     clock = () => performance.now(),
   }) {
-    Object.assign(this, { bridge, config, canvas, onStatus, openPump, openSink, openAudio });
+    Object.assign(this, {
+      bridge, config, canvas, onStatus, openPump, fetchJson, openSink, openAudio,
+    });
     this.sleepFor = sleep;
     this.clock = clock;
     this.stopped = false;
@@ -157,7 +194,9 @@ export class Viewer {
     try {
       sink = await this.openSink(bridge, this.canvas);
       if (this.stopped) return { reason: "stopped", liveMs: 0 };
-      pump = await this.openPump(bridge, config.relay, {
+      const relay = await resolveRelay(config.relay, this.fetchJson);
+      if (this.stopped) return { reason: "stopped", liveMs: 0 };
+      pump = await this.openPump(bridge, relay, {
         hostStaticPublicKeyHex: config.hostStaticPublicKeyHex,
         pin: config.pin,
       });

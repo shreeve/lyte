@@ -152,6 +152,15 @@ desktop full-window. It is a separate entry so the smoke keeps its
 scripted proof in `index.html`; a server that wants the viewer at `/`
 serves `viewer.html` there.
 
+Before every dial the viewer asks the relay URL itself for a descriptor
+(`GET`, no-store): a Janus `webtransport` route answers `{url,
+max_datagram, certificate_hashes}`, where `certificate_hashes` holds
+`{algorithm: "sha-256", value: <base64>}` entries in its pinned mode and
+is empty for a CA-trusted relay. The descriptor's URL and hashes then
+replace the config's, so a relay that rotates its pinned certificate needs
+no config edit. A relay that answers anything else (the test sidecar)
+keeps the config's `relayUrl` and `serverCertificateHashes`.
+
 ```json
 {
   "relayUrl": "https://desk.example.com/lyte",

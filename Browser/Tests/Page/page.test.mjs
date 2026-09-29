@@ -11,6 +11,7 @@ import {
   decodeCertificateHash,
   parseViewerConfig,
   reconnectDelayMs,
+  resolveRelay,
 } from "../../Page/viewer.js";
 import { runSessionProof } from "../../Page/session-proof.js";
 import { SessionPump } from "../../Page/session-pump.js";
@@ -420,6 +421,9 @@ function fakeViewer({ script, sessions = 3 }) {
     canvas: {},
     onStatus: (status) => statuses.push(status),
     openPump,
+    fetchJson: async () => {
+      throw new Error("no descriptor");
+    },
     openSink: async () => sink(),
     sleep: async (ms) => {
       delays.push(ms);
@@ -475,4 +479,35 @@ test("stopping the viewer tears the live session down and ends the loop", async 
   assert.ok(log.includes("session 0 closed: page closed"), log.join(" | "));
   assert.equal(statuses.at(-1).state, "stopped");
   assert.equal(statuses.at(-1).detail, "page closed");
+});
+
+test("a Janus descriptor names the relay URL and rotating hashes before each dial", async () => {
+  const config = { url: "https://pup.local/lyte", certificateHashes: [] };
+  const hash = Buffer.alloc(32, 7).toString("base64");
+  const pinned = await resolveRelay(config, async (url) => {
+    assert.equal(url, "https://pup.local/lyte");
+    return {
+      url: "https://pup.local/lyte",
+      max_datagram: 1200,
+      certificate_hashes: [{ algorithm: "sha-256", value: hash }],
+    };
+  });
+  assert.equal(pinned.url, "https://pup.local/lyte");
+  assert.deepEqual([...pinned.certificateHashes[0]], [...Buffer.alloc(32, 7)]);
+
+  const caMode = await resolveRelay(config, async () => ({
+    url: "/lyte", max_datagram: 1200, certificate_hashes: [],
+  }));
+  assert.equal(caMode.url, "https://pup.local/lyte");
+  assert.equal(caMode.certificateHashes.length, 0);
+});
+
+test("a relay without a descriptor keeps the config's URL and hashes", async () => {
+  const config = { url: "https://127.0.0.1:4433/lyte-datagram", certificateHashes: [new Uint8Array(32)] };
+  assert.equal(await resolveRelay(config, async () => { throw new Error("404"); }), config);
+  assert.equal(await resolveRelay(config, async () => ({ hello: "world" })), config);
+  assert.equal(
+    await resolveRelay(config, async () => ({ url: "http://evil.example/", certificate_hashes: [] })),
+    config,
+    "a descriptor that names a non-https URL is ignored");
 });
