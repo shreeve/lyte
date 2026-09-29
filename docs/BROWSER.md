@@ -69,10 +69,20 @@ Behavior the proof exercises today:
   drops after being promised are reported so the page closes them.
   Decode is throttled (at most 8 decoded or in-decoder frames); the decode
   backlog is bounded at 120 frames and the handoff at 12.
-- Audio: WASM depacketizes Opus and keeps the newest 20 packets (100 ms);
-  WebCodecs decodes; an AudioWorklet ring plays it, bounded at the 200 ms
-  ceiling WASM names. The smoke renders offline and requires non-silent
-  frames in the rendered buffer.
+- Audio: WASM depacketizes Opus (FEC recovery included) into the native
+  client's adaptive `AudioJitterBuffer`: reordered packets play in order,
+  late ones drop and raise the target, a gap is waited out while audio
+  still plays and concealed the moment the page would run dry, and a
+  stall's burst re-centers. The page pulls verdicts under the shared
+  `AudioRingFill` rule, reporting the audio it holds (the AudioWorklet
+  ring's depth from its consumption reports plus packets still decoding);
+  WebCodecs decodes, and the ring plays PCM in pull order, bounded at the
+  200 ms ceiling WASM names. WebCodecs has no Opus loss concealment, so a
+  concealed packet is the last sample decayed to silence over 2 ms. Until
+  the page first pulls the buffer keeps only the newest target's worth.
+  There is no WSOLA accelerate: depth above the target drains only through
+  the jitter buffer's re-center at its hard cap. The smoke renders offline
+  and requires non-silent frames in the rendered buffer.
 - Input: DOM keyboard (`KeyboardEvent.code` → evdev, JIS Kana/Eisu to the
   native client's codes), pointer, buttons and wheel go out as sealed
   `InputEvent`s. Motion and mid-gesture scroll coalesce to the newest per
@@ -130,9 +140,10 @@ each record carrying its datagram's age), `controlTick` (`null` when
 quiet), `controlTeardown`, `controlSendInput`, `controlClipboardSet`,
 `controlFacts`, `mediaTakeAnnexB` (`null`: skip the frame),
 `mediaPopDue`, `mediaTakeAbandoned`, `mediaNotePresented`,
-`mediaNoteDropped`, `mediaStats`, `audioPopPacket`, `interactionStats`,
-plus the constants `conductorBeatMicroseconds` and
-`audioRingCeilingFrames`. A burst crosses the boundary as one copy into
+`mediaNoteDropped`, `mediaStats`, `audioPull` (a packet, a concealment,
+or `null`: stop pulling), `interactionStats`, plus the constants
+`conductorBeatMicroseconds`, `audioRingCeilingFrames` and
+`audioPacketFrames`. A burst crosses the boundary as one copy into
 WASM memory and is sliced there.
 
 ## Carrier

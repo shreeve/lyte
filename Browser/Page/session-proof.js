@@ -205,7 +205,7 @@ export async function runSessionProof({
     `pts=[${recent.slice(0, 6).map((p) => p.pts).join(",")},…]\n` +
     `inputsSent=${ix.inputsSent} inputEchoes=${ix.inputEchoes} ` +
     `clipboardSent=${ix.clipboardSent} audioAssembled=${ix.audioAssembled} ` +
-    `audioDroppedStale=${ix.audioDroppedStale}\n` +
+    `audioPlayed=${ix.audioPlayed} audioConcealed=${ix.audioConcealed}\n` +
     `codec=${sink?.codec || "?"} adapter=${sink?.presenter.adapter || "?"} ` +
     `maxDatagramSize=${pump?.wt?.datagrams?.maxDatagramSize ?? "?"}\n` +
     `sink=${JSON.stringify(sink?.stats || {})}\n` +

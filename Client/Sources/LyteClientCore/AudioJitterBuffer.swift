@@ -73,6 +73,28 @@ public struct AudioJitterConfig: Sendable {
     public var hardCapPackets: Int { maxTargetPackets + slackPackets }
 }
 
+/// The ring pump's pull rule, shared by every audio shell: pull while the
+/// audio already between the jitter buffer and the speaker sits below the
+/// target and one more packet still fits the ring. Under one packet the
+/// ring is about to run dry, so the pull is urgent.
+public struct AudioRingFill: Equatable, Sendable {
+    /// Conceal a gap now rather than wait it out.
+    public let urgent: Bool
+
+    /// Nil when the pump should stop pulling. `pipelineFrames` counts
+    /// every frame not yet played: the ring plus anything decoded or
+    /// decoding on its way to it.
+    public static func next(
+        pipelineFrames: Int, targetPackets: Int, capacityFrames: Int
+    ) -> AudioRingFill? {
+        let packetFrames = AudioWire.samplesPerPacket
+        guard pipelineFrames < max(targetPackets, 1) * packetFrames,
+              pipelineFrames + packetFrames <= capacityFrames
+        else { return nil }
+        return AudioRingFill(urgent: pipelineFrames < packetFrames)
+    }
+}
+
 /// What the puller should feed the decoder next.
 public enum AudioPullVerdict: Equatable, Sendable {
     /// Decode and play this packet.

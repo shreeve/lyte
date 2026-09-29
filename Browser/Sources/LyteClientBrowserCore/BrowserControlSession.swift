@@ -109,7 +109,7 @@ public final class BrowserControlSession {
     private var events: [String] = []
     private var failure: String?
     private var video = BrowserVideoPlayout()
-    private var audio = BrowserAudioPlayout()
+    private let audio = BrowserAudioPlayout()
     private var nextInputSeq: UInt32 = 0
     private var input = BrowserInputQueue()
     /// Receive ledgers per channel, cumulative since establishment: every
@@ -140,9 +140,13 @@ public final class BrowserControlSession {
     public var videoDecodeBacklog: Int { video.decodeBacklogCount }
     /// Frames whose presentation metadata the playout still holds.
     public var videoPresentationBacklog: Int { video.presentationBacklogCount }
+    /// Packets waiting in the audio jitter buffer.
     public var audioPending: Int { audio.pendingCount }
     public var audioPacketsAssembled: UInt64 { audio.packetsAssembled }
-    public var audioPacketsDroppedStale: UInt64 { audio.packetsDroppedStale }
+    public var audioTargetPackets: Int { audio.targetPackets }
+    public var audioStats: AudioJitterStats { audio.stats }
+    /// True from the host's announced audio quiet until audio wakes it.
+    public var audioAnnouncedQuiet: Bool { audio.isAnnouncedQuiet }
     public var clipboardNegotiated: Bool { control?.clipboardNegotiated ?? false }
     /// Input events captured but not yet on the reliable stream.
     public var inputsPending: Int { input.count }
@@ -200,8 +204,13 @@ public final class BrowserControlSession {
         video.noteDropped(frameNumber: frameNumber)
     }
 
-    public func popAudioPacket() -> AudioPacket? {
-        audio.popPacket()
+    /// The audio organ's next verdict while `pipelineFrames` (audio the
+    /// page holds, decoded or decoding, and not yet played) is below the
+    /// jitter buffer's target; nil means stop pulling for now.
+    public func pullAudio(
+        nowMicros: UInt64, pipelineFrames: Int
+    ) -> BrowserAudioPlayout.Pull? {
+        audio.pull(nowMicros: nowMicros, pipelineFrames: pipelineFrames)
     }
 
     // MARK: Session drive
@@ -567,7 +576,9 @@ public final class BrowserControlSession {
                 scheduled: ingested.scheduled)
         case .audio:
             note(posture: control?.noteAudioEvidence(now: now))
-            for line in audio.ingestShard(envelope: envelope, payload: plaintext) {
+            for line in audio.ingestShard(
+                envelope: envelope, payload: plaintext, arrivalMicros: arrivalMicros)
+            {
                 note(line)
             }
             return step(outbound: [])

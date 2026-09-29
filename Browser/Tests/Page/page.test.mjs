@@ -3,6 +3,7 @@
 // Run: node --test Browser/Tests/Page/page.test.mjs (the macOS gate does).
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { AudioPlayout } from "../../Page/audio-playout.js";
 import { installCanvasInput } from "../../Page/interaction.js";
 import { runSessionProof } from "../../Page/session-proof.js";
 import { SessionPump } from "../../Page/session-pump.js";
@@ -195,4 +196,76 @@ test("a page that stops presenting still closes the frames WASM abandoned", () =
   sink.pumpDecode();
   assert.deepEqual(closed, [7]);
   assert.equal(sink.decoded.size, 0);
+});
+
+/** An AudioPlayout over a fake ring and decoder; outputs are released by hand. */
+async function fakePlayout(verdicts) {
+  const pulls = [];
+  const bridge = {
+    audioPacketFrames: 240,
+    audioPull: (_now, pipeline) => {
+      pulls.push(pipeline);
+      return verdicts.shift() ?? null;
+    },
+  };
+  const pushed = [];
+  const ring = {
+    depthFrames: () => pushed.reduce((sum, pcm) => sum + pcm.length / 2, 0),
+    pushPcm: (pcm) => pushed.push(pcm),
+    close: async () => {},
+  };
+  const decoders = [];
+  const factory = async (onPcm) => {
+    const decoder = {
+      ok: true, detail: "fake opus", decoding: [], failed: false,
+      decode(bytes) {
+        if (this.failed) throw new Error("decoder closed");
+        this.decoding.push(bytes[0]);
+      },
+      /** Emits the oldest decode as 240 frames of its first byte. */
+      output() {
+        onPcm(new Float32Array(480).fill(this.decoding.shift()));
+      },
+      close() {},
+    };
+    decoders.push(decoder);
+    return decoder;
+  };
+  const playout = new AudioPlayout(bridge, ring, factory);
+  await playout.resetStream();
+  return { playout, pulls, pushed, decoders };
+}
+
+const opusPacket = (value) => ({ bytes: new Uint8Array([value]), captureMicroseconds: value });
+
+test("decoded and concealed audio reach the ring in the order WASM pulled it", async () => {
+  const { playout, pushed, decoders } = await fakePlayout([
+    opusPacket(1), { conceal: true, number: 2 }, opusPacket(3),
+  ]);
+  playout.pump(0);
+  assert.equal(pushed.length, 0, "the concealment waits behind the packet still decoding");
+  decoders[0].output();
+  decoders[0].output();
+  assert.deepEqual(pushed.map((pcm) => pcm[0]), [1, Math.fround(95 / 96), 3]);
+  assert.equal(pushed[1][2 * 96], 0, "a concealment decays to silence");
+});
+
+test("WASM sees the audio the page holds, decoding included", async () => {
+  const { playout, pulls } = await fakePlayout([opusPacket(1), opusPacket(2), opusPacket(3)]);
+  playout.pump(0);
+  assert.deepEqual(pulls, [0, 240, 480, 720]);
+});
+
+test("a decoder that fails is replaced and its unfilled slots never block the ring", async () => {
+  const { playout, pushed, decoders } = await fakePlayout([opusPacket(1), opusPacket(2)]);
+  playout.pump(0);
+  decoders[0].failed = true;
+  playout.bridge.audioPull = (_now, pipeline) => (pipeline < 720 ? opusPacket(9) : null);
+  playout.pump(0);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(decoders.length, 2, "a fresh decoder replaces the failed one");
+  assert.equal(playout.slots.length, 0);
+  playout.pump(0);
+  decoders[1].output();
+  assert.deepEqual(pushed.map((pcm) => pcm[0]), [9]);
 });
