@@ -7,11 +7,13 @@ carrier and ownership are fixed by the
 [B-0 decision](decisions/20260807-021425-browser-client-platform-slice.md);
 this page owns the current state.
 
-**Status: a proof harness, not a product.** Chrome runs Lyte's Swift
+**Status: a proof harness and a first viewer.** Chrome runs Lyte's Swift
 WebAssembly client through a complete control, video, audio, input and
-clipboard session, but only against `lyte-control-peer`, a DRM-free test
-peer that replays the frozen video corpus and an Opus tone. No browser
-session has streamed a real desktop from a host's Direct Eye yet.
+clipboard session against `lyte-control-peer`, a DRM-free test peer that
+replays the frozen video corpus and an Opus tone. The [viewer](#viewer)
+(`viewer.html`) holds a standing session through a same-origin
+WebTransport relay and re-dials when it ends; it has not yet streamed a
+real desktop from a host's Direct Eye.
 
 ## What exists
 
@@ -19,7 +21,7 @@ session has streamed a real desktop from a host's Direct Eye yet.
 |---|---|---|
 | `LyteClientBrowserCore` | `Browser/Sources/` | Sans-IO browser session composed from the shared client policy in `LyteClientSession` and `LyteClientCore`: handshake, pairing, capabilities, lifecycle and blackout detector, beacon echo and host clock, exempt CTRL, chan-3 feedback, NACK repair and IDR recovery, video assembly and Conductor schedule, audio depacketize, input and clipboard. Built natively and tested (`LyteClientBrowserCoreTests`) against HostWireTestKit's shipping `HostWire.Session` and a scripted `SealedCtrlPeer` far end |
 | `LyteClientBrowser` | `Browser/Sources/` | The WASM executable: `globalThis.lyteBrowser`, the JS↔WASM bridge (JavaScriptKit) |
-| Page | `Browser/Page/` | `session-pump.js` (WebTransport datagrams ↔ WASM), `video-sink.js` (WebCodecs decode, WebGPU present), `interaction.js` (DOM input, Opus decode, AudioWorklet), `audio-ring-worklet.js`, `session-proof.js` (the scripted proof), `lyte-io.js`, `index.html`, and `vendor/browser_wasi_shim/` (the pinned `@bjorn3/browser_wasi_shim` 0.4.1 build PackageToJS imports; MIT OR Apache-2.0) |
+| Page | `Browser/Page/` | `session-pump.js` (WebTransport datagrams ↔ WASM), `video-sink.js` (WebCodecs decode, WebGPU present), `interaction.js` (DOM input), `audio-playout.js` (Opus decode in the jitter buffer's pull order, AudioWorklet ring) and `audio-ring-worklet.js`, `session-proof.js` and `index.html` (the scripted proof harness), `viewer.js` and `viewer.html` (the [viewer](#viewer)), `lyte-io.js`, and `vendor/browser_wasi_shim/` (the pinned `@bjorn3/browser_wasi_shim` 0.4.1 build PackageToJS imports; MIT OR Apache-2.0) |
 | `lyte-wt-sidecar` | `Browser/Scripts/wt-sidecar.mjs` | Same-box WebTransport ↔ UDP relay (Node, `rwebtransport` from `Browser/Harness/package-lock.json`); opaque bytes only, one UDP socket per WebTransport session, at most eight sessions; loopback unless `--allow-remote`; refuses to relay to 41151 |
 | `lyte-control-peer` | `Host/Sources/lyte-control-peer/` | A real `HostWire.Session` and pairing responder over UDP with no Direct Eye; `--emit-corpus` sends `video-corpus-v1` frames 000–009 and an Opus tone; `--sessions 0` serves sessions until killed; `--stream-corpus` loops those frames at 60 fps, unpaired, under `--rate-mbps` and prints every rate move (the live rate-estimator rig, dialed by `lyte-cli wire-view --host-key`); `--quiet-after S` switches it S s in to the corpus's small P-frames at 10 fps, a quiet screen that sends no full delivery train |
 
@@ -69,10 +71,20 @@ Behavior the proof exercises today:
   drops after being promised are reported so the page closes them.
   Decode is throttled (at most 8 decoded or in-decoder frames); the decode
   backlog is bounded at 120 frames and the handoff at 12.
-- Audio: WASM depacketizes Opus and keeps the newest 20 packets (100 ms);
-  WebCodecs decodes; an AudioWorklet ring plays it, bounded at the 200 ms
-  ceiling WASM names. The smoke renders offline and requires non-silent
-  frames in the rendered buffer.
+- Audio: WASM depacketizes Opus (FEC recovery included) into the native
+  client's adaptive `AudioJitterBuffer`: reordered packets play in order,
+  late ones drop and raise the target, a gap is waited out while audio
+  still plays and concealed the moment the page would run dry, and a
+  stall's burst re-centers. The page pulls verdicts under the shared
+  `AudioRingFill` rule, reporting the audio it holds (the AudioWorklet
+  ring's depth from its consumption reports plus packets still decoding);
+  WebCodecs decodes, and the ring plays PCM in pull order, bounded at the
+  200 ms ceiling WASM names. WebCodecs has no Opus loss concealment, so a
+  concealed packet is the last sample decayed to silence over 2 ms. Until
+  the page first pulls the buffer keeps only the newest target's worth.
+  There is no WSOLA accelerate: depth above the target drains only through
+  the jitter buffer's re-center at its hard cap. The smoke renders offline
+  and requires non-silent frames in the rendered buffer.
 - Input: DOM keyboard (`KeyboardEvent.code` → evdev, JIS Kana/Eisu to the
   native client's codes), pointer, buttons and wheel go out as sealed
   `InputEvent`s. Motion and mid-gesture scroll coalesce to the newest per
@@ -85,6 +97,14 @@ Behavior the proof exercises today:
   injects nothing.
 - Clipboard text round-trips through capability key 10; the peer's
   clipboard is in memory, not an OS clipboard.
+- Audio posture: the browser declares key 9 and, as the native app does,
+  asks for `hostMuted` when the host's first routing status differs, so
+  the host's own speakers go quiet while the stream plays in the browser.
+  It declares key 15, so an announced audio quiet is silence by contract:
+  a dry page is not concealed, the blackout detector relaxes to its 2.5 s
+  baseline, and the packet that wakes the track re-primes playout (native
+  `BrowserAudioPostureTests`). Keys 13, 14, 16 and 17 are not declared:
+  the browser does not execute them.
 
 ## Run it
 
@@ -95,7 +115,8 @@ Chrome with a GPU, Node 24 or 26, and `openssl`.
 ```sh
 Browser/Scripts/build.sh     # WASM + page + corpus staged in Browser/.serve/
 node Browser/Scripts/smoke.mjs --serve  # http://127.0.0.1:8765/ with control peer + sidecar
-# open the URL in Chrome; Connect and Re-run work repeatedly
+# open the URL in Chrome; Connect and Re-run work repeatedly;
+# /viewer.html runs the viewer against the same peer
 
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   Browser/Scripts/smoke-chrome.sh   # headless proof; rebuilds first
@@ -118,9 +139,73 @@ the manifest keeps only `LyteClientBrowserCore` and its suite, so Linux
 never resolves JavaScriptKit); the WASM build runs in the macOS gate when
 the toolchain is installed. Neither needs Chrome.
 
-The harness always starts its own local peer. Pointing the page
-at a peer on pup (a fresh 41xxx port, never 41151) needs a serve mode that
-skips the local peer, which does not exist yet.
+With `--serve` the script also writes `lyte-viewer.json` for its own
+sidecar and peer, so `http://127.0.0.1:8765/viewer.html` runs the viewer
+against the corpus replay. The harness always starts its own local peer;
+a real host is reached through the viewer and a relay beside it.
+
+## Viewer
+
+`viewer.html` is the daily-driver entry: on load it fetches
+`lyte-viewer.json` from its own origin, dials the relay, and shows the
+desktop full-window. It is a separate entry so the smoke keeps its
+scripted proof in `index.html`; a server that wants the viewer at `/`
+serves `viewer.html` there.
+
+```json
+{
+  "relayUrl": "https://desk.example.com/lyte",
+  "hostStaticPublicKeyHex": "<64 hex digits: the host's Noise static public key>",
+  "serverCertificateHashes": ["<SHA-256 of the relay's certificate, hex or base64>"],
+  "pin": "246810"
+}
+```
+
+| Key | Required | Meaning |
+|---|---|---|
+| `relayUrl` | yes | The WebTransport relay, `https:`; a path (`"/lyte"`) resolves against the page's origin |
+| `hostStaticPublicKeyHex` | yes | The host's Noise static public key, 64 hex digits: the `noise: host static public key …` line `lyte-host` logs at start ([OPERATIONS.md](OPERATIONS.md)) |
+| `serverCertificateHashes` | no | One string or a list: 64 hex digits (colons allowed) or base64/base64url of 32 bytes. Only for a relay with a self-signed certificate (Chrome caps those at 14 days); omit it for a CA-trusted relay, and the page then omits `serverCertificateHashes` from the WebTransport options |
+| `pin` | no | Pair with this PIN; omitted or empty, the viewer connects unpaired, which a host that does not require pairing admits |
+
+Behavior:
+
+- A click or key unlocks audio (the autoplay policy) and focuses the
+  canvas; keyboard, pointer and wheel then reach the host as in the
+  harness. Until then the jitter buffer keeps only its newest target's
+  worth.
+- The status pill reads `Connecting…`, fades while live, and reads
+  `Reconnecting in N s — <reason>` after a carrier EOF, a failed dial or
+  handshake, a session failure (the liveness close included) or a host
+  teardown. Each re-dial is a fresh session and Noise handshake. The first
+  re-dial is immediate; the next ones climb the native dial ladder
+  (`RoamingPolicyConfig`'s 2 s floor doubling to 30 s, read from WASM),
+  which restarts after a session that stayed live past the floor.
+- A session that ends lingers up to 300 ms so its teardown is
+  acknowledged; on `pagehide` the teardown leaves at once and the carrier
+  closes.
+- Not yet: clipboard sharing, a fullscreen or Keyboard Lock control,
+  Pointer Lock, a host-audio toggle, and the stats overlay.
+
+What a relay host (Janus) serves on the page's origin, from
+`Browser/.serve/` after `build.sh`:
+
+| Path | Content-Type |
+|---|---|
+| `/` (or `/viewer.html`) → `viewer.html` | `text/html` |
+| `viewer.js`, `audio-playout.js`, `audio-ring-worklet.js`, `interaction.js`, `lyte-io.js`, `session-pump.js`, `video-sink.js` | `text/javascript` |
+| `index.js`, `instantiate.js`, `runtime.js`, `platforms/browser.js` (PackageToJS) | `text/javascript` |
+| `vendor/browser_wasi_shim/*.js` | `text/javascript` |
+| `LyteClientBrowser.wasm` | `application/wasm` (streaming compile needs it) |
+| `lyte-viewer.json` | `application/json`, not cached (the relay's own config, not in `.serve/`) |
+
+`corpus/`, `index.html`, `session-proof.js`, the `*.d.ts` and
+`package.json` files, and the harness's `control-peer.json` and
+`wt-sidecar.json` are not needed. Serving all of `.serve/` except
+`corpus/` works too. No cross-origin isolation headers are required. The
+relay itself accepts WebTransport over HTTP/3 at `relayUrl`, carries each
+datagram opaquely to the host's UDP port and back, one UDP socket per
+WebTransport session, as `lyte-wt-sidecar` does.
 
 ## Bridge API
 
@@ -130,9 +215,10 @@ each record carrying its datagram's age), `controlTick` (`null` when
 quiet), `controlTeardown`, `controlSendInput`, `controlClipboardSet`,
 `controlFacts`, `mediaTakeAnnexB` (`null`: skip the frame),
 `mediaPopDue`, `mediaTakeAbandoned`, `mediaNotePresented`,
-`mediaNoteDropped`, `mediaStats`, `audioPopPacket`, `interactionStats`,
-plus the constants `conductorBeatMicroseconds` and
-`audioRingCeilingFrames`. A burst crosses the boundary as one copy into
+`mediaNoteDropped`, `mediaStats`, `audioPull` (a packet, a concealment,
+or `null`: stop pulling), `interactionStats`, plus the constants
+`conductorBeatMicroseconds`, `audioRingCeilingFrames` and
+`audioPacketFrames`. A burst crosses the boundary as one copy into
 WASM memory and is sliced there.
 
 ## Carrier
@@ -209,11 +295,12 @@ control peer's corpus replay, not against a real desktop.
 | B-3 | Noise, PIN pairing, capabilities, feedback, teardown against a real `HostWire.Session` | smoke: `control-session/*`; native tests (`BrowserControlSessionTests`, `BrowserFailureTests`, `BrowserMediaPathTests`: feedback keeps the host out of FROZEN, a NACK draws a repair, a refusal escalates, a PathChallenge is answered, the clock map tracks skew) |
 | B-4 | One timestamped HEVC IRAP through WebCodecs and WebGPU | smoke: `frame-present/*` |
 | B-5 | Sealed corpus video, FEC-assembled and presented on the Conductor's clock | smoke: `conductor-video/*` (paced, none early); native `BrowserPlayoutTests` |
-| B-6 | Input, clipboard text, Opus to AudioWorklet | smoke: `session-input/echo`, `clipboard/*`, `audio/*`, `audio-worklet/ring` (samples played); native `BrowserInputTests`; DOM input rules in `page.test.mjs`, not driven by the headless smoke |
+| B-6 | Input, clipboard text, Opus to AudioWorklet | smoke: `session-input/echo`, `clipboard/*`, `audio/*`, `audio-worklet/ring` (samples played); native `BrowserInputTests`, `BrowserAudioPostureTests`, the audio cases of `BrowserPlayoutTests`; DOM input rules and audio pull order in `page.test.mjs`, not driven by the headless smoke |
+| B-7 | A standing viewer session: config, re-dial ladder, teardown on stop | `page.test.mjs` (config parsing, WebTransport options, the ladder, re-dial after EOF and host close, teardown on stop) against fakes; no gate drives it in Chrome yet |
 
-Next, toward a usable client ([TODO.md](../TODO.md)): a relay to a real
-host (or WebTransport on the host), live Direct Eye in Chrome, a persistent
-interactive session, Safari, and product composition (`LyteBrowserApp`).
+Next, toward a usable client ([TODO.md](../TODO.md)): the viewer through a
+relay to a real host (or WebTransport on the host), live Direct Eye in
+Chrome, Safari, and product composition (`LyteBrowserApp`).
 
 The original research, measurements and rejected alternatives are in the
 [bridge consult](history/20260720-184200-browser-client-caddy-bridge.md)

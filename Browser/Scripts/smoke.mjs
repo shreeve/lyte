@@ -7,10 +7,11 @@
 //
 // --serve runs the same peer, sidecar and page server for a person instead:
 // the peer serves sessions until Ctrl-C, the page is on LYTE_BROWSER_PORT
-// (8765), and no Chrome is started. It needs a prior build.sh.
+// (8765), and no Chrome is started. It also writes lyte-viewer.json, so
+// /viewer.html dials the same peer. It needs a prior build.sh.
 import { spawn, execFileSync } from "node:child_process";
 import { createServer } from "node:http";
-import { readFile, mkdir } from "node:fs/promises";
+import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, extname } from "node:path";
 import { tmpdir } from "node:os";
@@ -22,6 +23,7 @@ const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const serveDir = join(browserRoot, ".serve");
 const metaOut = join(serveDir, "wt-sidecar.json");
 const peerMetaOut = join(serveDir, "control-peer.json");
+const viewerConfigOut = join(serveDir, "lyte-viewer.json");
 const serve = process.argv.includes("--serve");
 const timeoutMs = Number(process.env.LYTE_BROWSER_SMOKE_TIMEOUT_S || 180) * 1000;
 const peerPort =
@@ -247,7 +249,18 @@ const {
 const { server, port } = await startStaticServer();
 
 if (serve) {
+  // The viewer dials the same peer through the same sidecar.
+  await writeFile(
+    viewerConfigOut,
+    JSON.stringify({
+      relayUrl: sidecarMeta.url,
+      hostStaticPublicKeyHex: peerMeta.hostStaticPublicKeyHex,
+      serverCertificateHashes: [sidecarMeta.hashHex],
+      pin: peerMeta.pin,
+    })
+  );
   console.log(`browser-serve: http://127.0.0.1:${port}/ — open it in Google Chrome`);
+  console.log(`browser-serve: viewer http://127.0.0.1:${port}/viewer.html (lyte-viewer.json)`);
   console.log(`browser-serve: control PIN ${peerMeta.pin}; Ctrl-C to stop`);
   const stop = () => {
     sidecar.kill("SIGTERM");

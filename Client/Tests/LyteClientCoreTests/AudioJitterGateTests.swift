@@ -16,6 +16,7 @@ final class AudioJitterGateTests: XCTestCase {
     private static let packetMicros: UInt64 = 5_000
     private static let packetFrames = 240
     private static let framesPerMs = 48
+    private static let ringCapacityFrames = 48_000
 
     // MARK: - The virtual-time pump harness
 
@@ -62,10 +63,12 @@ final class AudioJitterGateTests: XCTestCase {
             }
             // Pump side: refill to target.
             var pulling = true
-            while pulling,
-                  ringFrames < buffer.targetPackets * Self.packetFrames {
-                let urgent = ringFrames < Self.packetFrames
-                switch buffer.pull(nowMicroseconds: t, urgent: urgent) {
+            while pulling, let fill = AudioRingFill.next(
+                pipelineFrames: ringFrames,
+                targetPackets: buffer.targetPackets,
+                capacityFrames: Self.ringCapacityFrames)
+            {
+                switch buffer.pull(nowMicroseconds: t, urgent: fill.urgent) {
                 case .packet(let packet):
                     result.played.append(packet.number)
                     result.playedPackets.append(packet)
@@ -110,6 +113,33 @@ final class AudioJitterGateTests: XCTestCase {
             captureMicroseconds: UInt64(n) * Self.packetMicros,
             bytes: [UInt8(truncatingIfNeeded: Int(n))] + [1, 2, 3],
             recovered: recovered)
+    }
+
+    // MARK: The pump's fill rule
+
+    /// Every shell's pump pulls until the audio not yet played reaches the
+    /// target, never past what the ring holds, and urgently only when the
+    /// ring is under one packet from dry.
+    func testRingFillStopsAtTargetAndIsUrgentUnderOnePacket() {
+        let target = 5
+        let fill = { (frames: Int, capacity: Int) in
+            AudioRingFill.next(
+                pipelineFrames: frames, targetPackets: target,
+                capacityFrames: capacity)
+        }
+        XCTAssertEqual(fill(0, 9_600)?.urgent, true)
+        XCTAssertEqual(fill(Self.packetFrames - 1, 9_600)?.urgent, true)
+        XCTAssertEqual(fill(Self.packetFrames, 9_600)?.urgent, false)
+        XCTAssertEqual(fill(target * Self.packetFrames - 1, 9_600)?.urgent, false)
+        XCTAssertNil(fill(target * Self.packetFrames, 9_600),
+                     "the ring already holds the target")
+        XCTAssertNil(fill(Self.packetFrames, Self.packetFrames + 1),
+                     "one more packet would overflow the ring")
+        XCTAssertEqual(
+            AudioRingFill.next(pipelineFrames: 0, targetPackets: 0,
+                               capacityFrames: 9_600)?.urgent,
+            true,
+            "a zero target still keeps one packet coming")
     }
 
     // MARK: Steady cadence: silence-free, minimal delay

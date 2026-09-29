@@ -1,6 +1,11 @@
 // AudioWorklet PCM ring fed { pcm: Float32Array } of interleaved 48 kHz
 // stereo. Underruns play silence; past the ceiling WASM names
-// (processorOptions.maxQueuedFrames) the oldest audio drops.
+// (processorOptions.maxQueuedFrames) the oldest audio drops. Every few
+// render quanta it reports the frames it has consumed (played or dropped),
+// which is how the page knows the audio it still holds.
+
+// 4 quanta of 128 frames: a report every ~10.7 ms.
+const REPORT_EVERY_QUANTA = 4;
 
 class LyteRingProcessor extends AudioWorkletProcessor {
   constructor(options) {
@@ -13,6 +18,7 @@ class LyteRingProcessor extends AudioWorkletProcessor {
     this.framesPlayed = 0;
     this.underrunFrames = 0;
     this.framesDropped = 0;
+    this.quanta = 0;
     this.port.onmessage = (event) => {
       const pcm = event.data?.pcm;
       if (pcm instanceof Float32Array && pcm.length >= 2) {
@@ -62,6 +68,13 @@ class LyteRingProcessor extends AudioWorkletProcessor {
         this.chunks.shift();
         this.offset = 0;
       }
+    }
+    this.quanta += 1;
+    if (this.quanta % REPORT_EVERY_QUANTA === 0) {
+      this.port.postMessage({
+        type: "depth",
+        consumedFrames: this.framesPlayed + this.framesDropped,
+      });
     }
     return true;
   }

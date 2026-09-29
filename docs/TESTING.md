@@ -86,7 +86,7 @@ fakes:
 | Host | `HostCoreTests`, `HostSessionTests`, `HostWireTests` (session gates), `HostIOTests`, `HostAudioTests`, `HostLayoutTests` (the seeded `host.conf`); Linux only: `HostEyeTests`, `CNetIOTests`, `CPipeWireAudioTests` (against a silent PipeWire socket in a temp runtime dir, never the desktop's server), `LyteHostIntegrationTests` |
 | Client | `LyteTransportTests`, `LyteClientSessionTests`, `LyteClientCoreTests`, `LyteCorpusTests` (benchmark scoring), `LyteAppTests` (app lifecycle under injected services), `LyteHelperTests`, `LyteCLITests` |
 | SystemTests | `LyteClientHostTests` — the real client core and host session composed in one process, on the client and host test kits |
-| Browser | `LyteClientBrowserCoreTests` — the browser core against an in-process `HostWire.Session`; page input rules in `Browser/Tests/Page/page.test.mjs` (Node, not SwiftPM) |
+| Browser | `LyteClientBrowserCoreTests` — the browser core against an in-process `HostWire.Session`; page input rules, audio pull order and the viewer loop in `Browser/Tests/Page/page.test.mjs` (Node, not SwiftPM) |
 
 ### Repository lints (run inside the Common suite)
 

@@ -19,6 +19,11 @@ enum BrowserBridge {
             "conductorBeatMicroseconds":
                 Double(VideoBeatConductor.Config().beatPeriodMicroseconds).jsValue,
             "audioRingCeilingFrames": Double(BrowserAudioPlayout.ringCeilingFrames).jsValue,
+            "audioPacketFrames": Double(BrowserAudioPlayout.packetFrames).jsValue,
+            "redialFloorMicroseconds":
+                Double(BrowserControlSession.redialFloorMicroseconds).jsValue,
+            "redialCeilingMicroseconds":
+                Double(BrowserControlSession.redialCeilingMicroseconds).jsValue,
         ]
         func expose(_ name: String, _ body: @escaping ([JSValue]) -> JSValue) {
             let closure = JSClosure { body($0) }
@@ -124,12 +129,24 @@ enum BrowserBridge {
                 "skippedLate": Double(counters.framesSkippedLate).jsValue,
             ].jsValue
         }
-        expose("audioPopPacket") { _ in
-            guard let packet = session?.popAudioPacket() else { return .null }
-            return [
-                "captureMicroseconds": Double(packet.captureMicroseconds).jsValue,
-                "bytes": JSTypedArray<UInt8>(packet.bytes).jsValue,
-            ].jsValue
+        expose("audioPull") { args in
+            let pipeline = number(args, 1).map { max(0, Int(min($0, 1e9))) } ?? 0
+            guard let pull = session?.pullAudio(
+                nowMicros: micros(args, 0), pipelineFrames: pipeline)
+            else { return .null }
+            switch pull {
+            case .packet(let packet):
+                return [
+                    "number": Double(packet.number).jsValue,
+                    "captureMicroseconds": Double(packet.captureMicroseconds).jsValue,
+                    "bytes": JSTypedArray<UInt8>(packet.bytes).jsValue,
+                ].jsValue
+            case .conceal(let number):
+                return [
+                    "number": Double(number).jsValue,
+                    "conceal": true.jsValue,
+                ].jsValue
+            }
         }
         expose("interactionStats") { _ in
             var stats: [String: JSValue] = [:]
@@ -138,7 +155,13 @@ enum BrowserBridge {
             stats["clipboardSent"] = Double(session?.clipboardSent ?? 0).jsValue
             stats["clipboardReceived"] = Double(session?.clipboardReceived ?? 0).jsValue
             stats["audioAssembled"] = Double(session?.audioPacketsAssembled ?? 0).jsValue
-            stats["audioDroppedStale"] = Double(session?.audioPacketsDroppedStale ?? 0).jsValue
+            let audio = session?.audioStats
+            stats["audioPlayed"] = Double(audio?.packetsPlayed ?? 0).jsValue
+            stats["audioConcealed"] = Double(audio?.plcInvocations ?? 0).jsValue
+            stats["audioLateDropped"] = Double(audio?.latePacketsDropped ?? 0).jsValue
+            stats["audioRecenters"] = Double(audio?.recenterEvents ?? 0).jsValue
+            stats["audioTargetPackets"] = Double(audio?.targetPackets ?? 0).jsValue
+            stats["audioAnnouncedQuiet"] = (session?.audioAnnouncedQuiet ?? false).jsValue
             stats["lastClipboardText"] = session?.lastClipboardText.map(\.jsValue) ?? .null
             return stats.jsValue
         }

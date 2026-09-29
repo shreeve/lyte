@@ -306,38 +306,81 @@ final class BrowserPlayoutTests: XCTestCase {
 
     // MARK: Audio
 
-    func testAudioQueueKeepsOnlyTheNewestPacketsWhenNotDrained() throws {
+    /// Audio that arrives before the page first pulls (autoplay still
+    /// locked) primes the jitter buffer with only the newest target's
+    /// worth; the first pulls fill the page's pipeline to that target and
+    /// stop.
+    func testAudioBeforeTheFirstPullKeepsOnlyTheTargetsNewestPackets() throws {
         let host = BrowserHostPeer()
         let (client, _) = try host.readyClient()
-        let session = host.session
         let sent = 50
-        for index in 0..<sent {
-            try session.ingestAudioPacket(
-                [0xF8, 0xFF, 0xFE, UInt8(index)],
-                captureTimestampMicroseconds: host.hostMicros,
-                now: host.hostMicros * 1_000
-            )
-            host.advance(microseconds: 5_000)
-            var notes: [String] = []
-            host.deliver(host.drain(), to: client, notes: &notes)
-        }
+        try host.sendAudio(count: sent, to: client)
 
         XCTAssertEqual(client.audioPacketsAssembled, UInt64(sent))
-        XCTAssertEqual(client.audioPending, BrowserAudioPlayout.capacity)
+        let target = client.audioTargetPackets
+        XCTAssertEqual(client.audioPending, target)
         XCTAssertEqual(
-            client.audioPacketsDroppedStale,
-            UInt64(sent - BrowserAudioPlayout.capacity)
-        )
-        var numbers: [UInt32] = []
-        while let packet = client.popAudioPacket() { numbers.append(packet.number) }
-        XCTAssertEqual(numbers.count, BrowserAudioPlayout.capacity)
-        XCTAssertEqual(numbers, numbers.sorted(), "oldest first")
-        XCTAssertEqual(numbers.last.map { Int($0) }, sent - 1, "newest kept")
+            client.audioStats.packetsDroppedBeforePlayout, UInt64(sent - target))
+
+        var pipeline = 0
+        let numbers = Self.played(host.pullAudio(client, pipeline: &pipeline))
+        XCTAssertEqual(numbers.count, target, "the pull stops at the target")
+        XCTAssertEqual(pipeline, target * BrowserAudioPlayout.packetFrames)
+        XCTAssertEqual(numbers, Array(numbers[0]...(numbers[0] + UInt32(target) - 1)),
+                       "the newest packets, oldest first")
+        XCTAssertEqual(client.audioPending, 0)
+    }
+
+    /// Packets the path reorders play in packet order: the jitter buffer,
+    /// not arrival order, decides what the page decodes next.
+    func testReorderedAudioPlaysInPacketOrder() throws {
+        let host = BrowserHostPeer()
+        let (client, _) = try host.readyClient()
+        try host.sendAudio(count: 8, to: client)
+        var pipeline = 0
+        let primed = Self.played(host.pullAudio(client, pipeline: &pipeline))
+        let last = try XCTUnwrap(primed.last)
+
+        try host.sendAudio(count: 8, to: client, reorder: { $0.reversed() })
+        pipeline = 0
+        let numbers = Self.played(host.pullAudio(client, pipeline: &pipeline))
+        XCTAssertFalse(numbers.isEmpty)
+        XCTAssertEqual(numbers, numbers.sorted())
+        XCTAssertEqual(numbers.first, last &+ 1, "playout resumes where it left off")
+        XCTAssertEqual(client.audioStats.plcInvocations, 0)
+    }
+
+    /// A gap is waited out while the page still has audio to play, and
+    /// concealed for one packet the moment its pipeline runs dry.
+    func testAnAudioGapWaitsWhileThePipelinePlaysAndIsConcealedWhenDry() throws {
+        let host = BrowserHostPeer()
+        let (client, _) = try host.readyClient()
+        try host.sendAudio(count: 8, to: client)
+        var pipeline = 0
+        let primed = Self.played(host.pullAudio(client, pipeline: &pipeline))
+        let last = try XCTUnwrap(primed.last)
+
+        XCTAssertNil(
+            client.pullAudio(
+                nowMicros: host.nowMicros,
+                pipelineFrames: BrowserAudioPlayout.packetFrames),
+            "a packet of audio still plays: the gap may yet be repaired")
+        XCTAssertEqual(
+            client.pullAudio(nowMicros: host.nowMicros, pipelineFrames: 0),
+            .conceal(number: last &+ 1))
+        XCTAssertEqual(client.audioStats.plcInvocations, 1)
     }
 
     // MARK: Helpers
 
     private static func corpus() throws -> [[UInt8]] {
         try VideoCorpus.frames()
+    }
+
+    private static func played(_ pulls: [BrowserAudioPlayout.Pull]) -> [UInt32] {
+        pulls.compactMap {
+            if case .packet(let packet) = $0 { return packet.number }
+            return nil
+        }
     }
 }
