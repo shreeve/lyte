@@ -9,8 +9,8 @@
   **0.7.1**, the latest release. Install: `brew install --cask
   shreeve/tap/lyte` or `Scripts/install.sh`.
 - Gates (`-warnings-as-errors`): Wire 476 (475 wasm32), Common 113, Host
-  398, Client 534, SystemTests 13, Browser 38 (+10 page); pup Host 468,
-  Client 164, Browser 38, Wire release 476 at 25,000 ARQ trials.
+  398, Client 537, SystemTests 13, Browser 44 (+26 page); pup Host 468,
+  Client 167, Browser 44, Wire release 476 at 25,000 ARQ trials.
 
 ## Live rig
 
