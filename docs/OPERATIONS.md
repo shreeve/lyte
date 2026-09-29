@@ -11,7 +11,7 @@ section applies to any installed host. Fresh-machine installation is in
 
 | Machine | Role | Facts |
 |---|---|---|
-| `pup` | Linux reference host | Ubuntu 26.04; Intel Meteor Lake GPU drives the panel (Direct Eye and VAAPI run there); RTX 4050 with no attached connectors. Wi-Fi only: `10.0.0.249` on `wlp0s20f3`, where the service advertises (the wired leg, `10.0.0.232` on `enxf8e43b7ede7c`, is absent). Swift 6.1.2 at `/usr/local/bin/swift`. `ssh pup`. |
+| `pup` | Linux reference host | Ubuntu 26.04; Intel Meteor Lake GPU drives the panel (Direct Eye and VAAPI run there); RTX 4050 with no attached connectors. Wi-Fi only: `10.0.0.249` on `wlp0s20f3`, where the service advertises (the wired leg, `10.0.0.232` on `enxf8e43b7ede7c`, is absent). avahi advertises IPv4 only ([name resolution](#name-resolution-ipv4-only)). Swift 6.1.2 at `/usr/local/bin/swift`. `ssh pup`. |
 | the Mac | client and development machine | Xcode, the signing identity, `.build/Lyte.app` (the owner's interactive app) |
 
 The standing host is `lyte-host.service` on UDP **41151**, advertised over
@@ -23,13 +23,43 @@ Point `--advertise-interface` at a live interface and restart the
 service:
 
 ```sh
-ssh pup "sed -i 's/--advertise-interface [^ ]*/--advertise-interface <iface>/' ~/.config/lyte/host.conf && sudo systemctl restart lyte-host"
+ssh pup "sudo sed -i 's/--advertise-interface [^ ]*/--advertise-interface <iface>/' /etc/lyte/host.conf && sudo systemctl restart lyte-host"
 ```
 
 `lyte-cli wire-view 0 --host <address> --host-port 41151 --host-key <key>`
 dials an address directly without discovery (`0` binds a free local port).
 The key is the 64-hex-digit line `noise: host static public key …` that
 `lyte-host` logs at start; once paired, `--host-key` can be omitted.
+
+### Name resolution: IPv4 only
+
+pup's avahi advertises `pup.local` with its IPv4 address only. Otherwise it
+also publishes pup's global IPv6 addresses, and a browser dials those
+first: the page still loads (TCP falls back to IPv4), but WebTransport's
+QUIC dial to the relay is refused on IPv6 and never falls back, so the
+browser viewer cannot connect. Janus's `lan` mode, like `lyte-host` and
+the native client, is IPv4-only by design; the global addresses are
+routable from outside, so nothing should listen on them. pup keeps IPv6
+for everything else.
+
+`/etc/avahi/avahi-daemon.conf` (the original is `avahi-daemon.conf.pre-ipv4only`):
+
+```ini
+use-ipv6=no
+publish-aaaa-on-ipv4=no
+```
+
+Applied with `sudo systemctl restart avahi-daemon`; `lyte-host` files its
+`_lyte._udp` record again by itself within a second (`discovery: record
+withdrawn (avahi-daemon went away) — filing it again`). Check from the Mac
+that only the IPv4 address comes back, and undo by restoring the original:
+
+```sh
+dns-sd -G v4v6 pup.local     # Add … pup.local. 10.0.0.249, and no IPv6 line; Ctrl-C to stop
+ssh pup 'sudo cp -p /etc/avahi/avahi-daemon.conf.pre-ipv4only /etc/avahi/avahi-daemon.conf && sudo systemctl restart avahi-daemon'
+```
+
+`Host/Scripts/setup-host.sh` flags a host whose avahi still advertises IPv6.
 
 **Agents on the Mac:** a sandboxed agent shell cannot reach pup: `ssh pup`
 fails with `No route to host` because macOS Local Network privacy blocks
@@ -63,17 +93,20 @@ links libav. The standing service always runs a release build.
 
 ## Installed layout
 
-The service runs as the seat user from XDG directories
-(`XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_DATA_HOME` move them when set
-to absolute paths; the installer writes the resolved paths into the unit).
+The service runs as the seat user, but what it executes and reads its
+arguments from is root's: code running as the seat user cannot plant a
+binary, `LD_PRELOAD` or other environment that then runs with
+`CAP_SYS_ADMIN`. Its identity and log stay in the seat user's XDG
+directories (`XDG_CONFIG_HOME` and `XDG_STATE_HOME` move them when set to
+absolute paths; the installer writes the resolved paths into the unit).
 
 | What | Path |
 |---|---|
-| Knobs (`LYTE_HOST_ARGS` only) | `~/.config/lyte/host.conf` |
+| Knobs (`LYTE_HOST_ARGS` only) | `/etc/lyte/host.conf` (root, 0644; edit with `sudoedit`) |
 | Identity | `~/.config/lyte/noise_static.key`, `~/.config/lyte/paired_clients` (0600, directory 0700) |
-| Executable the unit runs | `~/.local/bin/lyte-host` → `~/.local/share/lyte/versions/<sha256-12>/lyte-host` |
-| Deploy bookkeeping | `~/.local/share/lyte/previous` |
-| Legal payload | `~/.local/share/lyte/doc/` |
+| Executable the unit runs | `/usr/local/lib/lyte/lyte-host` → `versions/<sha256-12>/lyte-host` (root) |
+| Deploy bookkeeping | `/usr/local/lib/lyte/previous` |
+| Legal payload | `/usr/local/share/doc/lyte/` |
 | Audio crash ledger | `~/.local/state/lyte/audio_default_sink.prev` |
 | Log | `~/.local/state/lyte/host.log` (0600); over 64 MiB it moves to `host.log.1` at the next start, and the running host moves its own output the same way at every session boundary and once a minute |
 | Unit | `/etc/systemd/system/lyte-host.service` (system unit with `User=`, ambient `CAP_SYS_ADMIN`, `Restart=always`) |
@@ -95,12 +128,12 @@ cd ~/src/lyte-host                          # or Host/ in a checkout
 ```
 
 A deploy copies `.build/release/lyte-host` (and `lyte-audio-check` when
-built) into `versions/<first 12 hex of its sha256>/` and swaps
-`~/.local/bin/lyte-host` in one rename; it never rewrites a version in
-place, and redeploying the active binary is a no-op. The newest five
-versions (`--keep N`) plus the active and previous ones are kept.
-`--restart` runs `sudo -n systemctl restart lyte-host`, so it needs
-passwordless sudo for that command; without it the running process keeps
+built) into the root-owned `/usr/local/lib/lyte/versions/<first 12 hex of
+its sha256>/` and swaps `/usr/local/lib/lyte/lyte-host` in one rename;
+every write goes through `sudo`. It never rewrites a version in place, and
+redeploying the active binary is a no-op. The newest five versions
+(`--keep N`) plus the active and previous ones are kept. `--restart` runs
+`sudo systemctl restart lyte-host`; without it the running process keeps
 its open executable until the next restart.
 
 Verify a restart:
@@ -113,7 +146,7 @@ sudo grep CapAmb /proc/$pid/status      # 0000000000200000 (CAP_SYS_ADMIN)
 tail -40 ~/.local/state/lyte/host.log   # "noise: awaiting client handshake on port 41151"
 ```
 
-To change flags, edit `~/.config/lyte/host.conf` and restart. Unit
+To change flags, `sudoedit /etc/lyte/host.conf` and restart. Unit
 lifecycle lines are in `sudo journalctl -u lyte-host`.
 
 ## Pairing a client
@@ -123,7 +156,7 @@ stopped for the duration:
 
 ```sh
 sudo systemctl stop lyte-host
-bin="$(readlink -f ~/.local/bin/lyte-host)"
+bin="$(readlink -f /usr/local/lib/lyte/lyte-host)"
 sudo setcap cap_sys_admin+ep "$bin"        # hand-run only; the unit grants it ambiently
 "$bin" --wire-listen 41151 --pair          # prints the PIN; enter it on the client
 sudo setcap -r "$bin"
@@ -154,8 +187,9 @@ why they hold and how the tools enforce them.
 
 - **Identity.** Losing `~/.config/lyte/noise_static.key` unpairs every
   client, with no undo. The pup gate and the benchmark's handshake leg
-  fingerprint the identity, `host.conf`, `/etc/lyte/lyte-host.conf`, the
-  pre-XDG copies, the unit and the deployed link before and after
+  fingerprint the identity, both `host.conf` locations,
+  `/etc/lyte/lyte-host.conf`, the pre-XDG copies, the unit and the deployed
+  links before and after
   (`Scripts/lib/pup-side.sh`) and fail on any change or unreadable file;
   a handshake leg that dies after its restart re-checks on the way out.
 - **The standing port.** A listener on a port another socket holds
@@ -173,11 +207,12 @@ why they hold and how the tools enforce them.
   ENV{ID_SEAT}="seat-lytecheck"` in `/etc/udev/rules.d/`, then
   `udevadm control --reload`), and remove it afterwards: the service's own
   devices use the same names.
-- **Ambient `CAP_SYS_ADMIN` (accepted risk).** The unit runs a seat-user
-  symlink into seat-user-owned versions, with arguments from the user's
-  `host.conf`, ambient `CAP_SYS_ADMIN` and `Restart=always`; treat the seat
-  account as root-equivalent on a host running the service. The analysis
-  and the pre-1.0 hardening are in [TODO.md](../TODO.md).
+- **Ambient `CAP_SYS_ADMIN`.** The unit runs a root-owned binary with
+  arguments from the root-owned `/etc/lyte/host.conf`, through a fixed
+  `sh -c` that runs as the seat user with `set -f`, so the seat user cannot
+  choose the code or environment that holds the capability. On pup the seat
+  user also has password-free sudo, which makes the account
+  root-equivalent regardless ([TODO.md](../TODO.md)).
 - **netem.** `Scripts/netem/port-netem.sh` shapes one `(source port,
   destination /32)` flow and removes only the qdisc it installed.
   `Scripts/benchmark-netem.sh` arms cleanup before the apply, refuses to

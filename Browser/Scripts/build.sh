@@ -1,8 +1,9 @@
 #!/bin/sh
 # Cross-build LyteClientBrowser for the browser with the official Swift Wasm
 # SDK and JavaScriptKit PackageToJS, and stage a self-contained tree under
-# Browser/.serve/ (the WASM package, the page, and the video corpus the
-# control peer emits). Idempotent; incremental after the first build.
+# Browser/.serve/ (the WASM package, the proof harness index.html, the
+# viewer.html, their modules, and the video corpus the control peer emits).
+# Idempotent; incremental after the first build.
 #
 # Nothing is fetched at run time: the WASI shim PackageToJS imports is the
 # pinned @bjorn3/browser_wasi_shim 0.4.1 npm build vendored under
@@ -41,7 +42,7 @@ ls "${CORPUS_DIR}"/frame-00?-*.annexb >/dev/null 2>&1 || {
 rm -rf "$SERVE_DIR"
 mkdir -p "$SERVE_DIR/corpus"
 cp -R "${PACKAGE_OUT}/." "$SERVE_DIR/"
-cp "${BROWSER_ROOT}"/Page/index.html "${BROWSER_ROOT}"/Page/*.js "$SERVE_DIR/"
+cp "${BROWSER_ROOT}"/Page/*.html "${BROWSER_ROOT}"/Page/*.js "$SERVE_DIR/"
 cp -R "${BROWSER_ROOT}/Page/vendor" "$SERVE_DIR/"
 # lyte-control-peer --emit-corpus reads frames from here.
 cp "${CORPUS_DIR}"/frame-00?-*.annexb "$SERVE_DIR/corpus/"

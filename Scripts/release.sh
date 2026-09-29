@@ -14,8 +14,9 @@
 # Developer ID and notarized, with the ticket stapled, so Gatekeeper accepts
 # it however it was downloaded. The feed's enclosure carries an EdDSA
 # signature (edSignature) made with the key the login keychain holds under the
-# account "lyte", the private half of Client/Updates/sparkle-public-key.txt;
-# the feed document itself is not signed.
+# account "lyte", the private half of Client/Updates/sparkle-public-key.txt,
+# and the feed document itself carries an embedded EdDSA signature by the
+# same key, verified before publishing and again as published.
 #
 # The notes are the version's section of CHANGELOG.md, which a release must
 # have: the GitHub release shows them, and the feed embeds them for Sparkle's
@@ -212,6 +213,13 @@ unsigned=$(grep -o '<enclosure[^>]*>' "$out/feed/appcast.xml" | grep -v 'sparkle
 if [[ -n "$section" ]]; then
     grep -q '<description' "$out/feed/appcast.xml" || fail "the feed carries no release notes"
 fi
+# Sign the feed document itself, and prove it verifies before anything is
+# published: a bundle that requires a signed feed must never meet one that
+# is not.
+"$bin/sign_update" --account "$key_account" "$out/feed/appcast.xml" >/dev/null \
+    || fail "could not sign the feed"
+"$bin/sign_update" --verify --account "$key_account" "$out/feed/appcast.xml" \
+    >/dev/null || fail "the signed feed does not verify"
 cp "$out/feed/appcast.xml" "$out/appcast.xml"
 
 if [[ "$mode" == --dry-run ]]; then
@@ -249,4 +257,16 @@ stage=pushed
 gh release edit "$tag" --repo "$repo" --draft=false --latest --verify-tag >/dev/null
 stage=published
 echo "Published $tag"
+# The feed installed copies read is the latest release's: it must verify as
+# downloaded.
+published_feed="$out/appcast.published.xml"
+if curl -fsSL -o "$published_feed" \
+        "https://github.com/$repo/releases/latest/download/appcast.xml" \
+    && "$bin/sign_update" --verify --account "$key_account" "$published_feed" \
+        >/dev/null
+then
+    echo "The published feed verifies."
+else
+    warn "the published feed did not verify; check $published_feed before any bundle requires a signed feed"
+fi
 echo "Next: update Casks/lyte.rb in shreeve/homebrew-tap to $version (sha256 of $out/feed/$archive)."

@@ -43,6 +43,23 @@ public final class BrowserControlSession {
     /// Message-1 retransmit schedule; a page dial is a first dial.
     public typealias HandshakeRetry = ClientHandshakeInitiator.Retry
 
+    /// What the browser declares: only features it executes. Key 9 lets it
+    /// ask the host to mute its own speakers while the stream plays here;
+    /// key 15 lets it read an announced audio quiet as silence, not loss.
+    public static let localCapabilities: Capabilities = .wireDefault
+        .declaringClipboardText()
+        .declaringHostAudioRouting()
+        .declaringAudioQuietPosture()
+    /// The host's speakers go quiet for the session, as the native app asks.
+    public static let desiredHostAudioRouting: HostAudioRoutingMode = .hostMuted
+
+    /// The native dial ladder's bounds, for the page's re-dial after a
+    /// carrier or session ends.
+    public static let redialFloorMicroseconds =
+        RoamingPolicyConfig().dialRetryFloorMicroseconds
+    public static let redialCeilingMicroseconds =
+        RoamingPolicyConfig().dialRetryCeilingMicroseconds
+
     /// The chan-3 report cadence every client shell runs.
     private static let feedbackIntervalMicroseconds =
         UInt64(ClientFeedbackReporter.cadenceMilliseconds) * 1_000
@@ -80,7 +97,9 @@ public final class BrowserControlSession {
 
     private let hostStaticPublicKey: [UInt8]
     private let clientStatic: NoiseKeyPair
-    private let pin: [UInt8]
+    /// Nil connects unpaired, as the native app does against a host that
+    /// does not require pairing.
+    private let pin: [UInt8]?
     private let handshakeRetry: HandshakeRetry
 
     private var status: Status = .idle
@@ -107,7 +126,7 @@ public final class BrowserControlSession {
     private var events: [String] = []
     private var failure: String?
     private var video = BrowserVideoPlayout()
-    private var audio = BrowserAudioPlayout()
+    private let audio = BrowserAudioPlayout()
     private var nextInputSeq: UInt32 = 0
     private var input = BrowserInputQueue()
     /// Receive ledgers per channel, cumulative since establishment: every
@@ -138,9 +157,13 @@ public final class BrowserControlSession {
     public var videoDecodeBacklog: Int { video.decodeBacklogCount }
     /// Frames whose presentation metadata the playout still holds.
     public var videoPresentationBacklog: Int { video.presentationBacklogCount }
+    /// Packets waiting in the audio jitter buffer.
     public var audioPending: Int { audio.pendingCount }
     public var audioPacketsAssembled: UInt64 { audio.packetsAssembled }
-    public var audioPacketsDroppedStale: UInt64 { audio.packetsDroppedStale }
+    public var audioTargetPackets: Int { audio.targetPackets }
+    public var audioStats: AudioJitterStats { audio.stats }
+    /// True from the host's announced audio quiet until audio wakes it.
+    public var audioAnnouncedQuiet: Bool { audio.isAnnouncedQuiet }
     public var clipboardNegotiated: Bool { control?.clipboardNegotiated ?? false }
     /// Input events captured but not yet on the reliable stream.
     public var inputsPending: Int { input.count }
@@ -159,12 +182,16 @@ public final class BrowserControlSession {
         else {
             throw BrowserControlError.badHostStatic
         }
-        guard let pinBytes = PairingPin.normalize(pin) else {
-            throw BrowserControlError.badPin
+        if pin.allSatisfy(\.isWhitespace) {
+            self.pin = nil
+        } else {
+            guard let pinBytes = PairingPin.normalize(pin) else {
+                throw BrowserControlError.badPin
+            }
+            self.pin = pinBytes
         }
         self.hostStaticPublicKey = hostKey
         self.clientStatic = NoiseKeyPair.generate()
-        self.pin = pinBytes
         self.handshakeRetry = handshakeRetry
     }
 
@@ -194,8 +221,13 @@ public final class BrowserControlSession {
         video.noteDropped(frameNumber: frameNumber)
     }
 
-    public func popAudioPacket() -> AudioPacket? {
-        audio.popPacket()
+    /// The audio organ's next verdict while `pipelineFrames` (audio the
+    /// page holds, decoded or decoding, and not yet played) is below the
+    /// jitter buffer's target; nil means stop pulling for now.
+    public func pullAudio(
+        nowMicros: UInt64, pipelineFrames: Int
+    ) -> BrowserAudioPlayout.Pull? {
+        audio.pull(nowMicros: nowMicros, pipelineFrames: pipelineFrames)
     }
 
     // MARK: Session drive
@@ -459,27 +491,30 @@ public final class BrowserControlSession {
         note("noise: handshake completed")
 
         var control = ClientControlSession(
-            localCapabilities: .wireDefault.declaringClipboardText(),
-            desiredHostAudioRouting: nil,
+            localCapabilities: Self.localCapabilities,
+            desiredHostAudioRouting: Self.desiredHostAudioRouting,
             clipboardSharingAtStart: true,
             now: now
         )
-        var pairing = try ClientPairing(
-            pin: pin,
-            clientStaticPublicKey: clientStatic.publicKey,
-            hostStaticPublicKey: hostStaticPublicKey,
-            noiseHandshakeHash: made.handshakeHash
-        )
-
         // First reliable words: capability declaration, then pairing share A.
         if let declaration = try control.start() {
             try arq.send(message: declaration, now: now)
             note("capabilities: client declaration queued")
         }
         self.control = control
-        try arq.send(message: try pairing.start(), now: now)
-        self.pairing = pairing
-        note("pairing: share A queued")
+        if let pin {
+            var pairing = try ClientPairing(
+                pin: pin,
+                clientStaticPublicKey: clientStatic.publicKey,
+                hostStaticPublicKey: hostStaticPublicKey,
+                noiseHandshakeHash: made.handshakeHash
+            )
+            try arq.send(message: try pairing.start(), now: now)
+            self.pairing = pairing
+            note("pairing: share A queued")
+        } else {
+            note("pairing: none — connecting unpaired")
+        }
         return step(outbound: try pollArq(nowMicros: nowMicros))
     }
 
@@ -558,7 +593,9 @@ public final class BrowserControlSession {
                 scheduled: ingested.scheduled)
         case .audio:
             note(posture: control?.noteAudioEvidence(now: now))
-            for line in audio.ingestShard(envelope: envelope, payload: plaintext) {
+            for line in audio.ingestShard(
+                envelope: envelope, payload: plaintext, arrivalMicros: arrivalMicros)
+            {
                 note(line)
             }
             return step(outbound: [])
@@ -690,6 +727,12 @@ public final class BrowserControlSession {
             if caps.clipboardText {
                 detail += " clipboardText=true"
             }
+            if caps.hostAudioRouting {
+                detail += " hostAudioRouting=true"
+            }
+            if caps.audioQuietPosture {
+                detail += " audioQuietPosture=true"
+            }
             note(detail)
         case .capability(.failed(let err)):
             // The composed teardown leaves before the session fails.
@@ -704,6 +747,12 @@ public final class BrowserControlSession {
             clipboardReceived += 1
             lastClipboardText = text
             note("clipboard: announce (\(text.utf8.count) B)")
+        case .audioRouting(.status(let mode, _)):
+            note("audio routing: host reports \(mode)")
+        case .mediaPosture(.audioState(let state)) where state.state == .quiet:
+            // Repeated check-ins change nothing; the first one is news.
+            if !audio.isAnnouncedQuiet { note("audio: host announced quiet") }
+            audio.noteAnnouncedQuiet()
         default:
             break
         }
@@ -714,9 +763,11 @@ public final class BrowserControlSession {
     }
 
     private func promoteIfReady() {
-        if status == .established, capabilitiesAgreed, paired {
+        if status == .established, capabilitiesAgreed, paired || pin == nil {
             status = .ready
-            note("session: READY (Noise + pair + capabilities; video arm open)")
+            note(paired
+                ? "session: READY (Noise + pair + capabilities; video arm open)"
+                : "session: READY (Noise + capabilities, unpaired; video arm open)")
         }
     }
 

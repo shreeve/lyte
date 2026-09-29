@@ -73,6 +73,28 @@ public struct AudioJitterConfig: Sendable {
     public var hardCapPackets: Int { maxTargetPackets + slackPackets }
 }
 
+/// The ring pump's pull rule, shared by every audio shell: pull while the
+/// audio already between the jitter buffer and the speaker sits below the
+/// target and one more packet still fits the ring. Under one packet the
+/// ring is about to run dry, so the pull is urgent.
+public struct AudioRingFill: Equatable, Sendable {
+    /// Conceal a gap now rather than wait it out.
+    public let urgent: Bool
+
+    /// Nil when the pump should stop pulling. `pipelineFrames` counts
+    /// every frame not yet played: the ring plus anything decoded or
+    /// decoding on its way to it.
+    public static func next(
+        pipelineFrames: Int, targetPackets: Int, capacityFrames: Int
+    ) -> AudioRingFill? {
+        let packetFrames = AudioWire.samplesPerPacket
+        guard pipelineFrames < max(targetPackets, 1) * packetFrames,
+              pipelineFrames + packetFrames <= capacityFrames
+        else { return nil }
+        return AudioRingFill(urgent: pipelineFrames < packetFrames)
+    }
+}
+
 /// What the puller should feed the decoder next.
 public enum AudioPullVerdict: Equatable, Sendable {
     /// Decode and play this packet.
@@ -95,6 +117,9 @@ public struct AudioJitterStats: Sendable {
     /// Re-center events (overgrowth or number jump) and what they cost.
     public var recenterEvents: UInt64 = 0
     public var packetsDroppedInRecenter: UInt64 = 0
+    /// Arrived before the first pull and aged out of the priming window:
+    /// the player was not yet running, so no path fault.
+    public var packetsDroppedBeforePlayout: UInt64 = 0
     /// Times a starved verdict was issued after priming (ring-cushion
     /// waits and blackout silence both land here).
     public var starvedVerdicts: UInt64 = 0
@@ -134,9 +159,12 @@ public final class AudioJitterBuffer {
     private var consecutiveConcealments = 0
     /// Set by an announced quiet, cleared by the packet that wakes it.
     private var announcedQuiet = false
-    /// The latest arrival of the wake burst that ends a quiet: the host
-    /// ships its pre-roll at once, which describes its ring, not the path.
-    private var wakeBurstArrival: UInt64?
+    /// Where the wake burst that ends a quiet is over: the host ships its
+    /// pre-roll at once, which describes its ring, not the path, and Wi-Fi
+    /// may land it in several aggregates. The burst fits the hard cap, so
+    /// numbers below the waking packet's plus the cap are not path
+    /// evidence.
+    private var wakeBurstEnd: UInt32?
     /// The oldest number playout may still step back to. The slots from
     /// here to nextNumber were concealed on an empty buffer or skipped by
     /// a wake re-prime, and nothing has played since, so a wire-carried
@@ -215,7 +243,7 @@ public final class AudioJitterBuffer {
            lastPlayedNumber.map({ Int32(bitPattern: packet.number &- $0) > 0 })
                ?? true {
             announcedQuiet = false
-            wakeBurstArrival = arrivalMicroseconds
+            wakeBurstEnd = packet.number &+ UInt32(config.hardCapPackets)
             if pending.isEmpty {
                 nextNumber = packet.number
                 rewindFloor = lastPlayedNumber.map { $0 &+ 1 }
@@ -267,9 +295,12 @@ public final class AudioJitterBuffer {
         pending[packet.number] = (packet, arrivalMicroseconds)
 
         if !started {
-            if pending.count >= targetPackets {
-                started = true
-                nextNumber = oldestPendingNumber()!
+            // Until the player pulls, keep the newest target's worth:
+            // playout starts at the target depth, not behind a backlog.
+            while pending.count > targetPackets,
+                  let oldest = oldestPendingNumber() {
+                pending.removeValue(forKey: oldest)
+                stats.packetsDroppedBeforePlayout += 1
             }
             return
         }
@@ -283,7 +314,14 @@ public final class AudioJitterBuffer {
     public func pull(
         nowMicroseconds: UInt64, urgent: Bool = false
     ) -> AudioPullVerdict {
-        guard started else { return .starved }
+        if !started {
+            // Playout starts at the first pull that finds the target.
+            guard pending.count >= targetPackets,
+                  let oldest = oldestPendingNumber()
+            else { return .starved }
+            started = true
+            nextNumber = oldest
+        }
         stats.depthPackets.record(UInt64(pending.count))
 
         if let entry = pending.removeValue(forKey: nextNumber) {
@@ -417,14 +455,9 @@ public final class AudioJitterBuffer {
         _ packet: AudioPacket, arrivalMicroseconds: UInt64
     ) {
         guard !packet.recovered else { return }
-        if let burst = wakeBurstArrival {
-            guard arrivalMicroseconds &- burst
-                >= UInt64(config.packetDurationMicroseconds)
-            else {
-                wakeBurstArrival = arrivalMicroseconds
-                return
-            }
-            wakeBurstArrival = nil
+        if let end = wakeBurstEnd {
+            guard Int32(bitPattern: packet.number &- end) >= 0 else { return }
+            wakeBurstEnd = nil
         }
 
         // Diagnostics: pairwise inter-arrival deviation (σ, histogram).

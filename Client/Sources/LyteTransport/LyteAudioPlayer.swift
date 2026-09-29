@@ -14,6 +14,7 @@ import LyteIO
 import AVFoundation
 import Dispatch
 import Foundation
+import LyteClientCore
 import LyteWire
 import Synchronization
 
@@ -416,13 +417,15 @@ public final class LyteAudioPlayer: @unchecked Sendable {
                 }
                 ringDepth = ring.depthFrames
             }
-            let target = max(receiver.targetDepthPackets, 1) * packetFrames
-            guard ringDepth < target,
-                  ringDepth + packetFrames <= capacity else {
+            guard let fill = AudioRingFill.next(
+                pipelineFrames: ringDepth,
+                targetPackets: receiver.targetDepthPackets,
+                capacityFrames: capacity)
+            else {
                 snapshotAccelBooks()
                 return
             }
-            let urgent = ringDepth < packetFrames
+            let urgent = fill.urgent
             // The receiver judges ring + gather.
             let heldFrames = ringDepth + accelerator.pendingFrames
             let pipelineMicros = UInt64(heldFrames) * 1_000_000

@@ -9,11 +9,14 @@
 # eye's DRM ticket is therefore a property of the SERVICE, not of the
 # binary file, and deploying a new binary needs no setcap.
 #
-# Everything else is the user's:
-#   @CONFIG_HOME@/lyte/host.conf         LYTE_HOST_ARGS (EnvironmentFile)
-#   @CONFIG_HOME@/lyte/noise_static.key  host identity (lyte-host owns it)
-#   @HOME@/.local/bin/lyte-host          symlink to the active version
+# What the service executes and reads its arguments from is root's, so
+# code running as the seat user cannot plant a binary, LD_PRELOAD or other
+# environment that then runs with CAP_SYS_ADMIN:
+#   /etc/lyte/host.conf                  LYTE_HOST_ARGS (EnvironmentFile)
+#   /usr/local/lib/lyte/lyte-host        symlink to the active version
 #                                        (Host/Scripts/deploy-host.sh)
+# The rest is the user's:
+#   @CONFIG_HOME@/lyte/noise_static.key  host identity (lyte-host owns it)
 #   @STATE_HOME@/lyte/host.log           the host's own output, 0600
 #
 # The log is bounded: a host.log over 64 MiB becomes host.log.1 (replacing
@@ -35,14 +38,15 @@ Wants=graphical.target
 [Service]
 Type=simple
 User=@USER@
-EnvironmentFile=@CONFIG_HOME@/lyte/host.conf
+EnvironmentFile=/etc/lyte/host.conf
 Environment=XDG_CONFIG_HOME=@CONFIG_HOME@
 Environment=XDG_STATE_HOME=@STATE_HOME@
 Environment=XDG_RUNTIME_DIR=/run/user/@UID@
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/@UID@/bus
 # "$$" is systemd's escape for a literal "$": the shell, not systemd,
-# expands these. LYTE_HOST_ARGS stays unquoted so it splits into words.
-ExecStart=/bin/sh -c 'log=@STATE_HOME@/lyte/host.log; mkdir -p -m 0700 @STATE_HOME@/lyte || exit 1; [ -z "$$(find "$$log" -size +65536k 2>/dev/null)" ] || mv -f "$$log" "$$log.1"; (umask 077; : >> "$$log") || exit 1; exec @HOME@/.local/bin/lyte-host $$LYTE_HOST_ARGS >> "$$log" 2>&1'
+# expands these. LYTE_HOST_ARGS stays unquoted so it splits into words, and
+# `set -f` keeps a word from globbing against the file system.
+ExecStart=/bin/sh -c 'set -f; log=@STATE_HOME@/lyte/host.log; mkdir -p -m 0700 @STATE_HOME@/lyte || exit 1; [ -z "$$(find "$$log" -size +65536k 2>/dev/null)" ] || mv -f "$$log" "$$log.1"; (umask 077; : >> "$$log") || exit 1; exec /usr/local/lib/lyte/lyte-host $$LYTE_HOST_ARGS >> "$$log" 2>&1'
 AmbientCapabilities=CAP_SYS_ADMIN
 CapabilityBoundingSet=CAP_SYS_ADMIN
 # The service serves sessions in turn and exits only on SIGTERM, a

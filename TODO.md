@@ -11,22 +11,11 @@ live state: [HANDOFF.md](HANDOFF.md).
   Wanted: require-paired by default, and a pairing arm inside the running
   service (a signal or control socket that mints a PIN) instead of stop,
   hand-run, restart.
-- **Root-owned executable and knobs under ambient `CAP_SYS_ADMIN` (before
-  1.0).** The unit (`Host/Systemd/lyte-host.service`) execs the seat
-  user's `~/.local/bin/lyte-host` with ambient `CAP_SYS_ADMIN` and
-  `Restart=always`, so seat-user code can plant a binary and have it
-  re-executed with the capability
-  ([OPERATIONS](docs/OPERATIONS.md#safety)). A root-owned binary alone does
-  not close this: `EnvironmentFile=` is the seat user's
-  `~/.config/lyte/host.conf`, which can set `LD_PRELOAD` or
-  `LD_LIBRARY_PATH` for `/bin/sh` and `lyte-host`, and ambient
-  capabilities do not set `AT_SECURE`, so the loader honors them under
-  `CAP_SYS_ADMIN`. Wanted: `deploy-host.sh` installs root-owned versions
-  and the unit execs a root-owned link (or `setcap` on a root-owned copy);
-  the knobs move to a root-owned file (for example `/etc/lyte/host.conf`),
-  or `lyte-host` reads its own arguments file and `EnvironmentFile=` goes.
-  The unquoted `$$LYTE_HOST_ARGS` in `ExecStart` is also glob-expanded by
-  `sh`: add `set -f`, or exec `lyte-host` without a shell.
+- **Password-free sudo on pup.** The host now runs a root-owned binary
+  with root-owned knobs, but pup's seat user has `NOPASSWD: ALL`, so any
+  code running as that user is root anyway. Narrow it (for example to
+  `systemctl restart lyte-host` and the deploy's `install`/`ln`/`mv` under
+  `/usr/local/lib/lyte`) or require a password before 1.0 (owner).
 - **Helper registration residual (Mac).** Before `SMAppService`
   registration the app validates the embedded `lyte-helperd` against its
   own designated requirement
@@ -34,13 +23,12 @@ live state: [HANDOFF.md](HANDOFF.md).
   that can sign with the owner's development identity (which signs without
   a prompt) still passes, and a window remains between validation and
   `register()`. A root-owned install under `/Applications` closes both.
-- **Sign the update feed (next release).** `Scripts/release.sh` signs
-  each enclosure (`sparkle:edSignature`) but publishes an unsigned
-  `appcast.xml`. Sign the feed itself (`generate_appcast` with the `lyte`
-  EdDSA key), verify the published feed carries its signature, and only
-  then add `SURequireSignedFeed` and `SUVerifyUpdateBeforeExtraction` to
-  `SPARKLE_KEYS` in `Scripts/make-app.sh` for the following release: a
-  bundle that requires a signed feed must never meet an unsigned one.
+- **Require the signed feed (0.7.3).** From 0.7.2 on, `Scripts/release.sh`
+  signs `appcast.xml` itself and verifies it before and after publishing.
+  Once a published signed feed has verified, add `SURequireSignedFeed` and
+  `SUVerifyUpdateBeforeExtraction` to `SPARKLE_KEYS` in
+  `Scripts/make-app.sh` for the next release; from then on every feed must
+  stay signed, which `release.sh` enforces.
 - **Noise message-1 freshness (wire-v2 decision).** A captured message 1
   replayed in a later host run can open one unconfirmed handshake per run —
   a delay for a dialing client, not a lockout. A timestamp in the message-1
@@ -66,21 +54,13 @@ live state: [HANDOFF.md](HANDOFF.md).
 
 ## Client
 
-- **Audio primes before the player exists.** `LyteUdpSession` receives
-  audio before the AVAudioEngine spins up on the audio queue, so the
-  jitter buffer primes and re-centers about every 100 ms until the pump
-  starts (a 30 s read against pup showed 3 recenters, 2 PLC and 2 late at
-  session start). Start the player first, or drop pre-player audio
-  without booking recenters. Confirm with a `lyte-cli wire-view --audio`
-  read against pup.
-- **Audio target after a wake.** On pup, a sound that starts after a
-  quiet (`pw-play`) arrives irregularly at first (captureToFeed p99
-  70–90 ms against a steady 25 ms), which lifts the jitter target from 5
-  to about 11 packets; it then decays only one step per 10 s, so the
-  whole sound plays about 30 ms later than it needs to. Find whether the
-  irregularity is PipeWire's graph requantizing on the host or the
-  capture leaf, and whether the target should discount the first
-  hundred milliseconds after a wake.
+- **Confirm the wake target live.** The jitter buffer now ignores the
+  first hard cap's worth of packet numbers after a wake (the pre-roll burst
+  Wi-Fi may land in several aggregates), which kept a unit trace at the
+  floor where it rose to 13. The live reads on 2026-09-28 had 8–41 ms of
+  path jitter, which saturated the target for `main` and this client
+  alike; repeat the two-wake `wire-view --audio` read on a calm path and
+  expect the target to stay near 5 through a wake.
 - **Pairing sheet for an already-paired key.** A typed address that no
   pin knows asks "Which host is at …?" before offering pairing; the
   pairing sheet could instead offer Connect when the pasted key is
@@ -96,18 +76,27 @@ live state: [HANDOFF.md](HANDOFF.md).
 
 ## Browser
 
-- **Daily-driver browser client.** The Chrome proof runs only against
-  `lyte-control-peer` with corpus video, whose blackout detector is
-  widened to 30 s. Remaining: a relay to a real host (or WebTransport on
-  the host itself), live Direct Eye in Chrome, a persistent interactive
-  session, Safari, real host clipboard where the platform allows it, and
-  product composition (`LyteBrowserApp`). Do not scaffold empty
-  `Applications/` stubs before composition earns them. The page's
-  worklet ring (`Browser/Page/audio-ring-worklet.js`) books every silent
-  frame as underrun, including before the first audio and under an
-  announced quiet (0x25); the native player ring books neither. Carry the
-  shared `ClientControlSession.hostAnnouncedAudioQuiet` through the bridge
-  and post it to the worklet, which stops booking until its next write.
+- **Daily-driver browser client.** The viewer streams a real host
+  through a Janus relay ([BROWSER.md](docs/BROWSER.md#live-setup-janus-relay)),
+  proven live by hand. Remaining:
+  - Protocol work and rendering in a worker with `OffscreenCanvas`
+    (everything runs on the page's main thread today).
+  - A smaller module: the WASM is about 78 MB before `wasm-opt`.
+  - Audio accelerate and loss concealment in the page. `AudioAccelerator`
+    lives in `LyteTransport` with Foundation, so the browser has no WSOLA;
+    WebCodecs has no Opus PLC, so a concealed packet decays to silence.
+  - Viewer clipboard, fullscreen, Keyboard Lock and Pointer Lock.
+  - A gate that drives the viewer in Chrome against a real host or relay.
+  - Safari, and product composition (`LyteBrowserApp`). Do not scaffold
+    empty `Applications/` stubs before composition earns them.
+  - `lyte-host` registering its relay route with Janus over `/1.0`,
+    instead of a hand-written site block.
+- **Browser underrun books.** The page's worklet ring
+  (`Browser/Page/audio-ring-worklet.js`) books every silent frame as
+  underrun, including before the first audio and under an announced
+  quiet (0x25); the native player ring books neither. Carry the shared
+  `ClientControlSession.hostAnnouncedAudioQuiet` through the bridge and
+  post it to the worklet, which stops booking until its next write.
 
 ## Gates
 

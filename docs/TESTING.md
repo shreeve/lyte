@@ -86,7 +86,7 @@ fakes:
 | Host | `HostCoreTests`, `HostSessionTests`, `HostWireTests` (session gates), `HostIOTests`, `HostAudioTests`, `HostLayoutTests` (the seeded `host.conf`); Linux only: `HostEyeTests`, `CNetIOTests`, `CPipeWireAudioTests` (against a silent PipeWire socket in a temp runtime dir, never the desktop's server), `LyteHostIntegrationTests` |
 | Client | `LyteTransportTests`, `LyteClientSessionTests`, `LyteClientCoreTests`, `LyteCorpusTests` (benchmark scoring), `LyteAppTests` (app lifecycle under injected services), `LyteHelperTests`, `LyteCLITests` |
 | SystemTests | `LyteClientHostTests` — the real client core and host session composed in one process, on the client and host test kits |
-| Browser | `LyteClientBrowserCoreTests` — the browser core against an in-process `HostWire.Session`; page input rules in `Browser/Tests/Page/page.test.mjs` (Node, not SwiftPM) |
+| Browser | `LyteClientBrowserCoreTests` — the browser core against an in-process `HostWire.Session`; page input rules, audio pull order and the viewer loop in `Browser/Tests/Page/page.test.mjs` (Node, not SwiftPM) |
 
 ### Repository lints (run inside the Common suite)
 
@@ -184,11 +184,13 @@ session:
 
 1. Fingerprints protected state (`lyte_protected_state_fingerprint` in
    `Scripts/lib/pup-side.sh`, shared with the benchmarks):
-   `~/.config/lyte/{noise_static.key,paired_clients,host.conf}` (required:
-   a missing one fails the gate before any build), the pre-XDG copies and
-   `/etc/lyte/lyte-host.conf` when present,
-   `/etc/systemd/system/lyte-host.service`, and the `~/.local/bin/lyte-host`
-   link target. A file that exists but cannot be read fails the gate.
+   `~/.config/lyte/{noise_static.key,paired_clients}` and one `host.conf`
+   (`/etc/lyte/` or the earlier `~/.config/lyte/`; required: a missing one
+   fails the gate before any build), both `host.conf` locations, the
+   pre-XDG copies and `/etc/lyte/lyte-host.conf` when present,
+   `/etc/systemd/system/lyte-host.service`, and the
+   `/usr/local/lib/lyte/lyte-host` and earlier `~/.local/bin/lyte-host`
+   link targets. A file that exists but cannot be read fails the gate.
 2. Package tests (`swift test -Xswiftc -warnings-as-errors`) for Common,
    Wire, Client, Host and Browser. Off macOS the Client manifest keeps only
    `LyteClientCore`, `LyteClientSession` and their suites, and Browser's

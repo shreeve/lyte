@@ -195,6 +195,38 @@ final class BrowserHostPeer {
 
     // MARK: Media
 
+    /// The host sends `count` Opus packets at the 5 ms cadence; each
+    /// beat's datagrams reach the client in the order `reorder` gives them.
+    func sendAudio(
+        count: Int, to client: BrowserControlSession,
+        reorder: ([[UInt8]]) -> [[UInt8]] = { $0 }
+    ) throws {
+        var flight: [[UInt8]] = []
+        var notes: [String] = []
+        for index in 0..<count {
+            try session.ingestAudioPacket(
+                [0xF8, 0xFF, 0xFE, UInt8(truncatingIfNeeded: index)],
+                captureTimestampMicroseconds: hostMicros,
+                now: hostMicros * 1_000)
+            advance(microseconds: 5_000)
+            flight += drain()
+        }
+        deliver(reorder(flight), to: client, notes: &notes)
+    }
+
+    /// Pulls audio verdicts as the page does, counting each one's packet
+    /// of frames into `pipeline`, until the organ says stop.
+    func pullAudio(
+        _ client: BrowserControlSession, pipeline: inout Int
+    ) -> [BrowserAudioPlayout.Pull] {
+        var pulls: [BrowserAudioPlayout.Pull] = []
+        while let pull = client.pullAudio(nowMicros: nowMicros, pipelineFrames: pipeline) {
+            pulls.append(pull)
+            pipeline += BrowserAudioPlayout.packetFrames
+        }
+        return pulls
+    }
+
     /// The host ingests one frame captured at `capture` (default: now on
     /// its clock); every shard crosses in 1 ms beats until the client's
     /// Conductor schedules it.

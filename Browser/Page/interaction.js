@@ -2,6 +2,7 @@
 // capability-gated CTRL, Opus → WebCodecs → AudioWorklet ring. Policy stays
 // in WASM; this file is the browser IO shell.
 
+import { AudioPlayout } from "./audio-playout.js";
 import { nowMicros, sleep } from "./lyte-io.js";
 
 // DOM `KeyboardEvent.code` (physical position) → Linux evdev KEY_* codes.
@@ -187,60 +188,6 @@ export function installCanvasInput(canvas, { sendInput, hostSize }) {
   };
 }
 
-/**
- * AudioWorklet PCM ring bounded at WASM's `maxQueuedFrames`. Plays through
- * a realtime AudioContext; `offline` renders 100 ms into an
- * OfflineAudioContext instead — for headless smoke runs, where there is no
- * output device to prove anything with.
- */
-export async function createAudioRing({ offline = false, maxQueuedFrames } = {}) {
-  let ctx;
-  if (offline) {
-    if (typeof OfflineAudioContext !== "function") {
-      throw new Error("OfflineAudioContext unavailable");
-    }
-    ctx = new OfflineAudioContext(2, 4_800, 48_000);
-  } else {
-    const Ctx = globalThis.AudioContext || globalThis.webkitAudioContext;
-    if (!Ctx) throw new Error("AudioContext unavailable");
-    ctx = new Ctx({ sampleRate: 48_000, latencyHint: "interactive" });
-    if (ctx.state === "suspended") {
-      // Autoplay policy may hold resume() until a user gesture; never wait
-      // on it — the ring still loads and buffers.
-      ctx.resume().catch(() => {});
-    }
-  }
-  await ctx.audioWorklet.addModule("./audio-ring-worklet.js");
-  const node = new AudioWorkletNode(ctx, "lyte-audio-ring", {
-    numberOfInputs: 0,
-    numberOfOutputs: 1,
-    outputChannelCount: [2],
-    processorOptions: { maxQueuedFrames },
-  });
-  node.connect(ctx.destination);
-  let framesPushed = 0;
-  return {
-    mode: offline ? "offline" : "realtime",
-    /** Takes ownership of an interleaved stereo Float32Array (transferred). */
-    pushPcm(interleaved) {
-      framesPushed += interleaved.length / 2;
-      node.port.postMessage({ pcm: interleaved }, [interleaved.buffer]);
-    },
-    framesPushed: () => framesPushed,
-    renderOffline: () => (offline ? ctx.startRendering() : Promise.resolve(null)),
-    /** The ring's own counters (realtime only: an offline one has ended). */
-    stats: () =>
-      new Promise((resolve) => {
-        node.port.onmessage = (event) => resolve(event.data);
-        node.port.postMessage({ type: "stats" });
-      }),
-    async close() {
-      node.disconnect();
-      if (!offline) await ctx.close().catch(() => {});
-    },
-  };
-}
-
 /** Frames of a rendered AudioBuffer carrying any non-zero sample. */
 function audibleFrames(buffer) {
   if (!buffer) return 0;
@@ -248,77 +195,6 @@ function audibleFrames(buffer) {
   let frames = 0;
   for (let i = 0; i < left.length; i++) if (left[i] !== 0) frames += 1;
   return frames;
-}
-
-/** WebCodecs Opus decode → interleaved stereo Float32. */
-export async function createOpusDecoder(onPcm) {
-  if (typeof AudioDecoder !== "function") {
-    return { ok: false, detail: "AudioDecoder API unavailable" };
-  }
-  const config = { codec: "opus", sampleRate: 48_000, numberOfChannels: 2 };
-  try {
-    if (!(await AudioDecoder.isConfigSupported(config)).supported) {
-      return { ok: false, detail: "Opus AudioDecoder config unsupported" };
-    }
-  } catch (error) {
-    return { ok: false, detail: `isConfigSupported: ${error?.message || error}` };
-  }
-  let error = null;
-  let outputs = 0;
-  const decoder = new AudioDecoder({
-    output: (audioData) => {
-      try {
-        const frames = audioData.numberOfFrames;
-        const interleaved = new Float32Array(frames * 2);
-        if (audioData.numberOfChannels === 2 && audioData.format === "f32") {
-          audioData.copyTo(interleaved, { planeIndex: 0 });
-        } else if (audioData.numberOfChannels === 2) {
-          const left = new Float32Array(frames);
-          const right = new Float32Array(frames);
-          audioData.copyTo(left, { planeIndex: 0, format: "f32-planar" });
-          audioData.copyTo(right, { planeIndex: 1, format: "f32-planar" });
-          for (let i = 0; i < frames; i++) {
-            interleaved[i * 2] = left[i];
-            interleaved[i * 2 + 1] = right[i];
-          }
-        } else {
-          const mono = new Float32Array(frames);
-          audioData.copyTo(mono, { planeIndex: 0, format: "f32-planar" });
-          for (let i = 0; i < frames; i++) {
-            interleaved[i * 2] = mono[i];
-            interleaved[i * 2 + 1] = mono[i];
-          }
-        }
-        outputs += 1;
-        onPcm(interleaved);
-      } finally {
-        audioData.close();
-      }
-    },
-    error: (err) => {
-      error = err;
-    },
-  });
-  decoder.configure(config);
-  return {
-    ok: true,
-    detail: "codec=opus 48kHz stereo",
-    decode(bytes, timestampUs) {
-      if (error) throw error;
-      decoder.decode(
-        new EncodedAudioChunk({
-          type: "key",
-          timestamp: timestampUs,
-          data: bytes,
-          transfer: [bytes.buffer],
-        })
-      );
-    },
-    outputs: () => outputs,
-    close() {
-      if (decoder.state !== "closed") decoder.close();
-    },
-  };
 }
 
 /**
@@ -331,15 +207,12 @@ export async function runInteractionProofs({ pump, offlineAudio = false, timeout
   const note = (line) => lines.push(line);
   const stats = () => bridge.interactionStats();
 
-  // Load the worklet while the input and clipboard legs run.
-  let audioRing = null;
-  let ringError = null;
-  const ringReady = createAudioRing({
-    offline: offlineAudio,
-    maxQueuedFrames: bridge.audioRingCeilingFrames,
-  }).then(
-    (ring) => (audioRing = ring),
-    (error) => (ringError = error)
+  // Load the worklet and decoder while the input and clipboard legs run.
+  let playout = null;
+  let playoutError = null;
+  const playoutReady = AudioPlayout.open(bridge, { offline: offlineAudio }).then(
+    (opened) => (playout = opened),
+    (error) => (playoutError = error)
   );
 
   // Input: a few events, then wait for the host's InputEcho.
@@ -377,65 +250,56 @@ export async function runInteractionProofs({ pump, offlineAudio = false, timeout
       : `FAIL  clipboard/text-roundtrip — received=${clipboardReceived}`
   );
 
-  // Audio: depacketize sealed Opus → WebCodecs → AudioWorklet. Keep pumping
-  // while the worklet loads: unanswered beacons freeze the peer.
+  // Audio: depacketize sealed Opus → WASM jitter buffer → WebCodecs →
+  // AudioWorklet. Keep pumping while the worklet loads: unanswered beacons
+  // freeze the peer.
   const workletDeadline = Date.now() + 4_000;
-  while (Date.now() < workletDeadline && !audioRing && !ringError) {
+  while (Date.now() < workletDeadline && !playout && !playoutError) {
     await pump.turn(0);
-    await Promise.race([ringReady, sleep(15)]);
+    await Promise.race([playoutReady, sleep(15)]);
   }
-  let pcmFrames = 0;
-  let opus = null;
-  if (audioRing) {
-    opus = await createOpusDecoder((pcm) => {
-      pcmFrames += pcm.length / 2;
-      audioRing.pushPcm(pcm);
-    });
-  } else {
-    note(`FAIL  audio-worklet/ring — ${ringError?.message || "AudioWorklet setup timed out"}`);
+  if (!playout) {
+    note(`FAIL  audio-worklet/ring — ${playoutError?.message || "AudioWorklet setup timed out"}`);
   }
   const audioDeadline = Date.now() + Math.min(timeoutMs, 8_000);
   while (Date.now() < audioDeadline && !pump.failed) {
     await pump.turn(5);
-    for (let packet; opus?.ok && (packet = bridge.audioPopPacket()); ) {
-      try {
-        opus.decode(packet.bytes, packet.captureMicroseconds);
-      } catch (error) {
-        note(`FAIL  audio/webcodecs — ${error?.message || error}`);
-        opus = null;
-      }
-    }
-    if (stats().audioAssembled >= 8 && (pcmFrames >= 480 || !opus?.ok)) break;
+    playout?.pump();
+    const decoded = playout?.stats.framesDecoded || 0;
+    if (stats().audioAssembled >= 8 && (decoded >= 480 || !playout?.decoder)) break;
   }
-  const { audioAssembled } = stats();
+  const { audioAssembled, audioPlayed } = stats();
   note(
     audioAssembled >= 8
       ? `PASS  audio/depacketize — ${audioAssembled} Opus packets from sealed chan-1`
       : `FAIL  audio/depacketize — assembled=${audioAssembled} want≥8`
   );
-  if (audioRing) {
+  if (playout) {
+    const decoded = playout.stats.framesDecoded;
     note(
-      opus?.ok && pcmFrames > 0
-        ? `PASS  audio/webcodecs — ${opus.detail} → ${pcmFrames} PCM frames`
-        : `FAIL  audio/webcodecs — ${opus?.detail || "decoder produced no PCM"}`
+      decoded > 0
+        ? `PASS  audio/webcodecs — ${playout.detail} → ${decoded} PCM frames ` +
+            `(${audioPlayed} packets from the jitter buffer)`
+        : `FAIL  audio/webcodecs — ${playout.error?.message || playout.detail || "decoder produced no PCM"}`
     );
+    const ring = playout.ring;
     const played = await Promise.race([
-      audioRing.mode === "offline"
-        ? audioRing.renderOffline().then(audibleFrames)
-        : audioRing.stats().then((stats) => stats.framesPlayed),
+      ring.mode === "offline"
+        ? ring.renderOffline().then(audibleFrames)
+        : ring.stats().then((stats) => stats.framesPlayed),
       sleep(2_000).then(() => 0),
     ]).catch(() => 0);
     note(
       played > 0
-        ? `PASS  audio-worklet/ring — AudioWorklet (${audioRing.mode}) played ${played} ` +
-            `non-silent frames of ${audioRing.framesPushed()} pushed`
-        : `FAIL  audio-worklet/ring — AudioWorklet (${audioRing.mode}) played nothing ` +
-            `of ${audioRing.framesPushed()} pushed`
+        ? `PASS  audio-worklet/ring — AudioWorklet (${ring.mode}) played ${played} ` +
+            `non-silent frames of ${ring.framesPushed()} pushed`
+        : `FAIL  audio-worklet/ring — AudioWorklet (${ring.mode}) played nothing ` +
+            `of ${ring.framesPushed()} pushed`
     );
+    await Promise.race([playout.close(), sleep(500)]).catch(() => {});
   }
-  opus?.close?.();
-  if (audioRing) await Promise.race([audioRing.close(), sleep(500)]).catch(() => {});
 
   const passed = lines.length > 0 && lines.every((line) => line.startsWith("PASS"));
   return { passed, lines };
 }
+

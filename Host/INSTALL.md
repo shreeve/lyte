@@ -63,6 +63,16 @@ prints:
    echo "$USER - rtprio 20" | sudo tee /etc/security/limits.d/90-lyte-rtprio.conf
    ```
 
+4. **IPv4-only mDNS** if browsers will reach this host through a
+   WebTransport relay (Janus). avahi otherwise also publishes the host's
+   IPv6 addresses, and a browser's QUIC dial to one of them is refused
+   without falling back to IPv4
+   ([OPERATIONS.md](../docs/OPERATIONS.md#name-resolution-ipv4-only)):
+
+   ```sh
+   sudo sed -i -e 's/^#\?use-ipv6=.*/use-ipv6=no/' -e 's/^#\?publish-aaaa-on-ipv4=.*/publish-aaaa-on-ipv4=no/' /etc/avahi/avahi-daemon.conf && sudo systemctl restart avahi-daemon
+   ```
+
 It also reports the service and deployed binary, and portal-era and
 pre-XDG leftovers ([OPERATIONS.md](../docs/OPERATIONS.md#pre-xdg-leftovers)).
 
@@ -79,21 +89,25 @@ Host/Scripts/install-host.sh /path/to/lyte-host-image # or an already-staged ima
 What it does, idempotently:
 - Verifies the image's exact inventory, modes, and every SHA-256 manifest
   entry before changing anything.
-- Deploys the binary as a version (`deploy-host.sh`) and installs the legal
-  payload in `~/.local/share/lyte/doc/`.
-- Seeds `~/.config/lyte/host.conf` **once** (after that the conf is yours and
-  reinstalls preserve its bytes and mode). Its one knob is `LYTE_HOST_ARGS`
+- Deploys the binary as a root-owned version under `/usr/local/lib/lyte`
+  (`deploy-host.sh`) and installs the legal payload in
+  `/usr/local/share/doc/lyte/`. The seat user can run what the service
+  runs but never change it.
+- Seeds the root-owned `/etc/lyte/host.conf` **once**, from an earlier
+  install's `~/.config/lyte/host.conf` when one exists (that file is left
+  alone), else from the template. After that the conf is yours (edit it
+  with `sudoedit`) and reinstalls preserve its bytes and mode. Its one knob is `LYTE_HOST_ARGS`
   (listen port, advertised NIC, session flags). The seed turns on no
   clipboard sync or file drops; both are consent you add there.
 - Renders `/etc/systemd/system/lyte-host.service` with your user, uid and
-  real home path baked in (`User=`, `EnvironmentFile=`, `ExecStart`, the
-  session bus, `XDG_RUNTIME_DIR`), plus `AmbientCapabilities=CAP_SYS_ADMIN`
+  XDG directories baked in (`User=`, the log path, the session bus,
+  `XDG_RUNTIME_DIR`), plus `AmbientCapabilities=CAP_SYS_ADMIN`
   and `Restart=always`. It stays a system unit because only pid 1 can grant
   the ambient capability.
 - `daemon-reload` + `enable`. Start is left to you.
 
 Before the first start, check the seeded `--advertise-interface` in
-`~/.config/lyte/host.conf`: the installer seeds `LYTE_ADVERTISE_INTERFACE`
+`/etc/lyte/host.conf`: the installer seeds `LYTE_ADVERTISE_INTERFACE`
 when set, else the first wired (`en*` or `eth*`) interface it finds, and
 prints it; `CHANGE_ME` means it found none. Clients find the host over mDNS
 only on that interface.

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Exercise Host/Scripts/deploy-host.sh under a private HOME: versioned
-# deploys, the atomic link flip, idempotence, rollback, pruning, status, and
-# its refusals. No sudo and no systemctl — --restart runs a logging fake.
+# Exercise Host/Scripts/deploy-host.sh under a private install root:
+# versioned deploys, the atomic link flip, idempotence, rollback, pruning,
+# status, and its refusals; and that without the seam every write escalates
+# and nothing lands in HOME. No sudo and no systemctl — --restart runs a
+# logging fake.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
@@ -13,10 +15,11 @@ scratch="$(mktemp -d -t lyte-host-deploy-test.XXXXXX)"
 scratch="$(cd "$scratch" && pwd -P)"
 trap 'find "$scratch" -xdev -depth -delete' EXIT
 export HOME="$scratch/home"
-unset XDG_DATA_HOME
-mkdir -p "$HOME"
-versions="$HOME/.local/share/lyte/versions"
-link="$HOME/.local/bin/lyte-host"
+export LYTE_INSTALL_ROOT="$scratch/root"
+mkdir -p "$HOME" "$LYTE_INSTALL_ROOT"
+lib="$LYTE_INSTALL_ROOT/usr/local/lib/lyte"
+versions="$lib/versions"
+link="$lib/lyte-host"
 
 # A release directory whose lyte-host prints $1.
 release() {
@@ -49,7 +52,7 @@ id_b="$(id_of "$b")"
 cmp "$a/lyte-audio-check" "$versions/$id_a/lyte-audio-check"
 [[ "$(lyte_sha256 "$versions/$id_a/lyte-host")" == "$id_a"* ]] \
     || fail "version directory is not named by its digest"
-[[ ! -e "$HOME/.local/share/lyte/previous" ]] || fail "first deploy recorded a previous"
+[[ ! -e "$lib/previous" ]] || fail "first deploy recorded a previous"
 
 # Redeploying the active binary changes nothing.
 grep -Fq 'already deployed' <<< "$("$deploy" "$a")" \
@@ -61,7 +64,7 @@ grep -Fq 'already deployed' <<< "$("$deploy" "$a")" \
 # A new binary flips the link and remembers the old one.
 "$deploy" "$b" >/dev/null
 [[ "$(active)" == "$id_b" && "$("$link")" == bravo ]] || fail "flip to bravo"
-[[ "$(cat "$HOME/.local/share/lyte/previous")" == "$id_a" ]] \
+[[ "$(cat "$lib/previous")" == "$id_a" ]] \
     || fail "the replaced version is not remembered"
 
 # Rollback toggles between the two, and --restart reaches the service.
@@ -88,16 +91,24 @@ for n in 1 2 3 4 5; do
 done
 [[ "$(ls "$versions" | wc -l | tr -d ' ')" == 3 ]] || fail "prune kept $(ls "$versions")"
 [[ -d "$versions/$(active)" ]] || fail "pruning removed the active version"
-[[ -d "$versions/$(cat "$HOME/.local/share/lyte/previous")" ]] \
+[[ -d "$versions/$(cat "$lib/previous")" ]] \
     || fail "pruning removed the previous version"
 [[ ! -e "$versions/$id_a" ]] || fail "oldest version survived pruning"
 
-# XDG_DATA_HOME relocates the versions.
-XDG_DATA_HOME="$scratch/data" HOME="$scratch/home2" bash -c '
-    mkdir -p "$HOME" && "$1" "$2" >/dev/null
-    [[ "$(readlink "$HOME/.local/bin/lyte-host")" == "$XDG_DATA_HOME/lyte/versions/"*/lyte-host ]] \
-        || exit 1
-' _ "$deploy" "$a" || fail "XDG_DATA_HOME ignored"
+# Without the seam every write goes through sudo to the root-owned
+# /usr/local/lib/lyte, and the seat user's home receives nothing.
+mkdir -p "$scratch/sudo-bin" "$scratch/home-real"
+printf '#!/bin/sh\necho "$*" >> "%s/sudo.log"\nexit 1\n' "$scratch" \
+    > "$scratch/sudo-bin/sudo"
+chmod 0755 "$scratch/sudo-bin/sudo"
+if env -u LYTE_INSTALL_ROOT HOME="$scratch/home-real" \
+    PATH="$scratch/sudo-bin:$PATH" "$deploy" "$a" >/dev/null 2>&1
+then
+    fail "a deploy without sudo succeeded"
+fi
+grep -Fq 'install -d -m 0755 /usr/local/lib/lyte/versions' "$scratch/sudo.log" \
+    || fail "the first write did not escalate: $(cat "$scratch/sudo.log")"
+[[ -z "$(ls -A "$scratch/home-real")" ]] || fail "a deploy wrote into HOME"
 
 # Refusals leave the link exactly as it was.
 before="$(readlink "$link")"
@@ -127,8 +138,8 @@ refuses "$deploy" "$a"
 # chmod creates that version when the deploy marks its staging directory.
 real_chmod="$(command -v chmod)"
 mkdir -p "$scratch/race-bin"
-race_home="$scratch/home-race"
-race_version="$race_home/.local/share/lyte/versions/$id_a"
+race_root="$scratch/root-race"
+race_version="$race_root/usr/local/lib/lyte/versions/$id_a"
 cat > "$scratch/race-bin/chmod" <<EOF
 #!/bin/sh
 case "\$2" in
@@ -140,8 +151,8 @@ esac
 exec "$real_chmod" "\$@"
 EOF
 "$real_chmod" 0755 "$scratch/race-bin/chmod"
-mkdir -p "$race_home"
-if HOME="$race_home" PATH="$scratch/race-bin:$PATH" "$deploy" "$a" \
+mkdir -p "$race_root"
+if LYTE_INSTALL_ROOT="$race_root" PATH="$scratch/race-bin:$PATH" "$deploy" "$a" \
     > "$scratch/race.out" 2>&1
 then
     fail "a deploy overwrote a version that appeared during it"
@@ -151,9 +162,10 @@ grep -Fq "version $id_a appeared during this deploy" "$scratch/race.out" \
 [[ "$(ls -A "$race_version")" == lyte-host \
     && "$(cat "$race_version/lyte-host")" == racer ]] \
     || fail "the racing deploy changed the version that won"
-leftover="$(find "$race_home/.local/share/lyte/versions" -name '.staging.*')"
+leftover="$(find "$race_root/usr/local/lib/lyte/versions" -name '.staging.*')"
 [[ -z "$leftover" ]] || fail "the racing deploy left staging behind: $leftover"
-[[ ! -e "$race_home/.local/bin/lyte-host" && ! -L "$race_home/.local/bin/lyte-host" ]] \
+[[ ! -e "$race_root/usr/local/lib/lyte/lyte-host" \
+    && ! -L "$race_root/usr/local/lib/lyte/lyte-host" ]] \
     || fail "the racing deploy wrote a link"
 
 echo "host deploy tests PASSED"

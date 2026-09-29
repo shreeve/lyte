@@ -4,7 +4,7 @@
 # contacts a service; install-host.sh consumes this exact image:
 #
 #   bin/lyte-host               deployed by deploy-host.sh as a version
-#   etc/host.conf               seeds ~/.config/lyte/host.conf once
+#   etc/host.conf               seeds /etc/lyte/host.conf once
 #   systemd/lyte-host.service   the unit template install-host.sh renders
 #   doc/                        LICENSE, THIRD-PARTY.md, third-party notices,
 #                               MANIFEST.sha256 (every other file's digest)

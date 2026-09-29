@@ -16,6 +16,29 @@ final class BrowserControlSessionTests: XCTestCase {
         XCTAssertEqual(client.counters.message1Transmissions, 1)
     }
 
+    /// With no PIN the browser connects as an unpaired client, as the
+    /// native app does against a host that does not require pairing: READY
+    /// needs only Noise and capabilities, and no pairing word leaves.
+    func testNoPinReachesReadyUnpaired() throws {
+        let host = BrowserHostPeer()
+        let client = try host.makeClient(pin: "")
+        var notes: [String] = []
+        host.deliver(try client.begin(nowMicros: host.nowMicros), notes: &notes)
+        host.run(client, notes: &notes) { $0.currentStatus == .ready }
+        XCTAssertEqual(client.currentStatus, .ready,
+                       "notes: \(notes.joined(separator: " | "))")
+        XCTAssertFalse(client.paired)
+        XCTAssertTrue(client.capabilitiesAgreed)
+        XCTAssertFalse(notes.contains { $0.hasPrefix("pairing: share") },
+                       "an unpaired client sends no pairing share")
+    }
+
+    /// A PIN that is present but malformed is still refused.
+    func testMalformedPinIsRefused() {
+        let host = BrowserHostPeer()
+        XCTAssertThrowsError(try host.makeClient(pin: "12ab"))
+    }
+
     // MARK: Per-datagram faults are dropped, not fatal
 
     func testReplayedSealedDatagramIsDroppedAndSessionStaysReady() throws {

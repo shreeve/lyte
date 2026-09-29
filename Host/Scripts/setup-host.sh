@@ -30,7 +30,7 @@ echo "lyte-host machine setup"
 
 # --- 1. The service and its CAP_SYS_ADMIN (the direct eye's DRM ticket)
 UNIT=/etc/systemd/system/lyte-host.service
-BIN="$HOME/.local/bin/lyte-host"
+BIN=/usr/local/lib/lyte/lyte-host
 if [ -f "$UNIT" ] && grep -q '^AmbientCapabilities=CAP_SYS_ADMIN' "$UNIT"; then
     ok "lyte-host.service grants CAP_SYS_ADMIN (ambient) — no setcap needed"
 else
@@ -42,6 +42,17 @@ if [ -L "$BIN" ]; then
 else
     todo "no deployed binary at $BIN — after a release build run:"
     printf '    Host/Scripts/deploy-host.sh\n'
+fi
+
+# --- 4. IPv4-only mDNS (browsers reach the host through a relay) ------
+AVAHI=/etc/avahi/avahi-daemon.conf
+if [ -f "$AVAHI" ]; then
+    if grep -qx 'use-ipv6=no' "$AVAHI" && grep -qx 'publish-aaaa-on-ipv4=no' "$AVAHI"; then
+        ok "avahi advertises IPv4 only"
+    else
+        todo "avahi also advertises IPv6 — a browser's QUIC dial to the relay is refused there; run:"
+        printf '%s\n' "    sudo sed -i -e 's/^#\\?use-ipv6=.*/use-ipv6=no/' -e 's/^#\\?publish-aaaa-on-ipv4=.*/publish-aaaa-on-ipv4=no/' $AVAHI && sudo systemctl restart avahi-daemon"
+    fi
 fi
 
 # --- portal-era leftover: the direct-scanout opt-out is obsolete -----
@@ -58,6 +69,14 @@ for OLD in /etc/lyte/lyte-host.conf /usr/local/bin/lyte-host /tmp/lyte-host-sess
         printf '    sudo rm %s\n' "$OLD"
     fi
 done
+# --- pre-root-owned leftovers: the service no longer reads the home ----
+if [ -L "$HOME/.local/bin/lyte-host" ] || [ -d "$HOME/.local/share/lyte/versions" ]; then
+    todo "pre-root-owned $HOME/.local/bin/lyte-host and ~/.local/share/lyte are unused by the current unit; once no rollback to the old unit is wanted:"
+    printf '    rm -f %s/.local/bin/lyte-host && rm -r %s/.local/share/lyte\n' "$HOME" "$HOME"
+fi
+if [ -f "$HOME/.config/lyte/host.conf" ] && [ -f /etc/lyte/host.conf ]; then
+    todo "$HOME/.config/lyte/host.conf is unused: the service reads /etc/lyte/host.conf"
+fi
 if [ -d "$HOME/.config/lyte-host" ]; then
     ok "pre-XDG identity $HOME/.config/lyte-host kept read-only (lyte-host copies from it, never writes it)"
 fi

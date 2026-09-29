@@ -6,6 +6,26 @@ Sparkle shows in the update window (`Scripts/release.sh`).
 
 ## Unreleased
 
+- **Open the host's desktop in a browser.** Chrome or Edge shows the
+  desktop, plays its audio and sends keyboard and mouse with nothing
+  installed, through a WebTransport relay beside the host (Janus 1.19's
+  `webtransport` route). Encryption still runs end to end between the page
+  and the host; the relay carries only ciphertext. Setup:
+  [docs/BROWSER.md](docs/BROWSER.md#live-setup-janus-relay). A host's
+  mDNS name must resolve IPv4-only for a browser to reach it, and
+  `setup-host.sh` now flags one that also advertises IPv6.
+- **The Linux host runs root-owned code.** `install-host.sh` and
+  `deploy-host.sh` now put the service's binary under
+  `/usr/local/lib/lyte` and its knobs in `/etc/lyte/host.conf`, both
+  root-owned, so code running as the seat user can no longer plant a
+  binary or environment that runs with `CAP_SYS_ADMIN`. Reinstall once
+  (`Host/Scripts/install-host.sh`): it copies an existing
+  `~/.config/lyte/host.conf` and leaves it in place. Edit knobs with
+  `sudoedit /etc/lyte/host.conf`.
+
+- **Audio starts clean.** Audio that arrives before the Mac's audio
+  engine is running no longer overfills the buffer and re-centers every
+  100 ms; playout starts at its target depth on the first pull.
 - **A still screen costs almost nothing upstream.** The Mac sent a
   feedback report 25 times a second whether or not anything arrived
   (about 25 kbps). Against a host that agrees (capability key 17), it now

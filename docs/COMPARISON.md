@@ -77,8 +77,8 @@ recovery policy it owns end to end.
 
 The shipping combination is a macOS client and a Linux host (GNOME/Mutter
 with an Intel GPU). The macOS host role, Windows and Linux role shells, printing and managed remote reach are future work. The browser
-client is a Chrome proof harness against a test peer, not yet a product
-client ([BROWSER.md](BROWSER.md)). Hosts do not yet require pairing by
+viewer streams a real host in Chrome through a relay but is not yet a
+finished product client ([BROWSER.md](BROWSER.md)). Hosts do not yet require pairing by
 default ([TODO.md](../TODO.md)).
 
 Keep this page short and honest. Product direction belongs in

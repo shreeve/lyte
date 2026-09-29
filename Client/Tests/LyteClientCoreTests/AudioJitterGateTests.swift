@@ -16,6 +16,7 @@ final class AudioJitterGateTests: XCTestCase {
     private static let packetMicros: UInt64 = 5_000
     private static let packetFrames = 240
     private static let framesPerMs = 48
+    private static let ringCapacityFrames = 48_000
 
     // MARK: - The virtual-time pump harness
 
@@ -62,10 +63,12 @@ final class AudioJitterGateTests: XCTestCase {
             }
             // Pump side: refill to target.
             var pulling = true
-            while pulling,
-                  ringFrames < buffer.targetPackets * Self.packetFrames {
-                let urgent = ringFrames < Self.packetFrames
-                switch buffer.pull(nowMicroseconds: t, urgent: urgent) {
+            while pulling, let fill = AudioRingFill.next(
+                pipelineFrames: ringFrames,
+                targetPackets: buffer.targetPackets,
+                capacityFrames: Self.ringCapacityFrames)
+            {
+                switch buffer.pull(nowMicroseconds: t, urgent: fill.urgent) {
                 case .packet(let packet):
                     result.played.append(packet.number)
                     result.playedPackets.append(packet)
@@ -85,6 +88,25 @@ final class AudioJitterGateTests: XCTestCase {
         return result
     }
 
+    /// Packets 0–9 at the 5 ms cadence, played in order as a running pump
+    /// plays them: it pulls as they arrive, so priming never trims them.
+    private func playFirstTen(
+        _ buffer: AudioJitterBuffer, file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        for n in UInt32(0)..<5 {
+            buffer.insert(packet(n), arrivalMicroseconds: UInt64(n) * 5_000)
+        }
+        for n in UInt32(0)..<10 {
+            XCTAssertEqual(buffer.pull(nowMicroseconds: 50_000, urgent: true),
+                           .packet(packet(n)), file: file, line: line)
+            if n + 5 < 10 {
+                buffer.insert(packet(n + 5),
+                              arrivalMicroseconds: UInt64(n + 5) * 5_000)
+            }
+        }
+    }
+
     private func packet(_ n: UInt32, recovered: Bool = false) -> AudioPacket {
         AudioPacket(
             number: n,
@@ -93,7 +115,53 @@ final class AudioJitterGateTests: XCTestCase {
             recovered: recovered)
     }
 
+    // MARK: The pump's fill rule
+
+    /// Every shell's pump pulls until the audio not yet played reaches the
+    /// target, never past what the ring holds, and urgently only when the
+    /// ring is under one packet from dry.
+    func testRingFillStopsAtTargetAndIsUrgentUnderOnePacket() {
+        let target = 5
+        let fill = { (frames: Int, capacity: Int) in
+            AudioRingFill.next(
+                pipelineFrames: frames, targetPackets: target,
+                capacityFrames: capacity)
+        }
+        XCTAssertEqual(fill(0, 9_600)?.urgent, true)
+        XCTAssertEqual(fill(Self.packetFrames - 1, 9_600)?.urgent, true)
+        XCTAssertEqual(fill(Self.packetFrames, 9_600)?.urgent, false)
+        XCTAssertEqual(fill(target * Self.packetFrames - 1, 9_600)?.urgent, false)
+        XCTAssertNil(fill(target * Self.packetFrames, 9_600),
+                     "the ring already holds the target")
+        XCTAssertNil(fill(Self.packetFrames, Self.packetFrames + 1),
+                     "one more packet would overflow the ring")
+        XCTAssertEqual(
+            AudioRingFill.next(pipelineFrames: 0, targetPackets: 0,
+                               capacityFrames: 9_600)?.urgent,
+            true,
+            "a zero target still keeps one packet coming")
+    }
+
     // MARK: Steady cadence: silence-free, minimal delay
+
+    /// Audio that arrives before the player pulls (the engine is still
+    /// spinning up) is priming, not a stall: the buffer keeps the newest
+    /// target's worth, books no recenter, and playout starts from there at
+    /// the first pull.
+    func testAudioBeforeTheFirstPullPrimesWithoutRecentering() {
+        let buffer = AudioJitterBuffer()
+        let target = buffer.targetPackets
+        for n in UInt32(0)..<200 {
+            buffer.insert(packet(n), arrivalMicroseconds: UInt64(n) * 5_000)
+        }
+        let primed = buffer.snapshotStats()
+        XCTAssertEqual(primed.recenterEvents, 0, "priming is not a recenter")
+        XCTAssertEqual(primed.packetsDroppedInRecenter, 0)
+        XCTAssertEqual(buffer.pendingCount, target)
+        XCTAssertEqual(buffer.pull(nowMicroseconds: 1_000_000, urgent: true),
+                       .packet(packet(200 - UInt32(target))),
+                       "playout starts target packets behind the newest")
+    }
 
     func testSteadyTraceZeroPlcZeroUnderrunTightTarget() {
         let buffer = AudioJitterBuffer()
@@ -342,13 +410,7 @@ final class AudioJitterGateTests: XCTestCase {
     /// resume behind the playhead.
     func testAnnouncedQuietConcealsNothingAndTheWakeBurstPlays() {
         let buffer = AudioJitterBuffer()
-        for n in UInt32(0)..<10 {
-            buffer.insert(packet(n), arrivalMicroseconds: UInt64(n) * 5_000)
-        }
-        for n in UInt32(0)..<10 {
-            XCTAssertEqual(buffer.pull(nowMicroseconds: 50_000, urgent: true),
-                           .packet(packet(n)))
-        }
+        playFirstTen(buffer)
         for _ in 0..<3 {
             guard case .conceal = buffer.pull(nowMicroseconds: 60_000, urgent: true)
             else { return XCTFail("before the notice a gap conceals") }
@@ -379,15 +441,33 @@ final class AudioJitterGateTests: XCTestCase {
 
     /// The wake grants no depth of its own: a burst deeper than the hard
     /// cap re-centers like any other, so a wake never parks latency.
+    /// Over Wi-Fi the wake burst lands in a few aggregates, not one
+    /// clump: 20 packets in 4 bursts of 5 with 6 ms between them, then the
+    /// live stream on its 5 ms cadence. The burst describes the host's
+    /// ring, not the path, so the target stays at its floor.
+    func testAWakeBurstInAggregatesDoesNotLiftTheTarget() {
+        let buffer = AudioJitterBuffer()
+        playFirstTen(buffer)
+        buffer.noteAnnouncedQuiet()
+        var now: UInt64 = 3_000_000
+        for n in UInt32(10)..<30 {
+            if n > 10, (n - 10) % 5 == 0 { now += 6_000 }
+            buffer.insert(packet(n), arrivalMicroseconds: now)
+            _ = buffer.pull(nowMicroseconds: now, urgent: false)
+        }
+        for n in UInt32(30)..<700 {
+            now += 5_000
+            buffer.insert(packet(n), arrivalMicroseconds: now)
+            _ = buffer.pull(nowMicroseconds: now, urgent: false)
+        }
+        XCTAssertEqual(buffer.snapshotStats().targetPackets,
+                       AudioJitterConfig().minTargetPackets,
+                       "the burst's aggregates are not path jitter")
+    }
+
     func testWakeBurstDeeperThanTheHardCapStillRecenters() {
         let buffer = AudioJitterBuffer()
-        for n in UInt32(0)..<10 {
-            buffer.insert(packet(n), arrivalMicroseconds: UInt64(n) * 5_000)
-        }
-        for n in UInt32(0)..<10 {
-            XCTAssertEqual(buffer.pull(nowMicroseconds: 50_000, urgent: true),
-                           .packet(packet(n)))
-        }
+        playFirstTen(buffer)
         buffer.noteAnnouncedQuiet()
         for n in UInt32(10)..<50 {
             buffer.insert(packet(n), arrivalMicroseconds: 3_000_000)
@@ -404,13 +484,7 @@ final class AudioJitterGateTests: XCTestCase {
     /// first neither rewinds playout nor ends the quiet.
     func testAnOldPacketAfterAnAnnouncedQuietNeitherReplaysNorWakesIt() {
         let buffer = AudioJitterBuffer()
-        for n in UInt32(0)..<10 {
-            buffer.insert(packet(n), arrivalMicroseconds: UInt64(n) * 5_000)
-        }
-        for n in UInt32(0)..<10 {
-            XCTAssertEqual(buffer.pull(nowMicroseconds: 50_000, urgent: true),
-                           .packet(packet(n)))
-        }
+        playFirstTen(buffer)
         buffer.noteAnnouncedQuiet()
         buffer.insert(packet(7, recovered: true), arrivalMicroseconds: 100_000)
         buffer.insert(packet(8), arrivalMicroseconds: 100_000)
@@ -429,13 +503,7 @@ final class AudioJitterGateTests: XCTestCase {
     /// not evidence against the cushion.
     func testReorderedWakeOnsetPlaysInOrder() {
         let buffer = AudioJitterBuffer()
-        for n in UInt32(0)..<10 {
-            buffer.insert(packet(n), arrivalMicroseconds: UInt64(n) * 5_000)
-        }
-        for n in UInt32(0)..<10 {
-            XCTAssertEqual(buffer.pull(nowMicroseconds: 50_000, urgent: true),
-                           .packet(packet(n)))
-        }
+        playFirstTen(buffer)
         buffer.noteAnnouncedQuiet()
         buffer.insert(packet(11), arrivalMicroseconds: 3_000_000)
         buffer.insert(packet(10), arrivalMicroseconds: 3_000_100)

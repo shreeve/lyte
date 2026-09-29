@@ -161,7 +161,7 @@ TransportSender ─► feedback (chan 3), beacon echoes, input, IDR requests, AR
 Chrome WebTransport datagrams ◄─► lyte-wt-sidecar (opaque relay) ◄─► UDP peer
 page: session-pump.js ─► lyteBrowser.controlIngestBatch ─► BrowserControlSession
       ─► BrowserVideoPlayout (assemble, Conductor) ─► mediaTakeAnnexB ─► WebCodecs ─► WebGPU
-      ─► BrowserAudioPlayout ─► audioPopPacket ─► WebCodecs Opus ─► AudioWorklet ring
+      ─► BrowserAudioPlayout (AudioJitterBuffer) ─► audioPull ─► WebCodecs Opus ─► AudioWorklet ring
       DOM input ─► controlSendInput ─► sealed CTRL
 ```
 
