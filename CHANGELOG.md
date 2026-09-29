@@ -8,7 +8,7 @@ Sparkle shows in the update window (`Scripts/release.sh`).
 
 - **Open the host's desktop in a browser.** Chrome or Edge shows the
   desktop, plays its audio and sends keyboard and mouse with nothing
-  installed, through a WebTransport relay beside the host (Janus 1.19's
+  installed, through a WebTransport relay beside the host (Janus v1.19.0's
   `webtransport` route). Encryption still runs end to end between the page
   and the host; the relay carries only ciphertext. Setup:
   [docs/BROWSER.md](docs/BROWSER.md#live-setup-janus-relay). A host's

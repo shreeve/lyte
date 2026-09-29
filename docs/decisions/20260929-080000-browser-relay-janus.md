@@ -52,6 +52,6 @@ These are Lyte's requirements, and Janus's contract adopts them:
 - **IPv4-only names.** A browser's QUIC dial never falls back from a
   refused IPv6 address, so a relay's name must resolve A-only.
 - **Janus is required for browsers only.** The browser path needs Janus
-  1.19 or later. The native UDP path is unchanged and needs no edge.
+  v1.19.0 or later. The native UDP path is unchanged and needs no edge.
 - **Revisit** only if a host must serve browsers without any edge beside
   it.

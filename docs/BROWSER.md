@@ -224,7 +224,7 @@ WebTransport session, as `lyte-wt-sidecar` does.
 A page cannot send UDP, so a host reached from a browser needs a relay
 that terminates WebTransport and forwards each datagram to the host's UDP
 port. The daily path is [Janus](https://github.com/shreeve/janus)
-capability 10, `webtransport` (Janus 1.19, a Caddy module): it accepts
+capability 10, `webtransport` (Janus v1.19.0 and later, a Caddy module): it accepts
 WebTransport over HTTP/3 on UDP 443, relays every datagram byte-exact to
 one UDP target fixed in its config, gives each session its own connected
 UDP socket (a stable source port for the host, closed when the session
