@@ -43,6 +43,16 @@ public final class BrowserControlSession {
     /// Message-1 retransmit schedule; a page dial is a first dial.
     public typealias HandshakeRetry = ClientHandshakeInitiator.Retry
 
+    /// What the browser declares: only features it executes. Key 9 lets it
+    /// ask the host to mute its own speakers while the stream plays here;
+    /// key 15 lets it read an announced audio quiet as silence, not loss.
+    public static let localCapabilities: Capabilities = .wireDefault
+        .declaringClipboardText()
+        .declaringHostAudioRouting()
+        .declaringAudioQuietPosture()
+    /// The host's speakers go quiet for the session, as the native app asks.
+    public static let desiredHostAudioRouting: HostAudioRoutingMode = .hostMuted
+
     /// The chan-3 report cadence every client shell runs.
     private static let feedbackIntervalMicroseconds =
         UInt64(ClientFeedbackReporter.cadenceMilliseconds) * 1_000
@@ -474,8 +484,8 @@ public final class BrowserControlSession {
         note("noise: handshake completed")
 
         var control = ClientControlSession(
-            localCapabilities: .wireDefault.declaringClipboardText(),
-            desiredHostAudioRouting: nil,
+            localCapabilities: Self.localCapabilities,
+            desiredHostAudioRouting: Self.desiredHostAudioRouting,
             clipboardSharingAtStart: true,
             now: now
         )
@@ -710,6 +720,12 @@ public final class BrowserControlSession {
             if caps.clipboardText {
                 detail += " clipboardText=true"
             }
+            if caps.hostAudioRouting {
+                detail += " hostAudioRouting=true"
+            }
+            if caps.audioQuietPosture {
+                detail += " audioQuietPosture=true"
+            }
             note(detail)
         case .capability(.failed(let err)):
             // The composed teardown leaves before the session fails.
@@ -724,6 +740,12 @@ public final class BrowserControlSession {
             clipboardReceived += 1
             lastClipboardText = text
             note("clipboard: announce (\(text.utf8.count) B)")
+        case .audioRouting(.status(let mode, _)):
+            note("audio routing: host reports \(mode)")
+        case .mediaPosture(.audioState(let state)) where state.state == .quiet:
+            // Repeated check-ins change nothing; the first one is news.
+            if !audio.isAnnouncedQuiet { note("audio: host announced quiet") }
+            audio.noteAnnouncedQuiet()
         default:
             break
         }

@@ -95,6 +95,14 @@ Behavior the proof exercises today:
   injects nothing.
 - Clipboard text round-trips through capability key 10; the peer's
   clipboard is in memory, not an OS clipboard.
+- Audio posture: the browser declares key 9 and, as the native app does,
+  asks for `hostMuted` when the host's first routing status differs, so
+  the host's own speakers go quiet while the stream plays in the browser.
+  It declares key 15, so an announced audio quiet is silence by contract:
+  a dry page is not concealed, the blackout detector relaxes to its 2.5 s
+  baseline, and the packet that wakes the track re-primes playout (native
+  `BrowserAudioPostureTests`). Keys 13, 14, 16 and 17 are not declared:
+  the browser does not execute them.
 
 ## Run it
 
