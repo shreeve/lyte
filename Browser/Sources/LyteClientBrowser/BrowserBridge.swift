@@ -20,6 +20,10 @@ enum BrowserBridge {
                 Double(VideoBeatConductor.Config().beatPeriodMicroseconds).jsValue,
             "audioRingCeilingFrames": Double(BrowserAudioPlayout.ringCeilingFrames).jsValue,
             "audioPacketFrames": Double(BrowserAudioPlayout.packetFrames).jsValue,
+            "redialFloorMicroseconds":
+                Double(BrowserControlSession.redialFloorMicroseconds).jsValue,
+            "redialCeilingMicroseconds":
+                Double(BrowserControlSession.redialCeilingMicroseconds).jsValue,
         ]
         func expose(_ name: String, _ body: @escaping ([JSValue]) -> JSValue) {
             let closure = JSClosure { body($0) }

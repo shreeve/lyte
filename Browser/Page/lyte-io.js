@@ -145,20 +145,31 @@ export class DatagramReader {
 const DATAGRAM_MAX_AGE_MS = 100;
 
 /**
- * Opens WebTransport to the sidecar with its pinned certificate hash, over
- * HTTP/3 only (never a reliable HTTP/2 fallback), with bounded datagram
- * queues each way.
+ * WebTransport options for a relay: HTTP/3 only (never a reliable HTTP/2
+ * fallback), and pinned certificate hashes only when the relay names some —
+ * the sidecar's `hashHex`, or the viewer config's decoded
+ * `certificateHashes`. A relay with a CA-trusted certificate dials without
+ * them: Chrome rejects `serverCertificateHashes` it cannot match.
  */
-export async function openWebTransport(sidecar) {
+export function webTransportOptions(relay) {
+  const hashes = [
+    ...(relay.hashHex ? [bytesFromHex(relay.hashHex)] : []),
+    ...(relay.certificateHashes || []),
+  ];
+  return {
+    requireUnreliable: true,
+    ...(hashes.length
+      ? { serverCertificateHashes: hashes.map((value) => ({ algorithm: "sha-256", value })) }
+      : {}),
+  };
+}
+
+/** Opens WebTransport to a relay, with bounded datagram queues each way. */
+export async function openWebTransport(relay) {
   if (typeof WebTransport !== "function") {
     throw new Error("WebTransport unavailable");
   }
-  const wt = new WebTransport(sidecar.url, {
-    requireUnreliable: true,
-    serverCertificateHashes: [
-      { algorithm: "sha-256", value: bytesFromHex(sidecar.hashHex) },
-    ],
-  });
+  const wt = new WebTransport(relay.url, webTransportOptions(relay));
   await wt.ready;
   wt.datagrams.incomingMaxAge = DATAGRAM_MAX_AGE_MS;
   wt.datagrams.outgoingMaxAge = DATAGRAM_MAX_AGE_MS;

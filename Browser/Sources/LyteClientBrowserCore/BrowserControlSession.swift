@@ -53,6 +53,13 @@ public final class BrowserControlSession {
     /// The host's speakers go quiet for the session, as the native app asks.
     public static let desiredHostAudioRouting: HostAudioRoutingMode = .hostMuted
 
+    /// The native dial ladder's bounds, for the page's re-dial after a
+    /// carrier or session ends.
+    public static let redialFloorMicroseconds =
+        RoamingPolicyConfig().dialRetryFloorMicroseconds
+    public static let redialCeilingMicroseconds =
+        RoamingPolicyConfig().dialRetryCeilingMicroseconds
+
     /// The chan-3 report cadence every client shell runs.
     private static let feedbackIntervalMicroseconds =
         UInt64(ClientFeedbackReporter.cadenceMilliseconds) * 1_000
